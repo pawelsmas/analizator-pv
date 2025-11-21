@@ -32,6 +32,10 @@ wheels/
 *.swp
 *.swo
 *~
+.claude/
+
+# Git
+.git/index.lock
 
 # OS
 .DS_Store
