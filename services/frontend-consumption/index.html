@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Analiza Zużycia</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="consumption-container">
+  <div class="page-header">
+    <h1>📊 ANALIZA ZUŻYCIA ENERGII</h1>
+    <div class="header-info">
+      <span id="dataInfo">Brak danych</span>
+    </div>
+  </div>
+
+  <div class="content-grid">
+    <!-- Statystyki podstawowe -->
+    <div class="stats-section">
+      <h2>Statystyki Roczne</h2>
+      <div class="stats-cards">
+        <div class="stat-card">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Zużycie Roczne</div>
+            <div class="stat-value" id="annualConsumption">-</div>
+            <div class="stat-unit">GWh</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">📈</div>
+          <div class="stat-content">
+            <div class="stat-label">Moc Szczytowa</div>
+            <div class="stat-value" id="peakPower">-</div>
+            <div class="stat-unit">MW</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">📉</div>
+          <div class="stat-content">
+            <div class="stat-label">Moc Minimalna</div>
+            <div class="stat-value" id="minPower">-</div>
+            <div class="stat-unit">kW</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">📊</div>
+          <div class="stat-content">
+            <div class="stat-label">Średnia Dzienna</div>
+            <div class="stat-value" id="avgDaily">-</div>
+            <div class="stat-unit">MWh</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Profil dobowy -->
+    <div class="chart-section">
+      <h2>Średni Profil Dobowy</h2>
+      <div class="chart-info">
+        Średnie godzinowe zużycie w ciągu doby
+      </div>
+      <canvas id="dailyProfile"></canvas>
+    </div>
+
+    <!-- Profil tygodniowy -->
+    <div class="chart-section">
+      <h2>Profil Tygodniowy</h2>
+      <div class="chart-info">
+        Średnie dobowe zużycie według dnia tygodnia
+      </div>
+      <canvas id="weeklyProfile"></canvas>
+    </div>
+
+    <!-- Profil miesięczny -->
+    <div class="chart-section full-width">
+      <h2>Profil Miesięczny</h2>
+      <div class="chart-info">
+        Zużycie w poszczególnych miesiącach
+      </div>
+      <canvas id="monthlyProfile"></canvas>
+    </div>
+
+    <!-- Analiza rozkładu mocy -->
+    <div class="chart-section">
+      <h2>Krzywa Uporządkowana Mocy</h2>
+      <div class="chart-info">
+        Rozkład mocy od największej do najmniejszej
+      </div>
+      <canvas id="loadDurationCurve"></canvas>
+    </div>
+
+    <!-- Statystyki szczegółowe -->
+    <div class="details-section">
+      <h2>Statystyki Szczegółowe</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">Średnia Moc:</span>
+          <span class="detail-value" id="avgPower">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Odchylenie Standardowe:</span>
+          <span class="detail-value" id="stdDev">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Współczynnik Zmienności:</span>
+          <span class="detail-value" id="variationCoef">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Współczynnik Obciążenia:</span>
+          <span class="detail-value" id="loadFactor">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Ilość Pomiarów:</span>
+          <span class="detail-value" id="dataPoints">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Okres Danych:</span>
+          <span class="detail-value" id="dataPeriod">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Akcje -->
+    <div class="actions-section full-width">
+      <button class="btn" onclick="exportAnalysis()">📥 Eksportuj Analizę</button>
+      <button class="btn btn-secondary" onclick="refreshData()">🔄 Odśwież Dane</button>
+    </div>
+  </div>
+
+  <!-- Info gdy brak danych -->
+  <div id="noDataMessage" class="no-data">
+    <div class="no-data-icon">📊</div>
+    <h3>Brak Danych do Analizy</h3>
+    <p>Przejdź do modułu Configuration i załaduj dane zużycia energii.</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="consumption.js"></script>
+</body>
+</html>

@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ustawienia Systemu</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="settings-container">
+  <div class="settings-header">
+    <h1>⚙️ USTAWIENIA SYSTEMU</h1>
+    <p>Centralna konfiguracja wszystkich parametrów analizy PV</p>
+  </div>
+
+  <div class="settings-content">
+    <!-- Energy Tariff Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">💡</span>
+        <h2>Taryfa Energetyczna</h2>
+        <span class="section-info">Składniki ceny energii [PLN/MWh]</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Energia czynna</label>
+          <input type="number" id="energyActive" value="550" step="10">
+          <span class="setting-hint">Podstawowa stawka za energię</span>
+        </div>
+        <div class="setting-item">
+          <label>Dystrybucja</label>
+          <input type="number" id="distribution" value="200" step="10">
+          <span class="setting-hint">Opłata dystrybucyjna</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata jakościowa</label>
+          <input type="number" id="qualityFee" value="10" step="1">
+          <span class="setting-hint">Za jakość energii</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata OZE</label>
+          <input type="number" id="ozeFee" value="7" step="1">
+          <span class="setting-hint">Wsparcie OZE</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata kogeneracyjna</label>
+          <input type="number" id="cogenerationFee" value="10" step="1">
+          <span class="setting-hint">Wsparcie kogeneracji</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata mocowa (7-21)</label>
+          <input type="number" id="capacityFee" value="219" step="10">
+          <span class="setting-hint">Godziny szczytu</span>
+        </div>
+        <div class="setting-item">
+          <label>Akcyza</label>
+          <input type="number" id="exciseTax" value="5" step="1">
+          <span class="setting-hint">Podatek akcyzowy</span>
+        </div>
+        <div class="setting-item highlight">
+          <label>SUMA</label>
+          <input type="number" id="totalEnergyPrice" value="1001" readonly>
+          <span class="setting-hint">Całkowita cena energii</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CAPEX Tiers Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">💰</span>
+        <h2>Przedziały CAPEX</h2>
+        <span class="section-info">Koszt inwestycji wg wielkości instalacji [PLN/kWp]</span>
+      </div>
+      <div class="settings-grid capex-grid">
+        <div class="setting-item">
+          <label>150 - 500 kWp</label>
+          <input type="number" id="capex1" value="4200" step="50">
+        </div>
+        <div class="setting-item">
+          <label>501 - 1 000 kWp</label>
+          <input type="number" id="capex2" value="3800" step="50">
+        </div>
+        <div class="setting-item">
+          <label>1 001 - 2 500 kWp</label>
+          <input type="number" id="capex3" value="3500" step="50">
+        </div>
+        <div class="setting-item">
+          <label>2 501 - 5 000 kWp</label>
+          <input type="number" id="capex4" value="3200" step="50">
+        </div>
+        <div class="setting-item">
+          <label>5 001 - 10 000 kWp</label>
+          <input type="number" id="capex5" value="3000" step="50">
+        </div>
+        <div class="setting-item">
+          <label>10 001 - 15 000 kWp</label>
+          <input type="number" id="capex6" value="2850" step="50">
+        </div>
+        <div class="setting-item full-width">
+          <label>15 001 - 50 000 kWp</label>
+          <input type="number" id="capex7" value="2700" step="50">
+        </div>
+      </div>
+    </div>
+
+    <!-- OPEX Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🔧</span>
+        <h2>Koszty Operacyjne (OPEX)</h2>
+        <span class="section-info">Roczne koszty eksploatacji</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>OPEX [PLN/kWp/rok]</label>
+          <input type="number" id="opexPerKwp" value="15" step="1">
+          <span class="setting-hint">Koszty serwisu i utrzymania</span>
+        </div>
+        <div class="setting-item">
+          <label>O&M EaaS [PLN/kWp/rok]</label>
+          <input type="number" id="eaasOM" value="24" step="1">
+          <span class="setting-hint">Koszty O&M w modelu EaaS</span>
+        </div>
+        <div class="setting-item">
+          <label>Ubezpieczenie [% CAPEX/rok]</label>
+          <input type="number" id="insuranceRate" value="0.3" step="0.1" min="0" max="2">
+          <span class="setting-hint">Stawka ubezpieczenia</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Financial Parameters Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📊</span>
+        <h2>Parametry Finansowe</h2>
+        <span class="section-info">Stopy, okresy i wskaźniki</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Stopa dyskontowa [%]</label>
+          <input type="number" id="discountRate" value="7" step="0.5" min="0" max="20">
+          <span class="setting-hint">Do obliczenia NPV</span>
+        </div>
+        <div class="setting-item">
+          <label>Degradacja PV [%/rok]</label>
+          <input type="number" id="degradationRate" value="0.5" step="0.1" min="0" max="2">
+          <span class="setting-hint">Spadek wydajności</span>
+        </div>
+        <div class="setting-item">
+          <label>Okres analizy [lat]</label>
+          <input type="number" id="analysisPeriod" value="25" step="1" min="10" max="30">
+          <span class="setting-hint">Horyzont czasowy</span>
+        </div>
+        <div class="setting-item">
+          <label>Inflacja [%/rok]</label>
+          <input type="number" id="inflationRate" value="2.5" step="0.5" min="0" max="10">
+          <span class="setting-hint">Wzrost cen energii</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- EaaS Parameters Section (Password Protected) -->
+    <div class="settings-section" id="eaasPasswordSection">
+      <div class="section-header">
+        <span class="section-icon">🔒</span>
+        <h2>Parametry EaaS (Energy-as-a-Service)</h2>
+        <span class="section-info">Sekcja chroniona hasłem</span>
+      </div>
+      <div style="text-align:center;padding:40px">
+        <button onclick="unlockEaasSection()" style="padding:12px 24px;background:#4caf50;color:white;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600">
+          🔓 Pokaż parametry EaaS
+        </button>
+      </div>
+    </div>
+
+    <!-- EaaS Parameters Section (Hidden by default) -->
+    <div class="settings-section" id="eaasParamsSection" style="display:none">
+      <div class="section-header">
+        <span class="section-icon">📋</span>
+        <h2>Parametry EaaS (Energy-as-a-Service)</h2>
+        <span class="section-info">Model subskrypcyjny - kalkulacja abonamentu na podstawie docelowego IRR</span>
+      </div>
+
+      <div style="margin-bottom:20px;padding:16px;background:#e8f5e9;border-radius:8px;border-left:4px solid #4caf50">
+        <div style="font-size:13px;font-weight:600;color:#2e7d32;margin-bottom:8px">💡 Jak działa kalkulacja EaaS?</div>
+        <div style="font-size:12px;color:#1b5e20;line-height:1.6">
+          Abonament EaaS jest obliczany automatycznie aby zapewnić ESCO docelową stopę zwrotu (IRR).<br>
+          <strong>Wzór:</strong> Abonament = f(CAPEX, OPEX, Ubezpieczenie, Podatek, IRR docelowe, Okres umowy)<br>
+          System obliczy miesięczną ratę która po uwzględnieniu wszystkich kosztów operacyjnych zapewni założone IRR.
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Waluta kontraktu</label>
+          <select id="eaasCurrency" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="PLN">PLN (Złoty Polski)</option>
+            <option value="EUR">EUR (Euro)</option>
+          </select>
+          <span class="setting-hint">Waluta rozliczeń EaaS</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Okres umowy EaaS [lat]</label>
+          <input type="number" id="eaasDuration" value="10" step="1" min="5" max="25">
+          <span class="setting-hint">Długość kontraktu subskrypcyjnego</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Typ abonamentu</label>
+          <select id="eaasIndexation" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="fixed">Fixed (stała rata)</option>
+            <option value="cpi">CPI (indeksacja inflacją)</option>
+          </select>
+          <span class="setting-hint">Czy abonament rośnie z inflacją</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Docelowe IRR dla ESCO - PLN [%]</label>
+          <input type="number" id="eaasTargetIrrPln" value="12.0" step="0.5" min="5" max="25">
+          <span class="setting-hint">Wymagana stopa zwrotu dla kontraktów w PLN</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Docelowe IRR dla ESCO - EUR [%]</label>
+          <input type="number" id="eaasTargetIrrEur" value="10.0" step="0.5" min="5" max="25">
+          <span class="setting-hint">Wymagana stopa zwrotu dla kontraktów w EUR</span>
+        </div>
+
+        <div class="setting-item">
+          <label>CPI PLN [%/rok]</label>
+          <input type="number" id="cpiPln" value="2.5" step="0.1" min="0" max="10">
+          <span class="setting-hint">Roczna inflacja dla PLN (do indeksacji CPI)</span>
+        </div>
+
+        <div class="setting-item">
+          <label>CPI EUR [%/rok]</label>
+          <input type="number" id="cpiEur" value="2.0" step="0.1" min="0" max="10">
+          <span class="setting-hint">Roczna inflacja dla EUR (do indeksacji CPI)</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Kurs PLN/EUR</label>
+          <input type="number" id="fxPlnEur" value="4.5" step="0.01" min="3" max="6">
+          <span class="setting-hint">Kurs wymiany do przeliczeń EUR</span>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;padding:12px;background:#fff3e0;border-radius:8px;border-left:3px solid #ff9800">
+        <div style="font-size:12px;color:#e65100">
+          <strong>ℹ️ Koszty uwzględniane w kalkulacji IRR:</strong><br>
+          • CAPEX (z przedziałów dostosowanych do mocy instalacji)<br>
+          • OPEX (koszty operacyjne z sekcji NPV)<br>
+          • Ubezpieczenie (jeśli skonfigurowane)<br>
+          • Podatek od nieruchomości (jeśli skonfigurowany)<br>
+          • Degradacja produkcji w czasie<br><br>
+          <strong>Wynik:</strong> Roczny abonament który zapewni ESCO założony IRR przy danej wielkości instalacji
+        </div>
+      </div>
+    </div>
+
+    <!-- Weather Data Source -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🌤️</span>
+        <h2>Źródło Danych Meteorologicznych</h2>
+        <span class="section-info">Wybierz źródło danych do symulacji produkcji PV</span>
+      </div>
+
+      <div class="setting-item" style="max-width:600px">
+        <label>Źródło danych pogodowych</label>
+        <select id="weatherDataSource" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+          <option value="pvgis">PVGIS (Rekomendowane) - Dane TMY z EU</option>
+          <option value="clearsky">Clearsky Model - Symulacja bezc\u200bhmurnego nieba</option>
+        </select>
+        <span class="setting-hint">PVGIS: Rzeczywiste dane meteorologiczne dla Europy (dokładniejsze). Clearsky: Model teoretyczny (szybszy, mniej dokładny)</span>
+      </div>
+
+      <div style="margin-top:16px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:3px solid #2196f3">
+        <div style="font-size:12px;color:#1565c0">
+          <strong>ℹ️ Informacja:</strong><br>
+          <strong>PVGIS (Photovoltaic Geographical Information System)</strong> - Darmowa usługa EU dostarczająca dane TMY (Typical Meteorological Year) z rozdzielczością ~5km. Zawiera rzeczywiste dane o nasłonecznieniu, temperaturze i wietrze. Poprawia dokładność prognoz o 15-25%.<br><br>
+          <strong>Clearsky Model</strong> - Teoretyczny model zakładający bezchmurne niebo. Szybszy, ale mniej dokładny, szczególnie w regionach z częstym zachmurzeniem.
+        </div>
+      </div>
+    </div>
+
+    <!-- PV Installation Defaults - per type -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">☀️</span>
+        <h2>Parametry Instalacji PV</h2>
+        <span class="setting-info">Uzysk i szerokość geograficzna dla każdego typu</span>
+      </div>
+
+      <!-- Ground South -->
+      <div class="pv-type-section" style="margin-bottom:20px;padding:15px;background:#e8f5e9;border-radius:8px;border-left:4px solid #4caf50">
+        <div style="font-weight:600;color:#2e7d32;margin-bottom:10px">🌍 Grunt Południe</div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Uzysk [kWh/kWp/rok]</label>
+            <input type="number" id="pvYield_ground_s" value="1050" step="10">
+          </div>
+          <div class="setting-item">
+            <label>Szerokość geogr. [°]</label>
+            <input type="number" id="latitude_ground_s" value="52.0" step="0.1" min="49" max="55">
+          </div>
+          <div class="setting-item">
+            <label>Kąt nachylenia [°]</label>
+            <input type="number" id="tilt_ground_s" value="0" step="1" min="0" max="90">
+            <span class="setting-hint">0 = auto (szerokość geogr.)</span>
+          </div>
+          <div class="setting-item">
+            <label>Azymut [°]</label>
+            <input type="number" id="azimuth_ground_s" value="180" step="5" min="0" max="360">
+            <span class="setting-hint">180° = Południe</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Roof East-West -->
+      <div class="pv-type-section" style="margin-bottom:20px;padding:15px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-weight:600;color:#1565c0;margin-bottom:10px">🏠 Dach Wschód-Zachód</div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Uzysk [kWh/kWp/rok]</label>
+            <input type="number" id="pvYield_roof_ew" value="950" step="10">
+          </div>
+          <div class="setting-item">
+            <label>Szerokość geogr. [°]</label>
+            <input type="number" id="latitude_roof_ew" value="52.0" step="0.1" min="49" max="55">
+          </div>
+          <div class="setting-item">
+            <label>Kąt nachylenia [°]</label>
+            <input type="number" id="tilt_roof_ew" value="10" step="1" min="0" max="90">
+            <span class="setting-hint">Niski kąt dla E-W</span>
+          </div>
+          <div class="setting-item">
+            <label>Azymut E/W [°]</label>
+            <input type="number" id="azimuth_roof_ew" value="90" step="5" min="0" max="360">
+            <span class="setting-hint">90°=E, 270°=W</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ground East-West -->
+      <div class="pv-type-section" style="padding:15px;background:#fff3e0;border-radius:8px;border-left:4px solid #ff9800">
+        <div style="font-weight:600;color:#e65100;margin-bottom:10px">🌍 Grunt Wschód-Zachód</div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Uzysk [kWh/kWp/rok]</label>
+            <input type="number" id="pvYield_ground_ew" value="980" step="10">
+          </div>
+          <div class="setting-item">
+            <label>Szerokość geogr. [°]</label>
+            <input type="number" id="latitude_ground_ew" value="52.0" step="0.1" min="49" max="55">
+          </div>
+          <div class="setting-item">
+            <label>Kąt nachylenia [°]</label>
+            <input type="number" id="tilt_ground_ew" value="15" step="1" min="0" max="90">
+            <span class="setting-hint">Kąt dla E-W grunt</span>
+          </div>
+          <div class="setting-item">
+            <label>Azymut E/W [°]</label>
+            <input type="number" id="azimuth_ground_ew" value="90" step="5" min="0" max="360">
+            <span class="setting-hint">90°=E, 270°=W</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Environmental Parameters -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🌍</span>
+        <h2>Parametry Środowiskowe (Zaawansowane)</h2>
+        <span class="section-info">Dodatkowe parametry wpływające na dokładność symulacji</span>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Wysokość npm [m]</label>
+          <input type="number" id="altitude" value="100" step="10" min="0" max="2500">
+          <span class="setting-hint">Wysokość instalacji nad poziomem morza</span>
+        </div>
+        <div class="setting-item">
+          <label>Albedo (reflektancja gruntu)</label>
+          <input type="number" id="albedo" value="0.2" step="0.05" min="0.1" max="0.9">
+          <span class="setting-hint">0.2=trawa, 0.3=beton, 0.8=śnieg</span>
+        </div>
+        <div class="setting-item">
+          <label>Straty przez zabrudzenie [%]</label>
+          <input type="number" id="soilingLoss" value="2" step="0.5" min="0" max="10">
+          <span class="setting-hint">Typowo 2-3% dla Europy</span>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;padding:12px;background:#fff3e0;border-radius:8px;border-left:3px solid #ff9800">
+        <div style="font-size:12px;color:#e65100">
+          <strong>💡 Wyjaśnienia:</strong><br>
+          <strong>Wysokość npm:</strong> Wyższa wysokość = wyższa irradiancja (cieńsza atmosfera)<br>
+          <strong>Albedo:</strong> Reflektancja gruntu wpływa na odbite promieniowanie. Wyższe albedo = więcej odbicia = wyższa produkcja<br>
+          <strong>Soiling loss:</strong> Straty przez zabrudzenie paneli (kurz, pył, liście). Zależy od regionu i częstotliwości czyszczenia
+        </div>
+      </div>
+    </div>
+
+    <!-- DC/AC Ratio Tiers -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">⚡</span>
+        <h2>DC/AC Ratio wg wielkości instalacji</h2>
+        <span class="section-info">Współczynnik DC/AC dla każdego przedziału mocy i typu montażu</span>
+      </div>
+
+      <div style="margin-bottom:16px;padding:12px;background:#f5f5f5;border-radius:8px">
+        <label style="font-weight:600;margin-bottom:8px;display:block">Tryb doboru DC/AC Ratio</label>
+        <select id="dcacMode" style="width:100%;max-width:400px;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+          <option value="manual">Ręczne przedziały (z tabeli poniżej)</option>
+          <option value="auto">Automatyczny dobór (w przyszłości)</option>
+        </select>
+        <span style="display:block;margin-top:8px;font-size:12px;color:#666">W trybie automatycznym użyte DC/AC ratio będzie pokazane w wynikach analizy</span>
+      </div>
+
+      <table class="dcac-table" style="width:100%;border-collapse:collapse;margin-top:10px">
+        <thead>
+          <tr style="background:#f5f5f5">
+            <th style="padding:10px;text-align:left;border:1px solid #ddd">Moc [kWp]</th>
+            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#e8f5e9">Grunt Płd</th>
+            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#e3f2fd">Dach E-W</th>
+            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#fff3e0">Grunt E-W</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">150 - 500</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_1" value="1.15" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_1" value="1.20" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_1" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">501 - 1 000</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_2" value="1.20" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_2" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_2" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">1 001 - 2 500</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_3" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_3" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_3" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">2 501 - 5 000</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_4" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_4" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_4" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">5 001 - 10 000</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_5" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_5" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_5" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">10 001 - 15 000</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_6" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_6" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_6" value="1.45" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border:1px solid #ddd">15 001 - 50 000</td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_7" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_7" value="1.45" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_7" value="1.50" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Analysis Range -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🔍</span>
+        <h2>Zakres Analizy</h2>
+        <span class="section-info">Przedziały mocy do analizy</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Moc minimalna [kWp]</label>
+          <input type="number" id="capMin" value="1000" step="100">
+        </div>
+        <div class="setting-item">
+          <label>Moc maksymalna [kWp]</label>
+          <input type="number" id="capMax" value="50000" step="1000">
+        </div>
+        <div class="setting-item">
+          <label>Krok [kWp]</label>
+          <input type="number" id="capStep" value="500" step="100">
+        </div>
+      </div>
+    </div>
+
+    <!-- Optimization Thresholds -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🎯</span>
+        <h2>Progi Autokonsumpcji</h2>
+        <span class="section-info">Warianty A, B, C, D [%]</span>
+      </div>
+      <div class="settings-grid threshold-grid">
+        <div class="setting-item threshold-a">
+          <label>Wariant A</label>
+          <input type="number" id="thrA" value="95" min="50" max="100">
+          <span class="setting-hint">Najwyższa autokonsumpcja</span>
+        </div>
+        <div class="setting-item threshold-b">
+          <label>Wariant B</label>
+          <input type="number" id="thrB" value="90" min="50" max="100">
+        </div>
+        <div class="setting-item threshold-c">
+          <label>Wariant C</label>
+          <input type="number" id="thrC" value="85" min="50" max="100">
+        </div>
+        <div class="setting-item threshold-d">
+          <label>Wariant D</label>
+          <input type="number" id="thrD" value="80" min="50" max="100">
+          <span class="setting-hint">Najniższa autokonsumpcja</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOWA SEKCJA: Taryfy CPH -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📋</span>
+        <h2>Taryfy CPH (dla firm B/C)</h2>
+        <span class="section-info">Wybór dostawcy energii i struktury taryfowej</span>
+      </div>
+
+      <div style="margin-bottom:20px;padding:16px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-size:13px;font-weight:600;color:#1565c0;margin-bottom:8px">ℹ️ Co to jest CPH?</div>
+        <div style="font-size:12px;color:#0d47a1;line-height:1.6">
+          CPH (Cena Prądu Handlowa) to cennik dostawcy energii dla firm. Zawiera ceny energii w różnych strefach czasowych (S1-S4) oraz opłatę handlową.<br>
+          <strong>Strefy:</strong> S1 (szczyt), S2 (dzień), S3 (noc), S4 (weekend) - zależne od grupy taryfowej.
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Dostawca energii</label>
+          <select id="energyProvider" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="ENEA">ENEA</option>
+            <option value="OTHER">Inny (przyszłość)</option>
+          </select>
+          <span class="setting-hint">Wybierz dostawcę energii</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Rodzina cennika</label>
+          <select id="priceFamily" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="CPH219">CPH219 (przyszłość)</option>
+          </select>
+          <span class="setting-hint">Aktualny cennik</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Wariant cennika</label>
+          <select id="priceVariant" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="DS">DS - 13 mies (2025/26)</option>
+            <option value="CS">CS - 12 mies (2026)</option>
+            <option value="GS">GS - 12 mies (2027)</option>
+            <option value="DM">DM - 25 mies (2025-2027)</option>
+            <option value="GM">GM - 12 mies (2028)</option>
+            <option value="CM">CM - 25 mies (2026-2028)</option>
+            <option value="CPG">CPG - cena powiązana z giełdą</option>
+          </select>
+          <span class="setting-hint">Długość kontraktu</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Grupa taryfowa</label>
+          <select id="tariffGroup" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <optgroup label="Grupa B">
+              <option value="B11">B11 - Całodobowa</option>
+              <option value="B12">B12 - Dwustrefowa</option>
+            </optgroup>
+            <optgroup label="Grupa C">
+              <option value="C21" selected>C21 - Całodobowa</option>
+              <option value="C22a">C22a - Dwustrefowa z nocą</option>
+              <option value="C22b">C22b - Dwustrefowa</option>
+              <option value="C22w">C22w - Całodobowa weekendowa</option>
+              <option value="C23">C23 - Trzystrefowa</option>
+              <option value="C11">C11 - Całodobowa</option>
+              <option value="C12a">C12a - Dwustrefowa</option>
+              <option value="C12b">C12b - Dwustrefowa z przedp.</option>
+              <option value="C13">C13 - Trzystrefowa z przedp.</option>
+              <option value="C11o">C11o - Całodobowa oświetl.</option>
+            </optgroup>
+          </select>
+          <span class="setting-hint">Typ taryfy dla firmy</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Rok obowiązywania</label>
+          <select id="tariffYear" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="2025">2025</option>
+            <option value="2026" selected>2026</option>
+            <option value="2027">2027</option>
+            <option value="2028">2028</option>
+          </select>
+          <span class="setting-hint">Rok taryfy</span>
+        </div>
+
+        <div class="setting-item">
+          <label>Wolumen roczny</label>
+          <select id="volumeSegment" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="<100">&lt; 100 MWh/rok</option>
+            <option value="dowolny" selected>Dowolny</option>
+            <option value=">=10">≥ 10 MWh/rok</option>
+            <option value=">=40">≥ 40 MWh/rok</option>
+          </select>
+          <span class="setting-hint">Wielkość zużycia rocznego</span>
+        </div>
+      </div>
+
+
+  </div>
+
+  <div class="settings-footer">
+    <button class="btn btn-primary" onclick="saveAllSettings()">💾 ZAPISZ USTAWIENIA</button>
+    <button class="btn btn-secondary" onclick="resetToDefaults()">🔄 PRZYWRÓĆ DOMYŚLNE</button>
+    <button class="btn btn-export" onclick="exportSettings()">📥 EKSPORT</button>
+    <button class="btn btn-import" onclick="importSettings()">📤 IMPORT</button>
+    <input type="file" id="importFile" accept=".json" style="display:none" onchange="handleImport(event)">
+  </div>
+
+  <div id="saveStatus" class="save-status"></div>
+</div>
+
+<script>
+// Password protection for EaaS section
+function unlockEaasSection() {
+  const password = prompt('Wprowadź hasło aby odblokować parametry EaaS:');
+
+  // Check password (change 'admin123' to your desired password)
+  if (password === 'admin123') {
+    document.getElementById('eaasPasswordSection').style.display = 'none';
+    document.getElementById('eaasParamsSection').style.display = 'block';
+
+    // Show success message
+    const saveStatus = document.getElementById('saveStatus');
+    saveStatus.textContent = '✅ Parametry EaaS odblokowane';
+    saveStatus.className = 'save-status success';
+    setTimeout(() => {
+      saveStatus.className = 'save-status';
+    }, 3000);
+  } else if (password !== null) {
+    alert('❌ Nieprawidłowe hasło!');
+  }
+}
+</script>
+
+<script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pv-optimizer
+
+resources:
+  - namespace.yaml
+  - data-analysis-deployment.yaml
+  - pv-calculation-deployment.yaml
+  - economics-deployment.yaml
+  - advanced-analytics-deployment.yaml
+  - typical-days-deployment.yaml
+  - frontend-deployment.yaml
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/name: pv-optimizer
+  app.kubernetes.io/version: "2.0"
+  app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: pv-optimizer/data-analysis
+    newTag: latest
+  - name: pv-optimizer/pv-calculation
+    newTag: latest
+  - name: pv-optimizer/economics
+    newTag: latest
+  - name: pv-optimizer/advanced-analytics
+    newTag: latest
+  - name: pv-optimizer/typical-days
+    newTag: latest
+  - name: pv-optimizer/frontend
+    newTag: latest

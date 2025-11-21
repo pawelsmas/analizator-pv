@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PV Optimizer Pro • Microservices Edition</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>PV <span>OPTIMIZER</span> PRO</h1>
+    <div style="font-size:14px;color:#666;margin-top:4px">
+      Microservices Architecture • v2.0
+    </div>
+    <div id="servicesStatus" style="font-size:11px;color:#888;margin-top:8px"></div>
+  </div>
+
+  <div class="main-tabs">
+    <button class="main-tab active" onclick="switchMainTab('config')">⚙️ CONFIGURATION</button>
+    <button class="main-tab" onclick="switchMainTab('consumption')">📊 CONSUMPTION ANALYSIS</button>
+    <button class="main-tab" onclick="switchMainTab('production')">☀️ PV PRODUCTION</button>
+    <button class="main-tab" onclick="switchMainTab('comparison')">⚡ COMPARISON</button>
+    <button class="main-tab" onclick="switchMainTab('economics')">💰 ECONOMICS</button>
+  </div>
+
+  <!-- CONFIGURATION TAB -->
+  <div id="tab-config" class="tab-content active">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">📁 DATA UPLOAD</div>
+        <div class="file-input">
+          <input type="file" id="loadFile" accept=".csv,.xlsx"/>
+          <div>Upload Consumption Data</div>
+          <div style="font-size:11px;color:#666;margin-top:4px">CSV or XLSX</div>
+        </div>
+        <div id="loadStatus"></div>
+
+        <div class="section-title" style="margin-top:24px">⚙️ PV CONFIGURATION</div>
+        <label>Installation Type</label>
+        <select id="pvType">
+          <option value="ground_s">Ground South</option>
+          <option value="roof_ew">Roof East-West</option>
+          <option value="ground_ew">Ground East-West</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label>Yield [kWh/kWp/y]</label>
+            <input type="number" id="yield" value="1050" step="10">
+          </div>
+          <div>
+            <label>DC/AC Ratio</label>
+            <input type="number" id="dcac" value="1.2" step="0.05">
+          </div>
+        </div>
+
+        <div class="section-title" style="margin-top:24px">🔎 ANALYSIS RANGE</div>
+        <div class="row">
+          <div>
+            <label>Min [kWp]</label>
+            <input type="number" id="capMin" value="1000" step="100">
+          </div>
+          <div>
+            <label>Max [kWp]</label>
+            <input type="number" id="capMax" value="50000" step="1000">
+          </div>
+        </div>
+        <label>Step [kWp]</label>
+        <input type="number" id="capStep" value="500" step="100">
+
+        <div class="section-title" style="margin-top:24px">🎯 VARIANT THRESHOLDS</div>
+        <div class="row">
+          <div>
+            <label>A [%]</label>
+            <input type="number" id="thrA" value="95" min="50" max="100">
+          </div>
+          <div>
+            <label>B [%]</label>
+            <input type="number" id="thrB" value="90" min="50" max="100">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>C [%]</label>
+            <input type="number" id="thrC" value="85" min="50" max="100">
+          </div>
+          <div>
+            <label>D [%]</label>
+            <input type="number" id="thrD" value="80" min="50" max="100">
+          </div>
+        </div>
+
+        <button class="btn" onclick="runAnalysis()">RUN ANALYSIS</button>
+        <button class="btn btn-secondary" onclick="exportResults()">EXPORT TO EXCEL</button>
+      </div>
+
+      <div class="content">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" id="statConsumption">–</div>
+            <div class="stat-label">Annual Consumption [GWh]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statPeak">–</div>
+            <div class="stat-label">Peak Power [MW]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statDays">–</div>
+            <div class="stat-label">Data Period [days]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statAvg">–</div>
+            <div class="stat-label">Avg Daily [MWh]</div>
+          </div>
+        </div>
+
+        <div class="chart-container">
+          <div id="chartSelfConsumption" style="height:400px"></div>
+        </div>
+
+        <div id="variantResults"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Other tabs similar to original, but will call API endpoints -->
+  <div id="tab-consumption" class="tab-content">
+    <div class="content">
+      <h2 style="color:#00ff88">Consumption Analysis</h2>
+      <p style="color:#888">Charts will be populated from data-analysis-service API</p>
+      <div id="consumptionCharts"></div>
+    </div>
+  </div>
+
+  <div id="tab-production" class="tab-content">
+    <div class="content">
+      <h2 style="color:#00ff88">PV Production</h2>
+      <p style="color:#888">Charts will be populated from pv-calculation-service API</p>
+      <div id="productionCharts"></div>
+    </div>
+  </div>
+
+  <div id="tab-comparison" class="tab-content">
+    <div class="content">
+      <h2 style="color:#00ff88">Comparison</h2>
+      <p style="color:#888">Comparison charts from multiple services</p>
+      <div id="comparisonCharts"></div>
+    </div>
+  </div>
+
+  <div id="tab-economics" class="tab-content">
+    <div class="content">
+      <h2 style="color:#00ff88">Economic Analysis</h2>
+      <p style="color:#888">Economic analysis from economics-service API</p>
+      <div id="economicsResults"></div>
+    </div>
+  </div>
+</div>
+
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

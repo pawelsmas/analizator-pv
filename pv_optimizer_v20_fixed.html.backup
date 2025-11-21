@@ -1,0 +1,2376 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PV Optimizer Pro • v18 Advanced Analytics</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    * {margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'SF Pro Display',-apple-system,system-ui,sans-serif;background:#0a0a0a;color:#fff}
+    .container{max-width:1800px;margin:0 auto;padding:20px}
+    
+    .header{
+      background:linear-gradient(135deg,#1a1a1a,#2d2d2d);
+      border:1px solid #333;
+      border-radius:16px;
+      padding:24px;
+      margin-bottom:20px;
+    }
+    .header h1{font-size:32px;font-weight:300;margin:0}
+    .header h1 span{color:#00ff88;font-weight:600}
+    
+    .main-tabs{
+      display:flex;
+      gap:8px;
+      margin-bottom:20px;
+      border-bottom:2px solid #2a2a2a;
+      padding-bottom:0;
+    }
+    .main-tab{
+      padding:12px 24px;
+      background:transparent;
+      color:#666;
+      border:0;
+      cursor:pointer;
+      font-size:14px;
+      font-weight:600;
+      transition:all 0.2s;
+      border-bottom:3px solid transparent;
+    }
+    .main-tab:hover{color:#fff}
+    .main-tab.active{color:#00ff88;border-bottom-color:#00ff88}
+    
+    .sidebar{
+      width:320px;
+      background:#1a1a1a;
+      border:1px solid #2a2a2a;
+      border-radius:12px;
+      padding:20px;
+      height:fit-content;
+      position:sticky;
+      top:20px;
+    }
+    
+    .content{
+      flex:1;
+      background:#1a1a1a;
+      border:1px solid #2a2a2a;
+      border-radius:12px;
+      padding:20px;
+      min-height:600px;
+    }
+    
+    .layout{display:flex;gap:20px}
+    
+    .admin-modal{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,0.7);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      z-index:2000;
+    }
+    .admin-modal.visible{display:flex}
+    .admin-card{
+      background:#111;
+      border:1px solid #2a2a2a;
+      border-radius:12px;
+      padding:24px;
+      width:800px;
+      max-height:90vh;
+      overflow-y:auto;
+      box-shadow:0 10px 40px rgba(0,0,0,0.6);
+    }
+    .admin-card h3{margin-bottom:12px;font-weight:600}
+    .admin-info{font-size:12px;color:#aaa;margin:8px 0 16px}
+    .helper-text{font-size:12px;color:#888;margin:8px 0 16px;line-height:1.4}
+    
+    .section-title{
+      font-size:18px;
+      margin-bottom:16px;
+      color:#00ff88;
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    
+    label{
+      display:block;
+      margin:12px 0 6px;
+      font-size:12px;
+      color:#888;
+      text-transform:uppercase;
+      letter-spacing:0.5px;
+    }
+    
+    input,select{
+      width:100%;
+      padding:10px;
+      background:#0a0a0a;
+      border:1px solid #2a2a2a;
+      border-radius:6px;
+      color:#fff;
+      font-size:13px;
+    }
+    
+    .btn{
+      background:#00ff88;
+      color:#000;
+      border:0;
+      padding:12px 24px;
+      border-radius:8px;
+      font-weight:600;
+      cursor:pointer;
+      width:100%;
+      margin-top:16px;
+      transition:all 0.2s;
+    }
+    .btn:hover{background:#00cc6a;transform:translateY(-1px)}
+    
+    .btn-secondary{background:#0088ff;color:#fff}
+    .btn-secondary:hover{background:#0066cc}
+    
+    .file-input{
+      border:2px dashed #2a2a2a;
+      border-radius:8px;
+      padding:20px;
+      text-align:center;
+      cursor:pointer;
+      position:relative;
+      transition:all 0.2s;
+    }
+    .file-input:hover{border-color:#00ff88;background:#0f0f0f}
+    .file-input input{position:absolute;inset:0;opacity:0;cursor:pointer}
+    
+    .row{display:flex;gap:12px}
+    .row > div{flex:1}
+    
+    .filter-group{
+      background:#0f0f0f;
+      border:1px solid #2a2a2a;
+      border-radius:8px;
+      padding:12px;
+      margin-bottom:12px;
+    }
+    
+    .filter-title{
+      font-size:12px;
+      color:#666;
+      text-transform:uppercase;
+      margin-bottom:8px;
+      letter-spacing:0.5px;
+    }
+    
+    .chart-container{
+      background:#0a0a0a;
+      border:1px solid #2a2a2a;
+      border-radius:8px;
+      padding:16px;
+      margin-bottom:20px;
+    }
+    
+    .stats-grid{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+      gap:12px;
+      margin-bottom:20px;
+    }
+    
+    .stat-card{
+      background:#0f0f0f;
+      border:1px solid #2a2a2a;
+      border-radius:8px;
+      padding:16px;
+      text-align:center;
+    }
+    .stat-value{font-size:24px;color:#00ff88;font-weight:600}
+    .stat-label{font-size:11px;color:#666;margin-top:4px;text-transform:uppercase}
+    
+    table{width:100%;color:#888;font-size:13px;border-collapse:collapse}
+    th,td{padding:10px;text-align:right;border-bottom:1px solid #2a2a2a}
+    th:first-child,td:first-child{text-align:left}
+    th{color:#aaa;font-weight:600;background:#0f0f0f}
+    
+    .success{
+      background:#00ff8820;
+      border:1px solid #00ff8840;
+      padding:12px;
+      border-radius:6px;
+      margin-top:12px;
+      color:#00ff88;
+      font-size:13px;
+    }
+    
+    .month-selector{
+      display:flex;
+      gap:4px;
+      flex-wrap:wrap;
+      margin:8px 0;
+    }
+    .month-btn{
+      padding:6px 12px;
+      background:#0f0f0f;
+      border:1px solid #2a2a2a;
+      border-radius:4px;
+      color:#666;
+      cursor:pointer;
+      font-size:12px;
+      transition:all 0.2s;
+    }
+    .month-btn:hover{border-color:#00ff88;color:#fff}
+    .month-btn.active{background:#00ff88;color:#000;border-color:#00ff88}
+    
+    .tab-content{display:none}
+    .tab-content.active{display:block}
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>PV <span>OPTIMIZER</span> PRO</h1>
+    <div style="font-size:14px;color:#666;margin-top:4px">Advanced Analytics Dashboard • v18</div>
+  </div>
+
+  <div class="main-tabs">
+    <button class="main-tab active" onclick="switchMainTab('config')">⚙️ CONFIGURATION</button>
+    <button class="main-tab" onclick="switchMainTab('consumption')">📊 CONSUMPTION ANALYSIS</button>
+    <button class="main-tab" onclick="switchMainTab('production')">☀️ PV PRODUCTION</button>
+    <button class="main-tab" onclick="switchMainTab('comparison')">⚡ COMPARISON</button>
+    <button class="main-tab" onclick="switchMainTab('economics')">💰 ECONOMICS</button>
+  </div>
+
+  <!-- CONFIGURATION TAB -->
+  <div id="tab-config" class="tab-content active">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">📁 DATA UPLOAD</div>
+        <div class="file-input">
+          <input type="file" id="loadFile" accept=".csv,.xlsx"/>
+          <div>Upload Consumption Data</div>
+          <div style="font-size:11px;color:#666;margin-top:4px">CSV or XLSX</div>
+        </div>
+        <div id="loadStatus"></div>
+        
+        <div class="section-title" style="margin-top:24px">⚙️ PV CONFIGURATION</div>
+        <label>Installation Type</label>
+        <select id="pvType">
+          <option value="ground_s">Ground South</option>
+          <option value="roof_ew">Roof East-West</option>
+          <option value="ground_ew">Ground East-West</option>
+        </select>
+        
+        <div class="row">
+          <div>
+            <label>Yield [kWh/kWp/y]</label>
+            <input type="number" id="yield" value="1050" step="10">
+          </div>
+          <div>
+            <label>DC/AC Ratio</label>
+            <input type="number" id="dcac" value="1.2" step="0.05">
+          </div>
+        </div>
+        
+        <div class="section-title" style="margin-top:24px">🔎 ANALYSIS RANGE</div>
+        <div class="row">
+          <div>
+            <label>Min [kWp]</label>
+            <input type="number" id="capMin" value="1000" step="100">
+          </div>
+          <div>
+            <label>Max [kWp]</label>
+            <input type="number" id="capMax" value="50000" step="1000">
+          </div>
+        </div>
+        <label>Step [kWp]</label>
+        <input type="number" id="capStep" value="500" step="100">
+        
+        <div class="section-title" style="margin-top:24px">🎯 VARIANT THRESHOLDS</div>
+        <div class="row">
+          <div>
+            <label>A [%]</label>
+            <input type="number" id="thrA" value="95" min="50" max="100">
+          </div>
+          <div>
+            <label>B [%]</label>
+            <input type="number" id="thrB" value="90" min="50" max="100">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>C [%]</label>
+            <input type="number" id="thrC" value="85" min="50" max="100">
+          </div>
+          <div>
+            <label>D [%]</label>
+            <input type="number" id="thrD" value="80" min="50" max="100">
+          </div>
+        </div>
+        
+        <button class="btn" onclick="runAnalysis()">RUN ANALYSIS</button>
+        <button class="btn btn-secondary" onclick="exportResults()">EXPORT TO EXCEL</button>
+      </div>
+      
+      <div class="content">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-value" id="statConsumption">–</div>
+            <div class="stat-label">Annual Consumption [GWh]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statPeak">–</div>
+            <div class="stat-label">Peak Power [MW]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statDays">–</div>
+            <div class="stat-label">Data Period [days]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="statAvg">–</div>
+            <div class="stat-label">Avg Daily [MWh]</div>
+          </div>
+        </div>
+        
+        <div class="chart-container">
+          <div id="chartSelfConsumption" style="height:400px"></div>
+        </div>
+        
+        <div id="variantResults"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONSUMPTION ANALYSIS TAB -->
+  <div id="tab-consumption" class="tab-content">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">🔍 FILTERS</div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Time Period</div>
+          <label>Select Month</label>
+          <div class="month-selector">
+            <button class="month-btn" onclick="selectMonth(0)">ALL</button>
+            <button class="month-btn" onclick="selectMonth(1)">JAN</button>
+            <button class="month-btn" onclick="selectMonth(2)">FEB</button>
+            <button class="month-btn" onclick="selectMonth(3)">MAR</button>
+            <button class="month-btn" onclick="selectMonth(4)">APR</button>
+            <button class="month-btn" onclick="selectMonth(5)">MAY</button>
+            <button class="month-btn" onclick="selectMonth(6)">JUN</button>
+            <button class="month-btn" onclick="selectMonth(7)">JUL</button>
+            <button class="month-btn" onclick="selectMonth(8)">AUG</button>
+            <button class="month-btn" onclick="selectMonth(9)">SEP</button>
+            <button class="month-btn" onclick="selectMonth(10)">OCT</button>
+            <button class="month-btn" onclick="selectMonth(11)">NOV</button>
+            <button class="month-btn" onclick="selectMonth(12)">DEC</button>
+          </div>
+          
+          <label style="margin-top:12px">Display Mode</label>
+          <select id="consumptionDisplayMode" onchange="updateConsumptionCharts()">
+            <option value="daily">Daily Values</option>
+            <option value="hourly">Hourly Average</option>
+            <option value="weekly">Weekly Average</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Statistics</div>
+          <div id="consumptionStats"></div>
+        </div>
+      </div>
+      
+      <div class="content">
+        <div class="section-title">📈 Daily Consumption Pattern</div>
+        <div class="chart-container">
+          <div id="chartDailyConsumption" style="height:350px"></div>
+        </div>
+        
+        <div class="section-title">📊 Monthly Consumption Summary</div>
+        <div class="chart-container">
+          <div id="chartMonthlyBars" style="height:300px"></div>
+        </div>
+        <div id="monthlyTable"></div>
+        
+        <div class="section-title">🗓️ Consumption Heatmaps</div>
+        <div class="row">
+          <div class="chart-container" style="flex:1">
+            <h4 style="color:#666;margin-bottom:12px">Day of Week x Hour</h4>
+            <div id="heatmapWeekHour" style="height:300px"></div>
+          </div>
+          <div class="chart-container" style="flex:1">
+            <h4 style="color:#666;margin-bottom:12px">Day of Month x Hour</h4>
+            <div id="heatmapMonthDay" style="height:300px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PV PRODUCTION TAB -->
+  <div id="tab-production" class="tab-content">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">🔍 FILTERS</div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Select Variant</div>
+          <select id="pvVariantSelect" onchange="updateProductionCharts()">
+            <option value="A">Variant A</option>
+            <option value="B" selected>Variant B</option>
+            <option value="C">Variant C</option>
+            <option value="D">Variant D</option>
+          </select>
+          
+          <div id="variantInfo" style="margin-top:12px;padding:12px;background:#0f0f0f;border-radius:6px">
+            <div style="font-size:12px;color:#666">Loading...</div>
+          </div>
+        </div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Production Statistics</div>
+          <div id="productionStats"></div>
+        </div>
+      </div>
+      
+      <div class="content">
+        <div class="section-title">⚡ Load vs PV Coverage</div>
+        <div class="chart-container">
+          <div id="chartLoadVsPV" style="height:320px"></div>
+        </div>
+        <div class="chart-container" style="margin-top:16px">
+          <div id="chartCoverageTimeline" style="height:360px"></div>
+        </div>
+        <div id="coverageStats" style="margin-bottom:20px"></div>
+        
+        <div class="section-title">☀️ Annual PV Production Profile</div>
+        <div class="chart-container">
+          <div id="chartAnnualProduction" style="height:350px"></div>
+        </div>
+        
+        <div class="section-title">📊 Monthly Production Summary</div>
+        <div class="chart-container">
+          <div id="chartMonthlyProduction" style="height:300px"></div>
+        </div>
+        <div id="productionTable"></div>
+        
+        <div class="section-title">🌅 Typical Daily Profiles</div>
+        <div class="row">
+          <div class="chart-container" style="flex:1">
+            <h4 style="color:#666;margin-bottom:12px">Summer Day (June)</h4>
+            <div id="chartSummerDay" style="height:250px"></div>
+          </div>
+          <div class="chart-container" style="flex:1">
+            <h4 style="color:#666;margin-bottom:12px">Winter Day (December)</h4>
+            <div id="chartWinterDay" style="height:250px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPARISON TAB -->
+  <div id="tab-comparison" class="tab-content">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">🔍 SETTINGS</div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Compare Variants</div>
+          <label>Primary Variant</label>
+          <select id="compareVariant1" onchange="updateComparisonCharts()">
+            <option value="A">Variant A</option>
+            <option value="B" selected>Variant B</option>
+            <option value="C">Variant C</option>
+            <option value="D">Variant D</option>
+          </select>
+          
+          <label style="margin-top:8px">Secondary Variant</label>
+          <select id="compareVariant2" onchange="updateComparisonCharts()">
+            <option value="A">Variant A</option>
+            <option value="B">Variant B</option>
+            <option value="C" selected>Variant C</option>
+            <option value="D">Variant D</option>
+          </select>
+          
+          <label style="margin-top:8px">Display Period</label>
+          <select id="comparePeriod" onchange="updateComparisonCharts()">
+            <option value="year">Full Year</option>
+            <option value="summer">Summer (Jun-Aug)</option>
+            <option value="winter">Winter (Dec-Feb)</option>
+            <option value="spring">Spring (Mar-May)</option>
+            <option value="autumn">Autumn (Sep-Nov)</option>
+          </select>
+        </div>
+        
+        <div class="filter-group">
+          <div class="filter-title">Comparison Metrics</div>
+          <div id="comparisonMetrics"></div>
+        </div>
+      </div>
+      
+      <div class="content">
+        <div class="section-title">⚡ Load vs PV Production Overlay</div>
+        <div class="chart-container">
+          <div id="chartOverlay" style="height:400px"></div>
+        </div>
+        
+        <div class="section-title">☀️ PV Window Load Match - <span id="pvWindowVariantLabel">Variant B</span></div>
+        <div class="chart-container">
+          <div id="chartPVWindow" style="height:320px"></div>
+        </div>
+        
+        <div class="section-title">📊 Self-Consumption Analysis</div>
+        <div class="row">
+          <div class="chart-container" style="flex:1">
+            <div id="chartSelfConsumptionBreakdown" style="height:300px"></div>
+          </div>
+          <div style="flex:1">
+            <div id="comparisonTable"></div>
+          </div>
+        </div>
+        
+        <div class="section-title">📈 Energy Flow Sankey Diagram</div>
+        <div class="chart-container">
+          <div id="chartSankey" style="height:400px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ECONOMICS TAB -->
+  <div id="tab-economics" class="tab-content">
+    <div class="layout">
+      <div class="sidebar">
+        <div class="section-title">💰 PARAMETRY</div>
+
+        <div class="filter-group">
+          <div class="filter-title">Dane użytkownika</div>
+          <label>Cena zakupu energii [PLN/rok]</label>
+          <input type="number" id="costEnergyActive" value="550000" step="1000">
+          <div class="helper-text">
+            Wszystkie pozostałe założenia ekonomiczne ustawia administrator po zalogowaniu.
+          </div>
+          <button id="adminPanelButton" class="btn-secondary" onclick="openAdminModal()">Panel administratora</button>
+        </div>
+
+        <div id="adminFields" style="display:none">
+          <div class="filter-group">
+            <div class="filter-title">INPUTS – Energy & PV</div>
+          
+            <label>Autoconsumption Scenario</label>
+            <select id="autoconsumptionScenario">
+              <option value="A">Model A (95%)</option>
+              <option value="B" selected>Model B (90%)</option>
+              <option value="C">Model C (85%)</option>
+              <option value="D">Model D (80%)</option>
+            </select>
+          
+            <label style="margin-top:12px">PV Generation [MWh/rok]</label>
+            <input type="number" id="pvGenerationInput" value="1000" step="10">
+          
+            <label>Distribution Variable [PLN/rok]</label>
+            <input type="number" id="costDistribution" value="200000" step="1000">
+          
+            <label>Quality Fee [PLN/rok]</label>
+            <input type="number" id="costQuality" value="10000" step="100">
+          
+            <label>OZE Fee [PLN/rok]</label>
+            <input type="number" id="costOZE" value="7300" step="100">
+          
+            <label>Cogeneration Fee [PLN/rok]</label>
+            <input type="number" id="costCogeneration" value="10000" step="100">
+          
+            <label>Capacity Fee [PLN/rok]</label>
+            <input type="number" id="costCapacity" value="219400" step="100">
+          
+            <label>Excise [PLN/rok]</label>
+            <input type="number" id="costExcise" value="5000" step="100">
+          
+            <label style="margin-top:12px">Discount Rate [%]</label>
+            <input type="number" id="discountRate" value="8" step="0.1">
+          
+            <label>EaaS Contract Years</label>
+            <input type="number" id="eaasTerm" value="15" min="1" step="1">
+          
+            <label>Post EaaS Years</label>
+            <input type="number" id="postEaasYears" value="10" min="0" step="1">
+          
+            <div class="capex-fields" style="margin-top:12px">
+              <label>Investment Cost [PLN/kWp]</label>
+              <input type="number" id="costInvestment" value="3500" step="100">
+            </div>
+          
+            <label>O&M Rate [% CAPEX]</label>
+            <input type="number" id="omRate" value="1.2" step="0.1">
+          
+            <label>Degradation Rate [%/rok]</label>
+            <input type="number" id="degradationRate" value="0.5" step="0.1">
+          </div>
+        
+          <div class="filter-group">
+            <div class="filter-title">Financing & EaaS</div>
+          
+            <label>Financing Mode (shows relevant inputs)</label>
+            <select id="financingMode">
+              <option value="capex" selected>CAPEX Focus</option>
+              <option value="eaas">EaaS Focus</option>
+            </select>
+          
+            <label>Financing Type (CAPEX)</label>
+            <select id="financingType">
+              <option value="cash" selected>Cash / Equity</option>
+              <option value="loan">Loan</option>
+              <option value="leasing">Leasing</option>
+            </select>
+          
+            <div class="capex-fields">
+              <label>Financing Share [%]</label>
+              <input type="number" id="financingShare" value="0" min="0" max="100" step="1">
+            </div>
+          
+            <div class="loan-fields">
+              <label>Financing Rate [%]</label>
+              <input type="number" id="loanInterest" value="6" step="0.1">
+              <label>Financing Term [years]</label>
+              <input type="number" id="loanTermYears" value="8" step="1">
+            </div>
+          
+            <div class="eaas-fields" style="margin-top:12px">
+              <label>Monthly EaaS Fee [PLN]</label>
+              <input type="number" id="eaasMonthlyFee" value="50000" step="1000">
+              <label>EaaS Price per MWh [PLN] (optional)</label>
+              <input type="number" id="eaasPricePerMWh" value="0" step="10">
+              <label>Floor Factor</label>
+              <input type="number" id="floorFactor" value="0.9" step="0.01">
+              <label>Cap Factor</label>
+              <input type="number" id="capFactor" value="1.05" step="0.01">
+            </div>
+          </div>
+        
+          <div class="filter-group">
+            <div class="filter-title">Settings</div>
+            <label>Export Mode</label>
+            <select id="exportMode">
+              <option value="zero">Zero Export</option>
+              <option value="limited">Limited Export</option>
+              <option value="full">Full Export</option>
+            </select>
+          
+            <label>Variant to Analyze</label>
+            <select id="economicVariant">
+              <option value="A">Variant A</option>
+              <option value="B" selected>Variant B</option>
+              <option value="C">Variant C</option>
+              <option value="D">Variant D</option>
+            </select>
+          </div>
+        </div>
+        
+        <button class="btn" onclick="calculateEconomics()">PRZELICZ</button>
+      </div>
+      
+      <div class="content">
+        <div id="economicsResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="adminModal" class="admin-modal">
+  <div class="admin-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3>Panel administratora</h3>
+      <button style="background:transparent;border:0;color:#888;font-size:20px;cursor:pointer" onclick="closeAdminModal()">×</button>
+    </div>
+    <label>Hasło administratora</label>
+    <div class="row">
+      <input type="password" id="adminPassword" placeholder="Wpisz hasło">
+      <button class="btn-secondary" style="margin-top:0" onclick="handleAdminLogin()">Zaloguj</button>
+    </div>
+    <div id="adminInfo" class="admin-info">Podaj hasło, aby odblokować zmienne ekonomiczne.</div>
+    <div class="helper-text">
+      Po zalogowaniu nowe pola pojawią się w panelu po lewej stronie i pozostaną dostępne do czasu odświeżenia strony.
+    </div>
+  </div>
+</div>
+
+<script>
+// ================ Global Variables ================
+let hourlyData = [];
+let yearHours = [];
+let scenarios = [];
+let keyVariants = {};
+let selectedMonth = 0; // 0 = all months
+const autoconsumptionMap = {A: 0.95, B: 0.90, C: 0.85, D: 0.80};
+const ADMIN_PASSWORD = 'PVadmin2025!';
+let adminUnlocked = false;
+
+function openAdminModal() {
+  const modal = document.getElementById('adminModal');
+  if (!modal) return;
+  modal.classList.add('visible');
+  const info = document.getElementById('adminInfo');
+  const passwordInput = document.getElementById('adminPassword');
+  if (passwordInput) passwordInput.value = '';
+  if (info) {
+    info.textContent = adminUnlocked
+      ? 'Dostęp już aktywny. Możesz zamknąć okno.'
+      : 'Podaj hasło, aby odblokować zmienne ekonomiczne.';
+  }
+  if (adminUnlocked) {
+    setTimeout(() => {
+      closeAdminModal();
+    }, 800);
+  }
+}
+
+function closeAdminModal() {
+  document.getElementById('adminModal')?.classList.remove('visible');
+}
+
+function unlockAdminFields() {
+  const adminFields = document.getElementById('adminFields');
+  if (adminFields) {
+    adminFields.style.display = 'block';
+  }
+  const adminBtn = document.getElementById('adminPanelButton');
+  if (adminBtn) {
+    adminBtn.textContent = 'Panel administratora (odblokowany)';
+  }
+  updateFinancingFields();
+}
+
+function handleAdminLogin() {
+  const password = document.getElementById('adminPassword')?.value || '';
+  const info = document.getElementById('adminInfo');
+  if (password.trim() === ADMIN_PASSWORD) {
+    adminUnlocked = true;
+    if (info) {
+      info.textContent = 'Dostęp przyznany. Panel został odblokowany.';
+    }
+    unlockAdminFields();
+    setTimeout(() => {
+      closeAdminModal();
+    }, 700);
+  } else {
+    if (info) {
+      info.textContent = 'Niepoprawne hasło. Spróbuj ponownie.';
+    }
+  }
+}
+
+function updateFinancingFields() {
+  const mode = document.getElementById('financingMode')?.value || 'capex';
+  document.querySelectorAll('.capex-fields').forEach(el => {
+    el.style.display = mode === 'eaas' ? 'none' : 'block';
+  });
+  document.querySelectorAll('.eaas-fields').forEach(el => {
+    el.style.display = mode === 'eaas' ? 'block' : 'none';
+  });
+  const financingType = document.getElementById('financingType')?.value || 'cash';
+  document.querySelectorAll('.loan-fields').forEach(el => {
+    el.style.display = (financingType === 'loan' || financingType === 'leasing') ? 'block' : 'none';
+  });
+}
+
+document.getElementById('financingMode')?.addEventListener('change', updateFinancingFields);
+document.getElementById('financingType')?.addEventListener('change', updateFinancingFields);
+updateFinancingFields();
+
+// ================ Main Tab Switching ================
+function switchMainTab(tabName) {
+  // Update tabs
+  document.querySelectorAll('.main-tab').forEach(tab => {
+    tab.classList.remove('active');
+  });
+  event.target.classList.add('active');
+  
+  // Update content
+  document.querySelectorAll('.tab-content').forEach(content => {
+    content.classList.remove('active');
+  });
+  document.getElementById('tab-' + tabName).classList.add('active');
+  
+  // Update charts if data is loaded
+  if (hourlyData.length > 0) {
+    switch(tabName) {
+      case 'consumption':
+        updateConsumptionCharts();
+        break;
+      case 'production':
+        if (keyVariants.B) updateProductionCharts();
+        break;
+      case 'comparison':
+        if (keyVariants.B) updateComparisonCharts();
+        break;
+    }
+  }
+}
+
+// ================ Data Loading ================
+function parseTimestamp(s) {
+  if (!s) return null;
+  if (s instanceof Date) return s;
+  if (typeof s === 'number') {
+    if (s > 25000 && s < 50000) {
+      return new Date((s - 25569) * 86400 * 1000);
+    }
+    return new Date(s);
+  }
+  s = String(s).trim();
+  
+  const patterns = [
+    /^(\d{4})-(\d{2})-(\d{2})[T\s]+(\d{2}):(\d{2})/,
+    /^(\d{2})\.(\d{2})\.(\d{4})[T\s]+(\d{2}):(\d{2})/,
+    /^(\d{2})-(\d{2})-(\d{4})[T\s]+(\d{2}):(\d{2})/
+  ];
+  
+  for (const pat of patterns) {
+    const m = s.match(pat);
+    if (m) {
+      if (pat === patterns[0]) {
+        return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], 0);
+      } else {
+        return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], 0);
+      }
+    }
+  }
+  
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+async function loadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    if (file.name.endsWith('.csv')) {
+      reader.onload = (e) => {
+        Papa.parse(e.target.result, {
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: true,
+          complete: (res) => {
+            try {
+              processData(res.data);
+              resolve();
+            } catch(err) {
+              reject(err);
+            }
+          }
+        });
+      };
+      reader.readAsText(file);
+    } else {
+      reader.onload = (e) => {
+        try {
+          const wb = XLSX.read(new Uint8Array(e.target.result), {type: 'array'});
+          const sh = wb.SheetNames[0];
+          const json = XLSX.utils.sheet_to_json(wb.Sheets[sh]);
+          processData(json);
+          resolve();
+        } catch(err) {
+          reject(err);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  });
+}
+
+function processData(rows) {
+  if (!rows || rows.length === 0) throw new Error("No data in file");
+  
+  const keys = Object.keys(rows[0] || {});
+  const timeKey = keys.find(k => /timestamp|data|czas|date|datetime|time/i.test(k));
+  if (!timeKey) throw new Error("Time column not found");
+  
+  const kWKey = keys.find(k => /^kw$|^moc$|power(?!.*kwh)/i.test(k));
+  const kWhKey = keys.find(k => /kwh|energia|energy/i.test(k));
+  
+  if (!kWKey && !kWhKey) throw new Error("No power or energy column found");
+  
+  let rawData = [];
+  let usedEnergyInput = false;
+  for (const r of rows) {
+    const t = parseTimestamp(r[timeKey]);
+    if (!t) continue;
+    
+    let kw = null;
+    if (kWKey && r[kWKey] != null) {
+      kw = Number(r[kWKey]);
+    } else if (kWhKey && r[kWhKey] != null) {
+      const energy = Number(r[kWhKey]);
+      if (isFinite(energy)) {
+        rawData.push({t, energy});
+        usedEnergyInput = true;
+        continue;
+      }
+    }
+    
+    if (isFinite(kw) && kw >= 0) {
+      rawData.push({t, kw});
+    }
+  }
+  
+  if (rawData.length < 10) throw new Error("Not enough data");
+  
+  rawData.sort((a, b) => a.t - b.t);
+  
+  if (usedEnergyInput) {
+    for (let i = 0; i < rawData.length - 1; i++) {
+      if (rawData[i].kw != null || rawData[i].energy == null) continue;
+      const dt = rawData[i+1].t.getTime() - rawData[i].t.getTime();
+      if (dt <= 0) continue;
+      const hours = dt / 3600000;
+      if (hours <= 0) continue;
+      const kw = rawData[i].energy / hours;
+      if (isFinite(kw) && kw >= 0) {
+        rawData[i].kw = kw;
+      }
+    }
+  }
+  
+  if (rawData.length < 2) throw new Error("Not enough data points after processing");
+  
+  // Create canonical year hours
+  const start = new Date(rawData[0].t);
+  start.setMinutes(0, 0, 0);
+  const end = new Date(rawData[rawData.length - 1].t);
+  end.setMinutes(0, 0, 0);
+  end.setHours(end.getHours() + 1);
+  
+  yearHours = [];
+  for (let t = start.getTime(); t < end.getTime(); t += 3600000) {
+    yearHours.push(new Date(t));
+  }
+  
+  // Aggregate to hourly
+  hourlyData = new Array(yearHours.length).fill(0);
+  
+  for (let i = 1; i < rawData.length; i++) {
+    const t0 = rawData[i-1].t.getTime();
+    const t1 = rawData[i].t.getTime();
+    const dt = t1 - t0;
+    
+    if (dt <= 0 || dt > 6 * 3600000) continue;
+    
+    const kw = rawData[i-1].kw;
+    if (!isFinite(kw) || kw < 0) continue;
+    let currentTime = t0;
+    
+    while (currentTime < t1) {
+      const hourEnd = new Date(new Date(currentTime).setMinutes(60, 0, 0)).getTime();
+      const segmentEnd = Math.min(hourEnd, t1);
+      const segmentDuration = segmentEnd - currentTime;
+      
+      const hourIndex = Math.floor((currentTime - yearHours[0].getTime()) / 3600000);
+      if (hourIndex >= 0 && hourIndex < hourlyData.length) {
+        hourlyData[hourIndex] += kw * (segmentDuration / 3600000);
+      }
+      
+      currentTime = segmentEnd;
+    }
+  }
+  
+  updateStatistics();
+}
+
+// ================ Update Statistics ================
+function updateStatistics() {
+  const totalKWh = hourlyData.reduce((a, b) => a + b, 0);
+  const peakKW = Math.max(...hourlyData);
+  const days = yearHours.length / 24;
+  const avgDaily = totalKWh / days;
+  
+  document.getElementById('statConsumption').textContent = (totalKWh / 1e6).toFixed(1);
+  document.getElementById('statPeak').textContent = (peakKW / 1000).toFixed(1);
+  document.getElementById('statDays').textContent = days.toFixed(0);
+  document.getElementById('statAvg').textContent = (avgDaily / 1000).toFixed(1);
+  
+  document.getElementById('loadStatus').innerHTML = `
+    <div class="success">
+      ✓ Data loaded successfully<br>
+      ${days.toFixed(0)} days<br>
+      ${(totalKWh / 1e6).toFixed(1)} GWh total
+    </div>
+  `;
+}
+
+// ================ File Input Handler ================
+document.getElementById('loadFile').addEventListener('change', async function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  try {
+    await loadFile(file);
+    updateConsumptionCharts();
+  } catch(err) {
+    alert('Error: ' + err.message);
+  }
+});
+
+// ================ Consumption Analysis Functions ================
+function selectMonth(month) {
+  selectedMonth = month;
+  
+  // Update button states
+  document.querySelectorAll('.month-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  event.target.classList.add('active');
+  
+  updateConsumptionCharts();
+}
+
+function updateConsumptionCharts() {
+  if (hourlyData.length === 0) return;
+  
+  const mode = document.getElementById('consumptionDisplayMode')?.value || 'daily';
+  
+  // Filter data by selected month
+  let filteredIndices = [];
+  for (let i = 0; i < yearHours.length; i++) {
+    if (selectedMonth === 0 || yearHours[i].getMonth() + 1 === selectedMonth) {
+      filteredIndices.push(i);
+    }
+  }
+  
+  // Daily consumption pattern
+  plotDailyConsumptionPattern(filteredIndices);
+  
+  // Monthly bars and table
+  plotMonthlyConsumption();
+  
+  // Heatmaps
+  plotConsumptionHeatmaps(filteredIndices);
+  
+  // Update statistics
+  updateConsumptionStats(filteredIndices);
+}
+
+function plotDailyConsumptionPattern(indices) {
+  const dayTotals = new Map();
+  for (const i of indices) {
+    const ts = yearHours[i];
+    if (!ts) continue;
+    const dayKey = ts.getFullYear() + '-' + String(ts.getMonth()+1).padStart(2,'0') + '-' + String(ts.getDate()).padStart(2,'0');
+    const current = dayTotals.get(dayKey) || 0;
+    dayTotals.set(dayKey, current + hourlyData[i]);
+  }
+  
+  const sortedDays = Array.from(dayTotals.keys()).sort((a,b) => new Date(a) - new Date(b));
+  const x = sortedDays.map(d => new Date(d));
+  const y = sortedDays.map(d => dayTotals.get(d));
+  
+  const layout = {
+    title: selectedMonth === 0 ? 'Daily Consumption - Full Year' : `Daily Consumption - Month ${selectedMonth}`,
+    xaxis: {title: 'Date', gridcolor: '#1a1a1a', type: 'date'},
+    yaxis: {title: 'Energy [kWh/day]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartDailyConsumption', [{
+    x: x,
+    y: y,
+    type: 'scatter',
+    mode: 'lines',
+    line: {color: '#ff0088', width: 2},
+    fill: 'tozeroy',
+    fillcolor: 'rgba(255,0,136,0.2)'
+  }], layout);
+}
+
+function plotMonthlyConsumption() {
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthlyData = Array(12).fill(0);
+  const monthlyPeak = Array(12).fill(0);
+  
+  for (let i = 0; i < hourlyData.length; i++) {
+    const month = yearHours[i].getMonth();
+    monthlyData[month] += hourlyData[i];
+    monthlyPeak[month] = Math.max(monthlyPeak[month], hourlyData[i]);
+  }
+  
+  const layout = {
+    title: 'Monthly Energy Consumption',
+    xaxis: {title: 'Month', ticktext: monthNames, tickvals: [0,1,2,3,4,5,6,7,8,9,10,11], gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Energy [MWh]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartMonthlyBars', [{
+    x: [0,1,2,3,4,5,6,7,8,9,10,11],
+    y: monthlyData.map(v => v / 1000),
+    type: 'bar',
+    marker: {color: '#0088ff'}
+  }], layout);
+  
+  // Create table
+  let html = '<table><tr><th>Month</th><th>Consumption [MWh]</th><th>Peak [MW]</th><th>Avg Daily [MWh]</th></tr>';
+  const daysInMonth = [31,28,31,30,31,30,31,31,30,31,30,31];
+  
+  for (let m = 0; m < 12; m++) {
+    html += `<tr>
+      <td>${monthNames[m]}</td>
+      <td>${(monthlyData[m]/1000).toFixed(1)}</td>
+      <td>${(monthlyPeak[m]/1000).toFixed(2)}</td>
+      <td>${(monthlyData[m]/1000/daysInMonth[m]).toFixed(1)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  
+  document.getElementById('monthlyTable').innerHTML = html;
+}
+
+function plotConsumptionHeatmaps(indices) {
+  // Week x Hour heatmap
+  const weekHourMatrix = Array(7).fill(null).map(() => Array(24).fill(0));
+  const weekHourCounts = Array(7).fill(null).map(() => Array(24).fill(0));
+  
+  for (const i of indices) {
+    const date = yearHours[i];
+    const dow = date.getDay(); // 0=Sunday
+    const hour = date.getHours();
+    weekHourMatrix[dow][hour] += hourlyData[i];
+    weekHourCounts[dow][hour]++;
+  }
+  
+  // Average
+  for (let d = 0; d < 7; d++) {
+    for (let h = 0; h < 24; h++) {
+      if (weekHourCounts[d][h] > 0) {
+        weekHourMatrix[d][h] /= weekHourCounts[d][h];
+      }
+    }
+  }
+  
+  const layout1 = {
+    xaxis: {title: 'Hour', gridcolor: '#1a1a1a'},
+    yaxis: {
+      title: 'Day of Week',
+      ticktext: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+      tickvals: [0,1,2,3,4,5,6],
+      gridcolor: '#1a1a1a'
+    },
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('heatmapWeekHour', [{
+    z: weekHourMatrix,
+    type: 'heatmap',
+    colorscale: [[0,'#0a0a0a'],[0.5,'#0088ff'],[1,'#ff0088']],
+    colorbar: {title: 'kW', titleside: 'right'}
+  }], layout1);
+}
+
+function updateConsumptionStats(indices) {
+  const filtered = indices.map(i => hourlyData[i]);
+  const total = filtered.reduce((a,b) => a+b, 0);
+  const avg = total / filtered.length;
+  const peak = Math.max(...filtered);
+  
+  let html = `
+    <div style="font-size:12px;color:#888">
+      <div style="padding:4px 0">Total: <span style="color:#00ff88">${(total/1000).toFixed(1)} MWh</span></div>
+      <div style="padding:4px 0">Average: <span style="color:#ffaa00">${avg.toFixed(1)} kW</span></div>
+      <div style="padding:4px 0">Peak: <span style="color:#ff0088">${peak.toFixed(1)} kW</span></div>
+    </div>
+  `;
+  
+  document.getElementById('consumptionStats').innerHTML = html;
+}
+
+// ================ PV Analysis Functions ================
+function runAnalysis() {
+  if (hourlyData.length === 0) {
+    alert('Please upload consumption data first');
+    return;
+  }
+  
+  const pvType = document.getElementById('pvType').value;
+  const yieldTarget = parseFloat(document.getElementById('yield').value);
+  const dcAcRatio = parseFloat(document.getElementById('dcac').value);
+  
+  const capMin = parseFloat(document.getElementById('capMin').value);
+  const capMax = parseFloat(document.getElementById('capMax').value);
+  const capStep = parseFloat(document.getElementById('capStep').value);
+  
+  // Generate PV profile
+  const pvProfile = generatePVProfile(pvType, yieldTarget);
+  
+  // Run simulations
+  scenarios = [];
+  for (let cap = capMin; cap <= capMax; cap += capStep) {
+    const result = simulate(cap, pvProfile, dcAcRatio);
+    scenarios.push(result);
+  }
+  
+  // Find key variants
+  const thrA = parseFloat(document.getElementById('thrA').value);
+  const thrB = parseFloat(document.getElementById('thrB').value);
+  const thrC = parseFloat(document.getElementById('thrC').value);
+  const thrD = parseFloat(document.getElementById('thrD').value);
+  
+  keyVariants = {
+    A: findVariant(thrA),
+    B: findVariant(thrB),
+    C: findVariant(thrC),
+    D: findVariant(thrD)
+  };
+  
+  plotSelfConsumptionCurve();
+  showVariantResults();
+  
+  alert('Analysis complete! Check other tabs for detailed results.');
+}
+
+function generatePVProfile(type, yieldTarget) {
+  // More realistic PV generation with proper solar modeling
+  const profile = [];
+  const lat = 52; // Poland latitude
+  
+  // Total hours in year
+  const totalHours = 8760;
+  
+  for (let hourOfYear = 0; hourOfYear < totalHours; hourOfYear++) {
+    const dayOfYear = Math.floor(hourOfYear / 24) + 1;
+    const hourOfDay = hourOfYear % 24;
+    
+    // Solar declination
+    const declination = 23.45 * Math.sin((360 * (284 + dayOfYear) / 365) * Math.PI / 180);
+    
+    // Hour angle
+    const hourAngle = (hourOfDay - 12) * 15; // degrees
+    
+    // Solar elevation
+    const elevation = Math.asin(
+      Math.sin(declination * Math.PI / 180) * Math.sin(lat * Math.PI / 180) +
+      Math.cos(declination * Math.PI / 180) * Math.cos(lat * Math.PI / 180) * 
+      Math.cos(hourAngle * Math.PI / 180)
+    ) * 180 / Math.PI;
+    
+    if (elevation > 0) {
+      // Basic irradiance model
+      const airMass = 1 / Math.sin(Math.max(0.1, elevation) * Math.PI / 180);
+      const directIrradiance = 900 * Math.exp(-0.13 * airMass) * Math.sin(elevation * Math.PI / 180);
+      const diffuseIrradiance = 100 * Math.sin(Math.max(0, elevation) * Math.PI / 180);
+      
+      // Type-specific adjustments
+      let efficiency = 1.0;
+      if (type === 'roof_ew' || type === 'ground_ew') {
+        // East-West has lower efficiency but more consistent production
+        const azimuth = Math.atan2(
+          Math.cos(declination * Math.PI / 180) * Math.sin(hourAngle * Math.PI / 180),
+          Math.cos(lat * Math.PI / 180) * Math.sin(declination * Math.PI / 180) -
+          Math.sin(lat * Math.PI / 180) * Math.cos(declination * Math.PI / 180) * 
+          Math.cos(hourAngle * Math.PI / 180)
+        ) * 180 / Math.PI;
+        
+        const eastFactor = Math.max(0, Math.cos((azimuth + 90) * Math.PI / 180));
+        const westFactor = Math.max(0, Math.cos((azimuth - 90) * Math.PI / 180));
+        efficiency = 0.5 * (eastFactor + westFactor);
+      }
+      
+      // Temperature and system losses (15% total)
+      const systemEfficiency = 0.85;
+      
+      // Convert to kW per kWp (normalized)
+      const power = (directIrradiance + diffuseIrradiance) * efficiency * systemEfficiency / 1000;
+      
+      profile.push(power);
+    } else {
+      profile.push(0);
+    }
+  }
+  
+  // Calibrate to target yield
+  const currentYield = profile.reduce((a, b) => a + b, 0);
+  const scaleFactor = yieldTarget / currentYield;
+  
+  return profile.map(v => v * scaleFactor);
+}
+
+function simulate(capacity, pvProfile, dcAcRatio) {
+  const inverterLimit = capacity / dcAcRatio;
+  let totalLoad = 0, totalPV = 0, totalUsed = 0;
+  
+  for (let i = 0; i < hourlyData.length && i < pvProfile.length; i++) {
+    const load = hourlyData[i];
+    const pvDC = pvProfile[i] * capacity;
+    const pvAC = Math.min(pvDC, inverterLimit);
+    const used = Math.min(load, pvAC);
+    
+    totalLoad += load;
+    totalPV += pvAC;
+    totalUsed += used;
+  }
+  
+  return {
+    capacity: capacity,
+    production: totalPV,
+    selfConsumed: totalUsed,
+    exported: totalPV - totalUsed,
+    autoCons: totalPV > 0 ? (totalUsed / totalPV) * 100 : 0,
+    coverage: totalLoad > 0 ? (totalUsed / totalLoad) * 100 : 0
+  };
+}
+
+function findVariant(threshold) {
+  const eligible = scenarios.filter(s => s.autoCons >= threshold);
+  if (eligible.length > 0) {
+    // Find the largest capacity that meets the threshold
+    return eligible[eligible.length - 1];
+  } else {
+    // If no scenario meets threshold, return the one closest to it
+    let closest = scenarios[0];
+    let minDiff = Math.abs(scenarios[0].autoCons - threshold);
+    for (const s of scenarios) {
+      const diff = Math.abs(s.autoCons - threshold);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = s;
+      }
+    }
+    return closest;
+  }
+}
+
+function plotSelfConsumptionCurve() {
+  const x = scenarios.map(s => s.capacity / 1000);
+  const y = scenarios.map(s => s.autoCons);
+  
+  // Add markers for key variants
+  const variantMarkers = {
+    x: Object.values(keyVariants).map(v => v.capacity / 1000),
+    y: Object.values(keyVariants).map(v => v.autoCons),
+    text: Object.keys(keyVariants),
+    mode: 'markers+text',
+    type: 'scatter',
+    textposition: 'top center',
+    marker: {
+      size: 12,
+      color: ['#ff0088', '#0088ff', '#ffaa00', '#ff00ff']
+    },
+    name: 'Variants'
+  };
+  
+  const layout = {
+    title: 'Self-Consumption vs PV Power',
+    xaxis: {title: 'PV Power [MWp]', gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Self-Consumption [%]', range: [0,105], gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    showlegend: false
+  };
+  
+  Plotly.newPlot('chartSelfConsumption', [
+    {
+      x: x,
+      y: y,
+      type: 'scatter',
+      mode: 'lines',
+      line: {color: '#00ff88', width: 3},
+      name: 'Self-Consumption'
+    },
+    variantMarkers
+  ], layout);
+}
+
+function showVariantResults() {
+  const totalLoad = hourlyData.reduce((a,b) => a+b, 0);
+  
+  let html = `
+    <div style="background:#0f0f0f;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:16px">
+      <h3 style="color:#00ff88;margin-bottom:12px">System Analysis Summary</h3>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
+        <div style="background:#1a1a1a;padding:8px;border-radius:4px">
+          <div style="color:#666;font-size:11px">Annual Load</div>
+          <div style="color:#ff0088;font-size:18px;font-weight:600">${(totalLoad/1e6).toFixed(1)} GWh</div>
+        </div>
+        <div style="background:#1a1a1a;padding:8px;border-radius:4px">
+          <div style="color:#666;font-size:11px">Peak Load</div>
+          <div style="color:#ffaa00;font-size:18px;font-weight:600">${(Math.max(...hourlyData)/1000).toFixed(1)} MW</div>
+        </div>
+        <div style="background:#1a1a1a;padding:8px;border-radius:4px">
+          <div style="color:#666;font-size:11px">Avg Load</div>
+          <div style="color:#0088ff;font-size:18px;font-weight:600">${(totalLoad/8760).toFixed(0)} kW</div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  html += `
+    <table>
+      <tr>
+        <th>Variant</th>
+        <th>Threshold</th>
+        <th>Power [MWp]</th>
+        <th>Production [GWh]</th>
+        <th>Self-Cons [%]</th>
+        <th>Coverage [%]</th>
+        <th>Export [GWh]</th>
+      </tr>
+  `;
+  
+  const thresholds = {
+    A: parseFloat(document.getElementById('thrA').value),
+    B: parseFloat(document.getElementById('thrB').value),
+    C: parseFloat(document.getElementById('thrC').value),
+    D: parseFloat(document.getElementById('thrD').value)
+  };
+  
+  for (const [key, v] of Object.entries(keyVariants)) {
+    const meetsThreshold = v.autoCons >= thresholds[key];
+    html += `<tr style="${!meetsThreshold ? 'opacity:0.6' : ''}">
+      <td>Variant ${key}</td>
+      <td>≥${thresholds[key]}%</td>
+      <td style="color:#0088ff">${(v.capacity/1000).toFixed(1)}</td>
+      <td style="color:#00ff88">${(v.production/1e6).toFixed(1)}</td>
+      <td style="color:${meetsThreshold ? '#ffaa00' : '#ff0088'}">${v.autoCons.toFixed(1)}</td>
+      <td style="color:#ff00ff">${v.coverage.toFixed(1)}</td>
+      <td style="color:#666">${(v.exported/1e6).toFixed(1)}</td>
+    </tr>`;
+  }
+  
+  html += `</table>`;
+  
+  // Add diagnostic info
+  html += `
+    <div style="margin-top:16px;padding:12px;background:#1a1a1a;border-radius:6px;font-size:12px;color:#666">
+      <div style="color:#888;margin-bottom:8px"><b>Diagnostic Info:</b></div>
+      <div>Scenarios calculated: ${scenarios.length}</div>
+      <div>PV range: ${(scenarios[0].capacity/1000).toFixed(1)} - ${(scenarios[scenarios.length-1].capacity/1000).toFixed(1)} MWp</div>
+      <div>Self-cons range: ${Math.min(...scenarios.map(s => s.autoCons)).toFixed(1)}% - ${Math.max(...scenarios.map(s => s.autoCons)).toFixed(1)}%</div>
+      <div>Yield target: ${document.getElementById('yield').value} kWh/kWp/year</div>
+    </div>
+  `;
+  
+  document.getElementById('variantResults').innerHTML = html;
+}
+
+// ================ PV Production Functions ================
+function updateProductionCharts() {
+  if (!keyVariants.B) {
+    document.getElementById('productionStats').innerHTML = '<div style="color:#ff0088">Run analysis first!</div>';
+    return;
+  }
+  
+  const variantKey = document.getElementById('pvVariantSelect').value;
+  const variant = keyVariants[variantKey];
+  
+  if (!variant) return;
+  
+  // Update variant info
+  document.getElementById('variantInfo').innerHTML = `
+    <div style="color:#00ff88;font-size:16px;margin-bottom:8px">Variant ${variantKey}</div>
+    <div style="font-size:12px;color:#888">
+      Power: <span style="color:#0088ff">${(variant.capacity/1000).toFixed(1)} MWp</span><br>
+      Production: <span style="color:#ffaa00">${(variant.production/1e6).toFixed(1)} GWh/y</span><br>
+      Self-Cons: <span style="color:#00ff88">${variant.autoCons.toFixed(1)}%</span>
+    </div>
+  `;
+  
+  // Generate PV profile for this variant
+  const pvType = document.getElementById('pvType').value;
+  const yieldTarget = parseFloat(document.getElementById('yield').value);
+  const pvProfile = generatePVProfile(pvType, yieldTarget);
+  
+  plotCoverageOverlay(variant, pvProfile);
+  // Annual production chart
+  plotAnnualProduction(variant, pvProfile);
+  
+  // Monthly production
+  plotMonthlyProduction(variant, pvProfile);
+  
+  // Typical days
+  plotTypicalDays(variant, pvProfile);
+  
+  // Update statistics
+  document.getElementById('productionStats').innerHTML = `
+    <div style="font-size:12px;color:#888">
+      <div style="padding:4px 0">Annual: <span style="color:#00ff88">${(variant.production/1e6).toFixed(2)} GWh</span></div>
+      <div style="padding:4px 0">Daily Avg: <span style="color:#ffaa00">${(variant.production/365).toFixed(0)} kWh</span></div>
+      <div style="padding:4px 0">Peak Power: <span style="color:#ff0088">${(variant.capacity/1000).toFixed(1)} MW</span></div>
+    </div>
+  `;
+}
+
+function plotCoverageOverlay(variant, pvProfile) {
+  const dcAcRatio = parseFloat(document.getElementById('dcac').value) || 1.0;
+  const inverterLimit = variant.capacity / dcAcRatio;
+  const avgLoad = Array(24).fill(0);
+  const avgPV = Array(24).fill(0);
+  const avgSelf = Array(24).fill(0);
+  const counts = Array(24).fill(0);
+  const timelineLoad = [];
+  const timelinePV = [];
+  const timelineSelf = [];
+  const timelineHours = [];
+  
+  for (let i = 0; i < hourlyData.length && i < pvProfile.length; i++) {
+    const hour = yearHours[i].getHours();
+    const load = hourlyData[i];
+    const pvAC = Math.min(pvProfile[i] * variant.capacity, inverterLimit);
+    const used = Math.min(load, pvAC);
+    
+    avgLoad[hour] += load;
+    avgPV[hour] += pvAC;
+    avgSelf[hour] += used;
+    counts[hour]++;
+    
+    timelineLoad.push(load / 1000);
+    timelinePV.push(pvAC / 1000);
+    timelineSelf.push(used / 1000);
+    timelineHours.push(yearHours[i]);
+  }
+  
+  for (let h = 0; h < 24; h++) {
+    if (counts[h] > 0) {
+      avgLoad[h] = (avgLoad[h] / counts[h]) / 1000;
+      avgPV[h] = (avgPV[h] / counts[h]) / 1000;
+      avgSelf[h] = (avgSelf[h] / counts[h]) / 1000;
+    }
+  }
+  
+  const hours = Array.from({length: 24}, (_, i) => i);
+  Plotly.newPlot('chartLoadVsPV', [
+    {
+      x: hours,
+      y: avgSelf,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Self-Consumed PV',
+      line: {color: '#00ff88', width: 2},
+      fill: 'tozeroy',
+      fillcolor: 'rgba(0,255,136,0.2)'
+    },
+    {
+      x: hours,
+      y: avgLoad,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Load',
+      line: {color: '#ff0088', width: 3}
+    },
+    {
+      x: hours,
+      y: avgPV,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'PV Generation',
+      line: {color: '#ffaa00', width: 2, dash: 'dot'}
+    }
+  ], {
+    title: 'Average Daily Load vs PV',
+    xaxis: {title: 'Hour of Day', gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Power [MW]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    legend: {orientation: 'h'}
+  });
+  
+  Plotly.newPlot('chartCoverageTimeline', [
+    {
+      x: timelineHours,
+      y: timelineLoad,
+      type: 'scattergl',
+      name: 'Load',
+      line: {color: '#ff0088', width: 1}
+    },
+    {
+      x: timelineHours,
+      y: timelinePV,
+      type: 'scattergl',
+      name: 'PV Generation',
+      line: {color: '#ffaa00', width: 1}
+    },
+    {
+      x: timelineHours,
+      y: timelineSelf,
+      type: 'scattergl',
+      name: 'Self-Consumed',
+      line: {color: '#00ff88', width: 1},
+      fill: 'tozeroy',
+      fillcolor: 'rgba(0,255,136,0.15)'
+    }
+  ], {
+    title: 'Hourly Load vs PV (Complete Dataset)',
+    xaxis: {title: 'Date', gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Power [MW]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    legend: {orientation: 'h'},
+    hovermode: 'x unified'
+  });
+  
+  const totalLoad = hourlyData.reduce((a,b) => a+b, 0);
+  const coverage = totalLoad > 0 ? (variant.selfConsumed / totalLoad) * 100 : 0;
+  const autoCons = variant.production > 0 ? (variant.selfConsumed / variant.production) * 100 : 0;
+  
+  document.getElementById('coverageStats').innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:#888">
+      <div style="background:#0f0f0f;border:1px solid #2a2a2a;border-radius:6px;padding:8px 12px">
+        Coverage <span style="color:#00ff88;font-weight:600">${coverage.toFixed(1)}%</span>
+      </div>
+      <div style="background:#0f0f0f;border:1px solid #2a2a2a;border-radius:6px;padding:8px 12px">
+        Self-Consumption <span style="color:#ffaa00;font-weight:600">${autoCons.toFixed(1)}%</span>
+      </div>
+      <div style="background:#0f0f0f;border:1px solid #2a2a2a;border-radius:6px;padding:8px 12px">
+        Grid Import <span style="color:#ff0088;font-weight:600">${((totalLoad - variant.selfConsumed)/1e6).toFixed(2)} GWh</span>
+      </div>
+      <div style="background:#0f0f0f;border:1px solid #2a2a2a;border-radius:6px;padding:8px 12px">
+        PV Export <span style="color:#0088ff;font-weight:600">${(variant.exported/1e6).toFixed(2)} GWh</span>
+      </div>
+    </div>
+  `;
+}
+
+function plotAnnualProduction(variant, pvProfile) {
+  const dailyProduction = [];
+  const dates = [];
+  
+  for (let d = 0; d < 365; d++) {
+    let daySum = 0;
+    for (let h = 0; h < 24; h++) {
+      const idx = d * 24 + h;
+      if (idx < pvProfile.length) {
+        daySum += pvProfile[idx] * variant.capacity;
+      }
+    }
+    dailyProduction.push(daySum);
+    const date = new Date(2024, 0, d + 1);
+    dates.push(`${date.getDate()}/${date.getMonth()+1}`);
+  }
+  
+  const layout = {
+    title: 'Annual PV Production Profile',
+    xaxis: {
+      title: 'Day of Year',
+      gridcolor: '#1a1a1a',
+      tickmode: 'linear',
+      tick0: 0,
+      dtick: 30
+    },
+    yaxis: {title: 'Energy [kWh/day]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartAnnualProduction', [{
+    x: Array.from({length: 365}, (_, i) => i),
+    y: dailyProduction,
+    type: 'scatter',
+    mode: 'lines',
+    line: {color: '#00ff88', width: 2},
+    fill: 'tozeroy',
+    fillcolor: 'rgba(0,255,136,0.1)'
+  }], layout);
+}
+
+function plotMonthlyProduction(variant, pvProfile) {
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthlyData = Array(12).fill(0);
+  const daysInMonth = [31,28,31,30,31,30,31,31,30,31,30,31];
+  
+  let dayIndex = 0;
+  for (let m = 0; m < 12; m++) {
+    for (let d = 0; d < daysInMonth[m]; d++) {
+      for (let h = 0; h < 24; h++) {
+        const idx = dayIndex * 24 + h;
+        if (idx < pvProfile.length) {
+          monthlyData[m] += pvProfile[idx] * variant.capacity;
+        }
+      }
+      dayIndex++;
+    }
+  }
+  
+  const layout = {
+    title: 'Monthly PV Production',
+    xaxis: {
+      title: 'Month',
+      ticktext: monthNames,
+      tickvals: [0,1,2,3,4,5,6,7,8,9,10,11],
+      gridcolor: '#1a1a1a'
+    },
+    yaxis: {title: 'Energy [MWh]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartMonthlyProduction', [{
+    x: [0,1,2,3,4,5,6,7,8,9,10,11],
+    y: monthlyData.map(v => v / 1000),
+    type: 'bar',
+    marker: {color: '#00ff88'}
+  }], layout);
+  
+  // Create table
+  let html = '<table><tr><th>Month</th><th>Production [MWh]</th><th>Daily Avg [kWh]</th><th>% of Annual</th></tr>';
+  const annualTotal = monthlyData.reduce((a,b) => a+b, 0);
+  
+  for (let m = 0; m < 12; m++) {
+    html += `<tr>
+      <td>${monthNames[m]}</td>
+      <td>${(monthlyData[m]/1000).toFixed(1)}</td>
+      <td>${(monthlyData[m]/daysInMonth[m]).toFixed(0)}</td>
+      <td>${(monthlyData[m]/annualTotal*100).toFixed(1)}%</td>
+    </tr>`;
+  }
+  html += '</table>';
+  
+  document.getElementById('productionTable').innerHTML = html;
+}
+
+function plotTypicalDays(variant, pvProfile) {
+  // Summer day (June 15 = day 166)
+  const summerDay = 166;
+  const winterDay = 350; // Dec 16
+  
+  const summerHours = [];
+  const winterHours = [];
+  
+  for (let h = 0; h < 24; h++) {
+    summerHours.push(pvProfile[summerDay * 24 + h] * variant.capacity);
+    winterHours.push(pvProfile[winterDay * 24 + h] * variant.capacity);
+  }
+  
+  const hours = Array.from({length: 24}, (_, i) => i);
+  
+  const layout1 = {
+    xaxis: {title: 'Hour', gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Power [kW]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartSummerDay', [{
+    x: hours,
+    y: summerHours,
+    type: 'scatter',
+    mode: 'lines',
+    line: {color: '#ffaa00', width: 3},
+    fill: 'tozeroy',
+    fillcolor: 'rgba(255,170,0,0.2)'
+  }], layout1);
+  
+  Plotly.newPlot('chartWinterDay', [{
+    x: hours,
+    y: winterHours,
+    type: 'scatter',
+    mode: 'lines',
+    line: {color: '#0088ff', width: 3},
+    fill: 'tozeroy',
+    fillcolor: 'rgba(0,136,255,0.2)'
+  }], layout1);
+}
+
+// ================ Comparison Functions ================
+function updateComparisonCharts() {
+  if (!keyVariants.B) {
+    document.getElementById('comparisonMetrics').innerHTML = '<div style="color:#ff0088">Run analysis first!</div>';
+    return;
+  }
+  
+  const variant1Key = document.getElementById('compareVariant1').value;
+  const variant2Key = document.getElementById('compareVariant2').value;
+  const period = document.getElementById('comparePeriod').value;
+  
+  const variant1 = keyVariants[variant1Key];
+  const variant2 = keyVariants[variant2Key];
+  
+  if (!variant1 || !variant2) return;
+  
+  // Generate PV profiles
+  const pvType = document.getElementById('pvType').value;
+  const yieldTarget = parseFloat(document.getElementById('yield').value);
+  const pvProfile = generatePVProfile(pvType, yieldTarget);
+  
+  // Plot overlay chart
+  plotComparisonOverlay(variant1, variant2, pvProfile, period);
+  plotPVWindowOverlay(variant1, pvProfile, variant1Key);
+  
+  // Plot self-consumption breakdown
+  plotSelfConsumptionBreakdown(variant1, variant2);
+  
+  // Create comparison table
+  createComparisonTable(variant1, variant2, variant1Key, variant2Key);
+  
+  // Update metrics
+  document.getElementById('comparisonMetrics').innerHTML = `
+    <div style="font-size:12px;color:#888">
+      <div style="padding:4px 0;color:#00ff88"><b>Variant ${variant1Key}</b></div>
+      <div style="padding:2px 0">Power: ${(variant1.capacity/1000).toFixed(1)} MWp</div>
+      <div style="padding:2px 0">Coverage: ${variant1.coverage.toFixed(1)}%</div>
+      <hr style="border-color:#2a2a2a;margin:8px 0">
+      <div style="padding:4px 0;color:#0088ff"><b>Variant ${variant2Key}</b></div>
+      <div style="padding:2px 0">Power: ${(variant2.capacity/1000).toFixed(1)} MWp</div>
+      <div style="padding:2px 0">Coverage: ${variant2.coverage.toFixed(1)}%</div>
+    </div>
+  `;
+  
+  // Plot Sankey diagram
+  plotSankeyDiagram(variant1, variant1Key);
+}
+
+function plotComparisonOverlay(variant1, variant2, pvProfile, period) {
+  let startDay = 0, endDay = 365;
+  
+  switch(period) {
+    case 'summer': startDay = 152; endDay = 244; break;
+    case 'winter': startDay = 335; endDay = 365; break;
+    case 'spring': startDay = 60; endDay = 152; break;
+    case 'autumn': startDay = 244; endDay = 335; break;
+  }
+  
+  const dcAcRatio = parseFloat(document.getElementById('dcac').value) || 1.0;
+  const inverterLimit1 = variant1.capacity / dcAcRatio;
+  const inverterLimit2 = variant2.capacity / dcAcRatio;
+  
+  const days = [];
+  const loadData = [];
+  const pv1Data = [];
+  const pv2Data = [];
+  const self1Data = [];
+  const self2Data = [];
+  
+  for (let d = startDay; d < endDay; d++) {
+    let dayLoad = 0, dayPV1 = 0, dayPV2 = 0, daySelf1 = 0, daySelf2 = 0;
+    
+    for (let h = 0; h < 24; h++) {
+      const idx = d * 24 + h;
+      if (idx < hourlyData.length && idx < pvProfile.length) {
+        const load = hourlyData[idx];
+        const pv1AC = Math.min(pvProfile[idx] * variant1.capacity, inverterLimit1);
+        const pv2AC = Math.min(pvProfile[idx] * variant2.capacity, inverterLimit2);
+        
+        dayLoad += load;
+        dayPV1 += pv1AC;
+        dayPV2 += pv2AC;
+        daySelf1 += Math.min(load, pv1AC);
+        daySelf2 += Math.min(load, pv2AC);
+      }
+    }
+    
+    days.push(d - startDay);
+    loadData.push(dayLoad);
+    pv1Data.push(dayPV1);
+    pv2Data.push(dayPV2);
+    self1Data.push(daySelf1);
+    self2Data.push(daySelf2);
+  }
+  
+  const traces = [
+    {
+      x: days,
+      y: loadData,
+      name: 'Load',
+      type: 'scatter',
+      mode: 'lines',
+      line: {color: '#ff3366', width: 2}
+    },
+    {
+      x: days,
+      y: pv1Data,
+      name: `PV Variant ${document.getElementById('compareVariant1').value}`,
+      type: 'scatter',
+      mode: 'lines',
+      line: {color: '#00c2ff', width: 2}
+    },
+    {
+      x: days,
+      y: pv2Data,
+      name: `PV Variant ${document.getElementById('compareVariant2').value}`,
+      type: 'scatter',
+      mode: 'lines',
+      line: {color: '#2a5bff', width: 2, dash: 'dash'}
+    },
+    {
+      x: days,
+      y: self1Data,
+      name: `Self-Cons ${document.getElementById('compareVariant1').value}`,
+      type: 'scatter',
+      mode: 'lines',
+      line: {color: '#f5a623', width: 2},
+      fill: 'tozeroy',
+      fillcolor: 'rgba(245,166,35,0.2)'
+    }
+  ];
+  
+  const layout = {
+    title: `Comparison: ${period.charAt(0).toUpperCase() + period.slice(1)}`,
+    xaxis: {title: 'Day', gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Energy [kWh/day]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    legend: {x: 0, y: 1}
+  };
+  
+  Plotly.newPlot('chartOverlay', traces, layout);
+}
+
+function plotPVWindowOverlay(variant, pvProfile, variantKey) {
+  const dcAcRatio = parseFloat(document.getElementById('dcac').value) || 1.0;
+  const inverterLimit = variant.capacity / dcAcRatio;
+  const times = [];
+  const loadSeries = [];
+  const pvSeries = [];
+  const selfSeries = [];
+  
+  for (let i = 0; i < hourlyData.length && i < pvProfile.length; i++) {
+    if (!pvProfile[i] || pvProfile[i] <= 0) continue;
+    const load = hourlyData[i];
+    const pvAC = Math.min(pvProfile[i] * variant.capacity, inverterLimit);
+    const used = Math.min(load, pvAC);
+    
+    times.push(yearHours[i]);
+    loadSeries.push(load / 1000);
+    pvSeries.push(pvAC / 1000);
+    selfSeries.push(used / 1000);
+  }
+  
+  const labelEl = document.getElementById('pvWindowVariantLabel');
+  if (labelEl) labelEl.textContent = `Variant ${variantKey}`;
+  
+  if (times.length === 0) {
+    document.getElementById('chartPVWindow').innerHTML = '<div style="color:#ff3366;padding:12px">No PV hours available</div>';
+    return;
+  }
+  
+  Plotly.newPlot('chartPVWindow', [
+    {
+      x: times,
+      y: loadSeries,
+      type: 'scattergl',
+      name: 'Load',
+      line: {color: '#ff3366', width: 1.5}
+    },
+    {
+      x: times,
+      y: pvSeries,
+      type: 'scattergl',
+      name: 'PV Generation',
+      line: {color: '#00c2ff', width: 1.5}
+    },
+    {
+      x: times,
+      y: selfSeries,
+      type: 'scattergl',
+      name: 'Self-Consumption',
+      line: {color: '#f5a623', width: 2},
+      fill: 'tozeroy',
+      fillcolor: 'rgba(245,166,35,0.2)'
+    }
+  ], {
+    title: 'Hourly Load vs PV (PV Hours Only)',
+    xaxis: {title: 'Timestamp', gridcolor: '#1a1a1a', type: 'date'},
+    yaxis: {title: 'Energy [MWh/h]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    legend: {orientation: 'h'},
+    hovermode: 'x unified'
+  });
+}
+
+function plotSelfConsumptionBreakdown(variant1, variant2) {
+  const data = [
+    {
+      values: [variant1.selfConsumed/1000, (variant1.production-variant1.selfConsumed)/1000],
+      labels: ['Self-Consumed', 'Exported'],
+      type: 'pie',
+      hole: 0.4,
+      marker: {colors: ['#00ff88', '#0088ff']},
+      domain: {x: [0, 0.48]},
+      textposition: 'inside',
+      textinfo: 'percent',
+      name: `Variant ${document.getElementById('compareVariant1').value}`
+    },
+    {
+      values: [variant2.selfConsumed/1000, (variant2.production-variant2.selfConsumed)/1000],
+      labels: ['Self-Consumed', 'Exported'],
+      type: 'pie',
+      hole: 0.4,
+      marker: {colors: ['#ffaa00', '#ff0088']},
+      domain: {x: [0.52, 1]},
+      textposition: 'inside',
+      textinfo: 'percent',
+      name: `Variant ${document.getElementById('compareVariant2').value}`
+    }
+  ];
+  
+  const layout = {
+    title: 'Self-Consumption Breakdown',
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'},
+    showlegend: true,
+    annotations: [
+      {
+        text: `V${document.getElementById('compareVariant1').value}`,
+        x: 0.18, y: 0.5,
+        font: {size: 20, color: '#00ff88'},
+        showarrow: false
+      },
+      {
+        text: `V${document.getElementById('compareVariant2').value}`,
+        x: 0.82, y: 0.5,
+        font: {size: 20, color: '#ffaa00'},
+        showarrow: false
+      }
+    ]
+  };
+  
+  Plotly.newPlot('chartSelfConsumptionBreakdown', data, layout);
+}
+
+function createComparisonTable(variant1, variant2, key1, key2) {
+  const totalLoad = hourlyData.reduce((a,b) => a+b, 0);
+  
+  let html = `
+    <table>
+      <tr>
+        <th>Metric</th>
+        <th>Variant ${key1}</th>
+        <th>Variant ${key2}</th>
+        <th>Difference</th>
+      </tr>
+      <tr>
+        <td>PV Power</td>
+        <td>${(variant1.capacity/1000).toFixed(1)} MWp</td>
+        <td>${(variant2.capacity/1000).toFixed(1)} MWp</td>
+        <td>${((variant1.capacity-variant2.capacity)/1000).toFixed(1)} MWp</td>
+      </tr>
+      <tr>
+        <td>Production</td>
+        <td>${(variant1.production/1e6).toFixed(2)} GWh</td>
+        <td>${(variant2.production/1e6).toFixed(2)} GWh</td>
+        <td>${((variant1.production-variant2.production)/1e6).toFixed(2)} GWh</td>
+      </tr>
+      <tr>
+        <td>Self-Consumption</td>
+        <td>${variant1.autoCons.toFixed(1)}%</td>
+        <td>${variant2.autoCons.toFixed(1)}%</td>
+        <td>${(variant1.autoCons-variant2.autoCons).toFixed(1)}%</td>
+      </tr>
+      <tr>
+        <td>Coverage</td>
+        <td>${variant1.coverage.toFixed(1)}%</td>
+        <td>${variant2.coverage.toFixed(1)}%</td>
+        <td>${(variant1.coverage-variant2.coverage).toFixed(1)}%</td>
+      </tr>
+      <tr>
+        <td>Grid Import</td>
+        <td>${((totalLoad-variant1.selfConsumed)/1e6).toFixed(2)} GWh</td>
+        <td>${((totalLoad-variant2.selfConsumed)/1e6).toFixed(2)} GWh</td>
+        <td>${((variant2.selfConsumed-variant1.selfConsumed)/1e6).toFixed(2)} GWh</td>
+      </tr>
+    </table>
+  `;
+  
+  document.getElementById('comparisonTable').innerHTML = html;
+}
+
+function plotSankeyDiagram(variant, variantKey) {
+  // Simple energy flow visualization using bar chart (Sankey would need additional library)
+  const totalLoad = hourlyData.reduce((a,b) => a+b, 0);
+  
+  const data = [
+    {
+      x: ['PV Production', 'Self-Consumed', 'Exported', 'Grid Import', 'Total Load'],
+      y: [
+        variant.production/1e6,
+        variant.selfConsumed/1e6,
+        (variant.production - variant.selfConsumed)/1e6,
+        (totalLoad - variant.selfConsumed)/1e6,
+        totalLoad/1e6
+      ],
+      type: 'bar',
+      marker: {
+        color: ['#00ff88', '#ffaa00', '#0088ff', '#ff0088', '#ff00ff']
+      }
+    }
+  ];
+  
+  const layout = {
+    title: `Energy Flow - Variant ${variantKey} [GWh/year]`,
+    xaxis: {gridcolor: '#1a1a1a'},
+    yaxis: {title: 'Energy [GWh]', gridcolor: '#1a1a1a'},
+    paper_bgcolor: '#0a0a0a',
+    plot_bgcolor: '#0a0a0a',
+    font: {color: '#888'}
+  };
+  
+  Plotly.newPlot('chartSankey', data, layout);
+}
+
+// ================ Economics Functions ================
+﻿function calculateEconomics() {
+  if (!keyVariants.B) {
+    alert('Run analysis first!');
+    return;
+  }
+  
+  const variantKey = document.getElementById('economicVariant').value;
+  const variant = keyVariants[variantKey];
+  if (!variant) return;
+  
+  const totalLoadMWh = hourlyData.reduce((a,b) => a + b, 0) / 1000;
+  if (!isFinite(totalLoadMWh) || totalLoadMWh <= 0) {
+    alert('Load data required for economics.');
+    return;
+  }
+  
+  const scenarioKey = document.getElementById('autoconsumptionScenario').value || 'B';
+  const scenarioShare = autoconsumptionMap[scenarioKey] ?? 0.90;
+  const pvGenerationInput = parseFloat(document.getElementById('pvGenerationInput').value) || (variant.production/1000);
+  const floorFactor = parseFloat(document.getElementById('floorFactor').value) || 0.9;
+  const capFactor = parseFloat(document.getElementById('capFactor').value) || 1.05;
+  const referencePvMWh = variant.production / 1000 || pvGenerationInput;
+  let effectivePvMWh = Math.min(Math.max(pvGenerationInput, referencePvMWh * floorFactor), referencePvMWh * capFactor);
+  effectivePvMWh = Math.min(effectivePvMWh, totalLoadMWh);
+  const targetSelf = totalLoadMWh * scenarioShare;
+  const selfMWh = Math.min(targetSelf, effectivePvMWh);
+  if (selfMWh <= 0) {
+    alert('Autoconsumption scenario yields zero savings. Adjust inputs.');
+    return;
+  }
+  
+  const costEnergyActive = parseFloat(document.getElementById('costEnergyActive').value) || 0;
+  const costDistribution = parseFloat(document.getElementById('costDistribution').value) || 0;
+  const costQuality = parseFloat(document.getElementById('costQuality').value) || 0;
+  const costOZE = parseFloat(document.getElementById('costOZE').value) || 0;
+  const costCogeneration = parseFloat(document.getElementById('costCogeneration').value) || 0;
+  const costCapacity = parseFloat(document.getElementById('costCapacity').value) || 0;
+  const costExcise = parseFloat(document.getElementById('costExcise').value) || 0;
+  const baseEnergyCost = costEnergyActive + costDistribution + costQuality + costOZE + costCogeneration + costCapacity + costExcise;
+  
+  const discountRate = (parseFloat(document.getElementById('discountRate').value) || 8) / 100;
+  const eaasContractYears = Math.max(1, Math.round(parseFloat(document.getElementById('eaasTerm').value) || 1));
+  const postEaasYears = Math.max(0, Math.round(parseFloat(document.getElementById('postEaasYears').value) || 0));
+  const totalYears = eaasContractYears + postEaasYears;
+  const omRate = (parseFloat(document.getElementById('omRate').value) || 1.2) / 100;
+  const degradationRate = (parseFloat(document.getElementById('degradationRate').value) || 0.5) / 100;
+  const investmentCost = parseFloat(document.getElementById('costInvestment').value) || 3500;
+  const baseCapex = variant.capacity * investmentCost;
+  const annualOMValue = baseCapex * omRate;
+  
+  const savingsRatio = selfMWh / totalLoadMWh;
+  const firstYearSavings = baseEnergyCost * savingsRatio;
+  const gridCostAfter = baseEnergyCost - firstYearSavings;
+  
+  const financingType = document.getElementById('financingType').value || 'cash';
+  const financingShare = (parseFloat(document.getElementById('financingShare').value) || 0) / 100;
+  const loanInterest = (parseFloat(document.getElementById('loanInterest').value) || 6) / 100;
+  const loanTermYears = Math.max(1, parseInt(document.getElementById('loanTermYears').value) || 1);
+  const loanPrincipal = (financingType === 'loan' || financingType === 'leasing') ? baseCapex * Math.min(Math.max(financingShare, 0), 1) : 0;
+  const equityInvestment = baseCapex - loanPrincipal;
+  let loanPayment = 0;
+  if (loanPrincipal > 0) {
+    if (loanInterest === 0) {
+      loanPayment = loanPrincipal / loanTermYears;
+    } else {
+      const factor = Math.pow(1 + loanInterest, loanTermYears);
+      loanPayment = loanPrincipal * (loanInterest * factor) / (factor - 1);
+    }
+  }
+  
+  const eaasMonthlyFee = parseFloat(document.getElementById('eaasMonthlyFee').value) || 0;
+  const eaasPricePerMWh = parseFloat(document.getElementById('eaasPricePerMWh').value) || 0;
+  let annualEaasFee = eaasMonthlyFee * 12;
+  if (!annualEaasFee && eaasPricePerMWh > 0) {
+    annualEaasFee = selfMWh * eaasPricePerMWh;
+  }
+  
+  const capexCashFlows = [];
+  capexCashFlows.push(-equityInvestment);
+  for (let y = 1; y <= totalYears; y++) {
+    const savingsYear = firstYearSavings * Math.pow(1 - degradationRate, y - 1);
+    let cash = savingsYear - annualOMValue;
+    if (loanPrincipal > 0 && y <= loanTermYears) {
+      cash -= loanPayment;
+    }
+    capexCashFlows.push(cash);
+  }
+  
+  const eaasCashFlows = [0];
+  for (let y = 1; y <= totalYears; y++) {
+    const savingsYear = firstYearSavings * Math.pow(1 - degradationRate, y - 1);
+    let cash = savingsYear;
+    if (y <= eaasContractYears) {
+      cash -= annualEaasFee;
+    } else {
+      cash -= annualOMValue;
+    }
+    eaasCashFlows.push(cash);
+  }
+  
+  const capexNPV = computeNPV(capexCashFlows, discountRate);
+  const capexIRR = computeIRR(capexCashFlows);
+  const capexSimplePayback = computePayback(capexCashFlows, false);
+  const capexDiscountedPayback = computePayback(capexCashFlows, true, discountRate);
+  const eaasNPV = computeNPV(eaasCashFlows, discountRate);
+  const bauPresentCost = computeBAUCost(baseEnergyCost, discountRate, totalYears);
+  
+  const bauAllIn = totalLoadMWh > 0 ? baseEnergyCost / totalLoadMWh : 0;
+  const capexAllIn = totalLoadMWh > 0 ? (gridCostAfter + annualOMValue + (loanPrincipal > 0 ? loanPayment : 0)) / totalLoadMWh : 0;
+  const eaasAllIn = totalLoadMWh > 0 ? (gridCostAfter + annualEaasFee) / totalLoadMWh : 0;
+  const eaasEffectiveRate = selfMWh > 0 ? annualEaasFee / selfMWh : 0;
+  
+  const summaryRows = [
+    { name: 'Stan bez PV', npv: -bauPresentCost, irr: 'N/A', payback: 'N/A', dpb: 'N/A', cost: bauAllIn },
+    { name: 'PV CAPEX', npv: capexNPV, irr: capexIRR ? `${(capexIRR*100).toFixed(1)}%` : 'N/A', payback: capexSimplePayback, dpb: capexDiscountedPayback, cost: capexAllIn },
+    { name: 'PV EaaS', npv: eaasNPV, irr: 'N/A', payback: 'N/A', dpb: 'N/A', cost: eaasAllIn }
+  ];
+  
+  const summaryTable = `
+    <table>
+      <tr>
+        <th>Scenario</th>
+        <th>NPV [M PLN]</th>
+        <th>IRR</th>
+        <th>Simple Payback</th>
+        <th>Discounted Payback</th>
+        <th>All-in Cost [PLN/MWh]</th>
+      </tr>
+      ${summaryRows.map(row => `
+        <tr>
+          <td>${row.name}</td>
+          <td>${(row.npv/1e6).toFixed(2)}</td>
+          <td>${row.irr}</td>
+          <td>${row.payback}</td>
+          <td>${row.dpb}</td>
+          <td>${row.cost.toFixed(0)}</td>
+        </tr>`).join('')}
+    </table>
+  `;
+  
+  const assumptions = `
+    <div style="margin-bottom:16px">
+      <div style="color:#00ff88;font-weight:600;margin-bottom:4px">Key Assumptions</div>
+      <div>Total Load: ${totalLoadMWh.toFixed(1)} MWh | Self-Consumption: ${selfMWh.toFixed(1)} MWh (${(savingsRatio*100).toFixed(1)}% – Scenario ${scenarioKey})</div>
+      <div>Discount Rate: ${(discountRate*100).toFixed(1)}% | Horizon: ${totalYears} years (EaaS ${eaasContractYears} + Post ${postEaasYears})</div>
+      <div>Koszt energii bez PV: ${(baseEnergyCost/1e6).toFixed(3)} M PLN | Cena all-in z sieci: ${bauAllIn.toFixed(0)} PLN/MWh</div>
+      <div>EaaS Fee Equivalent: ${eaasEffectiveRate.toFixed(0)} PLN/MWh (during contract) | CAP/FLOOR Window: ${(floorFactor*100).toFixed(0)}% - ${(capFactor*100).toFixed(0)}% P50</div>
+    </div>
+  `;
+  
+  document.getElementById('economicsResults').innerHTML = assumptions + summaryTable;
+}
+
+function computeNPV(cashFlows, rate) {
+  return cashFlows.reduce((acc, cf, idx) => acc + cf / Math.pow(1 + rate, idx), 0);
+}
+
+function computeIRR(cashFlows) {
+  let irr = 0.1;
+  for (let i = 0; i < 50; i++) {
+    let npv = 0;
+    let dnpv = 0;
+    for (let t = 0; t < cashFlows.length; t++) {
+      npv += cashFlows[t] / Math.pow(1 + irr, t);
+      dnpv -= t * cashFlows[t] / Math.pow(1 + irr, t + 1);
+    }
+    if (Math.abs(npv) < 1e-4) return irr;
+    const step = dnpv === 0 ? 0 : npv / dnpv;
+    irr = irr - step;
+    if (!isFinite(irr)) return null;
+  }
+  return null;
+}
+
+function computePayback(cashFlows, discounted, rate = 0) {
+  let cumulative = cashFlows[0] || 0;
+  for (let t = 1; t < cashFlows.length; t++) {
+    const cf = discounted ? cashFlows[t] / Math.pow(1 + rate, t) : cashFlows[t];
+    cumulative += cf;
+    if (cumulative >= 0) return `${t} years`;
+  }
+  return 'N/A';
+}
+
+function computeBAUCost(baseCost, rate, years) {
+  let total = 0;
+  for (let y = 1; y <= years; y++) {
+    total += baseCost / Math.pow(1 + rate, y);
+  }
+  return total;
+}
+
+
+// ================ Export Functions ================
+function exportResults() {
+  if (scenarios.length === 0) {
+    alert('Run analysis first!');
+    return;
+  }
+  
+  const wb = XLSX.utils.book_new();
+  
+  // Sheet 1: Scenarios
+  const scenariosData = scenarios.map(s => ({
+    'Power [MWp]': (s.capacity/1000).toFixed(2),
+    'Production [GWh]': (s.production/1e6).toFixed(3),
+    'Self-Consumed [GWh]': (s.selfConsumed/1e6).toFixed(3),
+    'Exported [GWh]': (s.exported/1e6).toFixed(3),
+    'Self-Consumption [%]': s.autoCons.toFixed(1),
+    'Coverage [%]': s.coverage.toFixed(1)
+  }));
+  
+  const ws1 = XLSX.utils.json_to_sheet(scenariosData);
+  XLSX.utils.book_append_sheet(wb, ws1, 'All Scenarios');
+  
+  // Sheet 2: Key Variants
+  const variantsData = Object.entries(keyVariants).map(([key, v]) => ({
+    'Variant': key,
+    'Power [MWp]': (v.capacity/1000).toFixed(2),
+    'Production [GWh]': (v.production/1e6).toFixed(3),
+    'Self-Consumed [GWh]': (v.selfConsumed/1e6).toFixed(3),
+    'Exported [GWh]': (v.exported/1e6).toFixed(3),
+    'Self-Consumption [%]': v.autoCons.toFixed(1),
+    'Coverage [%]': v.coverage.toFixed(1)
+  }));
+  
+  const ws2 = XLSX.utils.json_to_sheet(variantsData);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Key Variants');
+  
+  // Sheet 3: Monthly Consumption
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthlyConsumption = Array(12).fill(0);
+  
+  for (let i = 0; i < hourlyData.length; i++) {
+    const month = yearHours[i].getMonth();
+    monthlyConsumption[month] += hourlyData[i];
+  }
+  
+  const monthlyData = monthNames.map((name, i) => ({
+    'Month': name,
+    'Consumption [MWh]': (monthlyConsumption[i]/1000).toFixed(1)
+  }));
+  
+  const ws3 = XLSX.utils.json_to_sheet(monthlyData);
+  XLSX.utils.book_append_sheet(wb, ws3, 'Monthly Consumption');
+  
+  XLSX.writeFile(wb, 'pv_analysis_complete.xlsx');
+}
+</script>
+</body>
+</html>
+

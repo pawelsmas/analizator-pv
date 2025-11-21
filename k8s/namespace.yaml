@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pv-optimizer
+  labels:
+    app: pv-optimizer
+    environment: production

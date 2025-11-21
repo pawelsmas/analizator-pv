@@ -1,0 +1,287 @@
+version: '3.8'
+
+services:
+  # Data Analysis Service
+  data-analysis:
+    build:
+      context: ./services/data-analysis
+      dockerfile: Dockerfile
+    container_name: pv-data-analysis
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PV Calculation Service
+  pv-calculation:
+    build:
+      context: ./services/pv-calculation
+      dockerfile: Dockerfile
+    container_name: pv-calculation
+    ports:
+      - "8002:8002"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Economics Service
+  economics:
+    build:
+      context: ./services/economics
+      dockerfile: Dockerfile
+    container_name: pv-economics
+    ports:
+      - "8003:8003"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Advanced Analytics Service
+  advanced-analytics:
+    build:
+      context: ./services/advanced-analytics
+      dockerfile: Dockerfile
+    container_name: pv-advanced-analytics
+    ports:
+      - "8004:8004"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Typical Days Service
+  typical-days:
+    build:
+      context: ./services/typical-days
+      dockerfile: Dockerfile
+    container_name: pv-typical-days
+    ports:
+      - "8005:8005"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Frontend Shell (Main)
+  frontend-shell:
+    build:
+      context: ./services/frontend-shell
+      dockerfile: Dockerfile
+    container_name: pv-frontend-shell
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend-admin
+      - frontend-config
+      - frontend-consumption
+      - frontend-production
+      - frontend-comparison
+      - frontend-economics
+      - frontend-settings
+      - frontend-insights
+      - data-analysis
+      - pv-calculation
+      - economics
+      - advanced-analytics
+      - typical-days
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Admin Module
+  frontend-admin:
+    build:
+      context: ./services/frontend-admin
+      dockerfile: Dockerfile
+    container_name: pv-frontend-admin
+    ports:
+      - "9001:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Configuration Module
+  frontend-config:
+    build:
+      context: ./services/frontend-config
+      dockerfile: Dockerfile
+    container_name: pv-frontend-config
+    ports:
+      - "9002:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Consumption Analysis Module
+  frontend-consumption:
+    build:
+      context: ./services/frontend-consumption
+      dockerfile: Dockerfile
+    container_name: pv-frontend-consumption
+    ports:
+      - "9003:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PV Production Module
+  frontend-production:
+    build:
+      context: ./services/frontend-production
+      dockerfile: Dockerfile
+    container_name: pv-frontend-production
+    ports:
+      - "9004:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Comparison Module
+  frontend-comparison:
+    build:
+      context: ./services/frontend-comparison
+      dockerfile: Dockerfile
+    container_name: pv-frontend-comparison
+    ports:
+      - "9005:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Economics Module
+  frontend-economics:
+    build:
+      context: ./services/frontend-economics
+      dockerfile: Dockerfile
+    container_name: pv-frontend-economics
+    ports:
+      - "9006:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Settings Module
+  frontend-settings:
+    build:
+      context: ./services/frontend-settings
+      dockerfile: Dockerfile
+    container_name: pv-frontend-settings
+    ports:
+      - "9007:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Insights Module
+  frontend-insights:
+    build:
+      context: ./services/frontend-insights
+      dockerfile: Dockerfile
+    container_name: pv-frontend-insights
+    ports:
+      - "9008:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  pv-network:
+    driver: bridge
+    name: pv-optimizer-network
+
+volumes:
+  data-volume:
+    name: pv-data-volume

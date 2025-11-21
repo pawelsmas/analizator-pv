@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Typowe Dni & Insights - Analizator PV</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Zaawansowana Analityka</h1>
+            <p class="subtitle">Kluczowe wskaźniki efektywności, analiza sezonowa, oraz identyfikacja dni ekstremalnych</p>
+        </header>
+
+        <!-- Status Section -->
+        <div class="status-section">
+            <div class="status-card" id="loadingStatus">
+                <span class="status-icon">⏳</span>
+                <span class="status-text">Ładowanie danych...</span>
+            </div>
+        </div>
+
+        <!-- Advanced KPIs Section -->
+        <section class="kpi-section">
+            <h2>📈 Kluczowe Wskaźniki</h2>
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-icon">🔋</div>
+                    <div class="kpi-label">Autokonsumpcja</div>
+                    <div class="kpi-value" id="selfConsumptionRate">--%</div>
+                    <div class="kpi-description">Procent energii PV zużywanej na miejscu</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">🏠</div>
+                    <div class="kpi-label">Samowystarczalność</div>
+                    <div class="kpi-value" id="selfSufficiencyRate">--%</div>
+                    <div class="kpi-description">Procent zapotrzebowania pokryty z PV</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">⚡</div>
+                    <div class="kpi-label">Load Factor</div>
+                    <div class="kpi-value" id="loadFactor">--</div>
+                    <div class="kpi-description">Współczynnik obciążenia instalacji</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">🚫</div>
+                    <div class="kpi-label">Curtailment</div>
+                    <div class="kpi-value" id="curtailment">-- kWh</div>
+                    <div class="kpi-description">Stracona energia z powodu ograniczeń</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">📥</div>
+                    <div class="kpi-label">Import z sieci</div>
+                    <div class="kpi-value" id="gridImport">-- kWh</div>
+                    <div class="kpi-description">Energia pobrana z sieci rocznie</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">📤</div>
+                    <div class="kpi-label">Eksport do sieci</div>
+                    <div class="kpi-value" id="gridExport">-- kWh</div>
+                    <div class="kpi-description">Energia oddana do sieci rocznie</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Seasonal Patterns Section -->
+        <section class="seasonal-section">
+            <h2>🌍 Sezonowe Wzorce - Typowe Dni</h2>
+            <div class="seasonal-grid">
+                <div class="season-card">
+                    <h3>❄️ Zima (XII-II)</h3>
+                    <canvas id="winterChart"></canvas>
+                    <div class="season-stats" id="winterStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Średnie zużycie:</span>
+                            <span class="stat-value" id="winterConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Średnia produkcja:</span>
+                            <span class="stat-value" id="winterProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="winterSelfConsumption">--%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="season-card">
+                    <h3>🌸 Wiosna (III-V)</h3>
+                    <canvas id="springChart"></canvas>
+                    <div class="season-stats" id="springStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Średnie zużycie:</span>
+                            <span class="stat-value" id="springConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Średnia produkcja:</span>
+                            <span class="stat-value" id="springProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="springSelfConsumption">--%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="season-card">
+                    <h3>☀️ Lato (VI-VIII)</h3>
+                    <canvas id="summerChart"></canvas>
+                    <div class="season-stats" id="summerStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Średnie zużycie:</span>
+                            <span class="stat-value" id="summerConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Średnia produkcja:</span>
+                            <span class="stat-value" id="summerProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="summerSelfConsumption">--%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="season-card">
+                    <h3>🍂 Jesień (IX-XI)</h3>
+                    <canvas id="fallChart"></canvas>
+                    <div class="season-stats" id="fallStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Średnie zużycie:</span>
+                            <span class="stat-value" id="fallConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Średnia produkcja:</span>
+                            <span class="stat-value" id="fallProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="fallSelfConsumption">--%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Workday vs Weekend Section - HIDDEN -->
+        <section class="comparison-section" style="display: none;">
+            <h2>📅 Dzień Roboczy vs Weekend</h2>
+            <div class="comparison-grid">
+                <div class="comparison-card">
+                    <h3>💼 Typowy Dzień Roboczy</h3>
+                    <canvas id="workdayChart"></canvas>
+                    <div class="comparison-stats" id="workdayStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Zużycie całkowite:</span>
+                            <span class="stat-value" id="workdayConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Produkcja całkowita:</span>
+                            <span class="stat-value" id="workdayProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="workdaySelfConsumption">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Import z sieci:</span>
+                            <span class="stat-value" id="workdayImport">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Eksport do sieci:</span>
+                            <span class="stat-value" id="workdayExport">-- kWh</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="comparison-card">
+                    <h3>🏖️ Typowy Weekend</h3>
+                    <canvas id="weekendChart"></canvas>
+                    <div class="comparison-stats" id="weekendStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Zużycie całkowite:</span>
+                            <span class="stat-value" id="weekendConsumption">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Produkcja całkowita:</span>
+                            <span class="stat-value" id="weekendProduction">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="weekendSelfConsumption">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Import z sieci:</span>
+                            <span class="stat-value" id="weekendImport">-- kWh</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Eksport do sieci:</span>
+                            <span class="stat-value" id="weekendExport">-- kWh</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Best & Worst Days Section -->
+        <section class="extremes-section">
+            <h2>🏆 Najlepszy i Najgorszy Dzień</h2>
+            <div class="extremes-grid">
+                <div class="extreme-card best-day">
+                    <h3>🌟 Najlepszy Dzień</h3>
+                    <div class="extreme-date" id="bestDayDate">--</div>
+                    <canvas id="bestDayChart"></canvas>
+                    <div class="extreme-stats" id="bestDayStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="bestDaySelfConsumption">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Bilans netto:</span>
+                            <span class="stat-value" id="bestDayBalance">-- kWh</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="extreme-card worst-day">
+                    <h3>⚠️ Najgorszy Dzień</h3>
+                    <div class="extreme-date" id="worstDayDate">--</div>
+                    <canvas id="worstDayChart"></canvas>
+                    <div class="extreme-stats" id="worstDayStats">
+                        <div class="stat-item">
+                            <span class="stat-label">Autokonsumpcja:</span>
+                            <span class="stat-value" id="worstDaySelfConsumption">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Bilans netto:</span>
+                            <span class="stat-value" id="worstDayBalance">-- kWh</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Insights Section - HIDDEN -->
+        <section class="insights-section" style="display: none;">
+            <h2>💡 Insights & Rekomendacje</h2>
+            <div class="insights-container" id="insightsContainer">
+                <div class="insight-card loading">
+                    <span class="insight-icon">⏳</span>
+                    <span class="insight-text">Generowanie insights...</span>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="insights.js"></script>
+</body>
+</html>

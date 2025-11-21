@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Admin Module</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="admin-container">
+  <div class="admin-header">
+    <h1>⚙️ System Administration</h1>
+    <div class="status-indicator">
+      <div id="systemStatus" class="status-dot"></div>
+      <span id="statusText">Checking...</span>
+    </div>
+  </div>
+
+  <div class="admin-grid">
+    <!-- Backend Services Status -->
+    <div class="admin-card">
+      <div class="card-header">
+        <h2>🔌 Backend Services</h2>
+        <button class="btn-small" onclick="refreshServices()">Refresh</button>
+      </div>
+      <div id="servicesStatus" class="service-list">
+        <div class="service-item loading">Loading services...</div>
+      </div>
+    </div>
+
+    <!-- System Information -->
+    <div class="admin-card">
+      <div class="card-header">
+        <h2>📊 System Information</h2>
+      </div>
+      <div class="info-grid">
+        <div class="info-item">
+          <div class="info-label">Frontend Version</div>
+          <div class="info-value" id="frontendVersion">1.0.0</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Architecture</div>
+          <div class="info-value">Micro-Frontend</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Total Modules</div>
+          <div class="info-value">6</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Backend Services</div>
+          <div class="info-value" id="backendCount">5</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Configuration Management -->
+    <div class="admin-card">
+      <div class="card-header">
+        <h2>🔧 Configuration Management</h2>
+      </div>
+      <div class="config-actions">
+        <button class="btn" onclick="exportConfig()">📥 Export Configuration</button>
+        <button class="btn" onclick="importConfig()">📤 Import Configuration</button>
+        <button class="btn btn-danger" onclick="clearAllData()">🗑️ Clear All Data</button>
+      </div>
+      <div id="configInfo" class="config-info">
+        <div class="info-text">Current configuration stored in browser localStorage</div>
+      </div>
+    </div>
+
+    <!-- Data Management -->
+    <div class="admin-card">
+      <div class="card-header">
+        <h2>💾 Data Management</h2>
+      </div>
+      <div class="data-stats">
+        <div class="stat-row">
+          <span>Consumption Data:</span>
+          <span id="dataStatus" class="badge">Not Loaded</span>
+        </div>
+        <div class="stat-row">
+          <span>Analysis Results:</span>
+          <span id="resultsStatus" class="badge">Not Available</span>
+        </div>
+        <div class="stat-row">
+          <span>Saved Configurations:</span>
+          <span id="configCount" class="badge">0</span>
+        </div>
+      </div>
+      <button class="btn btn-secondary" onclick="viewStorageDetails()">View Storage Details</button>
+    </div>
+
+    <!-- API Endpoints -->
+    <div class="admin-card full-width">
+      <div class="card-header">
+        <h2>🌐 API Endpoints</h2>
+      </div>
+      <div class="endpoint-list">
+        <div class="endpoint-item">
+          <div class="endpoint-name">Data Analysis</div>
+          <div class="endpoint-url">http://localhost:8001</div>
+          <div id="api-status-8001" class="endpoint-status">Checking...</div>
+        </div>
+        <div class="endpoint-item">
+          <div class="endpoint-name">PV Calculation</div>
+          <div class="endpoint-url">http://localhost:8002</div>
+          <div id="api-status-8002" class="endpoint-status">Checking...</div>
+        </div>
+        <div class="endpoint-item">
+          <div class="endpoint-name">Economics</div>
+          <div class="endpoint-url">http://localhost:8003</div>
+          <div id="api-status-8003" class="endpoint-status">Checking...</div>
+        </div>
+        <div class="endpoint-item">
+          <div class="endpoint-name">Advanced Analytics</div>
+          <div class="endpoint-url">http://localhost:8004</div>
+          <div id="api-status-8004" class="endpoint-status">Checking...</div>
+        </div>
+        <div class="endpoint-item">
+          <div class="endpoint-name">Typical Days</div>
+          <div class="endpoint-url">http://localhost:8005</div>
+          <div id="api-status-8005" class="endpoint-status">Checking...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logs & Debugging -->
+    <div class="admin-card full-width">
+      <div class="card-header">
+        <h2>📝 System Logs</h2>
+        <button class="btn-small" onclick="clearLogs()">Clear</button>
+      </div>
+      <div id="systemLogs" class="logs-container">
+        <div class="log-entry info">System initialized</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Storage Details Modal -->
+  <div id="storageModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Storage Details</h3>
+        <button class="btn-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre id="storageDetails">Loading...</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="admin.js"></script>
+</body>
+</html>

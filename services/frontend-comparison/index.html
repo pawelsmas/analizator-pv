@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Porównanie Wariantów</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="comparison-container">
+  <div class="page-header">
+    <h1>PORÓWNANIE WARIANTÓW INSTALACJI PV</h1>
+    <div class="header-info">
+      <span id="dataInfo">Brak wariantów do porównania</span>
+    </div>
+  </div>
+
+  <div class="content-grid">
+    <!-- Kontrolki wyboru wariantów -->
+    <div class="variants-section">
+      <h2>Wybór Wariantów do Porównania</h2>
+      <div class="variants-controls">
+        <div class="variant-selector">
+          <label>Wariant A:</label>
+          <select id="variantA" onchange="updateComparison()">
+            <option value="">Wybierz wariant...</option>
+          </select>
+        </div>
+        <div class="variant-selector">
+          <label>Wariant B:</label>
+          <select id="variantB" onchange="updateComparison()">
+            <option value="">Wybierz wariant...</option>
+          </select>
+        </div>
+        <div class="variant-selector">
+          <label>Wariant C:</label>
+          <select id="variantC" onchange="updateComparison()">
+            <option value="">Wybierz wariant...</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabela porównawcza -->
+    <div class="comparison-table-section full-width">
+      <h2>Zestawienie Parametrów</h2>
+      <div class="table-wrapper">
+        <table id="comparisonTable">
+          <thead>
+            <tr>
+              <th>Parametr</th>
+              <th id="headerA">Wariant A</th>
+              <th id="headerB">Wariant B</th>
+              <th id="headerC">Wariant C</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody">
+            <tr>
+              <td colspan="4" class="no-data-row">Wybierz warianty do porównania</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Wykres porównania produkcji -->
+    <div class="chart-section">
+      <h2>Porównanie Produkcji Rocznej</h2>
+      <div class="chart-info">
+        Całkowita produkcja energii w ciągu roku
+      </div>
+      <canvas id="productionComparison"></canvas>
+    </div>
+
+    <!-- Wykres porównania ekonomicznego -->
+    <div class="chart-section">
+      <h2>Porównanie Ekonomiczne</h2>
+      <div class="chart-info">
+        Koszty inwestycji i zwrotu
+      </div>
+      <canvas id="economicsComparison"></canvas>
+    </div>
+
+    <!-- Wykres profili miesięcznych -->
+    <div class="chart-section full-width">
+      <h2>Profile Miesięczne Produkcji</h2>
+      <div class="chart-info">
+        Porównanie produkcji w poszczególnych miesiącach
+      </div>
+      <canvas id="monthlyComparison"></canvas>
+    </div>
+
+    <!-- Wykres wskaźników -->
+    <div class="chart-section">
+      <h2>Wskaźniki Efektywności</h2>
+      <div class="chart-info">
+        Porównanie kluczowych wskaźników
+      </div>
+      <canvas id="kpiComparison"></canvas>
+    </div>
+
+    <!-- Ranking wariantów -->
+    <div class="ranking-section">
+      <h2>Ranking Wariantów</h2>
+      <div class="ranking-list" id="rankingList">
+        <div class="ranking-item">
+          <span class="rank-badge">1</span>
+          <div class="rank-content">
+            <div class="rank-name">Wybierz warianty</div>
+            <div class="rank-score">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rekomendacje -->
+    <div class="recommendations-section full-width">
+      <h2>Rekomendacje</h2>
+      <div id="recommendations">
+        <p>Dodaj warianty do porównania, aby zobaczyć rekomendacje.</p>
+      </div>
+    </div>
+
+    <!-- Akcje -->
+    <div class="actions-section full-width">
+      <button class="btn" onclick="exportComparison()">Eksportuj Porównanie</button>
+      <button class="btn btn-secondary" onclick="addVariant()">Dodaj Nowy Wariant</button>
+      <button class="btn btn-secondary" onclick="refreshData()">Odśwież Dane</button>
+    </div>
+  </div>
+
+  <!-- Info gdy brak danych -->
+  <div id="noDataMessage" class="no-data">
+    <div class="no-data-icon">⚖️</div>
+    <h3>Brak Wariantów do Porównania</h3>
+    <p>Utwórz różne warianty instalacji PV w module Configuration.</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="comparison.js"></script>
+</body>
+</html>

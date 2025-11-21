@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pv-optimizer-ingress
+  namespace: pv-optimizer
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+spec:
+  rules:
+  - host: pv-optimizer.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80
+      - path: /api/data
+        pathType: Prefix
+        backend:
+          service:
+            name: data-analysis
+            port:
+              number: 8001
+      - path: /api/pv
+        pathType: Prefix
+        backend:
+          service:
+            name: pv-calculation
+            port:
+              number: 8002
+      - path: /api/economics
+        pathType: Prefix
+        backend:
+          service:
+            name: economics
+            port:
+              number: 8003

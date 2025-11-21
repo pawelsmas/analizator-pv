@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(powershell:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose stop:*)",
+      "Bash(docker-compose rm:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(curl:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker rmi:*)",
+      "Bash(copy economics.js economics-new.js)",
+      "Bash(find:*)",
+      "Bash(winpty docker exec:*)",
+      "Bash(cat:*)",
+      "Bash(\"services/frontend-production/production.js\")",
+      "Bash(docker images:*)",
+      "Bash(git add:*)",
+      "Bash(xargs ls:*)",
+      "Bash(\"services/frontend-production/production-temp.js\")",
+      "Bash(\"services/frontend-consumption/consumption-temp.js\")",
+      "Bash(\"services/frontend-settings/index-temp.html\")",
+      "Bash(git rev-parse:*)",
+      "Bash(git init:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

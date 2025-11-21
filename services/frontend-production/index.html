@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Produkcja PV</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="production-container">
+  <div class="page-header">
+    <h1>PRODUKCJA FOTOWOLTAICZNA</h1>
+    <div class="header-info">
+      <span id="dataInfo">Brak danych</span>
+    </div>
+  </div>
+
+  <!-- Variant Selector -->
+  <div class="variant-selector">
+    <div class="selector-label">Wybierz wariant instalacji:</div>
+    <div class="variant-buttons">
+      <button class="variant-btn active" data-variant="A" onclick="selectVariant('A')">
+        <span class="variant-name">Wariant A</span>
+        <span class="variant-desc" id="descA">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="B" onclick="selectVariant('B')">
+        <span class="variant-name">Wariant B</span>
+        <span class="variant-desc" id="descB">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="C" onclick="selectVariant('C')">
+        <span class="variant-name">Wariant C</span>
+        <span class="variant-desc" id="descC">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="D" onclick="selectVariant('D')">
+        <span class="variant-name">Wariant D</span>
+        <span class="variant-desc" id="descD">Ładowanie...</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="content-grid">
+    <!-- Statystyki podstawowe -->
+    <div class="stats-section">
+      <h2>Statystyki Roczne Produkcji</h2>
+      <div class="stats-cards">
+        <div class="stat-card">
+          <div class="stat-icon">☀️</div>
+          <div class="stat-content">
+            <div class="stat-label">Produkcja Roczna</div>
+            <div class="stat-value" id="annualProduction">-</div>
+            <div class="stat-unit">GWh</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Moc Instalacji</div>
+            <div class="stat-value" id="installedCapacity">-</div>
+            <div class="stat-unit">MWp</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">📊</div>
+          <div class="stat-content">
+            <div class="stat-label">Wydajność Spec.</div>
+            <div class="stat-value" id="specificYield">-</div>
+            <div class="stat-unit">kWh/kWp</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🎯</div>
+          <div class="stat-content">
+            <div class="stat-label">Współcz. PR</div>
+            <div class="stat-value" id="performanceRatio">-</div>
+            <div class="stat-unit">%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SEKCJA 1: Profil godzinowy - Load + PV + Self-Consumption (FULL YEAR) -->
+    <div class="chart-section full-width">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h2 style="margin: 0;">Profil Godzinowy Roczny: Load vs PV Production vs Self-Consumption</h2>
+        <button class="btn" onclick="exportHourlyProfileToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
+      </div>
+      <div class="chart-info">
+        Pełny rok (8760h) - trzy krzywe nałożone: 🔴 <strong>Zużycie (Load)</strong> - linia na wierzchu, 🟠 <strong>Produkcja PV AC</strong> (z inverter clipping DC/AC=1.2) - wypełnienie pomarańczowe, 🟢 <strong>Autokonsumpcja</strong> (Self-Consumption = min(Load, PV AC)) - wypełnienie zielone
+        <br><em>Warstwy: autokonsumpcja (dół) → produkcja PV (środek) → zużycie (góra)</em>
+      </div>
+
+      <!-- Visibility Controls -->
+      <div style="margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+        <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
+          <strong>Warstwy danych:</strong>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleLoad" checked onchange="toggleHourlyProfileLayer('load')">
+            <span>🔴 Load</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="togglePV" checked onchange="toggleHourlyProfileLayer('pv')">
+            <span>🟠 PV Production</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleSelfCons" checked onchange="toggleHourlyProfileLayer('selfcons')">
+            <span>🟢 Autokonsumpcja</span>
+          </label>
+        </div>
+        <div style="display: flex; gap: 15px; align-items: center; padding-top: 10px; border-top: 1px solid #dee2e6;">
+          <strong>Linie trendu (7d MA):</strong>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendLoad" onchange="toggleHourlyProfileLayer('trendload')">
+            <span>🔴 Trend Load</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendPV" onchange="toggleHourlyProfileLayer('trendpv')">
+            <span>🟠 Trend PV</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendSelfCons" onchange="toggleHourlyProfileLayer('trendselfcons')">
+            <span>🟢 Trend Autokonsumpcja</span>
+          </label>
+        </div>
+      </div>
+
+      <canvas id="hourlyProfile" style="height: 500px;"></canvas>
+    </div>
+
+    <!-- SEKCJA 2: Profil godzinowy - TYLKO GODZINY PV (Daylight Hours) -->
+    <div class="chart-section full-width">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h2 style="margin: 0;">Profil Godzinowy: TYLKO Godziny Produkcji PV (Daylight Analysis)</h2>
+        <button class="btn" onclick="exportDaylightProfileToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
+      </div>
+      <div class="chart-info">
+        Analiza tylko w godzinach gdy PV produkuje energię (5:00-20:00 latem, 8:00-16:00 zimą) - łatwiej zobaczyć bezpośrednie pokrycie Load przez PV i self-consumption bez nocnych godzin zero
+        <br><em>Pełny rok (tylko godziny dzienne, ~5000-6000h z 8760h) - zmienne godziny sunrise/sunset według sezonu</em>
+      </div>
+
+      <!-- Visibility Controls -->
+      <div style="margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+        <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
+          <strong>Warstwy danych:</strong>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleLoadDaylight" checked onchange="toggleDaylightLayer('load')">
+            <span>🔴 Load</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="togglePVDaylight" checked onchange="toggleDaylightLayer('pv')">
+            <span>🟠 PV Production</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleSelfConsDaylight" checked onchange="toggleDaylightLayer('selfcons')">
+            <span>🟢 Autokonsumpcja</span>
+          </label>
+        </div>
+        <div style="display: flex; gap: 15px; align-items: center; padding-top: 10px; border-top: 1px solid #dee2e6;">
+          <strong>Linie trendu (7d MA):</strong>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendLoadDaylight" onchange="toggleDaylightLayer('trendload')">
+            <span>🔴 Trend Load</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendPVDaylight" onchange="toggleDaylightLayer('trendpv')">
+            <span>🟠 Trend PV</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="toggleTrendSelfConsDaylight" onchange="toggleDaylightLayer('trendselfcons')">
+            <span>🟢 Trend Autokonsumpcja</span>
+          </label>
+        </div>
+      </div>
+
+      <canvas id="daylightProfile" style="height: 500px;"></canvas>
+    </div>
+
+    <!-- LINIA 1: Produkcja Miesięczna, Tabela, Średni Profil Produkcji Dobowej -->
+    <div class="chart-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h2 style="margin: 0;">Produkcja Miesięczna</h2>
+        <button class="btn" onclick="exportMonthlyProductionToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
+      </div>
+      <div class="chart-info">
+        Całkowita produkcja energii w poszczególnych miesiącach
+      </div>
+      <canvas id="monthlyProduction"></canvas>
+
+      <!-- Tabela miesięczna -->
+      <div id="monthlyDebugTable" style="margin-top: 20px; overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; background: white;">
+          <thead>
+            <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+              <th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Miesiąc</th>
+              <th style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">Produkcja [MWh]</th>
+              <th style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">Godziny Danych</th>
+              <th style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">Średnia [kW]</th>
+              <th style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">% Rocznej</th>
+            </tr>
+          </thead>
+          <tbody id="monthlyDebugBody">
+            <!-- Will be filled by JavaScript -->
+          </tbody>
+          <tfoot>
+            <tr style="background: #e9ecef; font-weight: bold; border-top: 2px solid #dee2e6;">
+              <td style="padding: 8px; border: 1px solid #dee2e6;">RAZEM</td>
+              <td id="totalProduction" style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">-</td>
+              <td id="totalHours" style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">-</td>
+              <td id="avgPower" style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">-</td>
+              <td style="padding: 8px; text-align: right; border: 1px solid #dee2e6;">100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- Średni profil dobowy -->
+    <div class="chart-section">
+      <h2>Średni Profil Produkcji Dobowej</h2>
+      <div class="chart-info">
+        Średnia produkcja w poszczególnych godzinach doby
+      </div>
+      <canvas id="dailyProductionProfile"></canvas>
+    </div>
+
+    <!-- LINIA 2: Bilans Miesięczny, Wskaźniki Autokonsumpcji -->
+    <div class="chart-section">
+      <h2>Bilans Miesięczny</h2>
+      <div class="chart-info">
+        Różnica między produkcją a zużyciem
+      </div>
+      <canvas id="energyBalance"></canvas>
+    </div>
+
+    <!-- Wskaźniki autokonsumpcji -->
+    <div class="details-section">
+      <h2>Wskaźniki Autokonsumpcji</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">Autokonsumpcja:</span>
+          <span class="detail-value" id="selfConsumption">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Stopień Samowystarczalności:</span>
+          <span class="detail-value" id="selfSufficiency">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Nadwyżka do Sieci:</span>
+          <span class="detail-value" id="gridExport">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Pobór z Sieci:</span>
+          <span class="detail-value" id="gridImport">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Moc Szczytowa:</span>
+          <span class="detail-value" id="peakPower">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Godziny Pełnego Obciążenia:</span>
+          <span class="detail-value" id="fullLoadHours">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Akcje -->
+    <div class="actions-section full-width">
+      <button class="btn" onclick="exportProduction()">Eksportuj Analizę</button>
+      <button class="btn btn-secondary" onclick="refreshData()">Odśwież Dane</button>
+    </div>
+  </div>
+
+  <!-- Info gdy brak danych -->
+  <div id="noDataMessage" class="no-data">
+    <div class="no-data-icon">☀️</div>
+    <h3>Brak Danych Produkcji PV</h3>
+    <p>Przejdź do modułu Configuration i skonfiguruj parametry instalacji PV.</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<script src="production.js?t=1763410598"></script>
+</body>
+</html>
