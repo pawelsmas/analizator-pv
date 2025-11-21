@@ -217,3 +217,87 @@ git diff services/frontend-production/production.js
 git checkout a7fdb17 -- .
 git commit -m "Przywrócono stan z initial commit"
 ```
+
+## 🏷️ Wersje (Tags)
+
+### Sprawdzanie wersji
+```bash
+# Zobacz wszystkie wersje
+git tag -l
+
+# Zobacz szczegóły konkretnej wersji
+git show A_PV_1.1
+```
+
+### Przywracanie konkretnej wersji
+```bash
+# Przełącz się na wersję (read-only)
+git checkout A_PV_1.1
+
+# Wróć do najnowszej wersji
+git checkout master
+
+# Stwórz nową gałąź z konkretnej wersji
+git checkout -b fix-from-1.1 A_PV_1.1
+```
+
+### Tworzenie nowych wersji
+```bash
+# Stwórz tag z obecnego stanu
+git tag -a A_PV_1.2 -m "Opis wersji 1.2"
+
+# Stwórz tag z konkretnego commita
+git tag -a A_PV_1.2 3c33c3f -m "Opis wersji"
+
+# Usuń tag (jeśli się pomyliłeś)
+git tag -d A_PV_1.2
+```
+
+## 📋 Historia Wersji
+
+### A_PV 1.1 (2025-11-21) - BASELINE ✅
+**Commit:** `3c33c3f`
+**Status:** STABLE
+
+**Co zawiera:**
+- ✅ Wszystkie moduły działają
+- ✅ Production analysis
+- ✅ Consumption analysis  
+- ✅ Economics calculations
+- ✅ Settings management
+
+**Czego NIE ma:**
+- ❌ K1-K4 capacity fee groups
+- ❌ CPH218 pricing data
+- ❌ ROI analysis
+- ❌ Cost breakdown
+
+**Jak wrócić:**
+```bash
+git checkout A_PV_1.1
+# lub
+git checkout A_PV_1.1 -- .
+git commit -m "Przywrócono wersję A_PV 1.1"
+```
+
+---
+
+### Planowane wersje:
+
+**A_PV 1.2** - K1-K4 Capacity Fees
+- K1-K4 classification
+- Polish holiday calendar
+- Peak hours detection
+
+**A_PV 1.3** - CPH218 Pricing
+- CPH218 tariff data
+- Automatic price loading
+
+**A_PV 1.4** - ROI Analysis
+- ROI calculations
+- Payback period
+- 25-year projections
+
+**A_PV 1.5** - Cost Breakdown
+- Energy cost visualization
+- Component breakdown charts
