@@ -93,34 +93,7 @@ const DEFAULT_CONFIG = {
   thrA: 95,
   thrB: 90,
   thrC: 85,
-  thrD: 80,
-
-  // CPH Tariff Selection (NEW)
-  energyProvider: 'ENEA',
-  priceFamily: 'CPH219',
-  priceVariant: 'CS',
-  tariffGroup: 'C21',
-  tariffYear: 2026,
-  volumeSegment: 'dowolny',
-
-  // Capacity Fee Groups K1-K4 (NEW)
-  k1_min: 80,
-  k1_max: 100,
-  k1_coeff: 1.3,
-  k2_min: 60,
-  k2_max: 79,
-  k2_coeff: 1.2,
-  k3_min: 40,
-  k3_max: 59,
-  k3_coeff: 1.1,
-  k4_min: 0,
-  k4_max: 39,
-  k4_coeff: 1.0,
-
-  // Peak Hours for Capacity Fee (NEW)
-  peakHourStart: 7,
-  peakHourEnd: 22,
-  capacityFeeRate: 219.4
+  thrD: 80
 };
 
 // Initialize on load
@@ -219,13 +192,6 @@ function applySettingsToUI(config) {
     'altitude', 'albedo', 'soilingLoss',
     // DC/AC Mode
     'dcacMode',
-    // NEW: CPH Tariff parameters
-    'energyProvider', 'priceFamily', 'priceVariant', 'tariffGroup', 'tariffYear', 'volumeSegment',
-    // NEW: K1-K4 groups
-    'k1_min', 'k1_max', 'k1_coeff', 'k2_min', 'k2_max', 'k2_coeff',
-    'k3_min', 'k3_max', 'k3_coeff', 'k4_min', 'k4_max', 'k4_coeff',
-    // NEW: Peak hours
-    'peakHourStart', 'peakHourEnd', 'capacityFeeRate',
     // PV params per type (Yield, Latitude, Tilt, Azimuth)
     'pvYield_ground_s', 'latitude_ground_s', 'tilt_ground_s', 'azimuth_ground_s',
     'pvYield_roof_ew', 'latitude_roof_ew', 'tilt_roof_ew', 'azimuth_roof_ew',
