@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Literal
 import numpy as np
+import io
+import csv
 
-app = FastAPI(title="Economics Service", version="1.0.0")
+app = FastAPI(title="Economics Service", version="1.1.0")
 
 # CORS configuration
 app.add_middleware(
@@ -25,6 +27,10 @@ class EconomicParameters(BaseModel):
     degradation_rate: float = 0.005
     opex_per_kwp: float = 15.0  # PLN/kWp/year
     analysis_period: int = 25  # years
+    # NEW: Inflation settings for IRR calculation
+    use_inflation: bool = False  # True = nominal IRR (cash flows indexed by inflation), False = real IRR
+    inflation_rate: float = 0.025  # 2.5% annual inflation rate
+    irr_mode: Literal["nominal", "real"] = "real"  # Alternative to use_inflation for clarity
 
 class VariantData(BaseModel):
     capacity: float  # kWp
@@ -47,6 +53,14 @@ class CashFlow(BaseModel):
     cumulative_cash_flow: float
     discounted_cash_flow: float
 
+class IRRResult(BaseModel):
+    """IRR calculation result with status information"""
+    value: Optional[float] = None  # IRR value (None if not calculable)
+    status: Literal["converged", "no_root", "invalid_cashflows", "failed"] = "converged"
+    mode: Literal["nominal", "real"] = "real"
+    message: Optional[str] = None  # Human-readable message for errors
+    iterations: int = 0  # Number of iterations used
+
 class EconomicResult(BaseModel):
     investment: float
     annual_savings: float
@@ -54,7 +68,8 @@ class EconomicResult(BaseModel):
     annual_total_revenue: float
     simple_payback: float
     npv: float
-    irr: float
+    irr: Optional[float]  # Can be None if calculation fails
+    irr_details: IRRResult  # Detailed IRR result with status
     lcoe: float  # Levelized Cost of Energy
     cash_flows: List[CashFlow]
     metrics: Dict[str, float]
@@ -76,10 +91,206 @@ class SensitivityAnalysisResult(BaseModel):
     most_sensitive_parameter: str
     insights: List[str]
 
+
+# ============== EaaS (Energy-as-a-Service) Models ==============
+
+class EaasParameters(BaseModel):
+    capacity_kw: float
+    capex_per_kwp: float
+    opex_per_kwp: float
+    insurance_rate: float = 0.005  # annual share of CAPEX
+    land_lease_per_kwp: float = 0.0  # annual PLN/kWp
+    duration_years: int = 10
+    target_irr: float = 0.119  # 11.9% default
+    indexation: Literal["fixed", "cpi"] = "fixed"
+    cpi: float = 0.025  # annual CPI
+    currency: str = "PLN"
+
+
+class EaasLogRow(BaseModel):
+    month: int
+    year: int
+    subscription: float
+    opex: float
+    insurance: float
+    lease: float
+    net_cf: float
+    discounted_cf: float
+    cumulative_cf: float
+    index_factor: float
+
+
+class EaasResult(BaseModel):
+    subscription_monthly: float
+    subscription_annual_year1: float
+    achieved_irr_annual: Optional[float]
+    irr_status: str
+    message: Optional[str]
+    log: List[EaasLogRow]
+    log_csv: str  # CSV content ready for download
+
 # ============== Calculation Functions ==============
+
+def _npv_at_rate(cash_flows: List[float], rate: float) -> float:
+    """Calculate NPV at a given discount rate"""
+    npv = 0.0
+    for year, cf in enumerate(cash_flows):
+        npv += cf / (1 + rate) ** year
+    return npv
+
+def _npv_derivative(cash_flows: List[float], rate: float) -> float:
+    """Calculate derivative of NPV with respect to rate"""
+    dnpv = 0.0
+    for year, cf in enumerate(cash_flows):
+        if year > 0:
+            dnpv -= year * cf / (1 + rate) ** (year + 1)
+    return dnpv
+
+def calculate_irr_robust(
+    cash_flows: List[float],
+    max_iterations: int = 200,
+    tolerance: float = 1e-6,
+    irr_mode: str = "real"
+) -> IRRResult:
+    """
+    Robust IRR calculation using hybrid bisection + Newton-Raphson method.
+
+    Features:
+    - Validates cash flows (requires at least one negative and one positive)
+    - Uses bracketing to find sign change in NPV
+    - Falls back to bisection if Newton-Raphson diverges
+    - Returns detailed status information
+
+    Args:
+        cash_flows: List of cash flows (negative for initial investment, year 0 first)
+        max_iterations: Maximum iterations for solver
+        tolerance: Convergence tolerance (default 1e-6)
+        irr_mode: "nominal" or "real" for display purposes
+
+    Returns:
+        IRRResult with value, status, mode, and message
+    """
+    # Validate cash flows
+    if len(cash_flows) < 2:
+        return IRRResult(
+            value=None,
+            status="invalid_cashflows",
+            mode=irr_mode,
+            message="Zbyt mało przepływów pieniężnych (min. 2 wymagane)",
+            iterations=0
+        )
+
+    has_negative = any(cf < 0 for cf in cash_flows)
+    has_positive = any(cf > 0 for cf in cash_flows)
+
+    if not has_negative or not has_positive:
+        return IRRResult(
+            value=None,
+            status="no_root",
+            mode=irr_mode,
+            message="IRR niedostępne - brak przepływów ujemnych i dodatnich (wymagane oba znaki)",
+            iterations=0
+        )
+
+    # Search for sign change in NPV within bracket [-0.99, 10.0]
+    low, high = -0.99, 10.0
+    npv_low = _npv_at_rate(cash_flows, low)
+    npv_high = _npv_at_rate(cash_flows, high)
+
+    # Check for sign change
+    if npv_low * npv_high > 0:
+        # No sign change - try to find one with finer search
+        test_rates = np.linspace(-0.99, 10.0, 100)
+        found_bracket = False
+        for i in range(len(test_rates) - 1):
+            npv1 = _npv_at_rate(cash_flows, test_rates[i])
+            npv2 = _npv_at_rate(cash_flows, test_rates[i + 1])
+            if npv1 * npv2 <= 0:
+                low, high = test_rates[i], test_rates[i + 1]
+                npv_low, npv_high = npv1, npv2
+                found_bracket = True
+                break
+
+        if not found_bracket:
+            return IRRResult(
+                value=None,
+                status="no_root",
+                mode=irr_mode,
+                message="IRR niedostępne - brak zmiany znaku NPV w przedziale [-99%, 1000%]",
+                iterations=0
+            )
+
+    # Hybrid solver: start with Newton-Raphson, fall back to bisection
+    irr = (low + high) / 2  # Initial guess at midpoint
+
+    for iteration in range(max_iterations):
+        npv = _npv_at_rate(cash_flows, irr)
+
+        # Check convergence
+        if abs(npv) < tolerance:
+            return IRRResult(
+                value=irr,
+                status="converged",
+                mode=irr_mode,
+                message=None,
+                iterations=iteration + 1
+            )
+
+        # Try Newton-Raphson step
+        dnpv = _npv_derivative(cash_flows, irr)
+
+        if abs(dnpv) > 1e-10:
+            newton_step = irr - npv / dnpv
+
+            # Accept Newton step only if it stays in bracket and makes progress
+            if low < newton_step < high:
+                # Update bracket based on sign of NPV
+                if npv * npv_low < 0:
+                    high = irr
+                    npv_high = npv
+                else:
+                    low = irr
+                    npv_low = npv
+
+                irr = newton_step
+                continue
+
+        # Fall back to bisection
+        mid = (low + high) / 2
+        npv_mid = _npv_at_rate(cash_flows, mid)
+
+        if npv_mid * npv_low < 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+
+        irr = (low + high) / 2
+
+        # Check if bracket is small enough
+        if high - low < tolerance:
+            return IRRResult(
+                value=irr,
+                status="converged",
+                mode=irr_mode,
+                message=None,
+                iterations=iteration + 1
+            )
+
+    # Max iterations reached but still within tolerance range
+    return IRRResult(
+        value=irr,
+        status="converged" if abs(_npv_at_rate(cash_flows, irr)) < tolerance * 100 else "failed",
+        mode=irr_mode,
+        message="Osiągnięto limit iteracji" if abs(_npv_at_rate(cash_flows, irr)) >= tolerance * 100 else None,
+        iterations=max_iterations
+    )
+
 def calculate_irr(cash_flows: List[float], max_iterations: int = 100, tolerance: float = 0.01) -> float:
     """
-    Calculate Internal Rate of Return using Newton-Raphson method
+    Legacy IRR calculation - wrapper for backwards compatibility.
+    Use calculate_irr_robust for new code.
 
     Args:
         cash_flows: List of cash flows (negative for initial investment)
@@ -87,35 +298,10 @@ def calculate_irr(cash_flows: List[float], max_iterations: int = 100, tolerance:
         tolerance: Convergence tolerance
 
     Returns:
-        IRR as decimal (e.g., 0.12 = 12%)
+        IRR as decimal (e.g., 0.12 = 12%), or 0.0 if calculation fails
     """
-    # Initial guess
-    irr = 0.1
-
-    for iteration in range(max_iterations):
-        npv = 0.0
-        dnpv = 0.0
-
-        for year, cf in enumerate(cash_flows):
-            npv += cf / (1 + irr) ** year
-            if year > 0:
-                dnpv -= year * cf / (1 + irr) ** (year + 1)
-
-        if abs(npv) < tolerance:
-            return irr
-
-        if dnpv == 0:
-            break
-
-        irr = irr - npv / dnpv
-
-        # Keep IRR reasonable
-        if irr < -0.99:
-            irr = -0.99
-        elif irr > 10.0:
-            irr = 10.0
-
-    return irr
+    result = calculate_irr_robust(cash_flows, max_iterations, tolerance * 0.01)
+    return result.value if result.value is not None else 0.0
 
 def calculate_lcoe(
     investment: float,
@@ -155,6 +341,129 @@ def calculate_lcoe(
 
     return total_costs_pv / total_energy_pv
 
+
+# ============== EaaS Monthly IRR Solver ==============
+
+def _eaas_cash_flows_monthly(params: EaasParameters, subscription_monthly: float):
+    """
+    Build monthly cash flows for given subscription.
+    Returns (npv_at_target, log_rows, cash_flows_monthly)
+    """
+    capex = params.capacity_kw * params.capex_per_kwp
+    months = params.duration_years * 12
+    # Monthly costs (kept constant; if indexation needed, extend here)
+    opex_month = params.capacity_kw * params.opex_per_kwp / 12
+    insurance_month = capex * params.insurance_rate / 12
+    lease_month = params.capacity_kw * params.land_lease_per_kwp / 12
+    fixed_monthly_cost = opex_month + insurance_month + lease_month
+
+    r_month = (1 + params.target_irr) ** (1 / 12) - 1
+
+    npv = -capex
+    cumulative = -capex
+    log_rows: List[EaasLogRow] = []
+    cash_flows = [-capex]
+
+    for m in range(1, months + 1):
+        index_factor = (1 + params.cpi) ** ((m - 1) / 12) if params.indexation == "cpi" else 1.0
+        subscription = subscription_monthly * index_factor
+        net_cf = subscription - fixed_monthly_cost
+        discounted_cf = net_cf / ((1 + r_month) ** m)
+        npv += discounted_cf
+        cumulative += net_cf
+        cash_flows.append(net_cf)
+        log_rows.append(EaasLogRow(
+            month=m,
+            year=(m - 1) // 12 + 1,
+            subscription=subscription,
+            opex=opex_month,
+            insurance=insurance_month,
+            lease=lease_month,
+            net_cf=net_cf,
+            discounted_cf=discounted_cf,
+            cumulative_cf=cumulative,
+            index_factor=index_factor
+        ))
+
+    return npv, log_rows, cash_flows
+
+
+def solve_eaas_subscription(params: EaasParameters) -> EaasResult:
+    """
+    Solve for monthly subscription that achieves target IRR using monthly cash flows.
+    Uses bisection search to find subscription where NPV at target IRR is ~0.
+    """
+    capex = params.capacity_kw * params.capex_per_kwp
+    # Initial bounds
+    low = 0.0
+    high = (capex / (params.duration_years * 12)) * (1 + params.target_irr) * 2
+
+    npv_low, _, _ = _eaas_cash_flows_monthly(params, low)
+    npv_high, _, _ = _eaas_cash_flows_monthly(params, high)
+
+    # Expand upper bound until sign change or cap reached
+    expand_steps = 0
+    while npv_low * npv_high > 0 and expand_steps < 10:
+        high *= 2
+        npv_high, _, _ = _eaas_cash_flows_monthly(params, high)
+        expand_steps += 1
+
+    if npv_low * npv_high > 0:
+        # Could not bracket root
+        _, log_rows, cash_flows = _eaas_cash_flows_monthly(params, high)
+        irr_details = calculate_irr_robust(cash_flows, irr_mode="nominal")
+        achieved = (1 + irr_details.value) ** 12 - 1 if irr_details.value is not None else None
+        return EaasResult(
+            subscription_monthly=high,
+            subscription_annual_year1=high * 12,
+            achieved_irr_annual=achieved,
+            irr_status="no_root",
+            message="Nie udało się znaleźć abonamentu spełniającego docelowe IRR (brak zmiany znaku NPV)",
+            log=log_rows,
+            log_csv=_log_rows_to_csv(log_rows)
+        )
+
+    # Bisection
+    for _ in range(100):
+        mid = (low + high) / 2
+        npv_mid, log_rows_mid, cash_flows_mid = _eaas_cash_flows_monthly(params, mid)
+        if abs(npv_mid) < 1e-4:
+            break
+        if npv_low * npv_mid < 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+    else:
+        # Max iterations; use mid as best effort
+        log_rows_mid, cash_flows_mid = log_rows_mid, cash_flows_mid
+
+    # Final evaluation at mid
+    subscription = (low + high) / 2
+    npv_final, log_rows, cash_flows = _eaas_cash_flows_monthly(params, subscription)
+    irr_details = calculate_irr_robust(cash_flows, irr_mode="nominal")
+    achieved_annual = (1 + irr_details.value) ** 12 - 1 if irr_details.value is not None else None
+
+    return EaasResult(
+        subscription_monthly=subscription,
+        subscription_annual_year1=subscription * 12,
+        achieved_irr_annual=achieved_annual,
+        irr_status=irr_details.status,
+        message=irr_details.message,
+        log=log_rows,
+        log_csv=_log_rows_to_csv(log_rows)
+    )
+
+
+def _log_rows_to_csv(rows: List[EaasLogRow]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["month", "year", "subscription", "opex", "insurance", "lease", "net_cf", "discounted_cf", "cumulative_cf", "index_factor"])
+    for r in rows:
+        writer.writerow([r.month, r.year, r.subscription, r.opex, r.insurance, r.lease, r.net_cf, r.discounted_cf, r.cumulative_cf, r.index_factor])
+    return buf.getvalue()
+
 # ============== API Endpoints ==============
 @app.get("/")
 async def root():
@@ -171,34 +480,48 @@ async def health():
 @app.post("/analyze", response_model=EconomicResult)
 async def analyze_economics(request: EconomicAnalysisRequest):
     """
-    Perform comprehensive economic analysis
+    Perform comprehensive economic analysis with optional inflation indexing.
+
+    When use_inflation=True (nominal mode):
+    - Energy prices, OPEX, and feed-in tariffs are indexed by inflation each year
+    - IRR reflects nominal returns (includes inflation)
+
+    When use_inflation=False (real mode, default):
+    - All values remain constant (real terms)
+    - IRR reflects real returns (excludes inflation)
     """
     try:
         variant = request.variant
         params = request.parameters
 
-        # Calculate investment
+        # Determine IRR mode from parameters
+        # use_inflation takes precedence, but irr_mode can also be used
+        use_inflation = params.use_inflation or params.irr_mode == "nominal"
+        irr_mode = "nominal" if use_inflation else "real"
+        inflation_rate = params.inflation_rate
+
+        # Calculate investment (always at year 0, no inflation)
         investment = variant.capacity * params.investment_cost
 
-        # Calculate annual revenues
-        annual_savings = (variant.self_consumed / 1000) * params.energy_price
+        # Base annual values (year 1, before inflation indexing)
+        base_energy_price = params.energy_price
+        base_feed_in_tariff = params.feed_in_tariff
+        base_opex = variant.capacity * params.opex_per_kwp
 
+        # Calculate first year revenues (for simple payback and display)
+        annual_savings = (variant.self_consumed / 1000) * base_energy_price
         annual_export_revenue = 0.0
         if params.export_mode != "zero":
-            annual_export_revenue = (variant.exported / 1000) * params.feed_in_tariff
-
+            annual_export_revenue = (variant.exported / 1000) * base_feed_in_tariff
         annual_total_revenue = annual_savings + annual_export_revenue
 
-        # Simple payback
+        # Simple payback (based on year 1 values)
         if annual_total_revenue > 0:
             simple_payback = investment / annual_total_revenue
         else:
             simple_payback = float('inf')
 
-        # Calculate O&M costs
-        opex = variant.capacity * params.opex_per_kwp
-
-        # NPV calculation with degradation
+        # NPV and cash flow calculation with degradation and optional inflation
         cash_flows = [-investment]  # Year 0
         cumulative = -investment
         npv = -investment
@@ -206,18 +529,30 @@ async def analyze_economics(request: EconomicAnalysisRequest):
         cash_flow_details = []
 
         for year in range(1, params.analysis_period + 1):
-            # Apply degradation
+            # Apply degradation to production
             degrad_factor = (1 - params.degradation_rate) ** year
+
+            # Apply inflation indexing if enabled (nominal mode)
+            if use_inflation:
+                inflation_factor = (1 + inflation_rate) ** year
+                energy_price = base_energy_price * inflation_factor
+                feed_in_tariff = base_feed_in_tariff * inflation_factor
+                opex = base_opex * inflation_factor
+            else:
+                # Real mode - constant prices
+                energy_price = base_energy_price
+                feed_in_tariff = base_feed_in_tariff
+                opex = base_opex
 
             # Production this year
             production = variant.production * degrad_factor
 
-            # Revenue this year
-            savings = (variant.self_consumed * degrad_factor / 1000) * params.energy_price
+            # Revenue this year (with inflation-adjusted prices if enabled)
+            savings = (variant.self_consumed * degrad_factor / 1000) * energy_price
             export_rev = 0.0
 
             if params.export_mode != "zero":
-                export_rev = (variant.exported * degrad_factor / 1000) * params.feed_in_tariff
+                export_rev = (variant.exported * degrad_factor / 1000) * feed_in_tariff
 
             revenue = savings + export_rev
 
@@ -242,14 +577,14 @@ async def analyze_economics(request: EconomicAnalysisRequest):
                 discounted_cash_flow=discounted_cf
             ))
 
-        # Calculate IRR
-        irr = calculate_irr(cash_flows)
+        # Calculate IRR using robust solver
+        irr_result = calculate_irr_robust(cash_flows, irr_mode=irr_mode)
 
-        # Calculate LCOE
+        # Calculate LCOE (always uses real terms for consistency)
         lcoe = calculate_lcoe(
             investment=investment,
             annual_production=variant.production,
-            opex=opex,
+            opex=base_opex,  # Use base OPEX for LCOE
             discount_rate=params.discount_rate,
             degradation_rate=params.degradation_rate,
             years=params.analysis_period
@@ -259,7 +594,7 @@ async def analyze_economics(request: EconomicAnalysisRequest):
         metrics = {
             "roi": ((npv + investment) / investment * 100) if investment > 0 else 0,
             "benefit_cost_ratio": (npv + investment) / investment if investment > 0 else 0,
-            "annual_roi": (annual_total_revenue - opex) / investment * 100 if investment > 0 else 0,
+            "annual_roi": (annual_total_revenue - base_opex) / investment * 100 if investment > 0 else 0,
             "specific_investment": investment / variant.capacity if variant.capacity > 0 else 0,
             "specific_production": variant.production / variant.capacity if variant.capacity > 0 else 0,
         }
@@ -271,7 +606,8 @@ async def analyze_economics(request: EconomicAnalysisRequest):
             annual_total_revenue=annual_total_revenue,
             simple_payback=simple_payback,
             npv=npv,
-            irr=irr,
+            irr=irr_result.value,
+            irr_details=irr_result,
             lcoe=lcoe,
             cash_flows=cash_flow_details,
             metrics=metrics
@@ -296,13 +632,17 @@ async def compare_scenarios(
                 "capacity": scenario.variant.capacity,
                 "npv": result.npv,
                 "irr": result.irr,
+                "irr_status": result.irr_details.status,
+                "irr_mode": result.irr_details.mode,
                 "payback": result.simple_payback,
                 "lcoe": result.lcoe
             })
 
         # Find best scenario by NPV
         best_npv = max(results, key=lambda x: x["npv"])
-        best_irr = max(results, key=lambda x: x["irr"])
+        # For IRR, filter out None values before finding max
+        valid_irr_results = [r for r in results if r["irr"] is not None]
+        best_irr = max(valid_irr_results, key=lambda x: x["irr"]) if valid_irr_results else None
         best_payback = min(results, key=lambda x: x["payback"])
 
         return {
@@ -312,6 +652,21 @@ async def compare_scenarios(
             "best_by_payback": best_payback
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/eaas-monthly", response_model=EaasResult)
+async def eaas_monthly(params: EaasParameters):
+    """
+    Calculate EaaS subscription to hit target IRR using monthly cash flows.
+
+    - Cash flows monthly (subscription and costs split per month)
+    - IRR target interpreted as annual; solver uses monthly discount rate r_m = (1+r)^(1/12)-1
+    - Supports CPI indexation for subscription (costs kept w nominal monthly split)
+    - Returns detailed monthly log + CSV for download
+    """
+    try:
+        return solve_eaas_subscription(params)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -353,6 +708,7 @@ async def sensitivity_analysis(
                 "parameter_value": getattr(modified_request.parameters, parameter),
                 "npv": result.npv,
                 "irr": result.irr,
+                "irr_status": result.irr_details.status,
                 "payback": result.simple_payback
             })
 

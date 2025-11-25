@@ -11,10 +11,10 @@ pvlib is the industry-standard library for solar resource and PV modeling.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import requests
 import io
@@ -195,6 +195,217 @@ class AnalysisResult(BaseModel):
     key_variants: Dict[str, VariantResult]
     pv_profile: List[float]
     pvlib_version: Optional[str] = None
+    # Date range information
+    date_range_start: Optional[str] = None
+    date_range_end: Optional[str] = None
+    estimation_method: Optional[str] = None  # "none", "seasonal_scaling_Xm", etc.
+    data_hours: Optional[int] = None
+
+# ============== Date Extraction and Validation ==============
+
+def extract_date_range_from_timestamps(timestamps: List[str]) -> Tuple[datetime, datetime, int]:
+    """
+    Extract date range from consumption timestamps.
+
+    Args:
+        timestamps: List of ISO format timestamps from consumption file
+
+    Returns:
+        Tuple of (start_date, end_date, total_days)
+    """
+    if not timestamps or len(timestamps) < 24:
+        raise ValueError("Insufficient timestamps - need at least 24 hours of data")
+
+    # Parse timestamps
+    parsed = pd.to_datetime(timestamps)
+    start_date = parsed.min()
+    end_date = parsed.max()
+
+    total_days = (end_date - start_date).days + 1
+
+    print(f"📅 Extracted date range from consumption data:")
+    print(f"   Start: {start_date.strftime('%Y-%m-%d %H:%M')}")
+    print(f"   End: {end_date.strftime('%Y-%m-%d %H:%M')}")
+    print(f"   Total days: {total_days}")
+
+    return start_date.to_pydatetime(), end_date.to_pydatetime(), total_days
+
+
+def validate_and_adjust_date_range(
+    start_date: datetime,
+    end_date: datetime,
+    max_days: int = 366
+) -> Tuple[datetime, datetime, bool]:
+    """
+    Validate date range and truncate if exceeds max_days (1 year).
+
+    Args:
+        start_date: Start date from consumption file
+        end_date: End date from consumption file
+        max_days: Maximum allowed days (default 366 for leap year)
+
+    Returns:
+        Tuple of (adjusted_start, adjusted_end, was_truncated)
+    """
+    total_days = (end_date - start_date).days + 1
+
+    if total_days <= max_days:
+        return start_date, end_date, False
+
+    # Truncate to max_days from start
+    adjusted_end = start_date + timedelta(days=max_days - 1)
+
+    print(f"⚠️ Date range exceeds {max_days} days ({total_days} days)")
+    print(f"   Truncating to: {start_date.strftime('%Y-%m-%d')} - {adjusted_end.strftime('%Y-%m-%d')}")
+
+    return start_date, adjusted_end, True
+
+
+def estimate_annual_consumption(
+    consumption: np.ndarray,
+    timestamps: List[str],
+    target_hours: int = 8760
+) -> Tuple[np.ndarray, List[str], str]:
+    """
+    Analyze consumption data and handle partial year scenarios.
+
+    ANALYTICAL YEAR APPROACH:
+    - If data covers 365/366 consecutive days, use as-is (full analytical year)
+    - If data covers less, we DON'T extend to calendar year anymore
+    - Instead, we use the actual date range (analytical year concept)
+
+    Args:
+        consumption: Hourly consumption array
+        timestamps: List of ISO timestamps
+        target_hours: Target hours (8760 for non-leap, 8784 for leap year) - NOW IGNORED
+
+    Returns:
+        Tuple of (consumption, timestamps, estimation_method)
+        Note: We no longer estimate/extend data - analytical year is used as-is
+    """
+    parsed = pd.to_datetime(timestamps)
+    start_date = parsed.min()
+    end_date = parsed.max()
+
+    total_days = (end_date - start_date).days + 1
+    total_hours = len(consumption)
+    months_covered = len(set([(d.year, d.month) for d in parsed]))
+
+    print(f"📅 Analytical year analysis:")
+    print(f"   Start date: {start_date.strftime('%Y-%m-%d')}")
+    print(f"   End date: {end_date.strftime('%Y-%m-%d')}")
+    print(f"   Total days: {total_days}")
+    print(f"   Total hours: {total_hours}")
+    print(f"   Months covered: {months_covered}")
+
+    # ANALYTICAL YEAR: Use data as-is, regardless of calendar year boundaries
+    # A full analytical year is 365/366 consecutive days from ANY start date
+    if total_days >= 365:
+        print(f"✓ Full analytical year ({total_days} days) - using data as-is")
+        return consumption, timestamps, "analytical_year_full"
+
+    if total_days >= 335:  # ~11 months
+        print(f"✓ Near-full analytical year ({total_days} days, {months_covered} months) - using data as-is")
+        return consumption, timestamps, "analytical_year_partial"
+
+    # For partial data (<11 months), we still use it as-is
+    # The PV calculation will be scaled appropriately
+    print(f"⚠️ Partial analytical year ({total_days} days, {months_covered} months)")
+    print(f"   Using actual data without extension (analytical year approach)")
+
+    return consumption, timestamps, f"analytical_year_{months_covered}m"
+
+
+# ============== Analytical Year Support ==============
+
+def map_tmy_to_analytical_year(
+    tmy_data: dict,
+    analytical_year_timestamps: List[str]
+) -> dict:
+    """
+    Mapuje dane TMY (Typical Meteorological Year) na rok analityczny.
+
+    Dane TMY to 8760 godzin reprezentujących typowy rok kalendarzowy (Jan 1 - Dec 31).
+    Rok analityczny może zaczynać się od dowolnej daty (np. 1 lipca 2024 do 30 czerwca 2025).
+
+    Mapowanie odbywa się przez dopasowanie miesiąc/dzień/godzina - ignorując rok.
+    Np. godzina 12:00 z 15 lipca w roku analitycznym pobiera dane z godziny 12:00, 15 lipca w TMY.
+
+    Args:
+        tmy_data: Słownik z danymi TMY (ghi, dni, dhi, temp_air, wind_speed)
+        analytical_year_timestamps: Lista timestampów roku analitycznego (ISO format)
+
+    Returns:
+        Słownik z danymi zmapowanymi na rok analityczny
+    """
+    import calendar as cal
+
+    print(f"📅 Mapowanie TMY na rok analityczny ({len(analytical_year_timestamps)} godzin)")
+
+    # Parse analytical year timestamps
+    parsed_times = pd.to_datetime(analytical_year_timestamps)
+
+    # TMY data is indexed by day-of-year (1-365) and hour (0-23)
+    # Total: 365 * 24 = 8760 hours
+    tmy_length = len(tmy_data['ghi'])
+
+    mapped_ghi = []
+    mapped_dni = []
+    mapped_dhi = []
+    mapped_temp = []
+    mapped_wind = []
+
+    for ts in parsed_times:
+        month = ts.month
+        day = ts.day
+        hour = ts.hour
+
+        # Obsługa 29 lutego w roku przestępnym:
+        # TMY nie ma 29 lutego (8760h = 365 dni)
+        # Jeśli rok analityczny zawiera 29 lutego, użyj danych z 28 lutego
+        if month == 2 and day == 29:
+            day = 28  # Fallback to Feb 28
+
+        # Oblicz dzień roku w TMY (bez 29 lutego)
+        # TMY używa standardowego roku 365 dni
+        # Styczeń = dni 1-31, Luty = dni 32-59, itd.
+        days_before_month = sum(cal.monthrange(2023, m)[1] for m in range(1, month))  # 2023 = rok nieprzestępny
+        tmy_day_of_year = days_before_month + day
+
+        # Indeks w tablicy TMY: (dzień-1) * 24 + godzina
+        tmy_idx = (tmy_day_of_year - 1) * 24 + hour
+
+        # Zabezpieczenie przed przekroczeniem zakresu
+        tmy_idx = min(tmy_idx, tmy_length - 1)
+        tmy_idx = max(tmy_idx, 0)
+
+        mapped_ghi.append(tmy_data['ghi'][tmy_idx])
+        mapped_dni.append(tmy_data['dni'][tmy_idx])
+        mapped_dhi.append(tmy_data['dhi'][tmy_idx])
+        mapped_temp.append(tmy_data['temp_air'][tmy_idx])
+
+        if 'wind_speed' in tmy_data and len(tmy_data['wind_speed']) > tmy_idx:
+            mapped_wind.append(tmy_data['wind_speed'][tmy_idx])
+        else:
+            mapped_wind.append(1.0)
+
+    print(f"   ✓ Zmapowano {len(mapped_ghi)} godzin danych TMY")
+    print(f"   Zakres dat: {parsed_times[0].strftime('%Y-%m-%d')} do {parsed_times[-1].strftime('%Y-%m-%d')}")
+
+    return {
+        'ghi': np.array(mapped_ghi),
+        'dni': np.array(mapped_dni),
+        'dhi': np.array(mapped_dhi),
+        'temp_air': np.array(mapped_temp),
+        'wind_speed': np.array(mapped_wind),
+        'timestamps': analytical_year_timestamps,
+        'metadata': {
+            'source': 'PVGIS TMY (mapped to analytical year)',
+            'analytical_year_hours': len(analytical_year_timestamps),
+            'original_tmy_hours': tmy_length
+        }
+    }
+
 
 # ============== PVGIS Integration ==============
 
@@ -233,9 +444,9 @@ def fetch_pvgis_tmy_data(latitude: float, longitude: float):
         # G(h) (global horizontal), Gb(n) (beam normal), Gd(h) (diffuse horizontal),
         # IR(h) (infrared), WS10m (wind speed), WD10m (wind direction), SP (pressure)
 
-        # Create timestamps (PVGIS TMY is synthesized from multiple years)
-        # We'll use 2020 as a reference year (non-leap for simplicity)
-        timestamps = pd.date_range('2020-01-01 00:30:00', periods=len(df), freq='H', tz='UTC')
+        # Create timestamps for TMY data (will be mapped to actual consumption period later)
+        # Use generic reference - actual mapping happens in generate_pv_profile_pvgis
+        timestamps = pd.date_range('2000-01-01 00:30:00', periods=len(df), freq='H', tz='UTC')
 
         result = {
             'timestamps': timestamps,
@@ -457,27 +668,40 @@ def generate_pv_profile_pvgis(
     soiling_loss: float = 0.02
 ) -> np.ndarray:
     """
-    Generate PV profile using PVGIS TMY data.
-    Maps PVGIS hourly data to consumption timestamps.
+    Generate PV profile using PVGIS TMY data for analytical year.
 
-    PVGIS provides 8760 hours of TMY data.
-    Consumption data may be for actual year with 8760 or 8784 hours.
-    We'll map PVGIS data to match consumption timestamps by time-of-year.
+    PVGIS provides 8760 hours of TMY data (typical calendar year Jan 1 - Dec 31).
+    Analytical year may start from any date (e.g., July 1, 2024 to June 30, 2025).
+
+    TMY data is mapped to analytical year by matching month/day/hour - ignoring year.
+    This ensures correct solar irradiance for each calendar day regardless of
+    which year the analytical period spans.
 
     Args:
+        pvgis_data: PVGIS TMY data dictionary
+        consumption_timestamps: Timestamps from analytical year (ISO format)
         albedo: Ground reflectance (0.2 = typical, 0.8 = snow)
         soiling_loss: Soiling loss factor (0.02 = 2% typical for Europe)
 
     Returns:
         Array of power output per kWp [kW/kWp] for each timestamp.
-        Annual sum gives kWh/kWp/year.
+        Sum gives kWh/kWp for the analytical year period.
     """
     if not PVLIB_AVAILABLE:
         raise HTTPException(status_code=500, detail="pvlib-python not available")
 
-    print(f"📊 Generating PV profile using PVGIS data")
-    print(f"   Consumption timestamps: {len(consumption_timestamps)}")
-    print(f"   PVGIS data points: {len(pvgis_data['ghi'])}")
+    print(f"📊 Generating PV profile using PVGIS data (analytical year)")
+    print(f"   Analytical year timestamps: {len(consumption_timestamps)}")
+    print(f"   PVGIS TMY data points: {len(pvgis_data['ghi'])}")
+
+    # Map TMY data to analytical year timestamps (handles any start date)
+    mapped_data = map_tmy_to_analytical_year(pvgis_data, consumption_timestamps)
+
+    ghi = mapped_data['ghi']
+    dni = mapped_data['dni']
+    dhi = mapped_data['dhi']
+    temp_air = mapped_data['temp_air']
+    wind_speed = mapped_data['wind_speed']
 
     # Parse consumption timestamps
     consumption_times = pd.DatetimeIndex(pd.to_datetime(consumption_timestamps))
@@ -490,9 +714,6 @@ def generate_pv_profile_pvgis(
             print(f"⚠️ Timezone handling: {e}")
             consumption_times = consumption_times.tz_localize('UTC').tz_convert('Europe/Warsaw')
 
-    # PVGIS data is for a typical year - map to consumption year
-    # Extract day-of-year and hour from consumption timestamps
-
     # Create location
     site = location.Location(
         latitude=latitude,
@@ -501,34 +722,8 @@ def generate_pv_profile_pvgis(
         tz='Europe/Warsaw'
     )
 
-    # Calculate solar position for consumption timestamps
+    # Calculate solar position for analytical year timestamps
     solar_position = site.get_solarposition(consumption_times)
-
-    # Map PVGIS irradiance data to consumption timestamps
-    # Match by day-of-year and hour
-    mapped_ghi = []
-    mapped_dni = []
-    mapped_dhi = []
-    mapped_temp = []
-
-    for ct in consumption_times:
-        # Find matching hour in PVGIS data (by day-of-year and hour)
-        doy = ct.dayofyear
-        hour = ct.hour
-
-        # PVGIS index: (doy-1) * 24 + hour
-        # Handle leap years: if consumption is in leap year and past Feb 29, adjust
-        pvgis_idx = min((doy - 1) * 24 + hour, len(pvgis_data['ghi']) - 1)
-
-        mapped_ghi.append(pvgis_data['ghi'][pvgis_idx])
-        mapped_dni.append(pvgis_data['dni'][pvgis_idx])
-        mapped_dhi.append(pvgis_data['dhi'][pvgis_idx])
-        mapped_temp.append(pvgis_data['temp_air'][pvgis_idx])
-
-    ghi = np.array(mapped_ghi)
-    dni = np.array(mapped_dni)
-    dhi = np.array(mapped_dhi)
-    temp_air = np.array(mapped_temp)
 
     # Calculate POA irradiance using pvlib with albedo (ground reflectance)
     if pv_type in ['roof_ew', 'ground_ew']:
@@ -577,12 +772,12 @@ def generate_pv_profile_pvgis(
 
     print(f"   Using albedo={albedo:.2f} (ground reflectance)")
 
-    # Calculate cell temperature
+    # Calculate cell temperature using mapped wind speed data
     temp_params = temperature.TEMPERATURE_MODEL_PARAMETERS['sapm']['open_rack_glass_polymer']
     cell_temp = temperature.sapm_cell(
         poa_global,
         temp_air,
-        pvgis_data['wind_speed'][:len(consumption_times)] if len(pvgis_data['wind_speed']) >= len(consumption_times) else np.full(len(consumption_times), 1.0),
+        wind_speed,  # Use mapped wind_speed from analytical year
         **temp_params
     )
 
@@ -779,9 +974,23 @@ async def health():
         "pvlib_version": PVLIB_VERSION
     }
 
+class GenerateProfileRequest(BaseModel):
+    """Request model for generate-profile endpoint with optional date range"""
+    pv_config: PVConfiguration
+    start_date: Optional[str] = None  # ISO format: "2024-01-01"
+    end_date: Optional[str] = None  # ISO format: "2024-12-31"
+
+
 @app.post("/generate-profile")
-async def generate_profile(config: PVConfiguration):
-    """Generate PV generation profile"""
+async def generate_profile(config: PVConfiguration, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """
+    Generate PV generation profile.
+
+    Args:
+        config: PV system configuration
+        start_date: Optional start date (ISO format). If not provided, uses current year.
+        end_date: Optional end date (ISO format). If not provided, uses full year from start.
+    """
     try:
         # Determine panel configuration
         if config.pv_type == "ground_s":
@@ -794,11 +1003,25 @@ async def generate_profile(config: PVConfiguration):
             tilt = config.tilt if config.tilt else 15
             azimuth = config.azimuth if config.azimuth else 90
 
-        # Generate timestamps for a full year
-        year = datetime.now().year
+        # Generate timestamps based on provided dates or default to current year
+        if start_date and end_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            print(f"📅 Using provided date range: {start_date} to {end_date}")
+        elif start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            end_dt = datetime(start_dt.year, 12, 31, 23, 0, 0)
+            print(f"📅 Using start date with full year: {start_date} to {end_dt.strftime('%Y-%m-%d')}")
+        else:
+            # Default: current year (fallback for backward compatibility)
+            year = datetime.now().year
+            start_dt = datetime(year, 1, 1)
+            end_dt = datetime(year, 12, 31, 23, 0, 0)
+            print(f"📅 Using current year: {year}")
+
         times = pd.date_range(
-            start=f'{year}-01-01',
-            end=f'{year}-12-31 23:00:00',
+            start=start_dt,
+            end=end_dt,
             freq='H',
             tz='Europe/Warsaw'
         )
@@ -870,14 +1093,55 @@ async def analyze(request: AnalysisRequest):
         print(f"🔆 PV Analysis using pvlib-python v{PVLIB_VERSION}")
         print(f"{'='*60}")
 
-        # Generate timestamps if not provided
+        consumption = np.array(request.consumption)
+        estimation_method = "none"
+
+        # Process timestamps - extract from consumption data or generate
         if request.timestamps and len(request.timestamps) == len(request.consumption):
             timestamps = request.timestamps
+
+            # Extract and validate date range from provided timestamps
+            try:
+                start_date, end_date, total_days = extract_date_range_from_timestamps(timestamps)
+
+                # Validate and truncate if exceeds 1 year
+                start_date, end_date, was_truncated = validate_and_adjust_date_range(start_date, end_date)
+
+                if was_truncated:
+                    # Truncate consumption data and timestamps to match
+                    max_hours = 366 * 24  # Max hours for a leap year
+                    timestamps = timestamps[:max_hours]
+                    consumption = consumption[:max_hours]
+                    print(f"   Truncated data to {len(timestamps)} hours")
+
+                # Check if we need estimation for incomplete data (<11 months)
+                parsed_times = pd.to_datetime(timestamps)
+                months_covered = len(set([(d.year, d.month) for d in parsed_times]))
+
+                if months_covered < 11 and total_days < 335:
+                    print(f"📊 Incomplete data detected: {months_covered} months")
+                    consumption, timestamps, estimation_method = estimate_annual_consumption(
+                        consumption, timestamps
+                    )
+
+            except Exception as e:
+                print(f"⚠️ Date extraction warning: {e}")
+                # Continue with provided timestamps as-is
+
             print(f"Using {len(timestamps)} timestamps from consumption data")
         else:
-            # Generate hourly timestamps for the year
+            # No timestamps provided - generate based on consumption data length
             n_hours = len(request.consumption)
-            year = datetime.now().year
+
+            # Determine if it's a leap year based on hours
+            if n_hours == 8784:
+                year = 2024  # Use a leap year reference
+            elif n_hours == 8760:
+                year = 2023  # Use a non-leap year reference
+            else:
+                # Partial data - use current year as reference
+                year = datetime.now().year
+
             times = pd.date_range(
                 start=f'{year}-01-01',
                 periods=n_hours,
@@ -885,7 +1149,7 @@ async def analyze(request: AnalysisRequest):
                 tz='Europe/Warsaw'
             )
             timestamps = [t.isoformat() for t in times]
-            print(f"Generated {len(timestamps)} hourly timestamps for year {year}")
+            print(f"Generated {len(timestamps)} hourly timestamps for year {year} (no timestamps provided)")
 
         # Try to use PVGIS data first, fall back to clearsky if unavailable
         pvgis_data = None
@@ -930,15 +1194,13 @@ async def analyze(request: AnalysisRequest):
         else:
             print("⚠️ pvlib not available, using fallback model")
             pv_profile = generate_pv_profile_fallback(
-                n_hours=len(request.consumption),
+                n_hours=len(consumption),
                 latitude=config.latitude,
                 tilt=tilt,
                 azimuth=azimuth,
                 pv_type=config.pv_type,
                 yield_target=config.yield_target
             )
-
-        consumption = np.array(request.consumption)
 
         # Determine DC/AC selection mode
         dcac_mode = getattr(config, 'dcac_mode', 'manual')  # Default to manual if not set
@@ -1002,14 +1264,25 @@ async def analyze(request: AnalysisRequest):
                 )
                 print(f"   Variant {variant_name} ({threshold}%): {variant_scenario.capacity:.0f} kWp, auto={variant_scenario.auto_consumption_pct:.1f}%")
 
+        # Extract date range for response
+        parsed_timestamps = pd.to_datetime(timestamps)
+        date_start = parsed_timestamps.min().strftime('%Y-%m-%d')
+        date_end = parsed_timestamps.max().strftime('%Y-%m-%d')
+
         print(f"\n✅ Analysis complete: {len(scenarios)} scenarios, {len(key_variants)} variants")
+        print(f"   Date range: {date_start} to {date_end}")
+        print(f"   Estimation method: {estimation_method}")
         print(f"{'='*60}\n")
 
         return AnalysisResult(
             scenarios=scenarios,
             key_variants=key_variants,
             pv_profile=pv_profile.tolist(),
-            pvlib_version=PVLIB_VERSION
+            pvlib_version=PVLIB_VERSION,
+            date_range_start=date_start,
+            date_range_end=date_end,
+            estimation_method=estimation_method,
+            data_hours=len(timestamps)
         )
 
     except Exception as e:

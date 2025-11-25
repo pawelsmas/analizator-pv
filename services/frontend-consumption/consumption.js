@@ -94,8 +94,8 @@ function hideNoData() {
   document.getElementById('noDataMessage').classList.remove('active');
 }
 
-// Perform consumption analysis
-function performAnalysis() {
+// Perform consumption analysis - fetch stats from backend
+async function performAnalysis() {
   hideNoData();
 
   if (!consumptionData || !consumptionData.hourlyData) {
@@ -103,21 +103,37 @@ function performAnalysis() {
     return;
   }
 
-  const hourlyData = consumptionData.hourlyData;
-  const values = hourlyData.values;
+  try {
+    // Fetch statistics from backend (all calculations done server-side)
+    const statsResponse = await fetch('http://localhost:8001/statistics');
+    if (!statsResponse.ok) {
+      throw new Error('Failed to fetch statistics');
+    }
+    const backendStats = await statsResponse.json();
 
-  // Calculate statistics
-  const stats = calculateStatistics(values);
+    // Update UI with backend-calculated statistics
+    updateStatisticsFromBackend(backendStats);
+    updateDataInfo(consumptionData, backendStats);
 
-  // Update UI
-  updateStatistics(stats);
-  updateDataInfo(consumptionData);
+    // Generate charts using backend data
+    generateDailyProfileFromBackend(backendStats.daily_profile_mw);
+    generateWeeklyProfileFromBackend(backendStats.weekly_profile_mwh);
+    generateMonthlyProfileFromBackend(backendStats.monthly_consumption);
+    generateLoadDurationCurve(consumptionData.hourlyData.values);
 
-  // Generate charts
-  generateDailyProfile(hourlyData);
-  generateWeeklyProfile(hourlyData);
-  generateMonthlyProfile(hourlyData);
-  generateLoadDurationCurve(values);
+  } catch (error) {
+    console.error('Error fetching backend statistics:', error);
+    // Fallback to local calculation if backend fails
+    const hourlyData = consumptionData.hourlyData;
+    const values = hourlyData.values;
+    const stats = calculateStatistics(values);
+    updateStatistics(stats);
+    updateDataInfo(consumptionData, null);
+    generateDailyProfile(hourlyData);
+    generateWeeklyProfile(hourlyData);
+    generateMonthlyProfile(hourlyData);
+    generateLoadDurationCurve(values);
+  }
 }
 
 // Calculate statistics
@@ -158,7 +174,7 @@ function calculateStatistics(values) {
   };
 }
 
-// Update statistics display
+// Update statistics display (legacy - local calculation)
 function updateStatistics(stats) {
   document.getElementById('annualConsumption').textContent = stats.annualConsumption;
   document.getElementById('peakPower').textContent = stats.peakPower;
@@ -172,13 +188,71 @@ function updateStatistics(stats) {
   document.getElementById('dataPeriod').textContent = `${stats.days} dni`;
 }
 
+// Update statistics from backend response
+function updateStatisticsFromBackend(stats) {
+  document.getElementById('annualConsumption').textContent = stats.total_consumption_gwh.toFixed(2);
+  document.getElementById('peakPower').textContent = stats.peak_power_mw.toFixed(2);
+  document.getElementById('minPower').textContent = stats.min_power_kw.toFixed(0);
+  document.getElementById('avgDaily').textContent = stats.avg_daily_mwh.toFixed(2);
+  document.getElementById('avgPower').textContent = `${stats.avg_power_mw.toFixed(2)} MW`;
+  document.getElementById('stdDev').textContent = `${stats.std_dev_mw.toFixed(2)} MW`;
+  document.getElementById('variationCoef').textContent = `${stats.variation_coef_pct.toFixed(1)}%`;
+  document.getElementById('loadFactor').textContent = `${stats.load_factor_pct.toFixed(1)}%`;
+  document.getElementById('dataPoints').textContent = stats.hours.toLocaleString('pl-PL');
+  document.getElementById('dataPeriod').textContent = `${stats.days} dni (${stats.date_start} - ${stats.date_end})`;
+}
+
 // Update data info
-function updateDataInfo(data) {
-  const info = `${data.filename} • ${data.dataPoints} punktów • ${data.year}`;
+function updateDataInfo(data, backendStats) {
+  let info;
+  if (backendStats) {
+    info = `${data.filename} • ${backendStats.hours} godzin • ${backendStats.date_start} do ${backendStats.date_end}`;
+  } else {
+    info = `${data.filename} • ${data.dataPoints} punktów • ${data.year}`;
+  }
   document.getElementById('dataInfo').textContent = info;
 }
 
-// Generate daily profile chart
+// Generate daily profile chart from backend data
+function generateDailyProfileFromBackend(dailyProfileMw) {
+  const ctx = document.getElementById('dailyProfile').getContext('2d');
+
+  if (dailyChart) dailyChart.destroy();
+
+  dailyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: Array.from({ length: 24 }, (_, i) => `${i}:00`),
+      datasets: [{
+        label: 'Średnia Moc [MW]',
+        data: dailyProfileMw.map(v => v.toFixed(2)),
+        borderColor: '#667eea',
+        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: true }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Moc [MW]' }
+        },
+        x: {
+          title: { display: true, text: 'Godzina' }
+        }
+      }
+    }
+  });
+}
+
+// Generate daily profile chart (legacy - local calculation)
 function generateDailyProfile(hourlyData) {
   const hourlyAverages = new Array(24).fill(0);
   const hourlyCounts = new Array(24).fill(0);
@@ -231,7 +305,42 @@ function generateDailyProfile(hourlyData) {
   });
 }
 
-// Generate weekly profile chart
+// Generate weekly profile chart from backend data
+function generateWeeklyProfileFromBackend(weeklyProfileMwh) {
+  const dayNames = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Nie'];
+  const ctx = document.getElementById('weeklyProfile').getContext('2d');
+
+  if (weeklyChart) weeklyChart.destroy();
+
+  weeklyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: dayNames,
+      datasets: [{
+        label: 'Średnie Zużycie [MWh/dzień]',
+        data: weeklyProfileMwh.map(v => v.toFixed(2)),
+        backgroundColor: 'rgba(102, 126, 234, 0.7)',
+        borderColor: '#667eea',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: true }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Zużycie [MWh/dzień]' }
+        }
+      }
+    }
+  });
+}
+
+// Generate weekly profile chart (legacy - local calculation)
 function generateWeeklyProfile(hourlyData) {
   const dayNames = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Nie'];
   const dailyTotals = new Array(7).fill(0);
@@ -282,7 +391,46 @@ function generateWeeklyProfile(hourlyData) {
   });
 }
 
-// Generate monthly profile chart
+// Generate monthly profile chart from backend data
+function generateMonthlyProfileFromBackend(monthlyConsumption) {
+  const monthNames = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru'];
+
+  // Backend returns kWh, convert to MWh
+  const monthlyMWh = monthlyConsumption.map(total => (total / 1000).toFixed(2));
+
+  const ctx = document.getElementById('monthlyProfile').getContext('2d');
+
+  if (monthlyChart) monthlyChart.destroy();
+
+  monthlyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: monthNames,
+      datasets: [{
+        label: 'Zużycie Miesięczne [MWh]',
+        data: monthlyMWh,
+        backgroundColor: 'rgba(118, 75, 162, 0.7)',
+        borderColor: '#764ba2',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: true }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Zużycie [MWh]' }
+        }
+      }
+    }
+  });
+}
+
+// Generate monthly profile chart (legacy - local calculation)
 function generateMonthlyProfile(hourlyData) {
   const monthNames = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru'];
   const monthlyTotals = new Array(12).fill(0);

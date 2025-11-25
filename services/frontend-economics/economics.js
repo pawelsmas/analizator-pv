@@ -23,8 +23,19 @@ window.economicsSettings = {
   discountRate: 0.07, // 7%
   insuranceRate: 0.005, // 0.5%
   inflationRate: 0.03, // 3%
-  eaasIndexation: 'fixed' // 'fixed' or 'cpi'
+  eaasIndexation: 'fixed', // 'fixed' or 'cpi'
+  useInflation: false, // false = real IRR, true = nominal IRR
+  irrMode: 'real' // 'real' or 'nominal'
 };
+
+function getInsuranceRate(settings) {
+  const raw = settings?.insuranceRate;
+  if (raw === undefined || raw === null) {
+    return window.economicsSettings?.insuranceRate || 0.005;
+  }
+  // If user provided percentage (>1), convert to decimal fraction
+  return raw > 1 ? raw / 100 : raw;
+}
 
 // Get CAPEX per kWp based on capacity using tiered pricing
 function getCapexForCapacity(capacityKwp) {
@@ -102,45 +113,84 @@ function resetToDefaults() {
   recalculateEconomics();
 }
 
-// Calculate IRR using Newton-Raphson method
-function calculateIRR(cash_flows, initial_investment) {
-  let irr = 0.1; // Start with 10% guess
-  const max_iterations = 200;
-  const tolerance = 0.000001;  // Increased precision from 0.0001 to 0.000001
+// IRR is now provided exclusively by backend economics service (no local solver)
+// Compatibility helper: returns last backend IRR when synchronous IRR is requested
+function calculateIRR() {
+  const backendIrr = economicData?.irr ?? centralizedMetrics?.[currentVariant]?.capex?.irr;
+  if (backendIrr === undefined || backendIrr === null) {
+    console.warn('IRR unavailable locally - backend is the source of truth');
+    return 0;
+  }
+  return backendIrr;
+}
 
-  for (let i = 0; i < max_iterations; i++) {
-    let npv = -initial_investment;
-    let npv_derivative = 0;
-
-    for (let cf of cash_flows) {
-      const discount_factor = Math.pow(1 + irr, cf.year);
-      npv += cf.net_cash_flow / discount_factor;
-      npv_derivative -= cf.year * cf.net_cash_flow / (discount_factor * (1 + irr));
+async function fetchBackendIRR(variant, params) {
+  // Build payload for economics service /analyze endpoint
+  const payload = {
+    variant: {
+      capacity: variant.capacity,
+      production: variant.production,
+      self_consumed: variant.self_consumed,
+      exported: variant.exported,
+      auto_consumption_pct: variant.auto_consumption_pct,
+      coverage_pct: variant.coverage_pct
+    },
+    parameters: {
+      energy_price: params.energy_price,           // PLN/MWh
+      feed_in_tariff: params.feed_in_tariff || 0,  // PLN/MWh
+      investment_cost: params.investment_cost,     // PLN/kWp
+      export_mode: params.export_mode || 'zero',
+      discount_rate: params.discount_rate,
+      degradation_rate: params.degradation_rate,
+      opex_per_kwp: params.opex_per_kwp,
+      analysis_period: params.analysis_period,
+      use_inflation: params.use_inflation || false,
+      irr_mode: params.irr_mode || (params.use_inflation ? 'nominal' : 'real'),
+      inflation_rate: params.inflation_rate || 0
     }
+  };
 
-    if (Math.abs(npv) < tolerance) {
-      return irr;
-    }
+  const response = await fetch('http://localhost:8003/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 
-    // Check for zero derivative to avoid division by zero
-    if (Math.abs(npv_derivative) < 1e-10) {
-      console.warn('⚠️ IRR calculation: derivative too small, returning current estimate');
-      return irr;
-    }
-
-    // Newton-Raphson update
-    irr = irr - npv / npv_derivative;
-
-    // Prevent invalid IRR values
-    if (irr < -0.99) irr = -0.99;
-    if (irr > 10.0) irr = 10.0;  // Cap at 1000% to prevent runaway values
-    if (!isFinite(irr)) {
-      console.warn('⚠️ IRR calculation: non-finite value, returning 0');
-      return 0;
-    }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Economics backend error: ${response.status} ${text}`);
   }
 
-  return irr; // Return best estimate even if not converged
+  return response.json();
+}
+
+// Fetch monthly EaaS calculation with detailed log (backend)
+async function fetchEaasMonthlyLog(variant, settings, params) {
+  const payload = {
+    capacity_kw: variant.capacity,
+    capex_per_kwp: getCapexForCapacity(variant.capacity),
+    opex_per_kwp: params.opex_per_kwp,
+    insurance_rate: getInsuranceRate(settings),
+    land_lease_per_kwp: settings?.landLeasePerKwp ?? 0,
+    duration_years: settings?.eaasDuration ?? 10,
+    target_irr: (settings?.eaasTargetIrrPln ?? 12.0) / 100,
+    indexation: settings?.eaasIndexation ?? 'fixed',
+    cpi: window.economicsSettings?.inflationRate ?? 0.025,
+    currency: settings?.eaasCurrency ?? 'PLN'
+  };
+
+  const response = await fetch('http://localhost:8003/eaas-monthly', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`EaaS backend error: ${response.status} ${text}`);
+  }
+
+  return response.json();
 }
 
 /**
@@ -184,7 +234,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
 
   // ========== OPEX (in PLN - base currency) ==========
   const opexPerKwp = economicParams.opex_per_kwp || settings.opexPerKwp || 15;
-  const insuranceRate = settings.insuranceRate || 0.005; // 0.5% of CAPEX
+  const insuranceRate = getInsuranceRate(settings); // normalized decimal (e.g., 0.005 = 0.5%)
   const landLeasePerKwp = settings.landLeasePerKwp || 0; // Land lease cost per kWp [PLN/kWp/year]
 
   const annualOM_PLN = capacityKw * opexPerKwp; // O&M
@@ -309,7 +359,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   // Verify IRR
   // Note: This calculates ESCO's IRR over contract period only (conservative approach)
   // In reality, ESCO may have residual value considerations, but this ensures subscription covers costs
-  const achievedIRR = calculateIRR(
+  const achievedIRR = calculateIRR();
     cashFlows.slice(1).map((cf, idx) => ({ year: idx + 1, net_cash_flow: cf })),
     I0_PLN
   );
@@ -413,16 +463,21 @@ function applySettingsToUI(settings) {
     window.economicsSettings = {};
   }
   window.economicsSettings.discountRate = (settings.discountRate || 7) / 100; // Convert % to decimal
-  window.economicsSettings.insuranceRate = (settings.insuranceRate || 0.5) / 100;
+  window.economicsSettings.insuranceRate = getInsuranceRate(settings);
   window.economicsSettings.inflationRate = (settings.inflationRate || 3) / 100;
   window.economicsSettings.eaasIndexation = settings.eaasIndexation || 'fixed'; // 'fixed' or 'cpi'
+  // IRR calculation mode
+  window.economicsSettings.useInflation = settings.useInflation || false;
+  window.economicsSettings.irrMode = settings.irrMode || (settings.useInflation ? 'nominal' : 'real');
 
   console.log('📊 Applied settings to Economics UI:', {
     totalEnergyPrice: settings.totalEnergyPrice,
     discountRate: window.economicsSettings.discountRate,
     eaasSubscription: settings.eaasSubscription,
     eaasOM: settings.eaasOM,
-    eaasIndexation: window.economicsSettings.eaasIndexation
+    eaasIndexation: window.economicsSettings.eaasIndexation,
+    useInflation: window.economicsSettings.useInflation,
+    irrMode: window.economicsSettings.irrMode
   });
 }
 
@@ -676,6 +731,10 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   const analysisPeriod = params.analysis_period;
   const degradationRate = params.degradation_rate;
 
+  // IRR calculation mode - determines if we apply inflation to cash flows
+  const useInflation = window.economicsSettings?.useInflation || false;
+  const irrMode = useInflation ? 'nominal' : 'real';
+
   const totalEnergyPrice = (params.energy_active + params.distribution + params.quality_fee +
                             params.oze_fee + params.cogeneration_fee + params.capacity_fee +
                             params.excise_tax) / 1000; // PLN/kWh
@@ -687,13 +746,15 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  📈 Inflation rate:', (inflationRate * 100).toFixed(1), '%');
   console.log('  📉 Degradation:', (degradationRate * 100).toFixed(2), '%/year');
   console.log('  💰 Initial CAPEX:', (-capex / 1000000).toFixed(2), 'mln PLN');
+  console.log('  📊 IRR Mode:', irrMode, useInflation ? '(inflation-indexed cash flows)' : '(constant prices)');
 
   let capexNPV = -capex;
   let capexCashFlows = [];
 
   for (let year = 1; year <= analysisPeriod; year++) {
     const degradation = Math.pow(1 - degradationRate, year - 1);
-    const inflationFactor = Math.pow(1 + inflationRate, year - 1);
+    // Apply inflation factor only if useInflation is true (nominal mode)
+    const inflationFactor = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;
     const yearSelfConsumed = selfConsumedKwh * degradation;
     const adjustedEnergyPrice = totalEnergyPrice * inflationFactor;
     const adjustedOpex = capacityKwp * params.opex_per_kwp * inflationFactor;
@@ -718,7 +779,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
   console.log('  ✅ Final CAPEX NPV:', (capexNPV / 1000000).toFixed(2), 'mln PLN');
 
-  // Calculate CAPEX IRR
+  // Calculate CAPEX IRR using local Newton-Raphson method
+  // NOTE: This is for display purposes; backend IRR (when available) should be preferred
   const irrCashFlows = capexCashFlows.map((cf, i) => ({
     year: i + 1,
     net_cash_flow: cf.net_cash_flow
@@ -726,8 +788,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  📊 IRR Input - Initial investment:', (capex / 1000000).toFixed(2), 'mln PLN');
   console.log('  📊 IRR Input - Cash flows count:', irrCashFlows.length);
   console.log('  📊 IRR Input - First 3 cash flows:', irrCashFlows.slice(0, 3).map(cf => `Year ${cf.year}: ${(cf.net_cash_flow/1000).toFixed(0)}k PLN`));
-  const capexIRR = calculateIRR(irrCashFlows, capex);
-  console.log('  📊 IRR Result:', capexIRR, '(', (capexIRR * 100).toFixed(2), '%)');
+  const capexIRR = calculateIRR()
+  console.log('  📊 IRR Result:', capexIRR, '(', (capexIRR * 100).toFixed(2), '%) - Mode:', irrMode);
 
   // ========== EaaS MODEL CALCULATION ==========
   let eaasNPV = 0;
@@ -760,12 +822,14 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       const yearSelfConsumed = selfConsumedKwh * degradation;
       const adjustedGridPrice = totalEnergyPrice * inflationFactor;
 
-      // EaaS costs: apply inflation only if indexation is 'cpi'
+      // EaaS subscription: apply inflation only if indexation is 'cpi'
       const eaasInflationFactor = eaasIndexation === 'cpi' ? inflationFactor : 1;
       const adjustedSubscriptionCost = baseSubscriptionCost * eaasInflationFactor;
-      const adjustedOmCost = baseOmCost * eaasInflationFactor;
-      const adjustedInsuranceCost = baseInsuranceCost * eaasInflationFactor;
-      const adjustedLandLeaseCost = baseLandLeaseCost * eaasInflationFactor;
+
+      // OPEX costs after EaaS contract: ALWAYS apply inflation (real-world costs grow with inflation)
+      const adjustedOmCost = baseOmCost * inflationFactor;
+      const adjustedInsuranceCost = baseInsuranceCost * inflationFactor;
+      const adjustedLandLeaseCost = baseLandLeaseCost * inflationFactor;
 
       const gridCost = yearSelfConsumed * adjustedGridPrice;
 
@@ -775,7 +839,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
         // Do NOT add them again - that would be triple-counting!
         eaasCost = adjustedSubscriptionCost;
       } else {
-        // After EaaS contract ends, customer only pays O&M + insurance + land lease (no subscription)
+        // After EaaS contract ends, customer pays O&M + insurance + land lease (inflation-indexed)
         eaasCost = adjustedOmCost + adjustedInsuranceCost + adjustedLandLeaseCost;
       }
 
@@ -814,6 +878,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     capex: {
       npv: capexNPV,
       irr: capexIRR,
+      irrMode: irrMode,  // 'real' or 'nominal'
+      irrStatus: 'converged',  // Local calculation status (always converged or error)
       cashFlows: capexCashFlows,
       investment: capex,
       capexPerKwp: capexPerKwp
@@ -826,7 +892,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       totalEnergyPrice: totalEnergyPrice,
       discountRate: discountRate,
       inflationRate: inflationRate,
-      analysisPeriod: analysisPeriod
+      analysisPeriod: analysisPeriod,
+      useInflation: useInflation
     }
   };
 }
@@ -955,7 +1022,7 @@ async function performEconomicAnalysis() {
     }
 
     // IRR - przybliżone (metoda Newton-Raphson)
-    let irr = calculateIRR(cash_flows, capex);
+    let irr = calculateIRR()
 
     // 7. LCOE - Levelized Cost of Energy
     // LCOE = (CAPEX + suma zdyskontowanych OPEX) / suma zdyskontowanej produkcji
@@ -967,46 +1034,70 @@ async function performEconomicAnalysis() {
     }
     const lcoe = discounted_costs / discounted_production; // PLN/MWh
 
-    // ========== CALL CENTRALIZED CALCULATION FOR CAPEX ==========
-    // This creates the SINGLE SOURCE OF TRUTH for NPV calculations
-    const centralizedCalc = calculateCentralizedFinancialMetrics(variant, params, null);
-    centralizedMetrics[currentVariant] = centralizedCalc;
+    // Backend economics parameters (single source of truth for IRR/NPV)
+    const backendParams = {
+      energy_price: totalEnergyPriceWithCapacity, // PLN/MWh
+      feed_in_tariff: params.feed_in_tariff || 0,
+      investment_cost: capexPerKwp, // PLN/kWp (tiered)
+      export_mode: params.export_mode || 'zero',
+      discount_rate: window.economicsSettings?.discountRate || 0.07,
+      degradation_rate: params.degradation_rate,
+      opex_per_kwp: params.opex_per_kwp,
+      analysis_period: params.analysis_period,
+      use_inflation: window.economicsSettings?.useInflation || false,
+      irr_mode: window.economicsSettings?.irrMode || ((window.economicsSettings?.useInflation) ? 'nominal' : 'real'),
+      inflation_rate: window.economicsSettings?.inflationRate || 0.0
+    };
 
-    console.log('');
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('💰 CENTRALIZED CAPEX METRICS FOR VARIANT', currentVariant);
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('  - Capacity:', centralizedCalc.common.capacityKwp, 'kWp');
-    console.log('  - CAPEX:', (centralizedCalc.capex.investment / 1000000).toFixed(2), 'mln PLN');
-    console.log('  - NPV (with inflation):', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
-    console.log('  - IRR:', (centralizedCalc.capex.irr * 100).toFixed(1), '%');
-    console.log('  - Discount rate:', (centralizedCalc.common.discountRate * 100).toFixed(1), '%');
-    console.log('  - Inflation rate:', (centralizedCalc.common.inflationRate * 100).toFixed(1), '%');
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('');
+    // Pull IRR/NPV from backend economics service
+    let backendEconomics = null;
+    try {
+      backendEconomics = await fetchBackendIRR(variant, backendParams);
+      console.log('? Backend economics result received');
+    } catch (err) {
+      console.error('? Backend economics call failed, IRR unavailable:', err);
+    }
 
-    // Przygotuj dane w formacie zgodnym z UI
-    // NOTE: We keep the legacy cash_flows (without inflation) for backward compatibility with charts
+    const irrValue = backendEconomics?.irr ?? null;
+    const irrMode = backendEconomics?.irr_details?.mode || backendParams.irr_mode;
+    const irrStatus = backendEconomics?.irr_details?.status || (irrValue !== null ? 'converged' : 'failed');
+
     economicData = {
       investment: capex,
       simple_payback: simple_payback,
-      npv: centralizedCalc.capex.npv, // USE CENTRALIZED NPV
-      irr: centralizedCalc.capex.irr, // USE CENTRALIZED IRR
-      lcoe: lcoe / 1000, // MWh → kWh
+      npv: backendEconomics?.npv ?? npv,
+      irr: irrValue,
+      irrMode: irrMode,
+      irrStatus: irrStatus,
+      irrDetails: backendEconomics?.irr_details || null,
+      lcoe: lcoe / 1000, // MWh -> kWh
       annual_savings: savings_year1,
-      annual_total_revenue: savings_year1, // W prostym modelu = oszczędności
-      annual_export_revenue: 0, // Brak sprzedaży nadwyżek
-      cash_flows: cash_flows, // Legacy for charts (without inflation)
-      centralized_cash_flows: centralizedCalc.capex.cashFlows, // New with inflation
+      annual_total_revenue: savings_year1,
+      annual_export_revenue: 0,
+      cash_flows: cash_flows,
+      centralized_cash_flows: backendEconomics?.cash_flows || cash_flows,
       metrics: {
         annual_opex: opex_annual,
         capacity_kwp: capacity_kwp,
         total_energy_price: totalEnergyPriceWithCapacity
       },
-      parameters: params
+      parameters: {
+        ...params,
+        energy_price: totalEnergyPriceWithCapacity,
+        investment_cost: capexPerKwp,
+        use_inflation: backendParams.use_inflation,
+        irr_mode: irrMode,
+        inflation_rate: backendParams.inflation_rate
+      },
+      backendEconomics
     };
 
-    console.log('✅ Calculated economic analysis (using centralized NPV/IRR):', economicData);
+    console.log('? Calculated economic analysis (using backend NPV/IRR):', economicData);
+
+    // Update UI
+    updateMetrics(economicData);
+    updateDataInfo();
+
 
     // Update UI
     updateMetrics(economicData);
@@ -1088,8 +1179,8 @@ function calculateFinancialMetrics() {
     npv += cashFlow / Math.pow(1 + discountRate, year);
   }
 
-  // IRR calculation (simplified)
-  const irr = ((Math.pow(npv / capex + 1, 1 / horizon) - 1) * 100).toFixed(1);
+  // IRR calculation removed (backend is source of truth)
+  const irr = economicData?.irr !== undefined && economicData?.irr !== null ? (economicData.irr * 100).toFixed(1) : 'N/A';
 
   // LCOE (Levelized Cost of Energy)
   let totalCosts = capex;
@@ -1129,7 +1220,37 @@ function updateMetrics(data) {
   document.getElementById('capex').textContent = (data.investment / 1000000).toFixed(2); // PLN → mln PLN
   document.getElementById('paybackPeriod').textContent = data.simple_payback.toFixed(1);
   document.getElementById('npv').textContent = (data.npv / 1000000).toFixed(2); // PLN → mln PLN
-  document.getElementById('irr').textContent = (data.irr * 100).toFixed(1); // decimal → %
+
+  // IRR with mode indicator
+  const irrValue = data.irr;
+  const irrMode = data.irrMode || centralizedMetrics[currentVariant]?.capex?.irrMode || 'real';
+  const irrStatus = data.irrStatus || 'converged';
+
+  const irrElement = document.getElementById('irr');
+  if (irrElement) {
+    if (irrValue === null || irrValue === undefined || irrStatus === 'no_root' || irrStatus === 'failed') {
+      irrElement.textContent = 'N/A';
+      irrElement.title = data.irrMessage || 'IRR niedostępne';
+    } else {
+      irrElement.textContent = (irrValue * 100).toFixed(1); // decimal → %
+      irrElement.title = `IRR ${irrMode === 'nominal' ? 'nominalny' : 'realny'}`;
+    }
+  }
+
+  // Add IRR mode indicator if not already present
+  const irrModeIndicator = document.getElementById('irrModeIndicator');
+  if (!irrModeIndicator) {
+    const irrContainer = irrElement?.parentElement;
+    if (irrContainer) {
+      const modeSpan = document.createElement('span');
+      modeSpan.id = 'irrModeIndicator';
+      modeSpan.style.cssText = 'font-size:10px;color:#666;margin-left:4px;';
+      modeSpan.textContent = irrMode === 'nominal' ? '(nom.)' : '(real)';
+      irrContainer.appendChild(modeSpan);
+    }
+  } else {
+    irrModeIndicator.textContent = irrMode === 'nominal' ? '(nom.)' : '(real)';
+  }
 
   // Detailed metrics
   const variant = variants[currentVariant];
@@ -1160,7 +1281,12 @@ function updateDataInfo() {
   const variant = variants[currentVariant];
   const capacity = (variant.capacity / 1000).toFixed(1); // kWp → MWp
   const params = getEconomicParameters();
-  const info = `Wariant ${currentVariant}: ${capacity} MWp • Analiza ${params.analysis_period}-letnia • IRR: ${(economicData.irr * 100).toFixed(1)}%`;
+  const irrMode = economicData?.irrMode || centralizedMetrics[currentVariant]?.capex?.irrMode || 'real';
+  const irrValue = economicData?.irr;
+  const irrDisplay = irrValue !== null && irrValue !== undefined
+    ? `${(irrValue * 100).toFixed(1)}% (${irrMode === 'nominal' ? 'nom.' : 'real'})`
+    : 'N/A';
+  const info = `Wariant ${currentVariant}: ${capacity} MWp • Analiza ${params.analysis_period}-letnia • IRR: ${irrDisplay}`;
   document.getElementById('dataInfo').textContent = info;
 }
 
@@ -2340,86 +2466,88 @@ function formatEaaSResults(result) {
 /**
  * Calculate and display EaaS analysis
  */
-function calculateEaaS() {
-  console.log('📊 Calculating EaaS analysis...');
+async function calculateEaaS() {
+  console.log('Calculating EaaS analysis...');
   console.log('  - variants:', variants);
   console.log('  - currentVariant:', currentVariant);
   console.log('  - systemSettings:', systemSettings);
 
-  // Get current variant data
   const variant = variants[currentVariant];
   if (!variant) {
-    console.error('❌ No variant data available for EaaS');
+    console.error('No variant data available for EaaS');
     const resultsDiv = document.getElementById('eaasResults');
     if (resultsDiv) {
-      resultsDiv.innerHTML = '<div style="color:#7f8c8d;padding:20px;text-align:center">Załaduj dane z analizy aby zobaczyć kalkulację EaaS</div>';
+      resultsDiv.innerHTML = '<div style="color:#7f8c8d;padding:20px;text-align:center">Load analysis data to see EaaS</div>';
     }
     return;
   }
 
-  // Check if we have settings
   if (!systemSettings) {
-    console.warn('⚠️ No system settings available, using defaults');
+    console.warn('No system settings available, using defaults');
   }
 
-  // Get economic parameters
   const params = getEconomicParameters();
 
-  // Calculate EaaS subscription automatically based on target IRR
-  const subscriptionData = calculateEaasSubscription(
-    variant.capacity, // capacity in kW
-    systemSettings || {}, // settings with EaaS params
-    params // economic parameters
-  );
+  let subscriptionData = null;
+  try {
+    const backendEaas = await fetchEaasMonthlyLog(variant, systemSettings || {}, params);
+    console.log('Backend EaaS monthly result received:', backendEaas);
+    subscriptionData = {
+      annualSubscription: backendEaas.subscription_annual_year1,
+      annualSubscriptionPLN: backendEaas.subscription_annual_year1,
+      monthlySubscription: backendEaas.subscription_monthly,
+      irr: backendEaas.achieved_irr_annual ?? 0,
+      duration: systemSettings?.eaasDuration || 10,
+      currency: systemSettings?.eaasCurrency || 'PLN',
+    };
 
-  console.log('💰 Calculated EaaS subscription:', subscriptionData);
+    const dl = document.getElementById('eaasLogDownload');
+    if (dl && backendEaas.log_csv) {
+      const blob = new Blob([backendEaas.log_csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      dl.href = url;
+      dl.download = `eaas_log_${currentVariant}.csv`;
+      dl.style.display = 'inline-block';
+    }
+  } catch (err) {
+    console.error('Backend EaaS solver failed, falling back to local:', err);
+    subscriptionData = calculateEaasSubscription(variant.capacity, systemSettings || {}, params);
+  }
 
-  // Update display with calculated values
+  console.log('Calculated EaaS subscription:', subscriptionData);
+
   const currency = subscriptionData.currency || 'PLN';
-  document.getElementById('eaasAnnualSub').textContent =
-    subscriptionData.annualSubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
+  document.getElementById('eaasAnnualSub').textContent = subscriptionData.annualSubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
   document.getElementById('eaasAnnualSubUnit').textContent = `${currency}/rok`;
-  document.getElementById('eaasMonthlySub').textContent =
-    subscriptionData.monthlySubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
+  document.getElementById('eaasMonthlySub').textContent = subscriptionData.monthlySubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
   document.getElementById('eaasMonthlySubUnit').textContent = `${currency}/mies`;
   document.getElementById('eaasTargetIRR').textContent = (subscriptionData.irr * 100).toFixed(1);
   document.getElementById('eaasDurationDisplay').textContent = subscriptionData.duration;
 
-  // Use calculated subscription for further analysis
-  // IMPORTANT: Use annualSubscriptionPLN for internal calculations (NPV, etc.)
-  // Use annualSubscription (in selected currency) only for display
-  const eaasSubscriptionPLN = subscriptionData.annualSubscriptionPLN;  // Always in PLN
-  const eaasSubscription = subscriptionData.annualSubscription;  // In selected currency (for display)
+  const eaasSubscriptionPLN = subscriptionData.annualSubscriptionPLN;
   const eaasOM = params.opex_per_kwp || (systemSettings?.opexPerKwp || 15);
   const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value) || subscriptionData.duration || 10;
 
-  // ========== CALL CENTRALIZED CALCULATION ==========
-  // This is the SINGLE SOURCE OF TRUTH for NPV and financial metrics
-  // IMPORTANT: Always use PLN values for NPV calculations!
   const centralizedCalc = calculateCentralizedFinancialMetrics(variant, params, {
-    subscription: eaasSubscriptionPLN,  // Use PLN value for NPV calculations!
+    subscription: eaasSubscriptionPLN,
     duration: eaasDuration,
-    omPerKwp: eaasOM
+    omPerKwp: eaasOM,
   });
 
-  // Store in global centralized metrics for current variant
   centralizedMetrics[currentVariant] = centralizedCalc;
 
-  console.log('💰 CENTRALIZED METRICS stored:', centralizedCalc);
+  console.log('CENTRALIZED METRICS stored:', centralizedCalc);
   console.log('  - CAPEX NPV:', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
-  console.log('  - EaaS NPV:', (centralizedCalc.eaas.npv / 1000000).toFixed(2), 'mln PLN');
+  console.log('  - EaaS NPV:', ((centralizedCalc.eaas?.npv || 0) / 1000000).toFixed(2), 'mln PLN');
 
-  // Get consumption data
   const annualConsumption = consumptionData?.annual_consumption_kwh || 10000000;
-
-  // Prepare EaaS parameters for legacy display functions
   const eaasParams = {
     annualConsumptionKWh: annualConsumption,
     annualPVProductionKWh: variant.production,
     selfConsumptionRatio: variant.self_consumed / variant.production,
     pvPowerKWp: variant.capacity,
     pvCapexPLN: variant.capacity * getCapexForCapacity(variant.capacity),
-    eaasSubscriptionPLNperYear: eaasSubscriptionPLN,  // Use PLN value!
+    eaasSubscriptionPLNperYear: eaasSubscriptionPLN,
     omCostPerKWp: eaasOM,
     tariffComponents: {
       energyActive: params.energy_active,
@@ -2428,40 +2556,28 @@ function calculateEaaS() {
       oze: params.oze_fee,
       cogeneration: params.cogeneration_fee,
       capacity: params.capacity_fee,
-      excise: params.excise_tax
-    }
+      excise: params.excise_tax,
+    },
   };
 
-  // Calculate EaaS metrics (legacy function for display)
   const result = calculateEaaSFinancialMetrics(eaasParams);
 
-  // Display results
   const resultsDiv = document.getElementById('eaasResults');
   if (resultsDiv) {
     resultsDiv.innerHTML = formatEaaSResults(result);
   }
 
-  // Generate year-by-year EaaS table with NPV
   generateEaaSYearlyTable(eaasParams, result);
 
-  // Show EaaS section
   const eaasSection = document.getElementById('eaasSection');
   if (eaasSection) {
     eaasSection.style.display = 'block';
   }
 
-  console.log('✅ EaaS analysis completed:', result);
+  console.log('EaaS analysis completed:', result);
 
-  // Calculate optimization after EaaS
   calculateOptimization();
 }
-
-/**
- * Calculate optimization analysis across all variants
- * Compares NPV vs Autoconsumption for CAPEX and EaaS models
- *
- * UPDATED: Now uses CENTRALIZED CALCULATIONS from centralizedMetrics
- */
 function calculateOptimization() {
   console.log('🎯 Calculating optimization analysis...');
 
@@ -2647,49 +2763,7 @@ function calculateOptimization() {
  * Simple IRR calculation using Newton-Raphson method
  * NOTE: This is a duplicate function definition - the first one at line ~106 is used primarily
  */
-function calculateIRRSimple(cashFlows, guess = 0.1) {
-  const maxIterations = 100;
-  const tolerance = 0.00001;
 
-  let rate = guess;
-
-  for (let i = 0; i < maxIterations; i++) {
-    let npv = 0;
-    let dnpv = 0;
-
-    for (let j = 0; j < cashFlows.length; j++) {
-      npv += cashFlows[j] / Math.pow(1 + rate, j);
-      dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
-    }
-
-    // Check convergence
-    if (Math.abs(npv) < tolerance) {
-      return rate;
-    }
-
-    // Check for zero derivative to avoid division by zero
-    if (Math.abs(dnpv) < 1e-10) {
-      console.warn('⚠️ IRR calculation (simple): derivative too small, returning current estimate');
-      return rate;
-    }
-
-    const newRate = rate - npv / dnpv;
-
-    // Prevent invalid IRR values
-    if (!isFinite(newRate) || newRate < -0.99 || newRate > 10.0) {
-      console.warn('⚠️ IRR calculation (simple): invalid value, returning current estimate');
-      return rate;
-    }
-
-    if (Math.abs(newRate - rate) < tolerance) {
-      return newRate;
-    }
-
-    rate = newRate;
-  }
-
-  return rate;
-}
 
 /**
  * Generate EaaS year-by-year table with NPV calculation

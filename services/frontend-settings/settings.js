@@ -36,6 +36,10 @@ const DEFAULT_CONFIG = {
   analysisPeriod: 25,
   inflationRate: 2.5,
 
+  // IRR Calculation Mode
+  useInflation: false,   // false = real IRR (constant prices), true = nominal IRR (inflation-indexed)
+  irrMode: 'real',       // 'real' or 'nominal' - alternative to useInflation for clarity
+
   // EaaS Parameters
   eaasCurrency: 'PLN',       // 'PLN' or 'EUR'
   eaasDuration: 10,          // Contract duration in years
@@ -200,6 +204,12 @@ function applySettingsToUI(config) {
     'capMin', 'capMax', 'capStep', 'thrA', 'thrB', 'thrC', 'thrD'
   ];
 
+  // IRR mode checkbox
+  const useInflationEl = document.getElementById('useInflation');
+  if (useInflationEl) {
+    useInflationEl.checked = config.useInflation || config.irrMode === 'nominal' || false;
+  }
+
   simpleFields.forEach(field => {
     const el = document.getElementById(field);
     if (el) {
@@ -285,6 +295,10 @@ function getCurrentSettings() {
     degradationRate: parseFloat(document.getElementById('degradationRate')?.value || DEFAULT_CONFIG.degradationRate),
     analysisPeriod: parseInt(document.getElementById('analysisPeriod')?.value || DEFAULT_CONFIG.analysisPeriod),
     inflationRate: parseFloat(document.getElementById('inflationRate')?.value || DEFAULT_CONFIG.inflationRate),
+
+    // IRR Calculation Mode
+    useInflation: document.getElementById('useInflation')?.checked || false,
+    irrMode: document.getElementById('useInflation')?.checked ? 'nominal' : 'real',
 
     // EaaS
     eaasCurrency: document.getElementById('eaasCurrency')?.value || DEFAULT_CONFIG.eaasCurrency,

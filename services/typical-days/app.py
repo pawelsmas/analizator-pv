@@ -63,15 +63,43 @@ class TypicalDaysResult(BaseModel):
 def get_day_profiles(
     consumption: np.ndarray,
     pv_production: np.ndarray,
-    start_date: str = "2024-01-01"
+    start_date: Optional[str] = None,
+    timestamps: Optional[List[str]] = None
 ) -> List[DayProfile]:
     """
-    Extract daily profiles from hourly data
+    Extract daily profiles from hourly data.
+
+    Args:
+        consumption: Hourly consumption array
+        pv_production: Hourly PV production array
+        start_date: Optional start date string (legacy parameter)
+        timestamps: Optional list of timestamps from consumption data
+
+    Date determination priority:
+    1. If timestamps provided, extract start date from first timestamp
+    2. If start_date provided, use it
+    3. Default to first day of current year
     """
     num_hours = len(consumption)
     num_days = num_hours // 24
 
-    start = datetime.strptime(start_date, "%Y-%m-%d")
+    # Determine start date from timestamps, parameter, or default
+    if timestamps and len(timestamps) > 0:
+        # Extract start date from first timestamp
+        try:
+            first_ts = datetime.fromisoformat(timestamps[0].replace('Z', '+00:00').replace('+00:00', ''))
+            start = datetime(first_ts.year, first_ts.month, first_ts.day)
+            print(f"📅 Using start date from timestamps: {start.strftime('%Y-%m-%d')}")
+        except (ValueError, IndexError) as e:
+            print(f"⚠️ Could not parse timestamp, using default: {e}")
+            start = datetime(datetime.now().year, 1, 1)
+    elif start_date:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        print(f"📅 Using provided start_date: {start_date}")
+    else:
+        start = datetime(datetime.now().year, 1, 1)
+        print(f"📅 Using default start date: {start.strftime('%Y-%m-%d')}")
+
     profiles = []
 
     for day in range(num_days):
@@ -115,17 +143,24 @@ def get_day_profiles(
 
     return profiles
 
+def is_weekend(profile: "DayProfile") -> bool:
+    """
+    Check if a day profile is a weekend day using actual date.
+    Works correctly for analytical year starting from any date.
+    """
+    day_date = datetime.strptime(profile.date, "%Y-%m-%d")
+    return day_date.weekday() >= 5  # Saturday=5, Sunday=6
+
 def find_typical_day(profiles: List[DayProfile], day_type: str = "all") -> DayProfile:
     """
     Find the most typical day using statistical distance from mean
     Uses Euclidean distance in normalized consumption/production space
     """
-    # Filter by day type if specified
+    # Filter by day type if specified - use actual date weekday, not index
     if day_type == "workday":
-        # Assuming weekdays are days 0-4, 7-11, etc. (Mon-Fri)
-        filtered = [p for p in profiles if (p.day_index % 7) < 5]
+        filtered = [p for p in profiles if not is_weekend(p)]
     elif day_type == "weekend":
-        filtered = [p for p in profiles if (p.day_index % 7) >= 5]
+        filtered = [p for p in profiles if is_weekend(p)]
     else:
         filtered = profiles
 
@@ -174,13 +209,12 @@ def find_typical_day(profiles: List[DayProfile], day_type: str = "all") -> DayPr
     return typical
 
 def calculate_seasonal_patterns(
-    profiles: List[DayProfile],
-    start_date: str = "2024-01-01"
+    profiles: List[DayProfile]
 ) -> List[SeasonalPattern]:
     """
-    Analyze seasonal patterns (winter, spring, summer, fall)
+    Analyze seasonal patterns (winter, spring, summer, fall).
+    Uses dates from profile data directly.
     """
-    start = datetime.strptime(start_date, "%Y-%m-%d")
 
     # Define seasons by month (Northern Hemisphere)
     seasons = {
@@ -236,10 +270,12 @@ def calculate_seasonal_patterns(
 
 def calculate_weekday_patterns(profiles: List[DayProfile]) -> tuple[WeekdayPattern, WeekdayPattern]:
     """
-    Calculate patterns for workdays vs weekends
+    Calculate patterns for workdays vs weekends.
+    Uses actual date weekday for analytical year support.
     """
-    workday_profiles = [p for p in profiles if (p.day_index % 7) < 5]
-    weekend_profiles = [p for p in profiles if (p.day_index % 7) >= 5]
+    # Use actual date weekday, not day_index (works for any start date)
+    workday_profiles = [p for p in profiles if not is_weekend(p)]
+    weekend_profiles = [p for p in profiles if is_weekend(p)]
 
     def create_pattern(day_profiles: List[DayProfile], day_type: str) -> WeekdayPattern:
         if not day_profiles:
@@ -348,10 +384,22 @@ async def health():
 async def analyze_typical_days(
     consumption: List[float],
     pv_production: List[float],
-    start_date: str = "2024-01-01"
+    start_date: Optional[str] = None,
+    timestamps: Optional[List[str]] = None
 ):
     """
-    Analyze typical day patterns, seasonal variations, and workday/weekend differences
+    Analyze typical day patterns, seasonal variations, and workday/weekend differences.
+
+    Args:
+        consumption: Hourly consumption data
+        pv_production: Hourly PV production data
+        start_date: Optional start date (ISO format, e.g., "2024-01-01")
+        timestamps: Optional list of timestamps from consumption file (preferred over start_date)
+
+    Date handling:
+    - If timestamps provided, start date is extracted from first timestamp
+    - If start_date provided, use it directly
+    - Otherwise, default to January 1st of current year
     """
     try:
         cons_array = np.array(consumption)
@@ -363,8 +411,8 @@ async def analyze_typical_days(
         if len(cons_array) < 24:
             raise HTTPException(status_code=400, detail="Need at least 24 hours of data")
 
-        # Get all day profiles
-        profiles = get_day_profiles(cons_array, pv_array, start_date)
+        # Get all day profiles - pass timestamps for dynamic date extraction
+        profiles = get_day_profiles(cons_array, pv_array, start_date, timestamps)
 
         if len(profiles) < 1:
             raise HTTPException(status_code=400, detail="Insufficient data to analyze days")
@@ -377,8 +425,8 @@ async def analyze_typical_days(
         typical_workday = find_typical_day(profiles, "workday")
         typical_weekend = find_typical_day(profiles, "weekend")
 
-        # Analyze seasonal patterns
-        seasonal_patterns = calculate_seasonal_patterns(profiles, start_date)
+        # Analyze seasonal patterns (uses dates from profiles directly)
+        seasonal_patterns = calculate_seasonal_patterns(profiles)
 
         # Analyze workday/weekend patterns
         workday_pattern, weekend_pattern = calculate_weekday_patterns(profiles)
