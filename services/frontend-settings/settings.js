@@ -28,6 +28,7 @@ const DEFAULT_CONFIG = {
   opexPerKwp: 15,
   eaasOM: 24,
   insuranceRate: 0.005,  // 0.5% of CAPEX per year
+  landLeasePerKwp: 0,    // Land lease cost [PLN/kWp/year]
 
   // Financial Parameters
   discountRate: 7,
@@ -185,7 +186,7 @@ function applySettingsToUI(config) {
   // Simple fields
   const simpleFields = [
     'energyActive', 'distribution', 'qualityFee', 'ozeFee', 'cogenerationFee',
-    'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate',
+    'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate', 'landLeasePerKwp',
     'discountRate', 'degradationRate', 'analysisPeriod', 'inflationRate',
     'eaasDuration', 'eaasTargetIrrPln', 'eaasTargetIrrEur', 'cpiPln', 'cpiEur', 'fxPlnEur',
     // Environmental parameters
@@ -277,6 +278,7 @@ function getCurrentSettings() {
     opexPerKwp: parseFloat(document.getElementById('opexPerKwp')?.value || DEFAULT_CONFIG.opexPerKwp),
     eaasOM: parseFloat(document.getElementById('eaasOM')?.value || DEFAULT_CONFIG.eaasOM),
     insuranceRate: parseFloat(document.getElementById('insuranceRate')?.value || DEFAULT_CONFIG.insuranceRate),
+    landLeasePerKwp: parseFloat(document.getElementById('landLeasePerKwp')?.value || DEFAULT_CONFIG.landLeasePerKwp),
 
     // Financial
     discountRate: parseFloat(document.getElementById('discountRate')?.value || DEFAULT_CONFIG.discountRate),

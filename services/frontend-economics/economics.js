@@ -105,8 +105,8 @@ function resetToDefaults() {
 // Calculate IRR using Newton-Raphson method
 function calculateIRR(cash_flows, initial_investment) {
   let irr = 0.1; // Start with 10% guess
-  const max_iterations = 100;
-  const tolerance = 0.0001;
+  const max_iterations = 200;
+  const tolerance = 0.000001;  // Increased precision from 0.0001 to 0.000001
 
   for (let i = 0; i < max_iterations; i++) {
     let npv = -initial_investment;
@@ -122,11 +122,22 @@ function calculateIRR(cash_flows, initial_investment) {
       return irr;
     }
 
+    // Check for zero derivative to avoid division by zero
+    if (Math.abs(npv_derivative) < 1e-10) {
+      console.warn('⚠️ IRR calculation: derivative too small, returning current estimate');
+      return irr;
+    }
+
     // Newton-Raphson update
     irr = irr - npv / npv_derivative;
 
-    // Prevent negative IRR
+    // Prevent invalid IRR values
     if (irr < -0.99) irr = -0.99;
+    if (irr > 10.0) irr = 10.0;  // Cap at 1000% to prevent runaway values
+    if (!isFinite(irr)) {
+      console.warn('⚠️ IRR calculation: non-finite value, returning 0');
+      return 0;
+    }
   }
 
   return irr; // Return best estimate even if not converged
@@ -158,9 +169,10 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
     ? (settings.eaasTargetIrrPln || 12.0) / 100
     : (settings.eaasTargetIrrEur || 10.0) / 100;
 
-  // CPI inflation rates
-  const g_PLN = (settings.cpiPln || 2.5) / 100;
-  const g_EUR = (settings.cpiEur || 2.0) / 100;
+  // CPI inflation rates - use unified inflationRate from financial parameters
+  const systemInflationRate = window.economicsSettings?.inflationRate || 0.025;
+  const g_PLN = systemInflationRate; // Use system-wide inflation rate for PLN
+  const g_EUR = (settings.cpiEur || 2.0) / 100; // Keep separate EUR inflation if needed
   const g = currency === 'PLN' ? g_PLN : g_EUR;
 
   // FX rate
@@ -173,23 +185,28 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   // ========== OPEX (in PLN - base currency) ==========
   const opexPerKwp = economicParams.opex_per_kwp || settings.opexPerKwp || 15;
   const insuranceRate = settings.insuranceRate || 0.005; // 0.5% of CAPEX
+  const landLeasePerKwp = settings.landLeasePerKwp || 0; // Land lease cost per kWp [PLN/kWp/year]
 
   const annualOM_PLN = capacityKw * opexPerKwp; // O&M
   const annualInsurance_PLN = I0_PLN * insuranceRate; // Insurance
-  const O_PLN = annualOM_PLN + annualInsurance_PLN; // Total annual OPEX
+  const annualLandLease_PLN = capacityKw * landLeasePerKwp; // Land lease
+  const O_PLN = annualOM_PLN + annualInsurance_PLN + annualLandLease_PLN; // Total annual OPEX
 
   console.log(`  📋 INPUTS:`);
   console.log(`     Waluta: ${currency}`);
   console.log(`     Okres umowy: ${N} lat`);
   console.log(`     Typ opłaty: ${indexationType}`);
   console.log(`     Target IRR: ${(r * 100).toFixed(1)}%`);
-  console.log(`     CPI ${currency}: ${(g * 100).toFixed(1)}%`);
+  console.log(`     Inflacja (CPI ${currency}): ${(g * 100).toFixed(1)}%`);
   console.log(`  `);
   console.log(`  💰 PARAMETRY (waluta bazowa PLN):`);
   console.log(`     CAPEX (I₀): ${(I0_PLN / 1000000).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
   console.log(`     OPEX (O): ${O_PLN.toFixed(0)} PLN/rok`);
   console.log(`       - O&M: ${annualOM_PLN.toFixed(0)} PLN/rok`);
   console.log(`       - Ubezpieczenie: ${annualInsurance_PLN.toFixed(0)} PLN/rok`);
+  if (annualLandLease_PLN > 0) {
+    console.log(`       - Najem powierzchni: ${annualLandLease_PLN.toFixed(0)} PLN/rok`);
+  }
   console.log(`  `);
 
   let A_PLN; // Annual subscription in PLN (base currency)
@@ -290,6 +307,8 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   }
 
   // Verify IRR
+  // Note: This calculates ESCO's IRR over contract period only (conservative approach)
+  // In reality, ESCO may have residual value considerations, but this ensures subscription covers costs
   const achievedIRR = calculateIRR(
     cashFlows.slice(1).map((cf, idx) => ({ year: idx + 1, net_cash_flow: cf })),
     I0_PLN
@@ -700,10 +719,15 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  ✅ Final CAPEX NPV:', (capexNPV / 1000000).toFixed(2), 'mln PLN');
 
   // Calculate CAPEX IRR
-  const capexIRR = calculateIRR(capexCashFlows.map((cf, i) => ({
+  const irrCashFlows = capexCashFlows.map((cf, i) => ({
     year: i + 1,
     net_cash_flow: cf.net_cash_flow
-  })), capex);
+  }));
+  console.log('  📊 IRR Input - Initial investment:', (capex / 1000000).toFixed(2), 'mln PLN');
+  console.log('  📊 IRR Input - Cash flows count:', irrCashFlows.length);
+  console.log('  📊 IRR Input - First 3 cash flows:', irrCashFlows.slice(0, 3).map(cf => `Year ${cf.year}: ${(cf.net_cash_flow/1000).toFixed(0)}k PLN`));
+  const capexIRR = calculateIRR(irrCashFlows, capex);
+  console.log('  📊 IRR Result:', capexIRR, '(', (capexIRR * 100).toFixed(2), '%)');
 
   // ========== EaaS MODEL CALCULATION ==========
   let eaasNPV = 0;
@@ -715,6 +739,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     const baseSubscriptionCost = eaasParams.subscription;
     const baseOmCost = capacityKwp * (eaasParams.omPerKwp || 24);
     const baseInsuranceCost = capex * (window.economicsSettings?.insuranceRate || 0.005);
+    const baseLandLeaseCost = capacityKwp * (window.economicsSettings?.landLeasePerKwp || 0);
 
     console.log('🔢 CENTRALIZED EaaS NPV Calculation:');
     console.log('  📅 Analysis period:', analysisPeriod, 'years');
@@ -725,6 +750,9 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     console.log('  💰 Base subscription:', (baseSubscriptionCost / 1000).toFixed(0), 'k PLN/year');
     console.log('  💰 Base O&M:', (baseOmCost / 1000).toFixed(0), 'k PLN/year');
     console.log('  💰 Base insurance:', (baseInsuranceCost / 1000).toFixed(0), 'k PLN/year');
+    if (baseLandLeaseCost > 0) {
+      console.log('  💰 Base land lease:', (baseLandLeaseCost / 1000).toFixed(0), 'k PLN/year');
+    }
 
     for (let year = 1; year <= analysisPeriod; year++) {
       const degradation = Math.pow(1 - degradationRate, year - 1);
@@ -737,17 +765,18 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       const adjustedSubscriptionCost = baseSubscriptionCost * eaasInflationFactor;
       const adjustedOmCost = baseOmCost * eaasInflationFactor;
       const adjustedInsuranceCost = baseInsuranceCost * eaasInflationFactor;
+      const adjustedLandLeaseCost = baseLandLeaseCost * eaasInflationFactor;
 
       const gridCost = yearSelfConsumed * adjustedGridPrice;
 
       let eaasCost;
       if (year <= eaasDuration) {
-        // IMPORTANT: Subscription already includes OPEX (O&M + insurance) from annuity formula
+        // IMPORTANT: Subscription already includes OPEX (O&M + insurance + land lease) from annuity formula
         // Do NOT add them again - that would be triple-counting!
         eaasCost = adjustedSubscriptionCost;
       } else {
-        // After EaaS contract ends, customer only pays O&M + insurance (no subscription)
-        eaasCost = adjustedOmCost + adjustedInsuranceCost;
+        // After EaaS contract ends, customer only pays O&M + insurance + land lease (no subscription)
+        eaasCost = adjustedOmCost + adjustedInsuranceCost + adjustedLandLeaseCost;
       }
 
       const savings = gridCost - eaasCost;
@@ -1884,9 +1913,12 @@ function generatePaybackTable(data, capacity_kwp, params) {
 
   tableBody.innerHTML = '';
 
-  // Get total energy price
+  // Get total energy price (base, without inflation)
   const totalEnergyPrice = calculateTotalEnergyPrice(params);
   const totalEnergyPriceWithCapacity = totalEnergyPrice + calculateCapacityFeeForConsumption(consumptionData, params);
+
+  // Use centralized cash flows WITH inflation
+  const cashFlows = data.centralized_cash_flows || data.cash_flows;
 
   // Year 0 - Initial investment
   const row0 = document.createElement('tr');
@@ -1903,30 +1935,39 @@ function generatePaybackTable(data, capacity_kwp, params) {
   `;
   tableBody.appendChild(row0);
 
-  // Years 1-N
+  // Calculate cumulative cash flows (needed for break-even detection)
+  let cumulativeCF = -data.investment;
   let breakEvenYear = null;
-  data.cash_flows.forEach((cf) => {
+
+  // Years 1-N
+  cashFlows.forEach((cf) => {
     const row = document.createElement('tr');
 
+    cumulativeCF += cf.net_cash_flow;
+
     // Check if this is the break-even year
-    const prevCF = cf.year === 1 ? -data.investment : data.cash_flows[cf.year - 2].cumulative_cash_flow;
-    if (prevCF < 0 && cf.cumulative_cash_flow >= 0 && !breakEvenYear) {
+    const prevCumulativeCF = cf.year === 1 ? -data.investment : cumulativeCF - cf.net_cash_flow;
+    if (prevCumulativeCF < 0 && cumulativeCF >= 0 && !breakEvenYear) {
       breakEvenYear = cf.year;
       row.className = 'breakeven';
     }
 
     const degradationPct = ((1 - Math.pow(1 - params.degradation_rate, cf.year - 1)) * 100).toFixed(1);
-    const cfClass = cf.cumulative_cash_flow >= 0 ? 'positive' : 'negative';
+    const cfClass = cumulativeCF >= 0 ? 'positive' : 'negative';
+
+    // Calculate inflation factor for this year to show adjusted energy price
+    const inflationFactor = Math.pow(1 + (window.economicsSettings?.inflationRate || 0.025), cf.year - 1);
+    const adjustedEnergyPrice = totalEnergyPriceWithCapacity * inflationFactor;
 
     row.innerHTML = `
       <td>${cf.year}</td>
       <td>${cf.production.toFixed(1)}</td>
-      <td>${(cf.savings / totalEnergyPriceWithCapacity).toFixed(1)}</td>
+      <td>${(cf.savings / adjustedEnergyPrice).toFixed(1)}</td>
       <td>${degradationPct}%</td>
       <td>${(cf.savings / 1000).toFixed(0)}</td>
       <td>${(cf.opex / 1000).toFixed(0)}</td>
       <td class="${cf.net_cash_flow >= 0 ? 'positive' : 'negative'}">${(cf.net_cash_flow / 1000).toFixed(0)}</td>
-      <td class="${cfClass}">${(cf.cumulative_cash_flow / 1000000).toFixed(2)}</td>
+      <td class="${cfClass}">${(cumulativeCF / 1000000).toFixed(2)}</td>
     `;
 
     tableBody.appendChild(row);
@@ -1942,14 +1983,17 @@ function generateRevenueTable(data) {
 
   tableBody.innerHTML = '';
 
+  // Use centralized cash flows WITH inflation
+  const cashFlows = data.centralized_cash_flows || data.cash_flows;
+
   // Show first 10 years
-  const yearsToShow = Math.min(10, data.cash_flows.length);
+  const yearsToShow = Math.min(10, cashFlows.length);
   let totalSavings = 0;
   let totalOpex = 0;
   let totalProfit = 0;
 
   for (let i = 0; i < yearsToShow; i++) {
-    const cf = data.cash_flows[i];
+    const cf = cashFlows[i];
     const row = document.createElement('tr');
 
     const savings = cf.savings;
@@ -2601,8 +2645,9 @@ function calculateOptimization() {
 
 /**
  * Simple IRR calculation using Newton-Raphson method
+ * NOTE: This is a duplicate function definition - the first one at line ~106 is used primarily
  */
-function calculateIRR(cashFlows, guess = 0.1) {
+function calculateIRRSimple(cashFlows, guess = 0.1) {
   const maxIterations = 100;
   const tolerance = 0.00001;
 
@@ -2617,7 +2662,24 @@ function calculateIRR(cashFlows, guess = 0.1) {
       dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
     }
 
+    // Check convergence
+    if (Math.abs(npv) < tolerance) {
+      return rate;
+    }
+
+    // Check for zero derivative to avoid division by zero
+    if (Math.abs(dnpv) < 1e-10) {
+      console.warn('⚠️ IRR calculation (simple): derivative too small, returning current estimate');
+      return rate;
+    }
+
     const newRate = rate - npv / dnpv;
+
+    // Prevent invalid IRR values
+    if (!isFinite(newRate) || newRate < -0.99 || newRate > 10.0) {
+      console.warn('⚠️ IRR calculation (simple): invalid value, returning current estimate');
+      return rate;
+    }
 
     if (Math.abs(newRate - rate) < tolerance) {
       return newRate;
