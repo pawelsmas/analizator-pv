@@ -10,6 +10,7 @@ pvlib is the industry-standard library for solar resource and PV modeling.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Tuple
 import numpy as np
@@ -18,6 +19,18 @@ from datetime import datetime, timedelta
 import pytz
 import requests
 import io
+import asyncio
+import json
+
+# Global progress store for SSE
+optimization_progress = {
+    "active": False,
+    "percent": 0,
+    "step": "",
+    "current_capacity": 0,
+    "total_configs": 0,
+    "tested_configs": 0
+}
 
 # Import pvlib
 try:
@@ -33,7 +46,7 @@ except ImportError as e:
     PVLIB_VERSION = None
     print(f"✗ pvlib-python not available: {e}")
 
-app = FastAPI(title="PV Calculation Service (pvlib)", version="2.0.0")
+app = FastAPI(title="PV Calculation Service (pvlib)", version="2.1.0")
 
 # CORS configuration
 app.add_middleware(
@@ -200,6 +213,65 @@ class AnalysisResult(BaseModel):
     date_range_end: Optional[str] = None
     estimation_method: Optional[str] = None  # "none", "seasonal_scaling_Xm", etc.
     data_hours: Optional[int] = None
+
+# ============== Seasonality Band Optimization Models ==============
+class BandConfig(BaseModel):
+    """Konfiguracja pasma sezonowego"""
+    band: str  # "High", "Mid", "Low"
+    ac_limit_kw: float  # Limit mocy AC dla pasma [kW]
+    months: List[str]  # Miesiące przypisane do pasma
+
+class SeasonalityOptimizationRequest(BaseModel):
+    """Żądanie optymalizacji z pasmami sezonowości"""
+    pv_config: PVConfiguration
+    consumption: List[float]
+    timestamps: List[str]
+    # Pasma sezonowości (z data-analysis /seasonality)
+    band_powers: List[dict]  # {"band": "High", "p_recommended": 800}
+    monthly_bands: List[dict]  # {"month": "2024-07", "dominant_band": "High"}
+    # Zakres analizy
+    capacity_min: float = 100.0
+    capacity_max: float = 5000.0
+    capacity_step: float = 100.0
+    # Parametry finansowe (z frontend-settings)
+    capex_per_kwp: float = 3500.0
+    opex_per_kwp_year: float = 50.0
+    energy_price_import: float = 800.0  # PLN/MWh
+    energy_price_esco: float = 700.0  # PLN/MWh (cena dla klienta EaaS)
+    discount_rate: float = 0.08
+    project_years: int = 15
+    # Tryb optymalizacji
+    mode: str = "MAX_AUTOCONSUMPTION"  # lub "MAX_NPV"
+    # Wybrane sezony do optymalizacji (High, Mid, Low)
+    target_seasons: List[str] = ["High", "Mid"]  # Domyślnie High + Mid
+    # Progi autokonsumpcji z ustawień (do filtrowania konfiguracji)
+    autoconsumption_thresholds: Optional[dict] = None  # {"A": 95, "B": 90, "C": 85, "D": 80}
+
+class SeasonalityOptimizationResult(BaseModel):
+    """Wynik optymalizacji z pasmami sezonowości"""
+    mode: str
+    best_capacity_kwp: float
+    best_dcac_ratio: float
+    best_band_config: List[BandConfig]
+    # Metryki CAŁOROCZNE dla najlepszej konfiguracji
+    autoconsumption_pct: float
+    coverage_pct: float
+    annual_production_mwh: float
+    annual_self_consumed_mwh: float
+    annual_exported_mwh: float
+    # Metryki SEZONOWE (target) dla najlepszej konfiguracji
+    target_self_consumed_mwh: Optional[float] = None
+    target_autoconsumption_pct: Optional[float] = None
+    target_coverage_pct: Optional[float] = None
+    target_npv: Optional[float] = None
+    target_seasons: Optional[List[str]] = None
+    # Metryki finansowe CAŁOROCZNE (dla MAX_NPV)
+    npv: Optional[float] = None
+    irr: Optional[float] = None
+    payback_years: Optional[float] = None
+    # Porównanie konfiguracji
+    configurations_tested: int
+    all_configurations: List[dict]  # Tabela porównawcza
 
 # ============== Date Extraction and Validation ==============
 
@@ -892,6 +964,562 @@ def generate_pv_profile_fallback(
 
     return profile
 
+# ============== Seasonality Band Optimization Functions ==============
+
+def simulate_pv_with_seasonal_bands(
+    capacity_kwp: float,
+    pv_profile: np.ndarray,
+    consumption: np.ndarray,
+    timestamps: List[str],
+    monthly_bands: List[dict],
+    dc_ac_ratio: float = 1.2,
+    target_seasons: List[str] = None  # Filtr sezonów do metryki optymalizacji
+) -> dict:
+    """
+    Symulacja PV z sezonowością (bez sztucznych limitów mocy AC).
+    Wersja zoptymalizowana z wektoryzacją NumPy.
+
+    Jedyny limit AC to limit inwertera (z DC/AC ratio).
+    W trybie 0-export energia jest limitowana do zużycia w danej godzinie.
+
+    target_seasons: Jeśli podane, metryki optymalizacji (self_consumed_target)
+    są liczone tylko dla godzin w wybranych sezonach.
+    """
+    # Produkcja DC
+    production_dc = pv_profile * capacity_kwp
+
+    # Limit AC = tylko limit inwertera (z DC/AC ratio)
+    ac_capacity = capacity_kwp / dc_ac_ratio
+
+    # Przygotuj mapę pasm dla miesięcy (do filtrowania sezonów)
+    month_band_map = {item['month']: item['dominant_band'] for item in monthly_bands}
+
+    # Parsuj timestampy
+    parsed_times = pd.to_datetime(timestamps)
+
+    # Wektoryzowana symulacja
+    # Produkcja AC = min(DC, AC_capacity) - tylko limit inwertera!
+    production_ac = np.minimum(production_dc, ac_capacity)
+
+    # 0-export: nie więcej niż zużycie
+    self_consumed = np.minimum(production_ac, consumption)
+    exported = np.maximum(production_ac - self_consumed, 0)
+
+    # Sumy CAŁKOWITE (dla raportowania)
+    total_production = production_ac.sum()
+    total_self_consumed = self_consumed.sum()
+    total_exported = exported.sum()
+    total_consumption = consumption.sum()
+
+    # Metryki całkowite
+    autoconsumption_pct = (total_self_consumed / total_production * 100) if total_production > 0 else 0
+    coverage_pct = (total_self_consumed / total_consumption * 100) if total_consumption > 0 else 0
+
+    # Metryki dla WYBRANYCH SEZONÓW (do optymalizacji)
+    if target_seasons:
+        # Stwórz maskę dla wybranych sezonów
+        season_mask = np.array([
+            month_band_map.get(ts.strftime('%Y-%m'), 'Mid') in target_seasons
+            for ts in parsed_times
+        ])
+
+        # Policz metryki tylko dla wybranych sezonów
+        target_self_consumed = self_consumed[season_mask].sum()
+        target_production = production_ac[season_mask].sum()
+        target_consumption = consumption[season_mask].sum()
+        target_exported = exported[season_mask].sum()
+
+        target_autoconsumption_pct = (target_self_consumed / target_production * 100) if target_production > 0 else 0
+        target_coverage_pct = (target_self_consumed / target_consumption * 100) if target_consumption > 0 else 0
+    else:
+        # Bez filtra = całość
+        target_self_consumed = total_self_consumed
+        target_production = total_production
+        target_exported = total_exported
+        target_autoconsumption_pct = autoconsumption_pct
+        target_coverage_pct = coverage_pct
+
+    return {
+        'capacity_kwp': capacity_kwp,
+        'dc_ac_ratio': dc_ac_ratio,
+        # Metryki CAŁKOWITE (do raportowania)
+        'production_mwh': total_production / 1000,
+        'self_consumed_mwh': total_self_consumed / 1000,
+        'exported_mwh': total_exported / 1000,
+        'autoconsumption_pct': autoconsumption_pct,
+        'coverage_pct': coverage_pct,
+        # Metryki dla WYBRANYCH SEZONÓW (do optymalizacji)
+        'target_self_consumed_mwh': target_self_consumed / 1000,
+        'target_production_mwh': target_production / 1000,
+        'target_exported_mwh': target_exported / 1000,
+        'target_autoconsumption_pct': target_autoconsumption_pct,
+        'target_coverage_pct': target_coverage_pct,
+        # Dane godzinowe
+        'hourly_production': production_ac.tolist(),
+        'hourly_self_consumed': self_consumed.tolist()
+    }
+
+
+
+
+def calculate_npv_for_config(
+    simulation_result: dict,
+    capex_per_kwp: float,
+    opex_per_kwp_year: float,
+    energy_price_esco: float,
+    discount_rate: float,
+    project_years: int
+) -> dict:
+    """
+    Oblicz NPV dla konfiguracji PV (perspektywa ESCO/inwestora).
+
+    Args:
+        simulation_result: Wynik symulacji PV
+        capex_per_kwp: CAPEX per kWp [PLN]
+        opex_per_kwp_year: OPEX roczny per kWp [PLN]
+        energy_price_esco: Cena sprzedaży energii klientowi [PLN/MWh]
+        discount_rate: Stopa dyskontowa
+        project_years: Okres projektu [lata]
+
+    Returns:
+        Słownik z metrykami finansowymi
+    """
+    capacity = simulation_result['capacity_kwp']
+    annual_energy_mwh = simulation_result['self_consumed_mwh']
+
+    # CAPEX
+    capex = capacity * capex_per_kwp
+
+    # Roczne przychody (sprzedaż energii klientowi)
+    annual_revenue = annual_energy_mwh * energy_price_esco
+
+    # Roczne koszty operacyjne
+    annual_opex = capacity * opex_per_kwp_year
+
+    # Roczny cashflow
+    annual_cf = annual_revenue - annual_opex
+
+    # NPV
+    npv = -capex
+    for year in range(1, project_years + 1):
+        npv += annual_cf / ((1 + discount_rate) ** year)
+
+    # Prosty payback
+    if annual_cf > 0:
+        payback = capex / annual_cf
+    else:
+        payback = float('inf')
+
+    # IRR (przybliżony - metodą iteracyjną)
+    irr = None
+    try:
+        cashflows = [-capex] + [annual_cf] * project_years
+        # Prosta metoda bisekcji dla IRR
+        low, high = -0.5, 1.0
+        for _ in range(50):
+            mid = (low + high) / 2
+            npv_test = sum(cf / ((1 + mid) ** i) for i, cf in enumerate(cashflows))
+            if npv_test > 0:
+                low = mid
+            else:
+                high = mid
+        irr = mid * 100  # %
+    except:
+        irr = None
+
+    return {
+        'npv': npv,
+        'irr': irr,
+        'payback_years': payback if payback != float('inf') else None,
+        'capex': capex,
+        'annual_revenue': annual_revenue,
+        'annual_opex': annual_opex,
+        'annual_cf': annual_cf
+    }
+
+
+def extrapolate_consumption_from_high_season(
+    consumption: np.ndarray,
+    timestamps: List[str],
+    monthly_bands: List[dict],
+    pv_profile: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Ekstrapoluje zużycie z sezonu HIGH na cały rok.
+
+    ULEPSZONA LOGIKA:
+    1. Oblicz ŚREDNIĄ miesięcznego zużycia w miesiącach HIGH (nie medianę)
+    2. Skaluj miesiące MID i LOW do poziomu średniej HIGH
+    3. Miesiące HIGH pozostają bez zmian
+
+    Średnia jest lepsza od mediany bo:
+    - Uwzględnia wszystkie wartości HIGH (nie ignoruje outlierów)
+    - Daje wyższe oszacowanie dla scenariusza "pełne obroty"
+
+    Args:
+        consumption: Rzeczywiste zużycie godzinowe
+        timestamps: Timestampy
+        monthly_bands: Mapowanie miesięcy na pasma
+        pv_profile: Profil PV (do zachowania proporcji godzinowych)
+
+    Returns:
+        Tuple (ekstrapolowane_zużycie, ekstrapolowany_pv_profile)
+    """
+    parsed_times = pd.to_datetime(timestamps)
+    month_band_map = {item['month']: item['dominant_band'] for item in monthly_bands}
+
+    # Znajdź miesiące HIGH
+    high_months = [m for m, b in month_band_map.items() if b == 'High']
+
+    if not high_months:
+        print("⚠️ Brak miesięcy HIGH - używam całego roku")
+        return consumption, pv_profile
+
+    # Oblicz zużycie miesięczne dla każdego miesiąca
+    monthly_consumption = {}
+    monthly_hours = {}
+
+    for i, ts in enumerate(parsed_times):
+        month_key = ts.strftime('%Y-%m')
+        if month_key not in monthly_consumption:
+            monthly_consumption[month_key] = 0
+            monthly_hours[month_key] = 0
+        monthly_consumption[month_key] += consumption[i]
+        monthly_hours[month_key] += 1
+
+    # Zużycie miesięczne tylko dla HIGH
+    high_monthly_values = [
+        monthly_consumption[m] for m in high_months
+        if m in monthly_consumption
+    ]
+
+    if not high_monthly_values:
+        print("⚠️ Brak danych zużycia dla miesięcy HIGH")
+        return consumption, pv_profile
+
+    # ŚREDNIA miesięcznego zużycia w HIGH (zamiast mediany)
+    mean_high_consumption = np.mean(high_monthly_values)
+    median_high_consumption = np.median(high_monthly_values)
+    max_high_consumption = np.max(high_monthly_values)
+
+    # Znajdź miesiące MID i LOW do skalowania
+    mid_months = [m for m, b in month_band_map.items() if b == 'Mid']
+    low_months = [m for m, b in month_band_map.items() if b == 'Low']
+
+    print(f"📊 Ekstrapolacja zużycia z sezonu HIGH (ulepszona):")
+    print(f"   Miesiące HIGH: {', '.join(high_months)} ({len(high_months)} mies.)")
+    print(f"   Miesiące MID:  {', '.join(mid_months)} ({len(mid_months)} mies.) - będą skalowane")
+    print(f"   Miesiące LOW:  {', '.join(low_months)} ({len(low_months)} mies.) - będą skalowane")
+    print(f"   Zużycie miesięczne HIGH: {[f'{v/1000:.1f} MWh' for v in high_monthly_values]}")
+    print(f"   Statystyki HIGH:")
+    print(f"      Średnia: {mean_high_consumption/1000:.1f} MWh/mies. (używana do skalowania)")
+    print(f"      Mediana: {median_high_consumption/1000:.1f} MWh/mies.")
+    print(f"      Max:     {max_high_consumption/1000:.1f} MWh/mies.")
+
+    # Ekstrapolacja: dla miesięcy MID i LOW, skaluj do ŚREDNIEJ HIGH
+    extrapolated_consumption = consumption.copy()
+    scaling_info = []
+
+    for month_key, band in month_band_map.items():
+        # Skaluj MID i LOW (nie tylko LOW jak wcześniej)
+        if band in ['Mid', 'Low'] and month_key in monthly_consumption:
+            current_monthly = monthly_consumption[month_key]
+            if current_monthly > 0:
+                scale_factor = mean_high_consumption / current_monthly
+            else:
+                scale_factor = 1.0
+
+            # Skaluj godziny tego miesiąca
+            for i, ts in enumerate(parsed_times):
+                if ts.strftime('%Y-%m') == month_key:
+                    extrapolated_consumption[i] = consumption[i] * scale_factor
+
+            scaling_info.append({
+                'month': month_key,
+                'band': band,
+                'original': current_monthly / 1000,
+                'scaled': mean_high_consumption / 1000,
+                'factor': scale_factor
+            })
+
+    # Wyświetl szczegóły skalowania
+    print(f"\n   Skalowanie miesięcy MID+LOW:")
+    for info in scaling_info:
+        print(f"      {info['month']} ({info['band']}): {info['original']:.1f} → {info['scaled']:.1f} MWh (x{info['factor']:.2f})")
+
+    # Podsumowanie
+    original_total = consumption.sum()
+    extrapolated_total = extrapolated_consumption.sum()
+
+    print(f"\n   Zużycie oryginalne: {original_total/1000:.1f} MWh/rok")
+    print(f"   Zużycie ekstrapolowane: {extrapolated_total/1000:.1f} MWh/rok")
+    print(f"   Współczynnik ekstrapolacji: {extrapolated_total/original_total:.2f}x")
+
+    return extrapolated_consumption, pv_profile
+
+
+def optimize_seasonality_bands(
+    pv_config: PVConfiguration,
+    consumption: np.ndarray,
+    timestamps: List[str],
+    pv_profile: np.ndarray,
+    monthly_bands: List[dict],
+    capacity_min: float,
+    capacity_max: float,
+    capacity_step: float,
+    capex_per_kwp: float,
+    opex_per_kwp_year: float,
+    energy_price_esco: float,
+    discount_rate: float,
+    project_years: int,
+    mode: str = "MAX_AUTOCONSUMPTION",
+    target_seasons: List[str] = None,
+    autoconsumption_thresholds: dict = None  # {"A": 95, "B": 90, "C": 85, "D": 80}
+) -> SeasonalityOptimizationResult:
+    """
+    Optymalizacja doboru mocy PV z uwzględnieniem sezonowości.
+
+    LOGIKA DLA MAX_NPV (dwuetapowa):
+    1. ESTYMACJA: Ekstrapoluj zużycie HIGH na cały rok, szukaj optymalnej mocy
+    2. WERYFIKACJA: Przelicz NPV dla znalezionej mocy na RZECZYWISTYM zużyciu
+
+    LOGIKA DLA MAX_AUTOCONSUMPTION:
+    - Maksymalizuj MWh autokonsumpcji przy zachowaniu progu autokonsumpcji
+
+    Args:
+        target_seasons: Lista sezonów do optymalizacji ["High", "Mid", "Low"]
+        autoconsumption_thresholds: Progi autokonsumpcji z ustawień {"A": 95, "B": 90, ...}
+
+    Returns:
+        SeasonalityOptimizationResult z najlepszą konfiguracją
+    """
+    global optimization_progress
+
+    # Domyślnie High jeśli nie podano
+    if target_seasons is None:
+        target_seasons = ["High"]
+
+    # Domyślne progi autokonsumpcji
+    if autoconsumption_thresholds is None:
+        autoconsumption_thresholds = {"A": 95, "B": 90, "C": 85, "D": 80}
+
+    # Minimalny próg autokonsumpcji dla filtrowania (próg D)
+    min_autoconsumption_pct = autoconsumption_thresholds.get("D", 80)
+
+    print(f"\n{'='*60}")
+    print(f"🎯 Optymalizacja SEZONOWA - tryb: {mode}")
+    print(f"🎯 Sezony docelowe: {', '.join(target_seasons)}")
+    print(f"🎯 Min. autokonsumpcja: {min_autoconsumption_pct}%")
+    print(f"{'='*60}")
+
+    # ========== KROK 1: EKSTRAPOLACJA (tylko dla MAX_NPV) ==========
+    if mode == "MAX_NPV":
+        print(f"\n📈 KROK 1: Ekstrapolacja zużycia HIGH na cały rok")
+        extrapolated_consumption, extrapolated_pv = extrapolate_consumption_from_high_season(
+            consumption, timestamps, monthly_bands, pv_profile
+        )
+        search_consumption = extrapolated_consumption
+    else:
+        search_consumption = consumption
+
+    # ========== KROK 2: SZUKANIE OPTYMALNEJ MOCY ==========
+    print(f"\n🔍 KROK 2: Szukanie optymalnej mocy")
+
+    all_configs = []
+    config_id = 0
+    num_capacities = int((capacity_max - capacity_min) / capacity_step) + 1
+    print(f"📊 Testowanie {num_capacities} konfiguracji mocy")
+
+    # Initialize progress
+    optimization_progress["active"] = True
+    optimization_progress["total_configs"] = num_capacities
+    optimization_progress["tested_configs"] = 0
+    optimization_progress["percent"] = 0
+    optimization_progress["step"] = "Szukanie optymalnej mocy"
+
+    capacity = capacity_min
+    progress_step = max(1, num_capacities // 20)
+
+    while capacity <= capacity_max:
+        capacity_idx = int((capacity - capacity_min) / capacity_step)
+        if capacity_idx % progress_step == 0:
+            progress_pct = (capacity_idx / num_capacities) * 100
+            print(f"   ⏳ Postęp: {progress_pct:.0f}% ({capacity:.0f} kWp)")
+            optimization_progress["percent"] = int(progress_pct)
+            optimization_progress["current_capacity"] = capacity
+            optimization_progress["step"] = f"Testowanie {capacity:.0f} kWp"
+
+        dcac_ratio = get_dcac_for_capacity(capacity, pv_config.dcac_tiers, pv_config.dc_ac_ratio)
+
+        # Symulacja na zużyciu do przeszukiwania (ekstrapolowanym lub rzeczywistym)
+        sim_result = simulate_pv_with_seasonal_bands(
+            capacity_kwp=capacity,
+            pv_profile=pv_profile,
+            consumption=search_consumption,
+            timestamps=timestamps,
+            monthly_bands=monthly_bands,
+            dc_ac_ratio=dcac_ratio,
+            target_seasons=target_seasons
+        )
+
+        # NPV dla przeszukiwania
+        fin_result = calculate_npv_for_config(
+            sim_result,
+            capex_per_kwp,
+            opex_per_kwp_year,
+            energy_price_esco,
+            discount_rate,
+            project_years
+        )
+
+        all_configs.append({
+            'id': config_id,
+            'capacity_kwp': capacity,
+            'dcac_ratio': dcac_ratio,
+            'autoconsumption_pct': sim_result['autoconsumption_pct'],
+            'coverage_pct': sim_result['coverage_pct'],
+            'production_mwh': sim_result['production_mwh'],
+            'self_consumed_mwh': sim_result['self_consumed_mwh'],
+            'exported_mwh': sim_result['exported_mwh'],
+            'target_self_consumed_mwh': sim_result['target_self_consumed_mwh'],
+            'target_autoconsumption_pct': sim_result['target_autoconsumption_pct'],
+            'target_coverage_pct': sim_result['target_coverage_pct'],
+            'npv': fin_result['npv'],
+            'irr': fin_result['irr'],
+            'payback_years': fin_result['payback_years']
+        })
+
+        config_id += 1
+        capacity += capacity_step
+
+    print(f"✓ Przetestowano {len(all_configs)} konfiguracji")
+
+    # ========== WYBÓR NAJLEPSZEJ KONFIGURACJI ==========
+    target_seasons_str = ", ".join(target_seasons) if target_seasons else "wszystkie"
+
+    if mode == "MAX_AUTOCONSUMPTION":
+        # Filtruj wg autokonsumpcji całorocznej
+        filtered_configs = [
+            c for c in all_configs
+            if c['autoconsumption_pct'] >= min_autoconsumption_pct
+        ]
+        if not filtered_configs:
+            print(f"⚠️ Brak konfiguracji z autokonsumpcją >= {min_autoconsumption_pct}%, biorę wszystkie")
+            filtered_configs = all_configs
+
+        best = max(filtered_configs, key=lambda x: x['target_self_consumed_mwh'])
+        print(f"🏆 Najlepsza autokonsumpcja w sezonie {target_seasons_str}:")
+        print(f"   Moc: {best['capacity_kwp']:.0f} kWp")
+        print(f"   Target MWh: {best['target_self_consumed_mwh']:.2f} MWh")
+        print(f"   Auto%: {best['autoconsumption_pct']:.1f}%")
+        print(f"   NPV: {best['npv']:,.0f} PLN")
+
+    else:  # MAX_NPV
+        # Szukaj max NPV na ekstrapolowanym zużyciu - BEZ filtra autokonsumpcji!
+        best_extrapolated = max(all_configs, key=lambda x: x['npv'] if x.get('npv') else float('-inf'))
+
+        print(f"\n📈 Wynik na EKSTRAPOLOWANYM zużyciu:")
+        print(f"   Moc: {best_extrapolated['capacity_kwp']:.0f} kWp")
+        print(f"   NPV (ekstrap.): {best_extrapolated['npv']:,.0f} PLN")
+        print(f"   Auto% (ekstrap.): {best_extrapolated['autoconsumption_pct']:.1f}%")
+        print(f"   Self-consumed (ekstrap.): {best_extrapolated['self_consumed_mwh']:.2f} MWh")
+
+        # ========== KROK 3: WERYFIKACJA NA RZECZYWISTYM ZUŻYCIU ==========
+        print(f"\n✅ KROK 3: Weryfikacja na RZECZYWISTYM zużyciu")
+
+        # Symulacja z tą samą mocą, ale na rzeczywistym zużyciu
+        real_sim_result = simulate_pv_with_seasonal_bands(
+            capacity_kwp=best_extrapolated['capacity_kwp'],
+            pv_profile=pv_profile,
+            consumption=consumption,  # RZECZYWISTE zużycie!
+            timestamps=timestamps,
+            monthly_bands=monthly_bands,
+            dc_ac_ratio=best_extrapolated['dcac_ratio'],
+            target_seasons=target_seasons
+        )
+
+        real_fin_result = calculate_npv_for_config(
+            real_sim_result,
+            capex_per_kwp,
+            opex_per_kwp_year,
+            energy_price_esco,
+            discount_rate,
+            project_years
+        )
+
+        # Nadpisz metryki rzeczywistymi wartościami
+        best = {
+            'capacity_kwp': best_extrapolated['capacity_kwp'],
+            'dcac_ratio': best_extrapolated['dcac_ratio'],
+            'autoconsumption_pct': real_sim_result['autoconsumption_pct'],
+            'coverage_pct': real_sim_result['coverage_pct'],
+            'production_mwh': real_sim_result['production_mwh'],
+            'self_consumed_mwh': real_sim_result['self_consumed_mwh'],
+            'exported_mwh': real_sim_result['exported_mwh'],
+            'target_self_consumed_mwh': real_sim_result['target_self_consumed_mwh'],
+            'target_autoconsumption_pct': real_sim_result['target_autoconsumption_pct'],
+            'target_coverage_pct': real_sim_result['target_coverage_pct'],
+            'npv': real_fin_result['npv'],
+            'irr': real_fin_result['irr'],
+            'payback_years': real_fin_result['payback_years'],
+            # Dodatkowe info o ekstrapolacji
+            'extrapolated_npv': best_extrapolated['npv'],
+            'extrapolated_self_consumed_mwh': best_extrapolated['self_consumed_mwh']
+        }
+
+        print(f"\n🏆 Wynik na RZECZYWISTYM zużyciu:")
+        print(f"   Moc: {best['capacity_kwp']:.0f} kWp")
+        print(f"   NPV (rzeczywiste): {best['npv']:,.0f} PLN")
+        print(f"   Auto% (rzeczywiste): {best['autoconsumption_pct']:.1f}%")
+        print(f"   Self-consumed (rzeczywiste): {best['self_consumed_mwh']:.2f} MWh")
+
+    # Mark optimization as complete
+    optimization_progress["percent"] = 100
+    optimization_progress["step"] = "Zakończono"
+    optimization_progress["active"] = False
+
+    # Przygotuj tabelę porównawczą (top 20)
+    sorted_configs = sorted(
+        all_configs,
+        key=lambda x: x['npv'] if x.get('npv') else float('-inf'),
+        reverse=True
+    )[:20]
+
+    # Konfiguracja pasm
+    month_band_map = {item['month']: item['dominant_band'] for item in monthly_bands}
+    band_config = []
+    for band_name in ["High", "Mid", "Low"]:
+        months_for_band = [m for m, b in month_band_map.items() if b == band_name]
+        if months_for_band:
+            band_config.append(BandConfig(
+                band=band_name,
+                ac_limit_kw=best['capacity_kwp'] / best['dcac_ratio'],
+                months=months_for_band
+            ))
+
+    return SeasonalityOptimizationResult(
+        mode=mode,
+        best_capacity_kwp=best['capacity_kwp'],
+        best_dcac_ratio=best['dcac_ratio'],
+        best_band_config=band_config,
+        autoconsumption_pct=best['autoconsumption_pct'],
+        coverage_pct=best['coverage_pct'],
+        annual_production_mwh=best['production_mwh'],
+        annual_self_consumed_mwh=best['self_consumed_mwh'],
+        annual_exported_mwh=best['exported_mwh'],
+        target_self_consumed_mwh=best['target_self_consumed_mwh'],
+        target_autoconsumption_pct=best['target_autoconsumption_pct'],
+        target_coverage_pct=best['target_coverage_pct'],
+        target_npv=best.get('npv'),
+        target_seasons=target_seasons,
+        npv=best['npv'],
+        irr=best['irr'],
+        payback_years=best['payback_years'],
+        configurations_tested=len(all_configs),
+        all_configurations=sorted_configs
+    )
+
+
 # ============== Simulation Functions ==============
 
 def simulate_pv_system(
@@ -960,10 +1588,11 @@ def find_variant(scenarios: List[SimulationResult], threshold: float) -> Optiona
 async def root():
     return {
         "service": "PV Calculation Service",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "engine": "pvlib-python",
         "pvlib_available": PVLIB_AVAILABLE,
-        "pvlib_version": PVLIB_VERSION
+        "pvlib_version": PVLIB_VERSION,
+        "features": ["pvgis_tmy", "analytical_year", "seasonality_bands"]
     }
 
 @app.get("/health")
@@ -973,6 +1602,68 @@ async def health():
         "pvlib_available": PVLIB_AVAILABLE,
         "pvlib_version": PVLIB_VERSION
     }
+
+
+@app.get("/optimization-progress")
+async def optimization_progress_stream():
+    """
+    SSE endpoint for live progress updates during optimization.
+    Returns Server-Sent Events with progress data.
+    """
+    async def event_generator():
+        global optimization_progress
+        last_percent = -1
+        wait_count = 0
+        max_wait = 100  # Max 30 seconds waiting for optimization to start
+
+        # Wait for optimization to start (max 30 seconds)
+        while not optimization_progress["active"] and wait_count < max_wait:
+            await asyncio.sleep(0.3)
+            wait_count += 1
+            # Send waiting signal
+            data = json.dumps({
+                "active": False,
+                "percent": 0,
+                "step": "Oczekiwanie na optymalizację..."
+            })
+            yield f"data: {data}\n\n"
+
+        # If optimization started, track progress
+        if optimization_progress["active"]:
+            while True:
+                if optimization_progress["active"]:
+                    if optimization_progress["percent"] != last_percent:
+                        data = json.dumps({
+                            "active": True,
+                            "percent": optimization_progress["percent"],
+                            "step": optimization_progress["step"],
+                            "current_capacity": optimization_progress["current_capacity"],
+                            "total_configs": optimization_progress["total_configs"],
+                            "tested_configs": optimization_progress["tested_configs"]
+                        })
+                        yield f"data: {data}\n\n"
+                        last_percent = optimization_progress["percent"]
+                else:
+                    # Optimization finished
+                    data = json.dumps({
+                        "active": False,
+                        "percent": 100,
+                        "step": "Zakończono"
+                    })
+                    yield f"data: {data}\n\n"
+                    break
+
+                await asyncio.sleep(0.2)  # Check every 200ms
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 class GenerateProfileRequest(BaseModel):
     """Request model for generate-profile endpoint with optional date range"""
@@ -1289,6 +1980,128 @@ async def analyze(request: AnalysisRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/optimize-seasonality", response_model=SeasonalityOptimizationResult)
+async def optimize_seasonality(request: SeasonalityOptimizationRequest):
+    """
+    Optymalizacja doboru mocy PV z uwzględnieniem pasm sezonowości.
+
+    Strategia PASMA_SEZONOWOŚĆ:
+    - Wykrywa okresy wysokiego/niskiego zużycia (High/Mid/Low)
+    - Dobiera moc instalacji PV i limity AC dla każdego pasma
+    - Tryb MAX_AUTOCONSUMPTION: maksymalizuje autokonsumpcję przy 0-export
+    - Tryb MAX_NPV: maksymalizuje NPV dla modelu EaaS
+
+    Wymaga wcześniejszego wywołania /seasonality w data-analysis.
+    """
+    try:
+        config = request.pv_config
+
+        # Konfiguracja paneli
+        if config.pv_type == "ground_s":
+            tilt = config.tilt if config.tilt else config.latitude
+            azimuth = config.azimuth if config.azimuth else 180
+        elif config.pv_type == "roof_ew":
+            tilt = config.tilt if config.tilt else 10
+            azimuth = config.azimuth if config.azimuth else 90
+        else:
+            tilt = config.tilt if config.tilt else 15
+            azimuth = config.azimuth if config.azimuth else 90
+
+        print(f"\n{'='*60}")
+        print(f"🌞 PASMA_SEZONOWOŚĆ Optimization")
+        print(f"   Mode: {request.mode}")
+        print(f"   Capacity range: {request.capacity_min} - {request.capacity_max} kWp")
+        print(f"{'='*60}")
+
+        consumption = np.array(request.consumption)
+        timestamps = request.timestamps
+
+        # Pobierz dane PVGIS TMY
+        pvgis_data = None
+        if PVLIB_AVAILABLE:
+            pvgis_data = fetch_pvgis_tmy_data(config.latitude, config.longitude)
+
+        # Generuj profil PV
+        if PVLIB_AVAILABLE and pvgis_data:
+            pv_profile = generate_pv_profile_pvgis(
+                pvgis_data=pvgis_data,
+                consumption_timestamps=timestamps,
+                latitude=config.latitude,
+                longitude=config.longitude,
+                altitude=config.altitude,
+                tilt=tilt,
+                azimuth=azimuth,
+                pv_type=config.pv_type,
+                temperature_coefficient=config.temperature_coefficient,
+                albedo=config.albedo,
+                soiling_loss=config.soiling_loss
+            )
+        elif PVLIB_AVAILABLE:
+            pv_profile = generate_pv_profile_pvlib(
+                timestamps=timestamps,
+                latitude=config.latitude,
+                longitude=config.longitude,
+                altitude=config.altitude,
+                tilt=tilt,
+                azimuth=azimuth,
+                pv_type=config.pv_type,
+                module_efficiency=config.module_efficiency,
+                temperature_coefficient=config.temperature_coefficient,
+                albedo=config.albedo,
+                soiling_loss=config.soiling_loss
+            )
+        else:
+            pv_profile = generate_pv_profile_fallback(
+                n_hours=len(consumption),
+                latitude=config.latitude,
+                tilt=tilt,
+                azimuth=azimuth,
+                pv_type=config.pv_type,
+                yield_target=config.yield_target
+            )
+
+        # Uruchom optymalizację w osobnym wątku (pozwala SSE działać równolegle)
+        target_seasons = request.target_seasons if request.target_seasons else ["High", "Mid"]
+        autoconsumption_thresholds = request.autoconsumption_thresholds
+        print(f"   Target seasons: {target_seasons}")
+        print(f"   Autoconsumption thresholds: {autoconsumption_thresholds}")
+
+        result = await asyncio.to_thread(
+            optimize_seasonality_bands,
+            pv_config=config,
+            consumption=consumption,
+            timestamps=timestamps,
+            pv_profile=pv_profile,
+            monthly_bands=request.monthly_bands,
+            capacity_min=request.capacity_min,
+            capacity_max=request.capacity_max,
+            capacity_step=request.capacity_step,
+            capex_per_kwp=request.capex_per_kwp,
+            opex_per_kwp_year=request.opex_per_kwp_year,
+            energy_price_esco=request.energy_price_esco,
+            discount_rate=request.discount_rate,
+            project_years=request.project_years,
+            mode=request.mode,
+            target_seasons=target_seasons,
+            autoconsumption_thresholds=autoconsumption_thresholds
+        )
+
+        print(f"\n✅ Optimization complete")
+        print(f"   Best capacity: {result.best_capacity_kwp:.0f} kWp")
+        print(f"   Autoconsumption: {result.autoconsumption_pct:.1f}%")
+        if result.npv:
+            print(f"   NPV: {result.npv:.0f} PLN")
+        print(f"{'='*60}\n")
+
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============== Main ==============
 if __name__ == "__main__":

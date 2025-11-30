@@ -9,7 +9,7 @@ import calendar
 import io
 import json
 
-app = FastAPI(title="PV Data Analysis Service", version="2.1.0")
+app = FastAPI(title="PV Data Analysis Service", version="2.2.0")
 
 # CORS configuration
 app.add_middleware(
@@ -57,6 +57,51 @@ class HeatmapData(BaseModel):
     week_hour_matrix: List[List[float]]
     month_day_matrix: List[List[float]]
 
+# ============== Seasonality Models ==============
+class DailyPowerIndex(BaseModel):
+    """Dzienny wskaźnik mocy z przypisanym pasmem"""
+    date: str
+    daily_p95: float  # 95. percentyl mocy w danym dniu [kW]
+    p95_smooth: float  # Wygładzona wartość (rolling median)
+    z_score: float  # Standaryzowany wskaźnik
+    band: str  # "High", "Mid", "Low"
+
+class MonthlyBand(BaseModel):
+    """Pasmo sezonowe dla miesiąca"""
+    month: str  # YYYY-MM
+    month_name: str
+    dominant_band: str  # "High", "Mid", "Low"
+    band_share: float  # Udział dominującego pasma (0-1)
+    days_high: int
+    days_mid: int
+    days_low: int
+    # Dodatkowe statystyki dla tabeli w UI
+    consumption_kwh: Optional[float] = None  # Zużycie w miesiącu [kWh]
+    p95_power: Optional[float] = None  # P95 mocy w miesiącu [kW]
+    avg_power: Optional[float] = None  # Średnia moc w miesiącu [kW]
+
+class BandPowerStats(BaseModel):
+    """Statystyki mocy dla pasma (godziny PV)"""
+    band: str
+    p_q10: float  # 10. percentyl [kW]
+    p_q20: float  # 20. percentyl [kW]
+    p_q30: float  # 30. percentyl [kW]
+    p_recommended: float  # Zalecana moc AC [kW]
+    hours_count: int  # Liczba godzin w paśmie
+
+class SeasonalityAnalysis(BaseModel):
+    """Pełna analiza sezonowości zużycia"""
+    detected: bool  # Czy wykryto znaczącą sezonowość
+    seasonality_score: float  # Wskaźnik sezonowości (0-1)
+    message: str  # Opis dla użytkownika
+    daily_bands: List[DailyPowerIndex]
+    monthly_bands: List[MonthlyBand]
+    band_powers: List[BandPowerStats]
+    # Podsumowanie
+    high_months: List[str]
+    mid_months: List[str]
+    low_months: List[str]
+
 class AnalyticalYear(BaseModel):
     """
     Rok analityczny = dowolne 365/366 kolejnych dni
@@ -82,6 +127,409 @@ class DataStore:
         self.end_date: Optional[datetime] = None
 
 data_store = DataStore()
+
+# ============== Seasonality Analysis Functions ==============
+
+def compute_daily_power_index(
+    hourly_data: List[float],
+    timestamps: List[str],
+    z_high: float = 0.7,
+    z_low: float = -0.7,
+    min_run_len: int = 10
+) -> pd.DataFrame:
+    """
+    Oblicza dzienny wskaźnik mocy i przypisuje pasma High/Mid/Low.
+
+    Args:
+        hourly_data: Godzinowe dane zużycia [kW]
+        timestamps: Lista timestampów ISO
+        z_high: Próg z-score dla pasma High
+        z_low: Próg z-score dla pasma Low
+        min_run_len: Minimalna długość ciągu dni w jednym paśmie
+
+    Returns:
+        DataFrame z kolumnami: date, daily_p95, p95_smooth, z, band_raw, band
+    """
+    # Przygotuj DataFrame
+    df = pd.DataFrame({
+        'timestamp': pd.to_datetime(timestamps),
+        'P_kW': hourly_data
+    })
+    df['date'] = df['timestamp'].dt.date
+
+    # Grupowanie po dniu - 95. percentyl
+    daily_stats = df.groupby('date').agg(
+        daily_p95=('P_kW', lambda x: np.percentile(x, 95))
+    ).reset_index()
+
+    # Wygładzenie - rolling median (7 dni)
+    daily_stats['p95_smooth'] = daily_stats['daily_p95'].rolling(
+        window=7, center=True, min_periods=1
+    ).median()
+
+    # Standaryzacja MAD (Median Absolute Deviation)
+    median_val = daily_stats['p95_smooth'].median()
+    mad = np.median(np.abs(daily_stats['p95_smooth'] - median_val))
+    daily_stats['z'] = (daily_stats['p95_smooth'] - median_val) / (mad + 1e-6)
+
+    # Wstępne pasma
+    def assign_band_raw(z):
+        if z >= z_high:
+            return "High"
+        elif z <= z_low:
+            return "Low"
+        else:
+            return "Mid"
+
+    daily_stats['band_raw'] = daily_stats['z'].apply(assign_band_raw)
+
+    # Czyszczenie "wysp" - krótkie runy przypisz do sąsiadów
+    daily_stats = daily_stats.sort_values('date').reset_index(drop=True)
+    bands = daily_stats['band_raw'].tolist()
+
+    # Identyfikuj runy
+    runs = []
+    current_band = bands[0]
+    current_start = 0
+
+    for i in range(1, len(bands)):
+        if bands[i] != current_band:
+            runs.append((current_start, i - 1, current_band))
+            current_band = bands[i]
+            current_start = i
+    runs.append((current_start, len(bands) - 1, current_band))
+
+    # Hierarchia pasm: Low < Mid < High
+    band_hierarchy = {"Low": 0, "Mid": 1, "High": 2}
+
+    # Czyszczenie krótkich runów
+    cleaned_bands = bands.copy()
+    for start, end, band in runs:
+        run_len = end - start + 1
+        if run_len < min_run_len:
+            # Znajdź sąsiadów
+            left_band = cleaned_bands[start - 1] if start > 0 else None
+            right_band = cleaned_bands[end + 1] if end < len(bands) - 1 else None
+
+            # Wybierz pasmo sąsiada (silniejsze wg hierarchii)
+            if left_band and right_band:
+                if left_band == right_band:
+                    new_band = left_band
+                else:
+                    new_band = left_band if band_hierarchy.get(left_band, 1) > band_hierarchy.get(right_band, 1) else right_band
+            elif left_band:
+                new_band = left_band
+            elif right_band:
+                new_band = right_band
+            else:
+                new_band = "Mid"
+
+            for i in range(start, end + 1):
+                cleaned_bands[i] = new_band
+
+    daily_stats['band'] = cleaned_bands
+
+    return daily_stats
+
+
+def compute_monthly_bands(
+    df_daily: pd.DataFrame,
+    hourly_data: List[float] = None,
+    timestamps: List[str] = None
+) -> pd.DataFrame:
+    """
+    Klasyfikuje miesiące do pasm High/Mid/Low na podstawie CAŁKOWITEGO ZUŻYCIA miesięcznego.
+
+    Algorytm:
+    1. Oblicz całkowite zużycie dla każdego miesiąca
+    2. Oblicz średnie zużycie miesięczne
+    3. Klasyfikuj miesiące:
+       - HIGH: zużycie > średnia + 0.15 * średnia (>15% powyżej średniej)
+       - LOW: zużycie < średnia - 0.15 * średnia (<15% poniżej średniej)
+       - MID: pozostałe
+
+    Ten algorytm daje intuicyjne wyniki - miesiące z wyższym zużyciem są klasyfikowane jako HIGH.
+
+    Args:
+        df_daily: DataFrame z kolumnami date, band (używane do liczenia dni w pasmach)
+        hourly_data: Lista wartości godzinowych [kW] - WYMAGANE dla klasyfikacji
+        timestamps: Lista timestampów - WYMAGANE dla klasyfikacji
+
+    Returns:
+        DataFrame z pasmem dla każdego miesiąca
+    """
+    df_daily = df_daily.copy()
+    df_daily['month'] = pd.to_datetime(df_daily['date']).dt.to_period('M').astype(str)
+
+    # Policz dni w każdym paśmie dla każdego miesiąca (statystyki pomocnicze)
+    monthly_counts = df_daily.groupby(['month', 'band']).size().unstack(fill_value=0)
+
+    # Upewnij się, że wszystkie kolumny istnieją
+    for band in ['High', 'Mid', 'Low']:
+        if band not in monthly_counts.columns:
+            monthly_counts[band] = 0
+
+    monthly_counts = monthly_counts.reset_index()
+    monthly_counts['total_days'] = monthly_counts['High'] + monthly_counts['Mid'] + monthly_counts['Low']
+
+    # Oblicz statystyki miesięczne jeśli podano dane godzinowe
+    if hourly_data is not None and timestamps is not None:
+        df_hourly = pd.DataFrame({
+            'timestamp': pd.to_datetime(timestamps),
+            'power': hourly_data
+        })
+        df_hourly['month'] = df_hourly['timestamp'].dt.to_period('M').astype(str)
+
+        # Statystyki miesięczne
+        monthly_stats = df_hourly.groupby('month').agg(
+            consumption_kwh=('power', 'sum'),  # Suma = zużycie w kWh
+            p95_power=('power', lambda x: np.percentile(x, 95)),
+            avg_power=('power', 'mean')
+        ).reset_index()
+
+        # Połącz ze statystykami pasm
+        monthly_counts = monthly_counts.merge(monthly_stats, on='month', how='left')
+
+        # === NOWA LOGIKA KLASYFIKACJI NA PODSTAWIE ZUŻYCIA ===
+        # Oblicz średnie zużycie miesięczne
+        avg_monthly_consumption = monthly_counts['consumption_kwh'].mean()
+
+        # Progi: ±15% od średniej
+        high_threshold = avg_monthly_consumption * 1.15
+        low_threshold = avg_monthly_consumption * 0.85
+
+        def classify_by_consumption(consumption):
+            if pd.isna(consumption):
+                return 'Mid'
+            if consumption >= high_threshold:
+                return 'High'
+            elif consumption <= low_threshold:
+                return 'Low'
+            else:
+                return 'Mid'
+
+        monthly_counts['dominant_band'] = monthly_counts['consumption_kwh'].apply(classify_by_consumption)
+
+        # Oblicz "band_share" jako względne odchylenie od średniej
+        def calc_band_share(row):
+            if pd.isna(row['consumption_kwh']) or avg_monthly_consumption == 0:
+                return 0.5
+            deviation = abs(row['consumption_kwh'] - avg_monthly_consumption) / avg_monthly_consumption
+            return min(1.0, 0.5 + deviation)  # 0.5 = dokładnie średnia, 1.0 = duże odchylenie
+
+        monthly_counts['band_share'] = monthly_counts.apply(calc_band_share, axis=1)
+
+    else:
+        # Fallback do starej metody (dominujące pasmo z dni)
+        def get_dominant(row):
+            bands = {'High': row['High'], 'Mid': row['Mid'], 'Low': row['Low']}
+            dominant = max(bands, key=bands.get)
+            share = bands[dominant] / row['total_days'] if row['total_days'] > 0 else 0
+            return dominant, share
+
+        monthly_counts[['dominant_band', 'band_share']] = monthly_counts.apply(
+            lambda row: pd.Series(get_dominant(row)), axis=1
+        )
+        monthly_counts['consumption_kwh'] = None
+        monthly_counts['p95_power'] = None
+        monthly_counts['avg_power'] = None
+
+    # Dodaj nazwę miesiąca
+    monthly_counts['month_name'] = pd.to_datetime(monthly_counts['month']).dt.strftime('%B %Y')
+
+    result = monthly_counts[['month', 'month_name', 'dominant_band', 'band_share', 'High', 'Mid', 'Low',
+                             'consumption_kwh', 'p95_power', 'avg_power']].rename(
+        columns={'High': 'days_high', 'Mid': 'days_mid', 'Low': 'days_low'}
+    )
+
+    return result
+
+
+def compute_band_powers(
+    hourly_data: List[float],
+    timestamps: List[str],
+    df_daily: pd.DataFrame,
+    pv_hour_start: int = 7,
+    pv_hour_end: int = 17
+) -> pd.DataFrame:
+    """
+    Wyznacza rozkład mocy w godzinach PV dla każdego pasma.
+
+    Args:
+        hourly_data: Godzinowe dane zużycia [kW]
+        timestamps: Lista timestampów ISO
+        df_daily: DataFrame z kolumnami date, band
+        pv_hour_start: Początek godzin PV (domyślnie 7)
+        pv_hour_end: Koniec godzin PV (domyślnie 17)
+
+    Returns:
+        DataFrame ze statystykami mocy dla każdego pasma
+    """
+    # Przygotuj dane
+    df = pd.DataFrame({
+        'timestamp': pd.to_datetime(timestamps),
+        'P_kW': hourly_data
+    })
+    df['date'] = df['timestamp'].dt.date
+    df['hour'] = df['timestamp'].dt.hour
+
+    # Filtruj do godzin PV
+    df_pv = df[(df['hour'] >= pv_hour_start) & (df['hour'] < pv_hour_end)]
+
+    # Połącz z pasmami
+    band_map = dict(zip(df_daily['date'], df_daily['band']))
+    df_pv = df_pv.copy()
+    df_pv['band'] = df_pv['date'].map(band_map)
+    df_pv = df_pv.dropna(subset=['band'])
+
+    # Oblicz statystyki dla każdego pasma
+    results = []
+    for band in ['High', 'Mid', 'Low']:
+        band_data = df_pv[df_pv['band'] == band]['P_kW']
+
+        if len(band_data) > 0:
+            p_q10 = np.percentile(band_data, 10)
+            p_q20 = np.percentile(band_data, 20)
+            p_q30 = np.percentile(band_data, 30)
+            p_recommended = p_q20  # 20. percentyl = ~80% czasu load >= tej mocy
+        else:
+            p_q10 = p_q20 = p_q30 = p_recommended = 0
+
+        results.append({
+            'band': band,
+            'p_q10': p_q10,
+            'p_q20': p_q20,
+            'p_q30': p_q30,
+            'p_recommended': p_recommended,
+            'hours_count': len(band_data)
+        })
+
+    df_results = pd.DataFrame(results)
+
+    # Wymuszenie monotoniczności: High >= Mid >= Low
+    p_rec_high = df_results[df_results['band'] == 'High']['p_recommended'].values[0]
+    p_rec_mid = df_results[df_results['band'] == 'Mid']['p_recommended'].values[0]
+    p_rec_low = df_results[df_results['band'] == 'Low']['p_recommended'].values[0]
+
+    # Korekta
+    p_rec_mid = min(p_rec_mid, p_rec_high)
+    p_rec_low = min(p_rec_low, p_rec_mid)
+
+    df_results.loc[df_results['band'] == 'Mid', 'p_recommended'] = p_rec_mid
+    df_results.loc[df_results['band'] == 'Low', 'p_recommended'] = p_rec_low
+
+    return df_results
+
+
+def analyze_seasonality(
+    hourly_data: List[float],
+    timestamps: List[str],
+    z_high: float = 0.7,
+    z_low: float = -0.7,
+    min_run_len: int = 10,
+    seasonality_threshold: float = 0.3
+) -> SeasonalityAnalysis:
+    """
+    Pełna analiza sezonowości zużycia energii.
+
+    Args:
+        hourly_data: Godzinowe dane zużycia [kW]
+        timestamps: Lista timestampów ISO
+        z_high: Próg z-score dla pasma High
+        z_low: Próg z-score dla pasma Low
+        min_run_len: Minimalna długość ciągu dni w jednym paśmie
+        seasonality_threshold: Próg wykrycia sezonowości (udział dni High+Low)
+
+    Returns:
+        SeasonalityAnalysis z pełną analizą
+    """
+    # 1. Dzienny wskaźnik mocy
+    df_daily = compute_daily_power_index(hourly_data, timestamps, z_high, z_low, min_run_len)
+
+    # 2. Pasma miesięczne (z dodatkowymi statystykami)
+    df_monthly = compute_monthly_bands(df_daily, hourly_data, timestamps)
+
+    # 3. Statystyki mocy dla pasm
+    df_band_powers = compute_band_powers(hourly_data, timestamps, df_daily)
+
+    # 4. Ocena sezonowości
+    total_days = len(df_daily)
+    days_high = (df_daily['band'] == 'High').sum()
+    days_low = (df_daily['band'] == 'Low').sum()
+    days_mid = (df_daily['band'] == 'Mid').sum()
+
+    # Wskaźnik sezonowości = udział dni w pasmach High i Low
+    seasonality_score = (days_high + days_low) / total_days if total_days > 0 else 0
+    detected = seasonality_score >= seasonality_threshold
+
+    # Generuj komunikat
+    if detected:
+        if days_high > days_low:
+            message = f"Wykryto znaczącą sezonowość ({seasonality_score*100:.1f}%). Dominują okresy wysokiego zużycia ({days_high} dni High vs {days_low} dni Low)."
+        elif days_low > days_high:
+            message = f"Wykryto znaczącą sezonowość ({seasonality_score*100:.1f}%). Dominują okresy niskiego zużycia ({days_low} dni Low vs {days_high} dni High)."
+        else:
+            message = f"Wykryto znaczącą sezonowość ({seasonality_score*100:.1f}%). Zrównoważony rozkład pasm High/Low."
+    else:
+        message = f"Nie wykryto znaczącej sezonowości (wskaźnik: {seasonality_score*100:.1f}%). Zużycie jest względnie stabilne w ciągu roku."
+
+    # Listy miesięcy dla każdego pasma
+    high_months = df_monthly[df_monthly['dominant_band'] == 'High']['month_name'].tolist()
+    mid_months = df_monthly[df_monthly['dominant_band'] == 'Mid']['month_name'].tolist()
+    low_months = df_monthly[df_monthly['dominant_band'] == 'Low']['month_name'].tolist()
+
+    # Przygotuj dane do odpowiedzi
+    daily_bands = [
+        DailyPowerIndex(
+            date=str(row['date']),
+            daily_p95=float(row['daily_p95']),
+            p95_smooth=float(row['p95_smooth']),
+            z_score=float(row['z']),
+            band=row['band']
+        )
+        for _, row in df_daily.iterrows()
+    ]
+
+    monthly_bands = [
+        MonthlyBand(
+            month=row['month'],
+            month_name=row['month_name'],
+            dominant_band=row['dominant_band'],
+            band_share=float(row['band_share']),
+            days_high=int(row['days_high']),
+            days_mid=int(row['days_mid']),
+            days_low=int(row['days_low']),
+            consumption_kwh=float(row['consumption_kwh']) if pd.notna(row.get('consumption_kwh')) else None,
+            p95_power=float(row['p95_power']) if pd.notna(row.get('p95_power')) else None,
+            avg_power=float(row['avg_power']) if pd.notna(row.get('avg_power')) else None
+        )
+        for _, row in df_monthly.iterrows()
+    ]
+
+    band_powers = [
+        BandPowerStats(
+            band=row['band'],
+            p_q10=float(row['p_q10']),
+            p_q20=float(row['p_q20']),
+            p_q30=float(row['p_q30']),
+            p_recommended=float(row['p_recommended']),
+            hours_count=int(row['hours_count'])
+        )
+        for _, row in df_band_powers.iterrows()
+    ]
+
+    return SeasonalityAnalysis(
+        detected=detected,
+        seasonality_score=float(seasonality_score),
+        message=message,
+        daily_bands=daily_bands,
+        monthly_bands=monthly_bands,
+        band_powers=band_powers,
+        high_months=high_months,
+        mid_months=mid_months,
+        low_months=low_months
+    )
+
 
 # ============== Utility Functions ==============
 
@@ -371,9 +819,9 @@ def process_uploaded_data(df: pd.DataFrame):
 async def root():
     return {
         "service": "PV Data Analysis Service",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "status": "running",
-        "features": ["analytical_year", "dynamic_date_range", "auto_truncation"]
+        "features": ["analytical_year", "dynamic_date_range", "auto_truncation", "seasonality_analysis"]
     }
 
 @app.get("/health")
@@ -412,6 +860,65 @@ async def get_date_range():
         "total_days": data_store.analytical_year.total_days,
         "total_hours": data_store.analytical_year.total_hours,
         "timestamps": data_store.year_hours
+    }
+
+@app.get("/seasonality", response_model=SeasonalityAnalysis)
+async def get_seasonality(
+    z_high: float = 0.7,
+    z_low: float = -0.7,
+    min_run_len: int = 10,
+    seasonality_threshold: float = 0.3
+):
+    """
+    Analiza sezonowości zużycia energii.
+
+    Wykrywa pasma zużycia (High/Mid/Low) na podstawie dziennego 95. percentyla mocy.
+    Używane przez strategie PASMA_SEZONOWOŚĆ do optymalizacji doboru mocy PV.
+
+    Parametry:
+    - z_high: Próg z-score dla pasma High (domyślnie 0.7)
+    - z_low: Próg z-score dla pasma Low (domyślnie -0.7)
+    - min_run_len: Minimalna długość ciągu dni w jednym paśmie (domyślnie 10)
+    - seasonality_threshold: Próg wykrycia sezonowości - udział dni High+Low (domyślnie 0.3)
+
+    Zwraca:
+    - detected: Czy wykryto znaczącą sezonowość
+    - seasonality_score: Wskaźnik sezonowości (0-1)
+    - message: Opis dla użytkownika
+    - daily_bands: Lista dziennych pasm
+    - monthly_bands: Lista miesięcznych pasm dominujących
+    - band_powers: Zalecane moce AC dla każdego pasma
+    """
+    if not data_store.hourly_data:
+        raise HTTPException(status_code=400, detail="No data loaded")
+
+    return analyze_seasonality(
+        data_store.hourly_data,
+        data_store.year_hours,
+        z_high=z_high,
+        z_low=z_low,
+        min_run_len=min_run_len,
+        seasonality_threshold=seasonality_threshold
+    )
+
+@app.get("/seasonality/summary")
+async def get_seasonality_summary():
+    """
+    Szybkie podsumowanie sezonowości - do wyświetlenia po wgraniu pliku.
+    """
+    if not data_store.hourly_data:
+        raise HTTPException(status_code=400, detail="No data loaded")
+
+    analysis = analyze_seasonality(data_store.hourly_data, data_store.year_hours)
+
+    return {
+        "detected": analysis.detected,
+        "seasonality_score": analysis.seasonality_score,
+        "message": analysis.message,
+        "high_months_count": len(analysis.high_months),
+        "mid_months_count": len(analysis.mid_months),
+        "low_months_count": len(analysis.low_months),
+        "recommended_strategy": "PASMA_SEZONOWOŚĆ" if analysis.detected else "STANDARD"
     }
 
 @app.post("/upload/csv")

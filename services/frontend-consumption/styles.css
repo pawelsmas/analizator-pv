@@ -252,6 +252,179 @@ canvas {
   display: none;
 }
 
+/* Sezonowość */
+.seasonality-stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.seasonality-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 24px;
+  border-radius: 12px;
+  min-width: 100px;
+}
+
+.seasonality-stat.high {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  color: white;
+}
+
+.seasonality-stat.mid {
+  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+  color: white;
+}
+
+.seasonality-stat.low {
+  background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+  color: white;
+}
+
+.seasonality-stat.score {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.band-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.9;
+}
+
+.band-count {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.band-unit {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.seasonality-message {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #e8f5e9;
+  border-left: 4px solid #4caf50;
+  color: #2e7d32;
+}
+
+.seasonality-message.warning {
+  background: #fff3e0;
+  border-left-color: #ff9800;
+  color: #e65100;
+}
+
+#seasonalityChart {
+  max-height: 200px;
+}
+
+/* Tabela miesięcy z pasmami */
+.band-months-box {
+  flex: 1;
+  min-width: 200px;
+  padding: 16px;
+  border-radius: 12px;
+  color: white;
+}
+
+.band-months-box.high {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.band-months-box.mid {
+  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+}
+
+.band-months-box.low {
+  background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+}
+
+.band-months-box .band-header {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  opacity: 0.9;
+}
+
+.band-months-box .band-months-list {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.band-months-box .band-consumption {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* Tabela szczegółowa miesięcy */
+#monthlyBandsDetailTable tbody tr {
+  border-bottom: 1px solid #eee;
+  transition: background 0.2s;
+}
+
+#monthlyBandsDetailTable tbody tr:hover {
+  background: #f8f9fa;
+}
+
+#monthlyBandsDetailTable tbody td {
+  padding: 10px;
+}
+
+#monthlyBandsDetailTable .band-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: white;
+}
+
+#monthlyBandsDetailTable .band-badge.high {
+  background: #e74c3c;
+}
+
+#monthlyBandsDetailTable .band-badge.mid {
+  background: #f39c12;
+}
+
+#monthlyBandsDetailTable .band-badge.low {
+  background: #27ae60;
+}
+
+/* Karty rekomendowanych mocy */
+.power-card.high {
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+  color: #c0392b;
+  border: 2px solid #e74c3c;
+}
+
+.power-card.mid {
+  background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%);
+  color: #d68910;
+  border: 2px solid #f39c12;
+}
+
+.power-card.low {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  color: #1e8449;
+  border: 2px solid #27ae60;
+}
+
 /* Responsywność */
 @media (max-width: 768px) {
   .content-grid {
@@ -264,5 +437,9 @@ canvas {
 
   .details-grid {
     grid-template-columns: 1fr;
+  }
+
+  .seasonality-stats {
+    justify-content: center;
   }
 }

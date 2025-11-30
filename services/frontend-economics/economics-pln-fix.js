@@ -331,34 +331,14 @@ function resetToDefaults() {
   recalculateEconomics();
 }
 
-// Calculate IRR using Newton-Raphson method
-function calculateIRR(cash_flows, initial_investment) {
-  let irr = 0.1; // Start with 10% guess
-  const max_iterations = 100;
-  const tolerance = 0.0001;
-
-  for (let i = 0; i < max_iterations; i++) {
-    let npv = -initial_investment;
-    let npv_derivative = 0;
-
-    for (let cf of cash_flows) {
-      const discount_factor = Math.pow(1 + irr, cf.year);
-      npv += cf.net_cash_flow / discount_factor;
-      npv_derivative -= cf.year * cf.net_cash_flow / (discount_factor * (1 + irr));
-    }
-
-    if (Math.abs(npv) < tolerance) {
-      return irr;
-    }
-
-    // Newton-Raphson update
-    irr = irr - npv / npv_derivative;
-
-    // Prevent negative IRR
-    if (irr < -0.99) irr = -0.99;
+// IRR is sourced from backend economics service; local solver removed
+function calculateIRR() {
+  const backendIrr = economicData?.irr ?? centralizedMetrics?.[currentVariant]?.capex?.irr;
+  if (backendIrr === undefined || backendIrr === null) {
+    console.warn('IRR unavailable locally - backend is the source of truth');
+    return 0;
   }
-
-  return irr; // Return best estimate even if not converged
+  return backendIrr;
 }
 
 /**
@@ -519,7 +499,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   }
 
   // Verify IRR
-  const achievedIRR = calculateIRR(
+  const achievedIRR = calculateIRR();
     cashFlows.slice(1).map((cf, idx) => ({ year: idx + 1, net_cash_flow: cf })),
     I0_PLN
   );
@@ -929,7 +909,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  ✅ Final CAPEX NPV:', (capexNPV / 1000000).toFixed(2), 'mln PLN');
 
   // Calculate CAPEX IRR
-  const capexIRR = calculateIRR(capexCashFlows.map((cf, i) => ({
+  const capexIRR = calculateIRR();
     year: i + 1,
     net_cash_flow: cf.net_cash_flow
   })), capex);
@@ -1147,69 +1127,65 @@ async function performEconomicAnalysis() {
       });
     }
 
-    // 6. NPV i IRR - uproszczone
-    // NPV = suma zdyskontowanych przepływów - CAPEX
-    const discount_rate = 0.07; // 7% (można dodać do parametrów jeśli potrzeba)
-    let npv = -capex;
-    for (let cf of cash_flows) {
-      npv += cf.net_cash_flow / Math.pow(1 + discount_rate, cf.year);
+    // NPV/IRR sourced from backend economics service
+    const backendParams = {
+      energy_price: totalEnergyPriceWithCapacity,
+      feed_in_tariff: params.feed_in_tariff || 0,
+      investment_cost: capexPerKwp,
+      export_mode: params.export_mode || 'zero',
+      discount_rate: window.economicsSettings?.discountRate || 0.07,
+      degradation_rate: params.degradation_rate,
+      opex_per_kwp: params.opex_per_kwp,
+      analysis_period: params.analysis_period,
+      use_inflation: window.economicsSettings?.useInflation || false,
+      irr_mode: window.economicsSettings?.irrMode || ((window.economicsSettings?.useInflation) ? 'nominal' : 'real'),
+      inflation_rate: window.economicsSettings?.inflationRate || 0.0,
+    };
+
+    let backendEconomics = null;
+    try {
+      backendEconomics = await fetchBackendIRR(variant, backendParams);
+      console.log('? Backend economics result received');
+    } catch (err) {
+      console.error('? Backend economics call failed, IRR unavailable:', err);
     }
 
-    // IRR - przybliżone (metoda Newton-Raphson)
-    let irr = calculateIRR(cash_flows, capex);
+    const irrValue = backendEconomics?.irr ?? null;
+    const irrMode = backendEconomics?.irr_details?.mode || backendParams.irr_mode;
+    const irrStatus = backendEconomics?.irr_details?.status || (irrValue !== null ? 'converged' : 'failed');
 
-    // 7. LCOE - Levelized Cost of Energy
-    // LCOE = (CAPEX + suma zdyskontowanych OPEX) / suma zdyskontowanej produkcji
-    let discounted_costs = capex;
-    let discounted_production = 0;
-    for (let cf of cash_flows) {
-      discounted_costs += cf.opex / Math.pow(1 + discount_rate, cf.year);
-      discounted_production += cf.production / Math.pow(1 + discount_rate, cf.year);
-    }
-    const lcoe = discounted_costs / discounted_production; // PLN/MWh
-
-    // ========== CALL CENTRALIZED CALCULATION FOR CAPEX ==========
-    // This creates the SINGLE SOURCE OF TRUTH for NPV calculations
-    const centralizedCalc = calculateCentralizedFinancialMetrics(variant, params, null);
-    centralizedMetrics[currentVariant] = centralizedCalc;
-
-    console.log('');
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('💰 CENTRALIZED CAPEX METRICS FOR VARIANT', currentVariant);
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('  - Capacity:', centralizedCalc.common.capacityKwp, 'kWp');
-    console.log('  - CAPEX:', (centralizedCalc.capex.investment / 1000000).toFixed(2), 'mln PLN');
-    console.log('  - NPV (with inflation):', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
-    console.log('  - IRR:', (centralizedCalc.capex.irr * 100).toFixed(1), '%');
-    console.log('  - Discount rate:', (centralizedCalc.common.discountRate * 100).toFixed(1), '%');
-    console.log('  - Inflation rate:', (centralizedCalc.common.inflationRate * 100).toFixed(1), '%');
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log('');
-
-    // Przygotuj dane w formacie zgodnym z UI
-    // NOTE: We keep the legacy cash_flows (without inflation) for backward compatibility with charts
     economicData = {
       investment: capex,
       simple_payback: simple_payback,
-      npv: centralizedCalc.capex.npv, // USE CENTRALIZED NPV
-      irr: centralizedCalc.capex.irr, // USE CENTRALIZED IRR
-      lcoe: lcoe / 1000, // MWh → kWh
+      npv: backendEconomics?.npv ?? npv,
+      irr: irrValue,
+      irrMode: irrMode,
+      irrStatus: irrStatus,
+      irrDetails: backendEconomics?.irr_details || null,
+      lcoe: lcoe / 1000,
       annual_savings: savings_year1,
-      annual_total_revenue: savings_year1, // W prostym modelu = oszczędności
-      annual_export_revenue: 0, // Brak sprzedaży nadwyżek
-      cash_flows: cash_flows, // Legacy for charts (without inflation)
-      centralized_cash_flows: centralizedCalc.capex.cashFlows, // New with inflation
+      annual_total_revenue: savings_year1,
+      annual_export_revenue: 0,
+      cash_flows: cash_flows,
+      centralized_cash_flows: backendEconomics?.cash_flows || cash_flows,
       metrics: {
         annual_opex: opex_annual,
         capacity_kwp: capacity_kwp,
-        total_energy_price: totalEnergyPriceWithCapacity
+        total_energy_price: totalEnergyPriceWithCapacity,
       },
-      parameters: params
+      parameters: {
+        ...params,
+        energy_price: totalEnergyPriceWithCapacity,
+        investment_cost: capexPerKwp,
+        use_inflation: backendParams.use_inflation,
+        irr_mode: irrMode,
+        inflation_rate: backendParams.inflation_rate,
+      },
+      backendEconomics,
     };
 
-    console.log('✅ Calculated economic analysis (using centralized NPV/IRR):', economicData);
+    console.log('? Calculated economic analysis (using backend NPV/IRR):', economicData);
 
-    // Update UI
     updateMetrics(economicData);
     updateDataInfo();
 
@@ -1288,8 +1264,8 @@ function calculateFinancialMetrics() {
     const cashFlow = savingsAnnual;
     npv += cashFlow / Math.pow(1 + discountRate, year);
   }
-
-  // IRR calculation (simplified)
+  // IRR calculation removed (backend is source of truth)
+  const irr = economicData?.irr !== undefined && economicData?.irr !== null ? (economicData.irr * 100).toFixed(1) : 'N/A';
   const irr = ((Math.pow(npv / capex + 1, 1 / horizon) - 1) * 100).toFixed(1);
 
   // LCOE (Levelized Cost of Energy)
@@ -2833,20 +2809,6 @@ function calculateOptimization() {
 /**
  * Simple IRR calculation using Newton-Raphson method
  */
-function calculateIRR(cashFlows, guess = 0.1) {
-  const maxIterations = 100;
-  const tolerance = 0.00001;
-
-  let rate = guess;
-
-  for (let i = 0; i < maxIterations; i++) {
-    let npv = 0;
-    let dnpv = 0;
-
-    for (let j = 0; j < cashFlows.length; j++) {
-      npv += cashFlows[j] / Math.pow(1 + rate, j);
-      dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
-    }
 
     const newRate = rate - npv / dnpv;
 

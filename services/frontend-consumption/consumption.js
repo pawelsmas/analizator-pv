@@ -1,5 +1,5 @@
 // Chart.js instances
-let dailyChart, weeklyChart, monthlyChart, loadDurationChart;
+let dailyChart, weeklyChart, monthlyChart, loadDurationChart, seasonalityChart;
 
 // Data storage
 let consumptionData = null;
@@ -120,6 +120,9 @@ async function performAnalysis() {
     generateWeeklyProfileFromBackend(backendStats.weekly_profile_mwh);
     generateMonthlyProfileFromBackend(backendStats.monthly_consumption);
     generateLoadDurationCurve(consumptionData.hourlyData.values);
+
+    // Fetch and display seasonality analysis
+    await loadSeasonalityAnalysis();
 
   } catch (error) {
     console.error('Error fetching backend statistics:', error);
@@ -554,5 +557,231 @@ function exportAnalysis() {
 // Refresh data
 function refreshData() {
   loadConsumptionData();
+}
+
+// Clear analysis (called when data is cleared)
+function clearAnalysis() {
+  consumptionData = null;
+  showNoData();
+
+  // Destroy all charts
+  if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+  if (weeklyChart) { weeklyChart.destroy(); weeklyChart = null; }
+  if (monthlyChart) { monthlyChart.destroy(); monthlyChart = null; }
+  if (loadDurationChart) { loadDurationChart.destroy(); loadDurationChart = null; }
+  if (seasonalityChart) { seasonalityChart.destroy(); seasonalityChart = null; }
+
+  // Hide seasonality section
+  document.getElementById('seasonalitySection').style.display = 'none';
+}
+
+// Load seasonality analysis from backend
+async function loadSeasonalityAnalysis() {
+  try {
+    const response = await fetch('http://localhost:8001/seasonality');
+    if (!response.ok) {
+      document.getElementById('seasonalitySection').style.display = 'none';
+      return;
+    }
+
+    const data = await response.json();
+
+    // Show section
+    document.getElementById('seasonalitySection').style.display = 'block';
+
+    // Count bands
+    const bandCounts = { High: 0, Mid: 0, Low: 0 };
+    data.daily_bands.forEach(day => {
+      if (day.band in bandCounts) {
+        bandCounts[day.band]++;
+      }
+    });
+
+    // Update stats
+    document.getElementById('highDaysCount').textContent = bandCounts.High;
+    document.getElementById('midDaysCount').textContent = bandCounts.Mid;
+    document.getElementById('lowDaysCount').textContent = bandCounts.Low;
+    document.getElementById('seasonalityScore').textContent = (data.seasonality_score * 100).toFixed(1);
+
+    // Update message
+    const msgEl = document.getElementById('seasonalityMessage');
+    msgEl.textContent = data.message;
+    msgEl.className = 'seasonality-message' + (data.detected ? '' : ' warning');
+
+    // Generate chart
+    generateSeasonalityChart(data.daily_bands);
+
+    // Update monthly bands table and details
+    updateMonthlyBandsDisplay(data);
+
+  } catch (error) {
+    console.error('Error loading seasonality:', error);
+    document.getElementById('seasonalitySection').style.display = 'none';
+  }
+}
+
+// Update monthly bands display with detailed information
+function updateMonthlyBandsDisplay(data) {
+  const monthNames = {
+    '01': 'Styczeń', '02': 'Luty', '03': 'Marzec', '04': 'Kwiecień',
+    '05': 'Maj', '06': 'Czerwiec', '07': 'Lipiec', '08': 'Sierpień',
+    '09': 'Wrzesień', '10': 'Październik', '11': 'Listopad', '12': 'Grudzień'
+  };
+
+  const monthNamesShort = {
+    '01': 'Sty', '02': 'Lut', '03': 'Mar', '04': 'Kwi',
+    '05': 'Maj', '06': 'Cze', '07': 'Lip', '08': 'Sie',
+    '09': 'Wrz', '10': 'Paź', '11': 'Lis', '12': 'Gru'
+  };
+
+  // Group months by band
+  const bandMonths = { High: [], Mid: [], Low: [] };
+  const bandConsumption = { High: 0, Mid: 0, Low: 0 };
+  let totalConsumption = 0;
+
+  // Process monthly_bands data
+  if (data.monthly_bands && data.monthly_bands.length > 0) {
+    data.monthly_bands.forEach(mb => {
+      const monthNum = mb.month.split('-')[1]; // "2024-06" -> "06"
+      const band = mb.dominant_band;
+      if (band in bandMonths) {
+        bandMonths[band].push(monthNamesShort[monthNum]);
+        bandConsumption[band] += mb.consumption_kwh || 0;
+        totalConsumption += mb.consumption_kwh || 0;
+      }
+    });
+  }
+
+  // Update band summary boxes
+  ['high', 'mid', 'low'].forEach(band => {
+    const bandKey = band.charAt(0).toUpperCase() + band.slice(1);
+    const box = document.getElementById(`${band}MonthsList`);
+    if (box) {
+      const monthsList = bandMonths[bandKey].length > 0 ? bandMonths[bandKey].join(', ') : 'Brak';
+      const consumption = (bandConsumption[bandKey] / 1000).toFixed(1); // kWh -> MWh
+      const percentage = totalConsumption > 0 ? ((bandConsumption[bandKey] / totalConsumption) * 100).toFixed(1) : 0;
+
+      box.querySelector('.band-months-list').textContent = monthsList;
+      box.querySelector('.band-consumption').textContent = `${consumption} MWh (${percentage}% rocznego)`;
+    }
+  });
+
+  // Build detailed monthly table
+  const tableBody = document.getElementById('monthlyBandsTableBody');
+  if (tableBody && data.monthly_bands) {
+    let tableRows = '';
+
+    // Sort by month
+    const sortedMonths = [...data.monthly_bands].sort((a, b) => a.month.localeCompare(b.month));
+
+    sortedMonths.forEach(mb => {
+      const monthNum = mb.month.split('-')[1];
+      const year = mb.month.split('-')[0];
+      const monthName = `${monthNames[monthNum]} ${year}`;
+      const band = mb.dominant_band;
+      const bandClass = band.toLowerCase();
+
+      const consumptionMWh = ((mb.consumption_kwh || 0) / 1000).toFixed(1);
+      const p95kW = (mb.p95_power || 0).toFixed(0);
+      const avgkW = (mb.avg_power || 0).toFixed(0);
+      const percentage = totalConsumption > 0 ? (((mb.consumption_kwh || 0) / totalConsumption) * 100).toFixed(1) : 0;
+
+      tableRows += `
+        <tr>
+          <td style="text-align:left;font-weight:500">${monthName}</td>
+          <td style="text-align:center"><span class="band-badge ${bandClass}">${band}</span></td>
+          <td style="text-align:right">${consumptionMWh}</td>
+          <td style="text-align:right">${p95kW}</td>
+          <td style="text-align:right">${avgkW}</td>
+          <td style="text-align:right">${percentage}%</td>
+        </tr>
+      `;
+    });
+
+    tableBody.innerHTML = tableRows;
+  }
+
+  // Update recommended powers
+  if (data.band_powers) {
+    data.band_powers.forEach(bp => {
+      const band = bp.band.toLowerCase();
+      const powerEl = document.getElementById(`${band}PowerRecommended`);
+      if (powerEl) {
+        const powerKW = Math.round(bp.p_recommended);
+        powerEl.textContent = `${powerKW.toLocaleString('pl-PL')} kW`;
+      }
+    });
+  }
+}
+
+// Generate seasonality timeline chart
+function generateSeasonalityChart(dailyBands) {
+  const ctx = document.getElementById('seasonalityChart').getContext('2d');
+
+  if (seasonalityChart) seasonalityChart.destroy();
+
+  // Prepare data
+  const labels = dailyBands.map(d => d.date.slice(5)); // MM-DD format
+  const p95Values = dailyBands.map(d => (d.daily_p95 / 1000).toFixed(2)); // kW -> MW
+
+  // Color by band
+  const colors = dailyBands.map(d => {
+    switch (d.band) {
+      case 'High': return 'rgba(231, 76, 60, 0.8)';
+      case 'Mid': return 'rgba(243, 156, 18, 0.8)';
+      case 'Low': return 'rgba(39, 174, 96, 0.8)';
+      default: return 'rgba(149, 165, 166, 0.8)';
+    }
+  });
+
+  seasonalityChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'P95 Mocy [MW]',
+        data: p95Values,
+        backgroundColor: colors,
+        borderColor: colors.map(c => c.replace('0.8', '1')),
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const idx = items[0].dataIndex;
+              return dailyBands[idx].date;
+            },
+            label: (item) => {
+              const idx = item.dataIndex;
+              const band = dailyBands[idx].band;
+              return `${item.formattedValue} MW (${band})`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'P95 Mocy [MW]' }
+        },
+        x: {
+          title: { display: true, text: 'Dzień' },
+          ticks: {
+            maxTicksLimit: 12,
+            callback: function(val, index) {
+              // Show only every ~30th label
+              return index % 30 === 0 ? this.getLabelForValue(val) : '';
+            }
+          }
+        }
+      }
+    }
+  });
 }
 

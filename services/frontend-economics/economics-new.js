@@ -102,35 +102,55 @@ function resetToDefaults() {
   recalculateEconomics();
 }
 
-// Calculate IRR using Newton-Raphson method
-function calculateIRR(cash_flows, initial_investment) {
-  let irr = 0.1; // Start with 10% guess
-  const max_iterations = 100;
-  const tolerance = 0.0001;
-
-  for (let i = 0; i < max_iterations; i++) {
-    let npv = -initial_investment;
-    let npv_derivative = 0;
-
-    for (let cf of cash_flows) {
-      const discount_factor = Math.pow(1 + irr, cf.year);
-      npv += cf.net_cash_flow / discount_factor;
-      npv_derivative -= cf.year * cf.net_cash_flow / (discount_factor * (1 + irr));
+// IRR is sourced from backend economics service; local solver removed
+function calculateIRR() {
+  const backendIrr = economicData?.irr ?? centralizedMetrics?.[currentVariant]?.capex?.irr;
+  if (backendIrr === undefined || backendIrr === null) {
+    console.warn('IRR unavailable locally - backend is the source of truth');
+    return 0;
+  }
+  return backendIrr;
+}
+// Fetch IRR/NPV from backend economics service (/analyze)
+async function fetchBackendIRR(variant, params) {
+  const payload = {
+    variant: {
+      capacity: variant.capacity,
+      production: variant.production,
+      self_consumed: variant.self_consumed,
+      exported: variant.exported,
+      auto_consumption_pct: variant.auto_consumption_pct,
+      coverage_pct: variant.coverage_pct
+    },
+    parameters: {
+      energy_price: params.energy_price,
+      feed_in_tariff: params.feed_in_tariff || 0,
+      investment_cost: params.investment_cost,
+      export_mode: params.export_mode || 'zero',
+      discount_rate: params.discount_rate,
+      degradation_rate: params.degradation_rate,
+      opex_per_kwp: params.opex_per_kwp,
+      analysis_period: params.analysis_period,
+      use_inflation: params.use_inflation || false,
+      irr_mode: params.irr_mode || (params.use_inflation ? 'nominal' : 'real'),
+      inflation_rate: params.inflation_rate || 0
     }
+  };
 
-    if (Math.abs(npv) < tolerance) {
-      return irr;
-    }
+  const response = await fetch('http://localhost:8003/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 
-    // Newton-Raphson update
-    irr = irr - npv / npv_derivative;
-
-    // Prevent negative IRR
-    if (irr < -0.99) irr = -0.99;
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Economics backend error: ${response.status} ${text}`);
   }
 
-  return irr; // Return best estimate even if not converged
+  return response.json();
 }
+
 
 /**
  * Calculate EaaS annual subscription to achieve target IRR
@@ -290,7 +310,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   }
 
   // Verify IRR
-  const achievedIRR = calculateIRR(
+  const achievedIRR = calculateIRR();
     cashFlows.slice(1).map((cf, idx) => ({ year: idx + 1, net_cash_flow: cf })),
     I0_PLN
   );
@@ -700,7 +720,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  ✅ Final CAPEX NPV:', (capexNPV / 1000000).toFixed(2), 'mln PLN');
 
   // Calculate CAPEX IRR
-  const capexIRR = calculateIRR(capexCashFlows.map((cf, i) => ({
+  const capexIRR = calculateIRR();
     year: i + 1,
     net_cash_flow: cf.net_cash_flow
   })), capex);
@@ -926,7 +946,7 @@ async function performEconomicAnalysis() {
     }
 
     // IRR - przybliżone (metoda Newton-Raphson)
-    let irr = calculateIRR(cash_flows, capex);
+    let irr = calculateIRR()
 
     // 7. LCOE - Levelized Cost of Energy
     // LCOE = (CAPEX + suma zdyskontowanych OPEX) / suma zdyskontowanej produkcji
@@ -1057,9 +1077,9 @@ function calculateFinancialMetrics() {
   for (let year = 1; year <= horizon; year++) {
     const cashFlow = savingsAnnual;
     npv += cashFlow / Math.pow(1 + discountRate, year);
-  }
-
-  // IRR calculation (simplified)
+  // IRR calculation removed (backend is source of truth)
+  // IRR calculation removed (backend is source of truth)
+  const irr = economicData?.irr !== undefined && economicData?.irr !== null ? (economicData.irr * 100).toFixed(1) : 'N/A';
   const irr = ((Math.pow(npv / capex + 1, 1 / horizon) - 1) * 100).toFixed(1);
 
   // LCOE (Levelized Cost of Energy)
@@ -2610,20 +2630,6 @@ function calculateOptimization() {
 /**
  * Simple IRR calculation using Newton-Raphson method
  */
-function calculateIRR(cashFlows, guess = 0.1) {
-  const maxIterations = 100;
-  const tolerance = 0.00001;
-
-  let rate = guess;
-
-  for (let i = 0; i < maxIterations; i++) {
-    let npv = 0;
-    let dnpv = 0;
-
-    for (let j = 0; j < cashFlows.length; j++) {
-      npv += cashFlows[j] / Math.pow(1 + rate, j);
-      dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
-    }
 
     const newRate = rate - npv / dnpv;
 

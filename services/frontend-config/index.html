@@ -62,7 +62,42 @@
     <select id="optimizationStrategy" onchange="toggleStrategyOptions()">
       <option value="autoconsumption">Autokonsumpcja (%)</option>
       <option value="npv">Maksymalizacja NPV</option>
+      <option value="seasonality_auto">🌡️ PASMA SEZONOWOŚĆ - Max Autokonsumpcja</option>
+      <option value="seasonality_npv">🌡️ PASMA SEZONOWOŚĆ - Max NPV</option>
     </select>
+
+    <!-- Seasonality info (shown when seasonality strategy selected) -->
+    <div id="seasonalityInfo" style="display:none;margin-top:12px">
+      <div id="seasonalityDetected" style="padding:12px;background:#e8f5e9;border-radius:8px;border-left:3px solid #4caf50;display:none">
+        <div style="font-size:11px;font-weight:600;color:#2e7d32;margin-bottom:8px">✅ WYKRYTO SEZONOWOŚĆ</div>
+        <div id="seasonalityMessage" style="font-size:11px;color:#1b5e20"></div>
+        <div style="margin-top:8px;font-size:10px;color:#388e3c">
+          <span id="highMonthsCount">0</span> mies. High |
+          <span id="midMonthsCount">0</span> mies. Mid |
+          <span id="lowMonthsCount">0</span> mies. Low
+        </div>
+      </div>
+      <div id="seasonalityNotDetected" style="padding:12px;background:#fff3e0;border-radius:8px;border-left:3px solid #ff9800;display:none">
+        <div style="font-size:11px;font-weight:600;color:#e65100;margin-bottom:8px">⚠️ NIE WYKRYTO ZNACZĄCEJ SEZONOWOŚCI</div>
+        <div style="font-size:11px;color:#f57c00">Zużycie jest względnie stabilne. Strategia PASMA nadal może być użyta, ale standardowa optymalizacja może być równie skuteczna.</div>
+      </div>
+      <div id="seasonalityLoading" style="padding:12px;background:#e3f2fd;border-radius:8px;border-left:3px solid #2196f3">
+        <div style="font-size:11px;color:#1565c0">⏳ Wgraj dane aby sprawdzić sezonowość...</div>
+      </div>
+    </div>
+
+    <!-- Season selector - ZAWSZE widoczny gdy strategia sezonowości wybrana -->
+    <div id="seasonSelector" style="display:none;margin-top:12px;padding:12px;background:#f3e5f5;border-radius:8px;border-left:3px solid #9c27b0">
+      <div style="font-size:11px;font-weight:600;color:#7b1fa2;margin-bottom:8px">🎯 OPTYMALIZUJ DLA SEZONU</div>
+      <select id="targetSeason" style="width:100%;padding:8px;font-size:12px;border:1px solid #ce93d8;border-radius:4px;background:white">
+        <option value="high">Tylko HIGH (wysokie zużycie)</option>
+        <option value="high_mid" selected>HIGH + MID (wysokie i średnie)</option>
+        <option value="all">Wszystkie sezony (High + Mid + Low)</option>
+      </select>
+      <div style="font-size:10px;color:#8e24aa;margin-top:6px">
+        Wybierz dla których sezonów optymalizować instalację PV
+      </div>
+    </div>
 
     <!-- Autoconsumption thresholds (shown when strategy = autoconsumption) -->
     <div id="autoconsumptionOptions">
@@ -193,6 +228,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<script src="config-v2.js"></script>
+<script src="config-v2.js?v=20251130-season2"></script>
 </body>
 </html>

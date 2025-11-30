@@ -201,6 +201,42 @@ select:focus, input[type="number"]:focus {
   border: 2px solid #222;
 }
 
+/* Comparison Table */
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: center;
+}
+
+.comparison-table th {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 12px 8px;
+  font-weight: 600;
+}
+
+.comparison-table th:first-child {
+  border-radius: 8px 0 0 0;
+}
+
+.comparison-table th:last-child {
+  border-radius: 0 8px 0 0;
+}
+
+.comparison-table td {
+  padding: 12px 8px;
+  border-bottom: 1px solid #333;
+}
+
+.comparison-table tbody tr:hover {
+  background: rgba(102, 126, 234, 0.1);
+}
+
+.comparison-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .module-container {

@@ -209,22 +209,91 @@ function toggleStrategyOptions() {
   const strategy = document.getElementById('optimizationStrategy').value;
   const autoconsumptionOptions = document.getElementById('autoconsumptionOptions');
   const npvOptions = document.getElementById('npvOptions');
+  const seasonalityInfo = document.getElementById('seasonalityInfo');
+  const seasonSelector = document.getElementById('seasonSelector');
 
   console.log('🔧 toggleStrategyOptions:', {
     strategy,
     autoconsumptionOptions: !!autoconsumptionOptions,
-    npvOptions: !!npvOptions
+    npvOptions: !!npvOptions,
+    seasonalityInfo: !!seasonalityInfo,
+    seasonSelector: !!seasonSelector
   });
 
+  // Hide all options first
+  if (autoconsumptionOptions) autoconsumptionOptions.style.display = 'none';
+  if (npvOptions) npvOptions.style.display = 'none';
+  if (seasonalityInfo) seasonalityInfo.style.display = 'none';
+  if (seasonSelector) seasonSelector.style.display = 'none';
+
   if (strategy === 'autoconsumption') {
-    autoconsumptionOptions.style.display = 'block';
-    npvOptions.style.display = 'none';
-  } else {
-    autoconsumptionOptions.style.display = 'none';
-    npvOptions.style.display = 'block';
+    if (autoconsumptionOptions) autoconsumptionOptions.style.display = 'block';
+  } else if (strategy === 'npv') {
+    if (npvOptions) npvOptions.style.display = 'block';
+  } else if (strategy === 'seasonality_auto' || strategy === 'seasonality_npv') {
+    // Show seasonality info, season selector, and check for seasonality
+    if (seasonalityInfo) seasonalityInfo.style.display = 'block';
+    if (seasonSelector) seasonSelector.style.display = 'block';
+    checkSeasonality();
   }
 
   saveConfig();
+}
+
+// Global seasonality data
+let seasonalityData = null;
+
+// Check seasonality from API
+async function checkSeasonality() {
+  const seasonalityDetected = document.getElementById('seasonalityDetected');
+  const seasonalityNotDetected = document.getElementById('seasonalityNotDetected');
+  const seasonalityLoading = document.getElementById('seasonalityLoading');
+
+  // Show loading state
+  if (seasonalityDetected) seasonalityDetected.style.display = 'none';
+  if (seasonalityNotDetected) seasonalityNotDetected.style.display = 'none';
+  if (seasonalityLoading) seasonalityLoading.style.display = 'block';
+
+  // Check if data is uploaded
+  if (!sessionStorage.getItem('file_uploaded')) {
+    if (seasonalityLoading) {
+      seasonalityLoading.innerHTML = '<div style="font-size:11px;color:#1565c0">⏳ Wgraj dane aby sprawdzić sezonowość...</div>';
+    }
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API.dataAnalysis}/seasonality/summary`);
+    if (!response.ok) throw new Error('Failed to get seasonality');
+
+    const summary = await response.json();
+    seasonalityData = summary;
+
+    // Hide loading
+    if (seasonalityLoading) seasonalityLoading.style.display = 'none';
+
+    if (summary.detected) {
+      // Show detected message
+      if (seasonalityDetected) {
+        seasonalityDetected.style.display = 'block';
+        document.getElementById('seasonalityMessage').textContent = summary.message;
+        document.getElementById('highMonthsCount').textContent = summary.high_months_count;
+        document.getElementById('midMonthsCount').textContent = summary.mid_months_count;
+        document.getElementById('lowMonthsCount').textContent = summary.low_months_count;
+      }
+    } else {
+      // Show not detected message
+      if (seasonalityNotDetected) seasonalityNotDetected.style.display = 'block';
+    }
+
+    console.log('🌡️ Seasonality check:', summary);
+
+  } catch (error) {
+    console.error('Seasonality check error:', error);
+    if (seasonalityLoading) {
+      seasonalityLoading.innerHTML = '<div style="font-size:11px;color:#e74c3c">❌ Błąd sprawdzania sezonowości</div>';
+    }
+  }
 }
 
 // Update NPV mode hint text
@@ -605,18 +674,34 @@ async function runAnalysis() {
   try {
     analysisInProgress = true;
 
-    document.getElementById('configResults').innerHTML = `
-      <div style="text-align:center;padding:40px;color:#ffaa00">
-        <div style="font-size:24px;margin-bottom:10px">⏳</div>
-        <div>Running analysis...</div>
-        <div style="font-size:12px;margin-top:10px">This may take a few moments</div>
-      </div>
-    `;
+    // Progress indicator helper
+    const updateProgress = (step, stepName, percent = null) => {
+      const progressBar = percent !== null
+        ? `<div style="margin-top:15px;background:#333;border-radius:10px;height:8px;width:200px;margin:15px auto 0;">
+            <div style="background:linear-gradient(90deg,#667eea,#764ba2);height:100%;border-radius:10px;width:${percent}%;transition:width 0.3s"></div>
+           </div>
+           <div style="font-size:12px;margin-top:5px;color:#888">${percent}%</div>`
+        : '';
+
+      document.getElementById('configResults').innerHTML = `
+        <div style="text-align:center;padding:40px;color:#ffaa00">
+          <div style="font-size:36px;margin-bottom:10px">⏳</div>
+          <div style="font-size:16px;font-weight:600">Trwa analiza...</div>
+          <div style="font-size:14px;margin-top:10px;color:#ccc">${stepName}</div>
+          ${progressBar}
+          <div style="font-size:11px;margin-top:15px;color:#666">Krok ${step}</div>
+        </div>
+      `;
+    };
+
+    updateProgress(1, 'Pobieranie danych zużycia energii');
 
     // Get consumption data
     const hourlyDataResponse = await fetch(`${API.dataAnalysis}/hourly-data`);
     if (!hourlyDataResponse.ok) throw new Error('Failed to get hourly data');
     const hourlyData = await hourlyDataResponse.json();
+
+    updateProgress(2, 'Przygotowanie konfiguracji PV', 15);
 
     // Save consumption data to localStorage for other modules
     const dataInfo = JSON.parse(localStorage.getItem('pv_data_info') || '{}');
@@ -704,6 +789,8 @@ async function runAnalysis() {
       }
     });
 
+    updateProgress(3, 'Symulacja produkcji PV (PVGIS + pvlib)', 30);
+
     // Run PV analysis
     const analysisResponse = await fetch(`${API.pvCalculation}/analyze`, {
       method: 'POST',
@@ -715,6 +802,8 @@ async function runAnalysis() {
       const error = await analysisResponse.json();
       throw new Error(error.detail || 'Analysis failed');
     }
+
+    updateProgress(4, 'Przetwarzanie wyników bazowych', 50);
 
     const results = await analysisResponse.json();
 
@@ -760,7 +849,161 @@ async function runAnalysis() {
       analysisPeriod: systemSettings?.analysisPeriod || 25
     };
 
-    if (strategy === 'npv' && results.scenarios && results.scenarios.length > 0) {
+    // Handle seasonality strategies
+    if ((strategy === 'seasonality_auto' || strategy === 'seasonality_npv') && results.scenarios && results.scenarios.length > 0) {
+      console.log('🌡️ Running seasonality optimization...');
+
+      updateProgress(5, 'Pobieranie analizy sezonowości', 55);
+
+      // Get full seasonality data from API
+      const seasonalityResponse = await fetch(`${API.dataAnalysis}/seasonality`);
+      if (!seasonalityResponse.ok) throw new Error('Failed to get seasonality data');
+      const seasonality = await seasonalityResponse.json();
+
+      // Prepare band_powers and monthly_bands for API
+      const bandPowers = seasonality.band_powers.map(bp => ({
+        band: bp.band,
+        p_recommended: bp.p_recommended
+      }));
+
+      const monthlyBands = seasonality.monthly_bands.map(mb => ({
+        month: mb.month,
+        dominant_band: mb.dominant_band
+      }));
+
+      // Get target seasons from UI selector
+      const targetSeasonValue = document.getElementById('targetSeason')?.value || 'high_mid';
+      let targetSeasons;
+      if (targetSeasonValue === 'high') {
+        targetSeasons = ['High'];
+      } else if (targetSeasonValue === 'high_mid') {
+        targetSeasons = ['High', 'Mid'];
+      } else {
+        targetSeasons = ['High', 'Mid', 'Low'];
+      }
+
+      // Get autoconsumption thresholds from settings
+      const autoconsumptionThresholds = {
+        A: systemSettings?.autoA || 95,
+        B: systemSettings?.autoB || 90,
+        C: systemSettings?.autoC || 85,
+        D: systemSettings?.autoD || 80
+      };
+
+      // Call seasonality optimization endpoint
+      const seasonalityRequest = {
+        pv_config: pvConfig,
+        consumption: hourlyData.values,
+        timestamps: hourlyData.timestamps,
+        band_powers: bandPowers,
+        monthly_bands: monthlyBands,
+        capacity_min: systemSettings?.capMin || 1000,
+        capacity_max: systemSettings?.capMax || 50000,
+        capacity_step: systemSettings?.capStep || 500,
+        capex_per_kwp: getCapexForCapacity(5000), // Use mid-range CAPEX
+        opex_per_kwp_year: economicParams.opex,
+        energy_price_import: economicParams.energyPrice,
+        energy_price_esco: economicParams.energyPrice * 0.9, // 90% of import price
+        discount_rate: economicParams.discountRate / 100,
+        project_years: economicParams.analysisPeriod,
+        mode: strategy === 'seasonality_npv' ? 'MAX_NPV' : 'MAX_AUTOCONSUMPTION',
+        target_seasons: targetSeasons,
+        autoconsumption_thresholds: autoconsumptionThresholds
+      };
+
+      console.log('🌡️ Seasonality optimization request:', seasonalityRequest);
+
+      // Calculate estimated configurations for progress
+      const numCapacities = Math.ceil((seasonalityRequest.capacity_max - seasonalityRequest.capacity_min) / seasonalityRequest.capacity_step) + 1;
+      const numConfigs = numCapacities * 3; // 3 scalers
+      updateProgress(6, `Optymalizacja PASMA_SEZONOWOŚĆ (${numConfigs} konfiguracji)`, 60);
+
+      // Start SSE for live progress updates
+      let progressEventSource = null;
+      try {
+        console.log('🔌 Starting SSE connection...');
+        progressEventSource = new EventSource(`${API.pvCalculation}/optimization-progress`);
+
+        progressEventSource.onopen = () => {
+          console.log('🔌 SSE connection opened');
+        };
+
+        progressEventSource.onmessage = (event) => {
+          try {
+            const progress = JSON.parse(event.data);
+            console.log('📡 SSE progress:', progress);
+            if (progress.active) {
+              const stepInfo = progress.step || `Testowanie mocy`;
+              const percent = 60 + Math.round(progress.percent * 0.3); // Scale 0-100% to 60-90%
+              updateProgress(6, `${stepInfo} (${progress.percent}%)`, percent);
+            } else if (progress.step === "Oczekiwanie na optymalizację...") {
+              updateProgress(6, 'Łączenie z serwerem...', 60);
+            }
+          } catch (e) {
+            console.warn('SSE parse error:', e);
+          }
+        };
+
+        progressEventSource.onerror = (e) => {
+          console.warn('SSE connection error (may be normal at completion)', e);
+          if (progressEventSource) {
+            progressEventSource.close();
+            progressEventSource = null;
+          }
+        };
+      } catch (e) {
+        console.warn('Could not start SSE progress:', e);
+      }
+
+      const seasonalityOptResponse = await fetch(`${API.pvCalculation}/optimize-seasonality`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(seasonalityRequest)
+      });
+
+      // Close SSE after fetch completes
+      if (progressEventSource) {
+        progressEventSource.close();
+        progressEventSource = null;
+      }
+
+      if (!seasonalityOptResponse.ok) {
+        const error = await seasonalityOptResponse.json();
+        throw new Error(error.detail || 'Seasonality optimization failed');
+      }
+
+      updateProgress(7, 'Przetwarzanie wyników optymalizacji', 90);
+
+      const seasonalityOptResult = await seasonalityOptResponse.json();
+      console.log('🌡️ Seasonality optimization result:', seasonalityOptResult);
+
+      // Create variant from seasonality result
+      results.key_variants = {
+        SEASONALITY: {
+          capacity: seasonalityOptResult.best_capacity_kwp,
+          dcac_ratio: seasonalityOptResult.best_dcac_ratio,
+          production: seasonalityOptResult.annual_production_mwh * 1000, // Convert to kWh
+          self_consumed: seasonalityOptResult.annual_self_consumed_mwh * 1000,
+          exported: seasonalityOptResult.annual_exported_mwh * 1000,
+          auto_consumption_pct: seasonalityOptResult.autoconsumption_pct,
+          coverage_pct: seasonalityOptResult.coverage_pct,
+          threshold: Math.round(seasonalityOptResult.autoconsumption_pct),
+          meets_threshold: true,
+          npv: seasonalityOptResult.npv,
+          irr: seasonalityOptResult.irr,
+          payback_years: seasonalityOptResult.payback_years,
+          band_config: seasonalityOptResult.best_band_config
+        }
+      };
+
+      results.optimization_strategy = strategy;
+      results.seasonality_data = seasonality;
+      results.seasonality_optimization = seasonalityOptResult;
+      results.all_configurations = seasonalityOptResult.all_configurations;
+
+    } else if (strategy === 'npv' && results.scenarios && results.scenarios.length > 0) {
+      updateProgress(5, 'Optymalizacja NPV', 70);
+
       // Recalculate variants based on NPV optimization
       const npvParams = {
         energyPrice: economicParams.energyPrice,
@@ -782,13 +1025,17 @@ async function runAnalysis() {
       results.npv_mode = npvMode;
       results.npv_autoconsumption_range = npvMode === 'constrained' ? { min: thresholds.D, max: thresholds.A } : null;
 
+      updateProgress(6, 'Finalizacja wyników', 90);
       console.log(`📊 NPV-optimized variant (${npvMode} mode):`, npvVariants);
     } else {
+      updateProgress(5, 'Przetwarzanie wariantów autokonsumpcji', 80);
       results.optimization_strategy = 'autoconsumption';
     }
 
     // Add economic parameters including CAPEX tiers to results
     results.economicParams = economicParams;
+
+    updateProgress(8, 'Zapisywanie wyników', 95);
 
     // Save results to localStorage
     localStorage.setItem('pv_analysis_results', JSON.stringify(results));
@@ -851,22 +1098,29 @@ function showAnalysisResults(results) {
   const variantOptions = variantKeys.map(key => {
     const variant = results.key_variants[key];
     let label;
+    const capacityMWp = (parseFloat(variant.capacity) / 1000).toFixed(1);
 
     if (isNPVStrategy) {
       // NPV strategy - single optimal variant
-      const npvInfo = variant.npv_mln ? ` | NPV: ${variant.npv_mln} mln PLN` : '';
-      label = `${(variant.capacity/1000).toFixed(1)} MWp (${variant.threshold}% auto)${npvInfo}`;
+      const npvVal = variant.npv_mln != null ? parseFloat(variant.npv_mln).toFixed(2) : null;
+      const npvInfo = npvVal ? ` | NPV: ${npvVal} mln PLN` : '';
+      label = `${capacityMWp} MWp (${variant.threshold}% auto)${npvInfo}`;
     } else {
       // Autoconsumption strategy labels
-      label = `Wariant ${key} - ${(variant.capacity/1000).toFixed(1)} MWp (${variant.threshold}% pokrycia)`;
+      label = `Wariant ${key} - ${capacityMWp} MWp (${variant.threshold}% pokrycia)`;
     }
 
     return `<option value="${key}">${label}</option>`;
   }).join('');
 
   // Strategy label with range info for NPV
+  const isSeasonalityStrategy = results.optimization_strategy?.startsWith('seasonality_');
   let strategyLabel;
-  if (isNPVStrategy) {
+  if (isSeasonalityStrategy) {
+    const mode = results.optimization_strategy === 'seasonality_npv' ? 'MAX NPV' : 'MAX MWh';
+    const bestMWh = results.seasonality_optimization?.annual_self_consumed_mwh?.toFixed(2) || '-';
+    strategyLabel = `<span style="color:#9c27b0">🌡️ Strategia: PASMA_SEZONOWOŚĆ (${mode}) - ${bestMWh} MWh/rok autokonsumpcji</span>`;
+  } else if (isNPVStrategy) {
     const npvMode = results.npv_mode || 'constrained';
     if (npvMode === 'absolute') {
       strategyLabel = `<span style="color:#ff9800">📈 Strategia: Maksymalizacja NPV (cały zakres mocy)</span>`;
@@ -880,23 +1134,97 @@ function showAnalysisResults(results) {
 
   // Show success message with variant selector
   const variantCount = variantKeys.length;
-  const variantText = isNPVStrategy
-    ? `Znaleziono optymalną instalację`
-    : `Found ${variantCount} key variants`;
+  let variantText;
+  if (isSeasonalityStrategy) {
+    variantText = `Znaleziono optymalną instalację dla sezonu`;
+  } else if (isNPVStrategy) {
+    variantText = `Znaleziono optymalną instalację`;
+  } else {
+    variantText = `Znaleziono ${variantCount} wariantów`;
+  }
 
-  const selectorLabel = isNPVStrategy
+  const selectorLabel = (isSeasonalityStrategy || isNPVStrategy)
     ? 'Optymalna instalacja:'
     : 'Wybierz wariant główny do dalszych obliczeń:';
+
+  // Build comparison table rows
+  const comparisonRows = variantKeys.map(key => {
+    const v = results.key_variants[key];
+    // Konwertuj wszystkie wartości na liczby dla bezpieczeństwa
+    const capacity = parseFloat(v.capacity) || 0;
+    const production = parseFloat(v.production) || 0;
+    const selfConsumed = parseFloat(v.self_consumed) || 0;
+    const autoConsumptionPct = parseFloat(v.auto_consumption_pct) || 0;
+    const coveragePct = parseFloat(v.coverage_pct) || 0;
+
+    const capacityMWp = (capacity / 1000).toFixed(2);
+    const productionGWh = (production / 1000000).toFixed(2);
+    const selfConsumedGWh = (selfConsumed / 1000000).toFixed(2);
+    const exportedGWh = ((production - selfConsumed) / 1000000).toFixed(2);
+
+    // NPV może być w v.npv_mln (mln PLN) lub v.npv (PLN) - konwertuj na liczbę
+    let npvMln = null;
+    if (v.npv_mln != null) {
+      npvMln = parseFloat(v.npv_mln);
+    } else if (v.npv != null) {
+      npvMln = parseFloat(v.npv) / 1000000;
+    }
+    const npvInfo = (npvMln != null && !isNaN(npvMln)) ? npvMln.toFixed(2) : '-';
+
+    return `
+      <tr>
+        <td style="font-weight:600;color:#667eea">${key}</td>
+        <td>${v.threshold}%</td>
+        <td>${capacityMWp}</td>
+        <td>${productionGWh}</td>
+        <td>${selfConsumedGWh}</td>
+        <td>${exportedGWh}</td>
+        <td>${autoConsumptionPct.toFixed(1)}%</td>
+        <td>${coveragePct.toFixed(1)}%</td>
+        <td>${npvInfo}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Determine scenario count - use configurations_tested for seasonality optimization
+  const scenarioCount = results.seasonality_optimization?.configurations_tested
+    || results.scenarios?.length
+    || 0;
 
   document.getElementById('configResults').innerHTML = `
     <div style="text-align:center;padding:40px;color:#00ff88">
       <div style="font-size:48px;margin-bottom:10px">✓</div>
-      <div style="font-size:20px;font-weight:600;margin-bottom:10px">Analysis Complete!</div>
+      <div style="font-size:20px;font-weight:600;margin-bottom:10px">Analiza zakończona!</div>
       <div style="font-size:14px;color:#888">
-        Analyzed ${results.scenarios.length} scenarios<br>
+        Przeanalizowano ${scenarioCount} konfiguracji<br>
         ${variantText}
       </div>
       <div style="margin-top:12px">${strategyLabel}</div>
+
+      <!-- Comparison Table -->
+      <div style="margin-top:30px;padding:20px;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+        <h3 style="color:#2c3e50;margin-bottom:16px;font-size:16px;">Tabela Porównawcza Wariantów</h3>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;text-align:center;">
+            <thead>
+              <tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;">
+                <th style="padding:12px 8px;border-radius:8px 0 0 0">Wariant</th>
+                <th style="padding:12px 8px">Próg</th>
+                <th style="padding:12px 8px">Moc [MWp]</th>
+                <th style="padding:12px 8px">Produkcja [GWh/rok]</th>
+                <th style="padding:12px 8px">Autokonsum. [GWh]</th>
+                <th style="padding:12px 8px">Eksport [GWh]</th>
+                <th style="padding:12px 8px">Autokonsum. [%]</th>
+                <th style="padding:12px 8px">Pokrycie [%]</th>
+                <th style="padding:12px 8px;border-radius:0 8px 0 0">NPV [mln PLN]</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${comparisonRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div style="margin-top:30px;padding:20px;background:#f8f9fa;border-radius:8px;max-width:500px;margin-left:auto;margin-right:auto;">
         <label style="display:block;font-size:14px;color:#2c3e50;font-weight:600;margin-bottom:10px;">
@@ -909,7 +1237,7 @@ function showAnalysisResults(results) {
       </div>
 
       <div style="margin-top:20px">
-        <button class="btn" onclick="navigateToResults()">VIEW RESULTS →</button>
+        <button class="btn" onclick="navigateToResults()">PRZEJDŹ DO WYNIKÓW →</button>
       </div>
     </div>
   `;

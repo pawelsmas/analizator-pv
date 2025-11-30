@@ -82,6 +82,105 @@
       <canvas id="monthlyProfile"></canvas>
     </div>
 
+    <!-- Analiza sezonowości -->
+    <div class="chart-section full-width" id="seasonalitySection" style="display:none">
+      <h2>Analiza Sezonowości</h2>
+      <div class="chart-info">
+        Klasyfikacja dni według zużycia: High (wysoki) / Mid (średni) / Low (niski)
+      </div>
+      <div id="seasonalityStats" class="seasonality-stats">
+        <div class="seasonality-stat high">
+          <span class="band-label">HIGH</span>
+          <span id="highDaysCount" class="band-count">-</span>
+          <span class="band-unit">dni</span>
+        </div>
+        <div class="seasonality-stat mid">
+          <span class="band-label">MID</span>
+          <span id="midDaysCount" class="band-count">-</span>
+          <span class="band-unit">dni</span>
+        </div>
+        <div class="seasonality-stat low">
+          <span class="band-label">LOW</span>
+          <span id="lowDaysCount" class="band-count">-</span>
+          <span class="band-unit">dni</span>
+        </div>
+        <div class="seasonality-stat score">
+          <span class="band-label">WYNIK</span>
+          <span id="seasonalityScore" class="band-count">-</span>
+          <span class="band-unit">%</span>
+        </div>
+      </div>
+
+      <!-- Tabela miesięcy z podziałem na pasma -->
+      <div id="monthlyBandsTable" class="monthly-bands-section" style="margin-top:20px">
+        <h3 style="font-size:16px;color:#2c3e50;margin-bottom:12px">Podział Miesięcy na Pasma Sezonowości</h3>
+        <div class="bands-summary" style="display:flex;gap:20px;margin-bottom:16px;flex-wrap:wrap">
+          <div id="highMonthsList" class="band-months-box high">
+            <div class="band-header">HIGH - Wysokie zużycie</div>
+            <div class="band-months-list">-</div>
+            <div class="band-consumption">-</div>
+          </div>
+          <div id="midMonthsList" class="band-months-box mid">
+            <div class="band-header">MID - Średnie zużycie</div>
+            <div class="band-months-list">-</div>
+            <div class="band-consumption">-</div>
+          </div>
+          <div id="lowMonthsList" class="band-months-box low">
+            <div class="band-header">LOW - Niskie zużycie</div>
+            <div class="band-months-list">-</div>
+            <div class="band-consumption">-</div>
+          </div>
+        </div>
+
+        <!-- Szczegółowa tabela miesięcy -->
+        <div class="monthly-details-table" style="overflow-x:auto">
+          <table id="monthlyBandsDetailTable" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white">
+                <th style="padding:10px;text-align:left;border-radius:8px 0 0 0">Miesiąc</th>
+                <th style="padding:10px;text-align:center">Pasmo</th>
+                <th style="padding:10px;text-align:right">Zużycie [MWh]</th>
+                <th style="padding:10px;text-align:right">P95 Mocy [kW]</th>
+                <th style="padding:10px;text-align:right">Śr. Moc [kW]</th>
+                <th style="padding:10px;text-align:right;border-radius:0 8px 0 0">% Rocznego</th>
+              </tr>
+            </thead>
+            <tbody id="monthlyBandsTableBody">
+              <!-- Wypełniane dynamicznie -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Rekomendowane moce AC dla pasm -->
+        <div id="recommendedPowers" class="recommended-powers-section" style="margin-top:20px;padding:16px;background:#f8f9fa;border-radius:8px">
+          <h4 style="font-size:14px;color:#2c3e50;margin-bottom:12px">Rekomendowane Limity Mocy AC dla Optymalizacji PV</h4>
+          <div class="powers-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+            <div class="power-card high" style="padding:12px;border-radius:8px;text-align:center">
+              <div style="font-size:11px;font-weight:600;text-transform:uppercase;opacity:0.8">HIGH</div>
+              <div id="highPowerRecommended" style="font-size:24px;font-weight:700">- kW</div>
+              <div style="font-size:10px;opacity:0.7">P95 z okresu HIGH</div>
+            </div>
+            <div class="power-card mid" style="padding:12px;border-radius:8px;text-align:center">
+              <div style="font-size:11px;font-weight:600;text-transform:uppercase;opacity:0.8">MID</div>
+              <div id="midPowerRecommended" style="font-size:24px;font-weight:700">- kW</div>
+              <div style="font-size:10px;opacity:0.7">P95 z okresu MID</div>
+            </div>
+            <div class="power-card low" style="padding:12px;border-radius:8px;text-align:center">
+              <div style="font-size:11px;font-weight:600;text-transform:uppercase;opacity:0.8">LOW</div>
+              <div id="lowPowerRecommended" style="font-size:24px;font-weight:700">- kW</div>
+              <div style="font-size:10px;opacity:0.7">P95 z okresu LOW</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;font-size:11px;color:#666;padding:8px;background:#e8f5e9;border-radius:4px;border-left:3px solid #4caf50">
+            Te limity mocy AC są używane w strategii <strong>PASMA SEZONOWOŚĆ</strong> do ograniczenia eksportu energii w okresach niskiego zapotrzebowania.
+          </div>
+        </div>
+      </div>
+
+      <canvas id="seasonalityChart" style="margin-top:20px"></canvas>
+      <div id="seasonalityMessage" class="seasonality-message"></div>
+    </div>
+
     <!-- Analiza rozkładu mocy -->
     <div class="chart-section">
       <h2>Krzywa Uporządkowana Mocy</h2>
