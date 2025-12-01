@@ -9,7 +9,9 @@ const MODULES = {
   comparison: 'http://localhost:9005',
   economics: 'http://localhost:9006',
   settings: 'http://localhost:9007',
-  insights: 'http://localhost:9008'
+  insights: 'http://localhost:9008',
+  energyprices: 'http://localhost:9009',
+  reports: 'http://localhost:9010'
 };
 
 // Backend services
@@ -18,7 +20,9 @@ const BACKEND = {
   pvCalculation: 'http://localhost:8002',
   economics: 'http://localhost:8003',
   advancedAnalytics: 'http://localhost:8004',
-  typicalDays: 'http://localhost:8005'
+  typicalDays: 'http://localhost:8005',
+  energyPrices: 'http://localhost:8010',
+  reports: 'http://localhost:8011'
 };
 
 // Current module

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ceny Energii - Analizator PV</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Ceny Energii - Rynek SPOT</h1>
+            <p class="subtitle">Dane z ENTSO-E Transparency Platform (Day-Ahead Market)</p>
+        </header>
+
+        <!-- Status połączenia -->
+        <div id="connection-status" class="status-bar">
+            <span class="status-indicator"></span>
+            <span class="status-text">Sprawdzanie połączenia...</span>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="current">Aktualne ceny</button>
+            <button class="tab-btn" data-tab="historical">Dane historyczne</button>
+            <button class="tab-btn" data-tab="analysis">Analiza okresowa</button>
+            <button class="tab-btn" data-tab="comparison">SPOT vs Stała</button>
+        </div>
+
+        <!-- Tab: Aktualne ceny -->
+        <div id="current-tab" class="tab-content active">
+            <div class="controls">
+                <label>
+                    Okres:
+                    <select id="current-days">
+                        <option value="7">Ostatnie 7 dni</option>
+                        <option value="14">Ostatnie 14 dni</option>
+                        <option value="30" selected>Ostatnie 30 dni</option>
+                        <option value="60">Ostatnie 60 dni</option>
+                        <option value="90">Ostatnie 90 dni</option>
+                    </select>
+                </label>
+                <button id="load-current" class="btn-primary">Załaduj dane</button>
+            </div>
+
+            <div class="summary-cards" id="current-summary">
+                <div class="card">
+                    <h3>Średnia cena</h3>
+                    <div class="value" id="avg-price">-- EUR/MWh</div>
+                </div>
+                <div class="card">
+                    <h3>Min / Max</h3>
+                    <div class="value" id="minmax-price">-- / -- EUR</div>
+                </div>
+                <div class="card">
+                    <h3>Zmienność</h3>
+                    <div class="value" id="volatility">-- %</div>
+                </div>
+                <div class="card">
+                    <h3>Źródło danych</h3>
+                    <div class="value" id="data-source">--</div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h3>Ceny godzinowe Day-Ahead</h3>
+                <canvas id="hourly-chart"></canvas>
+            </div>
+
+            <div class="chart-container">
+                <h3>Statystyki dzienne</h3>
+                <canvas id="daily-chart"></canvas>
+            </div>
+
+            <div class="table-container">
+                <h3>Szczegóły dzienne</h3>
+                <table id="daily-table">
+                    <thead>
+                        <tr>
+                            <th>Data</th>
+                            <th>Średnia</th>
+                            <th>Min</th>
+                            <th>Max</th>
+                            <th>Peak (8-20)</th>
+                            <th>Off-peak</th>
+                            <th>Szczyt godz.</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Dane historyczne -->
+        <div id="historical-tab" class="tab-content">
+            <div class="controls">
+                <label>
+                    Lata:
+                    <input type="text" id="historical-years" value="2022,2023,2024" placeholder="np. 2022,2023,2024">
+                </label>
+                <button id="load-historical" class="btn-primary">Załaduj dane</button>
+            </div>
+
+            <div class="chart-container">
+                <h3>Trend cenowy (średnie miesięczne)</h3>
+                <canvas id="trend-chart"></canvas>
+            </div>
+
+            <div class="summary-cards" id="yearly-summary"></div>
+
+            <div class="table-container">
+                <h3>Statystyki roczne</h3>
+                <table id="yearly-table">
+                    <thead>
+                        <tr>
+                            <th>Rok</th>
+                            <th>Średnia</th>
+                            <th>Min</th>
+                            <th>Max</th>
+                            <th>Mediana</th>
+                            <th>Zmienność</th>
+                            <th>Baseload</th>
+                            <th>Peakload</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Analiza okresowa -->
+        <div id="analysis-tab" class="tab-content">
+            <div class="controls">
+                <label>
+                    Od:
+                    <input type="date" id="analysis-start" value="2024-07-01">
+                </label>
+                <label>
+                    Do:
+                    <input type="date" id="analysis-end" value="2024-12-31">
+                </label>
+                <button id="load-analysis" class="btn-primary">Analizuj okres</button>
+            </div>
+
+            <div class="summary-cards" id="analysis-summary"></div>
+
+            <div class="chart-container">
+                <h3>Profil dobowy (średnie godzinowe)</h3>
+                <canvas id="hourly-profile-chart"></canvas>
+            </div>
+
+            <div class="info-box" id="pv-correlation">
+                <h3>Korelacja z produkcją PV</h3>
+                <p id="pv-correlation-text"></p>
+            </div>
+
+            <div class="chart-container">
+                <h3>Ceny miesięczne</h3>
+                <canvas id="monthly-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- Tab: Porównanie SPOT vs Stała -->
+        <div id="comparison-tab" class="tab-content">
+            <div class="controls">
+                <label>
+                    Od:
+                    <input type="date" id="compare-start" value="2024-01-01">
+                </label>
+                <label>
+                    Do:
+                    <input type="date" id="compare-end" value="2024-12-31">
+                </label>
+                <label>
+                    Cena stała (EUR/MWh):
+                    <input type="number" id="fixed-price" value="100" step="5">
+                </label>
+                <button id="load-comparison" class="btn-primary">Porównaj</button>
+            </div>
+
+            <div class="comparison-result" id="comparison-result">
+                <div class="comparison-card spot">
+                    <h3>Cena SPOT</h3>
+                    <div class="big-value" id="spot-avg">-- EUR/MWh</div>
+                    <div class="details">
+                        <span>Min: <span id="spot-min">--</span></span>
+                        <span>Max: <span id="spot-max">--</span></span>
+                    </div>
+                </div>
+                <div class="comparison-card fixed">
+                    <h3>Cena stała</h3>
+                    <div class="big-value" id="fixed-value">-- EUR/MWh</div>
+                </div>
+                <div class="comparison-card result" id="savings-card">
+                    <h3>Różnica</h3>
+                    <div class="big-value" id="savings-pct">--%</div>
+                    <div class="recommendation" id="recommendation">--</div>
+                </div>
+            </div>
+
+            <div class="risk-analysis" id="risk-analysis">
+                <h3>Analiza ryzyka SPOT</h3>
+                <div class="risk-stats">
+                    <div class="risk-item">
+                        <span class="label">Czas gdy SPOT < stała:</span>
+                        <span class="value" id="time-cheaper">--%</span>
+                    </div>
+                    <div class="risk-item">
+                        <span class="label">Godziny powyżej stałej:</span>
+                        <span class="value" id="hours-above">--</span>
+                    </div>
+                    <div class="risk-item">
+                        <span class="label">Max skok ponad stałą:</span>
+                        <span class="value" id="max-spike">-- EUR</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Dane: ENTSO-E Transparency Platform | Day-Ahead Market Poland</p>
+        </footer>
+    </div>
+
+    <script src="energy-prices.js"></script>
+</body>
+</html>

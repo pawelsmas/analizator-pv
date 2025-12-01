@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raport - Analizator PV</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Generator Raportów</h1>
+            <p class="subtitle">Kompleksowy raport analizy instalacji PV</p>
+        </header>
+
+        <!-- Status połączenia -->
+        <div id="connection-status" class="status-bar">
+            <span class="status-indicator"></span>
+            <span class="status-text">Sprawdzanie połączenia...</span>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel - Configuration -->
+            <div class="config-panel">
+                <h2>Konfiguracja raportu</h2>
+
+                <div class="form-group">
+                    <label for="client-name">Nazwa klienta / projektu</label>
+                    <input type="text" id="client-name" value="Przykładowy Klient Sp. z o.o." placeholder="Nazwa klienta">
+                </div>
+
+                <div class="form-group">
+                    <label for="location">Lokalizacja</label>
+                    <input type="text" id="location" value="Polska" placeholder="Lokalizacja zakładu">
+                </div>
+
+                <div class="form-group">
+                    <label for="report-date">Data raportu</label>
+                    <input type="date" id="report-date">
+                </div>
+
+                <div class="form-group">
+                    <label>Wybrany wariant</label>
+                    <select id="selected-variant">
+                        <option value="">Automatyczny (NPV Max)</option>
+                        <option value="variant_a">Wariant A (90% autokonsumpcji)</option>
+                        <option value="variant_b">Wariant B (80% autokonsumpcji)</option>
+                        <option value="variant_c">Wariant C (70% autokonsumpcji)</option>
+                        <option value="npv_optimal">NPV Optimal</option>
+                    </select>
+                </div>
+
+                <h3>Sekcje raportu</h3>
+                <div class="sections-list">
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="executive_summary" checked>
+                        <span>0. Podsumowanie wykonawcze</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="consumption_profile" checked>
+                        <span>1. Profil zużycia energii</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="seasonality" checked>
+                        <span>2. Analiza sezonowości</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="pv_assumptions" checked>
+                        <span>3. Założenia techniczne PV</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="variants_scan" checked>
+                        <span>4. Skan wariantów mocy</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="key_variants" checked>
+                        <span>5. Warianty kluczowe</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="production_profile" checked>
+                        <span>6. Profil produkcji PV</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="energy_balance" checked>
+                        <span>7. Bilans energetyczny</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="economics_capex" checked>
+                        <span>8. Ekonomia - CAPEX</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="economics_eaas" checked>
+                        <span>9. Ekonomia - EaaS</span>
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="sensitivity" checked>
+                        <span>10. Analiza wrażliwości</span>
+                    </label>
+                </div>
+
+                <div class="button-group">
+                    <button id="btn-preview" class="btn btn-secondary" onclick="previewReport()">
+                        👁️ Podgląd HTML
+                    </button>
+                    <button id="btn-generate" class="btn btn-primary" onclick="generatePDF()">
+                        📄 Generuj PDF
+                    </button>
+                </div>
+
+                <div class="data-status">
+                    <h3>Status danych</h3>
+                    <div id="data-checklist">
+                        <div class="checklist-item" id="check-consumption">
+                            <span class="check-icon">⏳</span>
+                            <span>Dane zużycia</span>
+                        </div>
+                        <div class="checklist-item" id="check-seasonality">
+                            <span class="check-icon">⏳</span>
+                            <span>Analiza sezonowości</span>
+                        </div>
+                        <div class="checklist-item" id="check-pv">
+                            <span class="check-icon">⏳</span>
+                            <span>Analiza PV</span>
+                        </div>
+                        <div class="checklist-item" id="check-economics">
+                            <span class="check-icon">⏳</span>
+                            <span>Analiza ekonomiczna</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Preview -->
+            <div class="preview-panel">
+                <div class="preview-header">
+                    <h2>Podgląd raportu</h2>
+                    <div class="preview-actions">
+                        <button class="btn btn-small" onclick="refreshPreview()">🔄 Odśwież</button>
+                        <button class="btn btn-small" onclick="openInNewTab()">🔗 Otwórz w nowej karcie</button>
+                    </div>
+                </div>
+
+                <div id="preview-container">
+                    <div class="preview-placeholder">
+                        <div class="placeholder-icon">📊</div>
+                        <p>Kliknij "Podgląd HTML" aby wygenerować podgląd raportu</p>
+                        <p class="hint">Upewnij się, że dane zostały załadowane w innych zakładkach</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Download Modal -->
+        <div id="download-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Raport gotowy do pobrania</h3>
+                    <button class="modal-close" onclick="closeModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="success-icon">✅</div>
+                    <p id="pdf-filename">raport_pv.pdf</p>
+                    <p id="pdf-size">Rozmiar: 1.2 MB</p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" onclick="downloadPDF()">📥 Pobierz PDF</button>
+                    <button class="btn btn-secondary" onclick="closeModal()">Zamknij</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="loading-spinner"></div>
+            <p id="loading-text">Generowanie raportu...</p>
+        </div>
+    </div>
+
+    <script src="reports.js"></script>
+</body>
+</html>

@@ -101,6 +101,29 @@ services:
       retries: 3
       start_period: 40s
 
+  # Energy Prices Service (ENTSO-E)
+  energy-prices:
+    build:
+      context: ./services/energy-prices
+      dockerfile: Dockerfile
+    container_name: pv-energy-prices
+    ports:
+      - "8010:8010"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ENTSOE_API_KEY=${ENTSOE_API_KEY:-}
+    volumes:
+      - energy-prices-cache:/app/cache
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   # Frontend Shell (Main)
   frontend-shell:
     build:
@@ -277,6 +300,69 @@ services:
       retries: 3
       start_period: 10s
 
+  # Energy Prices Module
+  frontend-energy-prices:
+    build:
+      context: ./services/frontend-energy-prices
+      dockerfile: Dockerfile
+    container_name: pv-frontend-energy-prices
+    ports:
+      - "9009:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Reports Service (PDF generation)
+  reports:
+    build:
+      context: ./services/reports
+      dockerfile: Dockerfile
+    container_name: pv-reports
+    ports:
+      - "8011:8011"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATA_ANALYSIS_URL=http://pv-data-analysis:8001
+      - PV_CALCULATION_URL=http://pv-calculation:8002
+      - ECONOMICS_URL=http://pv-economics:8003
+      - ADVANCED_ANALYTICS_URL=http://pv-advanced-analytics:8004
+      - ENERGY_PRICES_URL=http://pv-energy-prices:8010
+    volumes:
+      - reports-output:/app/output
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Reports Frontend Module
+  frontend-reports:
+    build:
+      context: ./services/frontend-reports
+      dockerfile: Dockerfile
+    container_name: pv-frontend-reports
+    ports:
+      - "9010:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 networks:
   pv-network:
     driver: bridge
@@ -285,3 +371,7 @@ networks:
 volumes:
   data-volume:
     name: pv-data-volume
+  energy-prices-cache:
+    name: pv-energy-prices-cache
+  reports-output:
+    name: pv-reports-output
