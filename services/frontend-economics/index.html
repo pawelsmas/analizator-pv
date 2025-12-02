@@ -64,6 +64,28 @@
       </div>
     </div>
 
+    <!-- Global Production Scenario Selector - FLOATING/STICKY -->
+    <div id="globalScenarioSelector" style="position:fixed;top:10px;right:20px;z-index:9999;background:linear-gradient(135deg,#3f51b5,#5c6bc0);padding:12px 20px;border-radius:12px;display:flex;align-items:center;gap:16px;box-shadow:0 4px 20px rgba(63,81,181,0.4)">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px">📊</span>
+        <div style="font-size:12px;font-weight:600;color:white">Scenariusz:</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button id="globalBtnP50" class="scenario-btn active" onclick="setGlobalScenario('P50')" style="padding:8px 16px;border:2px solid #27ae60;background:#27ae60;color:white;border-radius:6px;font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">
+          P50
+        </button>
+        <button id="globalBtnP75" class="scenario-btn" onclick="setGlobalScenario('P75')" style="padding:8px 16px;border:2px solid #3498db;background:white;color:#3498db;border-radius:6px;font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">
+          P75
+        </button>
+        <button id="globalBtnP90" class="scenario-btn" onclick="setGlobalScenario('P90')" style="padding:8px 16px;border:2px solid #e74c3c;background:white;color:#e74c3c;border-radius:6px;font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">
+          P90
+        </button>
+      </div>
+      <div id="scenarioFactorDisplay" style="font-size:11px;color:rgba(255,255,255,0.8);margin-left:4px">100%</div>
+    </div>
+    <!-- Spacer for fixed selector -->
+    <div style="height:10px"></div>
+
     <div class="content-grid">
     <!-- Wskaźniki kluczowe -->
     <div class="stats-section">
@@ -165,7 +187,7 @@
           • Okresu umowy i typu indeksacji (z modułu USTAWIENIA)
         </div>
 
-        <!-- Calculated subscription display -->
+        <!-- Calculated subscription display - Basic -->
         <div id="eaasSubscriptionDisplay" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;background:#fff;padding:16px;border-radius:6px;margin-bottom:16px">
           <div style="text-align:center">
             <div style="font-size:12px;color:#666;margin-bottom:4px">Roczny abonament</div>
@@ -178,14 +200,109 @@
             <div id="eaasMonthlySubUnit" style="font-size:11px;color:#888">PLN/mies</div>
           </div>
           <div style="text-align:center">
-            <div style="font-size:12px;color:#666;margin-bottom:4px">Docelowe IRR</div>
-            <div id="eaasTargetIRR" style="font-size:20px;font-weight:700;color:#3498db">–</div>
-            <div style="font-size:11px;color:#888">%</div>
+            <div style="font-size:12px;color:#666;margin-bottom:4px">Cena EaaS</div>
+            <div id="eaasPricePerMWh" style="font-size:20px;font-weight:700;color:#9c27b0">–</div>
+            <div id="eaasPricePerMWhUnit" style="font-size:11px;color:#888">PLN/MWh</div>
           </div>
           <div style="text-align:center">
             <div style="font-size:12px;color:#666;margin-bottom:4px">Okres umowy</div>
             <div id="eaasDurationDisplay" style="font-size:20px;font-weight:700;color:#e67e22">–</div>
             <div style="font-size:11px;color:#888">lat</div>
+          </div>
+        </div>
+
+        <!-- Full Investor Model Display -->
+        <div id="eaasFullModelDisplay" style="display:none;background:#fff;padding:16px;border-radius:6px;margin-bottom:16px;border:2px solid #1976d2">
+          <div style="font-size:14px;font-weight:600;color:#1976d2;margin-bottom:12px">
+            📈 Pełny Model Inwestora
+          </div>
+
+          <!-- IRR Metrics -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+            <div style="text-align:center;background:#e3f2fd;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Target IRR</div>
+              <div id="eaasTargetIRR" style="font-size:18px;font-weight:700;color:#1565c0">–</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+            <div style="text-align:center;background:#e8f5e9;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Project IRR</div>
+              <div id="eaasProjectIRR" style="font-size:18px;font-weight:700;color:#2e7d32">–</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+            <div style="text-align:center;background:#fff3e0;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Equity IRR</div>
+              <div id="eaasEquityIRR" style="font-size:18px;font-weight:700;color:#e65100">–</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+            <div style="text-align:center;background:#fce4ec;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">IRR Driver</div>
+              <div id="eaasIrrDriver" style="font-size:18px;font-weight:700;color:#c2185b">–</div>
+              <div style="font-size:10px;color:#888">waluta</div>
+            </div>
+          </div>
+
+          <!-- Financing Structure -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">CAPEX</div>
+              <div id="eaasTotalCapex" style="font-size:16px;font-weight:600;color:#2c3e50">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Dług</div>
+              <div id="eaasDebtAmount" style="font-size:16px;font-weight:600;color:#d32f2f">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Kapitał własny</div>
+              <div id="eaasEquityAmount" style="font-size:16px;font-weight:600;color:#388e3c">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Leverage</div>
+              <div id="eaasLeverageRatio" style="font-size:16px;font-weight:600;color:#7b1fa2">–</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+          </div>
+
+          <!-- Contract Period Summary -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Przychody kontraktu</div>
+              <div id="eaasTotalRevenue" style="font-size:16px;font-weight:600;color:#1565c0">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">OPEX kontraktu</div>
+              <div id="eaasTotalOpex" style="font-size:16px;font-weight:600;color:#ff5722">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Podatek (CIT)</div>
+              <div id="eaasTotalTax" style="font-size:16px;font-weight:600;color:#795548">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Odsetki</div>
+              <div id="eaasTotalInterest" style="font-size:16px;font-weight:600;color:#607d8b">–</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+          </div>
+
+          <!-- Model Parameters Info -->
+          <div style="margin-top:16px;padding:12px;background:#f5f5f5;border-radius:6px;font-size:11px;color:#666">
+            <strong>Parametry modelu:</strong>
+            <span id="eaasModelParams">CIT: –% | Amortyzacja: – lat | Indeksacja: – | Życie projektu: – lat</span>
+          </div>
+
+          <!-- Residual Value Info -->
+          <div style="margin-top:12px;padding:12px;background:#fff8e1;border-radius:6px">
+            <div id="eaasResidualValue">
+              <div style="font-size:12px;color:#666">
+                <span style="font-weight:600">Wartość rezydualna:</span> – PLN
+                <span style="color:#888">(wykup przez klienta)</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -195,6 +312,7 @@
         <button class="btn btn-secondary" onclick="exportEaaSToExcel()" style="width:auto;padding:10px 24px;margin-left:12px">
           📥 EKSPORT DO EXCEL
         </button>
+        <span style="margin-left:16px;font-size:12px;color:#666">Scenariusz: <strong id="eaasCurrentScenario" style="color:#3f51b5">P50</strong></span>
       </div>
 
       <div id="eaasResults"></div>

@@ -28,6 +28,588 @@ window.economicsSettings = {
   irrMode: 'real' // 'real' or 'nominal'
 };
 
+// Production scenario selector for P50/P75/P90
+window.currentProductionScenario = 'P50';
+
+// P-factor values (can be overwritten by settings)
+window.productionFactors = {
+  P50: 1.00,
+  P75: 0.97,
+  P90: 0.94
+};
+
+/**
+ * Global scenario setter - updates ALL economic calculations
+ * Called from the global scenario selector in the header
+ */
+function setGlobalScenario(scenario) {
+  console.log(`🌐 Setting global scenario: ${scenario}`);
+  window.currentProductionScenario = scenario;
+
+  // Update global button styles
+  const btnConfig = {
+    P50: { borderColor: '#27ae60', activeBackground: '#27ae60', textColor: '#27ae60' },
+    P75: { borderColor: '#3498db', activeBackground: '#3498db', textColor: '#3498db' },
+    P90: { borderColor: '#e74c3c', activeBackground: '#e74c3c', textColor: '#e74c3c' }
+  };
+
+  ['P50', 'P75', 'P90'].forEach(s => {
+    const btn = document.getElementById(`globalBtn${s}`);
+    if (btn) {
+      const isActive = s === scenario;
+      const cfg = btnConfig[s];
+      btn.style.borderColor = cfg.borderColor;
+      btn.style.background = isActive ? cfg.activeBackground : 'white';
+      btn.style.color = isActive ? 'white' : cfg.textColor;
+    }
+  });
+
+  // Update scenario labels
+  const eaasLabel = document.getElementById('eaasCurrentScenario');
+  if (eaasLabel) eaasLabel.textContent = scenario;
+
+  const scenarioLabelEl = document.getElementById('eaasScenarioLabel');
+  if (scenarioLabelEl) scenarioLabelEl.textContent = scenario;
+
+  // Update EaaS metrics if scenarios are loaded
+  selectProductionScenario(scenario);
+
+  // Recalculate CAPEX section with new scenario factor
+  recalculateCapexWithScenario(scenario);
+
+  console.log(`✅ Global scenario set to ${scenario}`);
+}
+
+/**
+ * Recalculate CAPEX section economics with production scenario factor
+ */
+function recalculateCapexWithScenario(scenario) {
+  const factor = window.productionFactors[scenario] || 1.0;
+  console.log(`📊 Recalculating CAPEX economics with factor: ${factor} (${scenario})`);
+
+  // Store factor for use in calculations
+  window.currentScenarioFactor = factor;
+
+  // Clear cached centralized metrics so they get recalculated with new scenario
+  // This ensures optimization tables use the new scenario values
+  centralizedMetrics = {};
+  console.log('🔄 Cleared centralizedMetrics cache for scenario recalculation');
+
+  // If we have analysis results, recalculate and update displays
+  if (analysisResults && variants && Object.keys(variants).length > 0) {
+    // Update key metrics (NPV, IRR, Payback)
+    updateCapexMetricsWithScenario(factor);
+
+    // Regenerate all charts and tables with new scenario
+    regenerateAllChartsAndTables();
+  }
+}
+
+/**
+ * Regenerate all charts and tables after scenario change
+ */
+function regenerateAllChartsAndTables() {
+  console.log('🔄 Regenerating all charts and tables for new scenario...');
+
+  const variant = variants[currentVariant];
+  if (!variant) return;
+
+  const params = getEconomicParameters();
+  const factor = window.currentScenarioFactor || 1.0;
+
+  // Recalculate economic data with scenario factor
+  const scenarioAdjustedData = calculateScenarioAdjustedEconomicData(variant, params, factor);
+
+  // Store in economicData for other functions
+  economicData = {
+    ...economicData,
+    ...scenarioAdjustedData,
+    scenario: window.currentProductionScenario,
+    scenarioFactor: factor
+  };
+
+  // Update charts
+  if (typeof generateCashFlowChart === 'function' && scenarioAdjustedData) {
+    generateCashFlowChart(scenarioAdjustedData);
+  }
+
+  if (typeof generateRevenueChart === 'function') {
+    generateRevenueChart();
+  }
+
+  // Update payback table
+  if (typeof generatePaybackTable === 'function' && scenarioAdjustedData) {
+    generatePaybackTable(scenarioAdjustedData, variant.capacity, params);
+  }
+
+  // Update revenue table
+  if (typeof generateRevenueTable === 'function' && scenarioAdjustedData) {
+    generateRevenueTable(scenarioAdjustedData);
+  }
+
+  // Update optimization tables
+  if (typeof calculateOptimization === 'function') {
+    try {
+      calculateOptimization();
+    } catch (e) {
+      console.log('Optimization update skipped:', e.message);
+    }
+  }
+
+  // Update sensitivity charts if visible
+  if (typeof generateSensitivityAnalysisCharts === 'function') {
+    try {
+      generateSensitivityAnalysisCharts();
+    } catch (e) {
+      console.log('Sensitivity charts update skipped:', e.message);
+    }
+  }
+
+  // Update data info
+  if (typeof updateDataInfo === 'function') {
+    updateDataInfo();
+  }
+
+  console.log('✅ Charts and tables regenerated for scenario');
+}
+
+/**
+ * Calculate scenario-adjusted economic data
+ * Returns data in format expected by generateCashFlowChart, generatePaybackTable, etc.
+ */
+function calculateScenarioAdjustedEconomicData(variant, params, factor) {
+  const capacityKwp = variant.capacity || 0;
+  const baseProductionKwh = variant.production || 0;
+  const baseSelfConsumedKwh = variant.self_consumed || 0;
+
+  // Apply scenario factor
+  const adjustedProductionKwh = baseProductionKwh * factor;
+  const adjustedSelfConsumedKwh = baseSelfConsumedKwh * factor;
+  const adjustedProductionMwh = adjustedProductionKwh / 1000;
+  const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
+
+  // Energy prices
+  const energyPricePLN = calculateTotalEnergyPrice(params);
+  const capacityFeePLN = params.capacity_fee || 219;
+  const totalPricePerMwh = energyPricePLN + capacityFeePLN;
+
+  // CAPEX
+  const capexPerKwp = getCapexForCapacity(capacityKwp);
+  const totalCapex = capacityKwp * capexPerKwp;
+
+  // OPEX
+  const opexPerKwp = params.opex_per_kwp || 15;
+  const annualOpex = capacityKwp * opexPerKwp;
+
+  // Annual savings
+  const annualSavings = adjustedSelfConsumedMwh * totalPricePerMwh;
+  const netAnnualSavings = annualSavings - annualOpex;
+
+  // Analysis parameters
+  const analysisPeriod = params.analysis_period || 25;
+  const degradationRate = params.degradation_rate || 0.005;
+  const discountRate = params.discount_rate || 0.07;
+  const inflationRate = window.economicsSettings?.useInflation ? (params.inflation_rate || 0.03) : 0;
+
+  // Generate cash flows in format expected by charts/tables
+  const cash_flows = [];
+  let cumulativeCashFlow = -totalCapex;
+  let npv = -totalCapex;
+
+  for (let year = 1; year <= analysisPeriod; year++) {
+    const degradationFactor = Math.pow(1 - degradationRate, year - 1);
+    const inflationFactor = Math.pow(1 + inflationRate, year - 1);
+
+    const yearProductionMwh = adjustedSelfConsumedMwh * degradationFactor;
+    const yearSavings = yearProductionMwh * totalPricePerMwh;
+    const yearOpex = annualOpex * inflationFactor;
+    const yearCashFlow = yearSavings - yearOpex;
+
+    cumulativeCashFlow += yearCashFlow;
+    npv += yearCashFlow / Math.pow(1 + discountRate, year);
+
+    // Format expected by generatePaybackTable and generateCashFlowChart
+    cash_flows.push({
+      year: year,
+      production: yearProductionMwh,                     // MWh
+      savings: yearSavings,                              // PLN
+      opex: yearOpex,                                    // PLN
+      net_cash_flow: yearCashFlow,                       // PLN
+      cumulative_cash_flow: cumulativeCashFlow,          // PLN
+      npv: npv                                           // PLN
+    });
+  }
+
+  return {
+    investment: totalCapex,
+    annual_savings: annualSavings,
+    annual_opex: annualOpex,
+    net_annual_savings: netAnnualSavings,
+    npv: npv,
+    payback_period: netAnnualSavings > 0 ? totalCapex / netAnnualSavings : null,
+    cash_flows: cash_flows,                              // Used by generateCashFlowChart
+    centralized_cash_flows: cash_flows,                  // Used by generatePaybackTable
+    scenario: window.currentProductionScenario,
+    factor: factor,
+    capacity_kwp: capacityKwp,
+    production_mwh: adjustedProductionMwh,
+    self_consumed_mwh: adjustedSelfConsumedMwh,
+    energy_price: totalPricePerMwh
+  };
+}
+
+/**
+ * Update CAPEX metrics (key indicators, tables) with scenario factor
+ */
+function updateCapexMetricsWithScenario(factor) {
+  console.log('🔄 updateCapexMetricsWithScenario called with factor:', factor);
+
+  const variant = variants[currentVariant];
+  if (!variant) {
+    console.warn('⚠️ No variant data available for scenario update');
+    return;
+  }
+  console.log('  📊 Variant:', currentVariant, variant);
+
+  // Get economic parameters (properly formatted for calculations)
+  const params = getEconomicParameters();
+  console.log('  📊 Params:', params);
+
+  // Get base annual production (kWh) - use self_consumed for savings calculation
+  // variant.production is total production, variant.self_consumed is what saves money
+  const baseAnnualSelfConsumedKwh = variant.self_consumed || variant.production || 0;
+  const adjustedSelfConsumedKwh = baseAnnualSelfConsumedKwh * factor;
+  const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
+  console.log('  📊 Self-consumed: base=', baseAnnualSelfConsumedKwh, 'adjusted=', adjustedSelfConsumedKwh);
+
+  // Get energy price using properly formatted params
+  const energyPricePLN = calculateTotalEnergyPrice(params); // PLN/MWh
+  const capacityFeePLN = params.capacity_fee || 219; // PLN/MWh for 7-21
+  console.log('  📊 Energy price:', energyPricePLN, 'PLN/MWh, capacity fee:', capacityFeePLN);
+
+  // Calculate adjusted annual savings (self-consumed energy * full price with capacity fee)
+  const totalPricePerMwh = energyPricePLN + capacityFeePLN;
+  const annualSavings = adjustedSelfConsumedMwh * totalPricePerMwh;
+  console.log('  📊 Total price:', totalPricePerMwh, 'PLN/MWh, annual savings:', annualSavings);
+
+  // Get CAPEX using getCapexForCapacity function
+  const capacityKwp = variant.capacity || 0;
+  const capexPerKwp = getCapexForCapacity(capacityKwp);
+  const capex = capacityKwp * capexPerKwp;
+  console.log('  📊 CAPEX: capacity=', capacityKwp, 'kWp, capexPerKwp=', capexPerKwp, 'total=', capex);
+
+  // Calculate adjusted payback
+  const opexPerKwp = params.opex_per_kwp || 15;
+  const annualOpex = capacityKwp * opexPerKwp;
+  const netAnnualSavings = annualSavings - annualOpex;
+  const paybackYears = netAnnualSavings > 0 ? capex / netAnnualSavings : null;
+
+  // Calculate adjusted NPV
+  const discountRate = params.discount_rate || (systemSettings?.discountRate || 7) / 100;
+  const analysisPeriod = params.analysis_period || systemSettings?.analysisPeriod || 25;
+  const degradationRate = params.degradation_rate || (systemSettings?.degradationRate || 0.5) / 100;
+  const inflationRate = window.economicsSettings?.useInflation ? (params.inflation_rate || (systemSettings?.inflationRate || 3) / 100) : 0;
+
+  let npv = -capex;
+  for (let year = 1; year <= analysisPeriod; year++) {
+    const degradedSelfConsumedMwh = adjustedSelfConsumedMwh * Math.pow(1 - degradationRate, year - 1);
+    const yearSavings = degradedSelfConsumedMwh * totalPricePerMwh;
+    // OPEX with inflation if enabled
+    const yearOpex = capacityKwp * opexPerKwp * Math.pow(1 + inflationRate, year - 1);
+    const yearCashFlow = yearSavings - yearOpex;
+    npv += yearCashFlow / Math.pow(1 + discountRate, year);
+  }
+
+  // Calculate IRR using binary search
+  const irr = calculateSimpleIRR(capex, annualSavings, annualOpex, analysisPeriod, degradationRate);
+
+  // Update UI elements (using actual element IDs from index.html)
+  const paybackEl = document.getElementById('paybackPeriod');
+  if (paybackEl) paybackEl.textContent = paybackYears ? paybackYears.toFixed(1) : '–';
+
+  const npvEl = document.getElementById('npv');
+  if (npvEl) npvEl.textContent = (npv / 1000000).toFixed(2);
+
+  const irrEl = document.getElementById('irr');
+  if (irrEl) irrEl.textContent = irr ? (irr * 100).toFixed(1) : '–';
+
+  // Update scenario factor display
+  const factorDisplayEl = document.getElementById('scenarioFactorDisplay');
+  if (factorDisplayEl) factorDisplayEl.textContent = `${(factor * 100).toFixed(0)}%`;
+
+  // Store scenario-adjusted data for use by other functions
+  window.scenarioAdjustedData = {
+    factor: factor,
+    scenario: window.currentProductionScenario,
+    production: adjustedSelfConsumedKwh,
+    annualSavings: annualSavings,
+    npv: npv,
+    irr: irr,
+    paybackYears: paybackYears,
+    capex: capex,
+    capacityKwp: capacityKwp
+  };
+
+  // Update "Szczegółowe Wskaźniki Finansowe" section
+  const savingsAnnualEl = document.getElementById('savingsAnnual');
+  if (savingsAnnualEl) savingsAnnualEl.textContent = `${(netAnnualSavings / 1000).toFixed(0)} tys. PLN`;
+
+  const revenueAnnualEl = document.getElementById('revenueAnnual');
+  if (revenueAnnualEl) revenueAnnualEl.textContent = `${(annualSavings / 1000).toFixed(0)} tys. PLN`;
+
+  const opexAnnualEl = document.getElementById('opexAnnual');
+  if (opexAnnualEl) opexAnnualEl.textContent = `${(annualOpex / 1000).toFixed(0)} tys. PLN`;
+
+  const roiEl = document.getElementById('roi');
+  if (roiEl && capex > 0) roiEl.textContent = `${((npv / capex) * 100).toFixed(1)}%`;
+
+  const unitCapexEl = document.getElementById('unitCapex');
+  if (unitCapexEl && capacityKwp > 0) unitCapexEl.textContent = `${(capex / capacityKwp).toFixed(0)} PLN/kWp`;
+
+  console.log(`📈 CAPEX metrics updated: Payback=${paybackYears?.toFixed(1)}y, NPV=${(npv/1000000).toFixed(2)}M, IRR=${irr ? (irr*100).toFixed(1) : 'N/A'}%`);
+  console.log(`   Self-consumed: ${adjustedSelfConsumedMwh.toFixed(1)} MWh/yr, Savings: ${(annualSavings/1000).toFixed(0)}k PLN/yr`);
+}
+
+/**
+ * Simple IRR calculation using binary search
+ */
+function calculateSimpleIRR(capex, annualSavings, annualOpex, years, degradationRate) {
+  let low = -0.5, high = 1.0;
+  for (let i = 0; i < 50; i++) {
+    const mid = (low + high) / 2;
+    let npv = -capex;
+    for (let year = 1; year <= years; year++) {
+      const degradedSavings = annualSavings * Math.pow(1 - degradationRate, year - 1);
+      const cf = degradedSavings - annualOpex;
+      npv += cf / Math.pow(1 + mid, year);
+    }
+    if (Math.abs(npv) < 100) return mid;
+    if (npv > 0) low = mid;
+    else high = mid;
+  }
+  return (low + high) / 2;
+}
+
+function selectProductionScenario(scenario) {
+  console.log(`🎯 selectProductionScenario called with: ${scenario}`);
+  window.currentProductionScenario = scenario;
+
+  const scenarios = window.eaasScenarios;
+  const gridPricePLN = window.eaasGridPrice;
+  const annualSubscriptionPLN = window.eaasSubscription;
+  const baseMetrics = window.eaasBaseMetrics;
+
+  // Button styling configuration (for old buttons if they exist)
+  const btnConfig = {
+    P50: { borderColor: '#27ae60', activeBackground: '#27ae60', textColor: '#27ae60' },
+    P75: { borderColor: '#3498db', activeBackground: '#3498db', textColor: '#3498db' },
+    P90: { borderColor: '#e74c3c', activeBackground: '#e74c3c', textColor: '#e74c3c' }
+  };
+
+  // Update old button styles (backwards compatibility)
+  ['P50', 'P75', 'P90'].forEach(s => {
+    const btn = document.getElementById(`btnScenario${s}`);
+    if (btn) {
+      const isActive = s === scenario;
+      const cfg = btnConfig[s];
+      btn.style.borderColor = cfg.borderColor;
+      btn.style.background = isActive ? cfg.activeBackground : 'white';
+      btn.style.color = isActive ? 'white' : cfg.textColor;
+      btn.style.fontWeight = isActive ? '700' : '600';
+    }
+  });
+
+  // If scenarios not loaded yet, just update buttons
+  if (!scenarios || !scenarios[scenario]) {
+    console.warn('⚠️ Scenarios not loaded yet - only updating button styles');
+    return;
+  }
+
+  const cs = scenarios[scenario];
+  console.log(`📊 Scenario ${scenario} data:`, cs);
+
+  // Update all metric cards with scenario-adjusted values
+  // Efektywna cena EaaS = Abonament / Produkcja_scenariusz
+  const effectivePriceEl = document.getElementById('eaasVal_effectivePrice');
+  if (effectivePriceEl) {
+    effectivePriceEl.textContent = cs.pricePLN.toFixed(2);
+  }
+
+  // Różnica cen = Cena sieci - Efektywna cena EaaS
+  const priceDiffEl = document.getElementById('eaasVal_priceDiff');
+  if (priceDiffEl) {
+    priceDiffEl.textContent = cs.savingsPerMWh.toFixed(2);
+    priceDiffEl.style.color = cs.savingsPerMWh >= 0 ? '#27ae60' : '#e74c3c';
+  }
+
+  // Roczne oszczędności = Produkcja * Różnica cen
+  const annualSavingsEl = document.getElementById('eaasVal_annualSavings');
+  if (annualSavingsEl) {
+    annualSavingsEl.textContent = (cs.annualSavings / 1000).toFixed(1);
+    annualSavingsEl.style.color = cs.annualSavings >= 0 ? '#27ae60' : '#e74c3c';
+  }
+
+  // Savings percent
+  const savingsPercentEl = document.getElementById('eaasVal_savingsPercent');
+  if (savingsPercentEl) {
+    savingsPercentEl.textContent = `tys. PLN (${cs.savingsPercent.toFixed(1)}% kosztu energii)`;
+  }
+
+  // Równoważny okres zwrotu = CAPEX / Roczne oszczędności
+  const paybackEl = document.getElementById('eaasVal_payback');
+  if (paybackEl && baseMetrics) {
+    if (cs.annualSavings > 0) {
+      const payback = baseMetrics.capex / cs.annualSavings;
+      paybackEl.textContent = payback.toFixed(1);
+      paybackEl.style.color = '#27ae60';
+    } else {
+      paybackEl.textContent = '–';
+      paybackEl.style.color = '#e74c3c';
+    }
+  }
+
+  // Równoważny ROI = (Roczne oszczędności / CAPEX) * 100
+  const roiEl = document.getElementById('eaasVal_roi');
+  if (roiEl && baseMetrics && baseMetrics.capex > 0) {
+    if (cs.annualSavings > 0) {
+      const roi = (cs.annualSavings / baseMetrics.capex) * 100;
+      roiEl.textContent = roi.toFixed(1);
+      roiEl.style.color = '#27ae60';
+    } else {
+      roiEl.textContent = '–';
+      roiEl.style.color = '#e74c3c';
+    }
+  }
+
+  // Produkcja roczna (scenario row)
+  const productionEl = document.getElementById('eaasVal_production');
+  if (productionEl) {
+    productionEl.textContent = cs.energyMWh.toFixed(0);
+  }
+
+  // Scenario label
+  const scenarioLabelEl = document.getElementById('eaasScenarioLabel');
+  if (scenarioLabelEl) {
+    scenarioLabelEl.textContent = scenario;
+  }
+
+  // Also update the old label if exists (for backwards compatibility)
+  const oldLabelEl = document.getElementById('selectedScenarioLabel');
+  if (oldLabelEl) {
+    oldLabelEl.textContent = scenario;
+  }
+
+  // ESCO IRR stays fixed
+  const escoIrrEl = document.getElementById('eaasVal_escoIrr');
+  if (escoIrrEl && window.eaasEscoIrr) {
+    escoIrrEl.textContent = (window.eaasEscoIrr * 100).toFixed(1);
+  }
+
+  console.log(`✅ Selected production scenario: ${scenario}`, cs);
+
+  // Recalculate EaaS table and detailed metrics with new scenario
+  recalculateEaaSWithScenario(scenario);
+}
+
+/**
+ * Recalculate EaaS section (table, detailed metrics) with new production scenario
+ */
+function recalculateEaaSWithScenario(scenario) {
+  console.log(`🔄 Recalculating EaaS section for scenario: ${scenario}`);
+
+  const variant = variants[currentVariant];
+  if (!variant) {
+    console.warn('⚠️ No variant data for EaaS recalculation');
+    return;
+  }
+
+  const factor = window.productionFactors[scenario] || 1.0;
+  const params = getEconomicParameters();
+
+  // Clear cached centralized metrics to force recalculation
+  if (centralizedMetrics[currentVariant]) {
+    delete centralizedMetrics[currentVariant];
+  }
+
+  // Recalculate EaaS subscription with adjusted production
+  const eaasOM = parseFloat(document.getElementById('eaasOM')?.value) || 24;
+  const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value) || 10;
+
+  // Get subscription from calculateEaasSubscription (it uses currentScenarioFactor internally)
+  const subscriptionData = calculateEaasSubscription(
+    variant.capacity,
+    systemSettings || {},
+    params
+  );
+
+  // Recalculate centralized metrics with scenario factor
+  centralizedMetrics[currentVariant] = calculateCentralizedFinancialMetrics(variant, params, {
+    subscription: subscriptionData.annualSubscription,
+    duration: eaasDuration,
+    omPerKwp: eaasOM
+  });
+
+  // Regenerate EaaS yearly table
+  const eaasParams = {
+    annualConsumptionKWh: consumptionData?.annual_consumption_kwh || 10000000,
+    annualPVProductionKWh: variant.production * factor,
+    selfConsumptionRatio: variant.self_consumed / variant.production,
+    pvPowerKWp: variant.capacity,
+    pvCapexPLN: variant.capacity * getCapexForCapacity(variant.capacity),
+    eaasSubscriptionPLNperYear: subscriptionData.annualSubscription,
+    omCostPerKWp: eaasOM,
+    tariffComponents: {
+      energyActive: params.energy_active,
+      distribution: params.distribution,
+      quality: params.quality_fee,
+      oze: params.oze_fee,
+      cogeneration: params.cogeneration_fee,
+      capacity: params.capacity_fee,
+      excise: params.excise_tax
+    }
+  };
+
+  // Generate the EaaS yearly table
+  if (typeof generateEaaSYearlyTable === 'function') {
+    generateEaaSYearlyTable(eaasParams, { scenario: scenario, factor: factor });
+  }
+
+  // Update detailed metrics section
+  updateEaaSDetailedMetrics(scenario, factor);
+
+  console.log(`✅ EaaS section recalculated for ${scenario}`);
+}
+
+/**
+ * Update EaaS detailed financial metrics
+ */
+function updateEaaSDetailedMetrics(scenario, factor) {
+  const centralizedCalc = centralizedMetrics[currentVariant];
+  if (!centralizedCalc) return;
+
+  // Update Szczegółowe Wskaźniki Finansowe section
+  // These IDs might be different - need to check actual HTML
+  const detailedElements = {
+    'eaasDetailedNPV': centralizedCalc.eaas?.npv,
+    'eaasDetailedIRR': centralizedCalc.eaas?.irr ? centralizedCalc.eaas.irr * 100 : null,
+    'capexDetailedNPV': centralizedCalc.capex?.npv,
+    'capexDetailedIRR': centralizedCalc.capex?.irr ? centralizedCalc.capex.irr * 100 : null
+  };
+
+  for (const [id, value] of Object.entries(detailedElements)) {
+    const el = document.getElementById(id);
+    if (el && value !== null && value !== undefined) {
+      if (id.includes('NPV')) {
+        el.textContent = (value / 1000000).toFixed(2);
+      } else if (id.includes('IRR')) {
+        el.textContent = value.toFixed(1);
+      }
+    }
+  }
+
+  console.log(`📊 Updated EaaS detailed metrics for ${scenario}`);
+}
+
 function getInsuranceRate(settings) {
   const raw = settings?.insuranceRate;
   if (raw === undefined || raw === null) {
@@ -45,15 +627,18 @@ function getCapexForCapacity(capacityKwp) {
   if (capexTiers && capexTiers.length > 0) {
     for (const tier of capexTiers) {
       if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
-        return tier.capex;
+        // Support both old format (tier.capex) and new format (tier.sale or tier.cost)
+        return tier.sale || tier.capex || tier.cost || 3500;
       }
     }
     // Fallback: use last tier for very large installations
     if (capacityKwp > 50000) {
-      return capexTiers[capexTiers.length - 1].capex;
+      const lastTier = capexTiers[capexTiers.length - 1];
+      return lastTier.sale || lastTier.capex || lastTier.cost || 3500;
     }
     // Fallback: use first tier for very small installations
-    return capexTiers[0].capex;
+    const firstTier = capexTiers[0];
+    return firstTier.sale || firstTier.capex || firstTier.cost || 3500;
   }
 
   // Fallback to default investment cost from input
@@ -194,7 +779,374 @@ async function fetchEaasMonthlyLog(variant, settings, params) {
 }
 
 /**
- * Calculate EaaS annual subscription to achieve target IRR
+ * Calculate full EaaS investment model with monthly cash flows
+ *
+ * This is the complete investor model including:
+ * - Monthly cash flows
+ * - CIT tax with depreciation shield
+ * - Debt financing (optional)
+ * - CPI indexation with floor/cap
+ * - Project IRR and Equity IRR
+ * - Residual value
+ *
+ * @param {number} capacityKw - Installation capacity in kW
+ * @param {number} annualEnergyMWh - Annual energy delivered to client [MWh]
+ * @param {object} settings - System settings with all EaaS parameters
+ * @param {object} economicParams - Economic parameters
+ * @returns {object} - Full model results
+ */
+function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicParams) {
+  console.log(`\n📊 ========== PEŁNY MODEL EaaS ==========`);
+  console.log(`   Moc: ${capacityKw} kW, Energia roczna: ${annualEnergyMWh?.toFixed(0) || 'N/A'} MWh`);
+
+  // ========== PARAMETERS ==========
+  const currency = settings.eaasCurrency || 'PLN';
+  const irrDriver = settings.irrDriver || 'PLN';
+  const N_contract = settings.eaasDuration || 10;
+  const N_project = settings.projectLifetime || 25;
+  const indexationType = settings.eaasIndexation || 'fixed';
+
+  // Target IRR
+  const targetIrr = irrDriver === 'PLN'
+    ? (settings.eaasTargetIrrPln || 12.0) / 100
+    : (settings.eaasTargetIrrEur || 10.0) / 100;
+
+  // CPI
+  const cpi = irrDriver === 'PLN'
+    ? (settings.cpiPln || 2.5) / 100
+    : (settings.cpiEur || 2.0) / 100;
+  const cpiFloor = (settings.cpiFloor || 0) / 100;
+  const cpiCapAnnual = (settings.cpiCapAnnual || 5.0) / 100;
+  const cpiCapTotal = (settings.cpiCapTotal || 50.0) / 100;
+
+  // Tax & Depreciation
+  const citRate = (settings.citRate || 19.0) / 100;
+  const depPeriod = settings.depreciationPeriod || 20;
+
+  // Financing
+  const leverageRatio = (settings.leverageRatio || 0) / 100;
+  const costOfDebt = (settings.costOfDebt || 7.0) / 100;
+  const debtTenor = settings.debtTenor || 8;
+  const debtGracePeriod = settings.debtGracePeriod || 0;
+  const debtAmortization = settings.debtAmortization || 'annuity';
+
+  // Technical
+  const availability = (settings.availabilityFactor || 98.0) / 100;
+  const degradationRate = (settings.degradationRate || economicParams?.degradation_rate * 100 || 0.5) / 100;
+  const expectedLossRate = (settings.expectedLossRate || 0) / 100;
+
+  // FX
+  const fxPlnEur = settings.fxPlnEur || 4.5;
+
+  // ========== CAPEX ==========
+  const capexPerKwp = getCapexForCapacity(capacityKw);
+  const totalCapex = capacityKw * capexPerKwp;
+
+  // ========== OPEX (annual) ==========
+  const opexPerKwp = economicParams?.opex_per_kwp || settings.opexPerKwp || 15;
+  const insuranceRate = getInsuranceRate(settings);
+  const landLeasePerKwp = settings.landLeasePerKwp || 0;
+
+  const annualOM = capacityKw * opexPerKwp;
+  const annualInsurance = totalCapex * insuranceRate;
+  const annualLandLease = capacityKw * landLeasePerKwp;
+  const baseOpex = annualOM + annualInsurance + annualLandLease;
+
+  // ========== DEPRECIATION ==========
+  const annualDepreciation = totalCapex / depPeriod;
+
+  // ========== DEBT ==========
+  const debtAmount = totalCapex * leverageRatio;
+  const equityAmount = totalCapex - debtAmount;
+
+  console.log(`\n📋 PARAMETRY WEJŚCIOWE:`);
+  console.log(`   CAPEX: ${(totalCapex/1e6).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
+  console.log(`   OPEX bazowy: ${(baseOpex/1e3).toFixed(0)} tys. PLN/rok`);
+  console.log(`   Amortyzacja: ${(annualDepreciation/1e3).toFixed(0)} tys. PLN/rok (${depPeriod} lat)`);
+  console.log(`   Leverage: ${(leverageRatio*100).toFixed(0)}% → Dług: ${(debtAmount/1e6).toFixed(2)} mln, Equity: ${(equityAmount/1e6).toFixed(2)} mln`);
+  console.log(`   Target IRR: ${(targetIrr*100).toFixed(1)}% (${irrDriver})`);
+  console.log(`   Okres kontraktu: ${N_contract} lat, Życie projektu: ${N_project} lat`);
+
+  // ========== SOLVER: Find subscription that achieves target IRR ==========
+
+  // Binary search for annual subscription
+  // Upper bound: annuity payment that would return CAPEX + target profit over contract period
+  // A_high = CAPEX * annuity_factor where annuity_factor = r*(1+r)^N / ((1+r)^N - 1)
+  const annuityFactor = targetIrr > 0
+    ? (targetIrr * Math.pow(1 + targetIrr, N_contract)) / (Math.pow(1 + targetIrr, N_contract) - 1)
+    : 1 / N_contract;
+  let A_low = baseOpex; // At minimum, cover OPEX
+  let A_high = totalCapex * annuityFactor * 1.5 + baseOpex; // CAPEX annuity + OPEX + 50% margin
+  const tolerance = 100; // PLN tolerance
+  let iterations = 0;
+  const maxIterations = 100;
+
+  function buildCashFlows(annualSubscriptionYear1) {
+    const monthlyFlows = [];
+    let cumulativeCpi = 1;
+    let debtBalance = debtAmount;
+    let remainingDepreciation = totalCapex;
+
+    // Month 0: Initial investment
+    monthlyFlows.push({
+      month: 0,
+      capex: -totalCapex,
+      debtDraw: debtAmount,
+      cfProject: -totalCapex,
+      cfEquity: -equityAmount
+    });
+
+    // Calculate debt payment (if leverage > 0)
+    let monthlyDebtPayment = 0;
+    let principalPayment = 0;
+    if (debtAmount > 0 && debtTenor > 0) {
+      const monthlyRate = costOfDebt / 12;
+      const debtMonths = debtTenor * 12;
+      if (debtAmortization === 'annuity') {
+        monthlyDebtPayment = debtAmount * (monthlyRate * Math.pow(1 + monthlyRate, debtMonths)) / (Math.pow(1 + monthlyRate, debtMonths) - 1);
+      } else {
+        // Linear
+        principalPayment = debtAmount / debtMonths;
+      }
+    }
+
+    // EaaS model: cash flows only during contract period (ESCO perspective)
+    // After contract ends, asset is transferred to client or sold (residual value)
+    const modelDuration = N_contract; // Use contract duration, not project lifetime
+
+    // Months 1 to N_contract * 12
+    for (let m = 1; m <= modelDuration * 12; m++) {
+      const yearIndex = Math.floor((m - 1) / 12); // 0-indexed year
+      const monthInYear = (m - 1) % 12;
+
+      // CPI factor (apply at start of each year after year 1)
+      if (monthInYear === 0 && yearIndex > 0 && indexationType === 'cpi') {
+        const effectiveCpi = Math.min(Math.max(cpi, cpiFloor), cpiCapAnnual);
+        const newCumulativeCpi = cumulativeCpi * (1 + effectiveCpi);
+        // Apply total cap
+        cumulativeCpi = Math.min(newCumulativeCpi, 1 + cpiCapTotal);
+      }
+
+      // Revenue from subscription
+      let subscription = (annualSubscriptionYear1 / 12) * cumulativeCpi;
+      // Apply expected loss
+      subscription *= (1 - expectedLossRate);
+
+      // OPEX (grows with CPI)
+      const monthlyOpex = (baseOpex / 12) * cumulativeCpi;
+
+      // Energy with degradation (for reporting)
+      const energyFactor = Math.pow(1 - degradationRate, yearIndex) * availability;
+
+      // EBITDA
+      const ebitda = subscription - monthlyOpex;
+
+      // Depreciation (monthly) - only if within depreciation period
+      const monthlyDep = yearIndex < depPeriod ? annualDepreciation / 12 : 0;
+      remainingDepreciation = Math.max(0, remainingDepreciation - monthlyDep);
+
+      // EBIT
+      const ebit = ebitda - monthlyDep;
+
+      // Interest and principal
+      let interest = 0;
+      let principal = 0;
+      if (debtBalance > 0) {
+        interest = debtBalance * (costOfDebt / 12);
+
+        if (m > debtGracePeriod * 12 && m <= debtTenor * 12) {
+          if (debtAmortization === 'annuity') {
+            principal = Math.min(monthlyDebtPayment - interest, debtBalance);
+          } else {
+            principal = Math.min(principalPayment, debtBalance);
+          }
+          debtBalance -= principal;
+        }
+      }
+
+      // Tax base (EBIT - interest, but floored at 0)
+      const taxBase = Math.max(0, ebit - interest);
+      const tax = taxBase * citRate;
+
+      // Cash flows
+      const cfProject = ebitda - tax;
+      const cfEquity = ebitda - tax - interest - principal;
+
+      monthlyFlows.push({
+        month: m,
+        year: yearIndex + 1,
+        subscription,
+        opex: monthlyOpex,
+        ebitda,
+        depreciation: monthlyDep,
+        ebit,
+        interest,
+        principal,
+        tax,
+        cfProject,
+        cfEquity,
+        debtBalance,
+        cumulativeCpi,
+        energyFactor
+      });
+    }
+
+    // Add residual value at end of contract
+    // Per contract terms: client can buy installation for 1 PLN/kWp after contract ends
+    // This is symbolic value - no significant residual value for ESCO
+    const residualValuePerKwp = 1; // PLN/kWp - contractual buyout price
+    const residualValue = capacityKw * residualValuePerKwp;
+
+    if (monthlyFlows.length > 0) {
+      const lastMonth = monthlyFlows[monthlyFlows.length - 1];
+      lastMonth.residualValue = residualValue;
+      lastMonth.residualNote = `Wykup przez klienta: ${residualValuePerKwp} PLN/kWp`;
+      lastMonth.cfProject += residualValue;
+      lastMonth.cfEquity += residualValue;
+    }
+
+    return monthlyFlows;
+  }
+
+  function calculateXIRR(flows, cfType = 'cfEquity') {
+    // Simplified IRR calculation using Newton-Raphson on monthly cash flows
+    const cfs = flows.map(f => f[cfType] || 0);
+
+    // Convert to annual for simpler calculation
+    // Number of years = number of flows / 12 (month 0 is year 0, months 1-12 is year 1, etc.)
+    const numYears = Math.ceil((cfs.length - 1) / 12);
+    const annualCfs = [];
+
+    for (let y = 0; y <= numYears; y++) {
+      let yearCf = 0;
+      if (y === 0) {
+        yearCf = cfs[0] || 0;
+      } else {
+        const startMonth = (y - 1) * 12 + 1;
+        const endMonth = y * 12;
+        for (let m = startMonth; m <= Math.min(endMonth, cfs.length - 1); m++) {
+          yearCf += cfs[m] || 0;
+        }
+      }
+      annualCfs.push(yearCf);
+    }
+
+    // Newton-Raphson IRR
+    let irr = targetIrr; // Start with target IRR as initial guess
+    for (let iter = 0; iter < 200; iter++) {
+      let npv = 0;
+      let dnpv = 0;
+      for (let t = 0; t < annualCfs.length; t++) {
+        const factor = Math.pow(1 + irr, t);
+        npv += annualCfs[t] / factor;
+        if (t > 0) dnpv -= t * annualCfs[t] / Math.pow(1 + irr, t + 1);
+      }
+      if (Math.abs(npv) < 1) break;
+      if (Math.abs(dnpv) < 0.0001) break;
+      irr = irr - npv / dnpv;
+      if (irr < -0.99) irr = -0.99;
+      if (irr > 2) irr = 2;
+    }
+    return irr;
+  }
+
+  // Binary search for target IRR
+  while (A_high - A_low > tolerance && iterations < maxIterations) {
+    const A_mid = (A_low + A_high) / 2;
+    const flows = buildCashFlows(A_mid);
+    const irr = calculateXIRR(flows, leverageRatio > 0 ? 'cfEquity' : 'cfProject');
+
+    if (irr < targetIrr) {
+      A_low = A_mid;
+    } else {
+      A_high = A_mid;
+    }
+    iterations++;
+  }
+
+  const optimalSubscription = (A_low + A_high) / 2;
+  const finalFlows = buildCashFlows(optimalSubscription);
+  const projectIrr = calculateXIRR(finalFlows, 'cfProject');
+  const equityIrr = leverageRatio > 0 ? calculateXIRR(finalFlows, 'cfEquity') : projectIrr;
+
+  // ========== RESULTS ==========
+  const monthlySubscription = optimalSubscription / 12;
+  const pricePerMWh = annualEnergyMWh > 0 ? optimalSubscription / annualEnergyMWh : 0;
+
+  // Sum up contract period revenues and costs
+  let totalRevenue = 0;
+  let totalOpex = 0;
+  let totalTax = 0;
+  let totalInterest = 0;
+  for (let m = 1; m <= N_contract * 12; m++) {
+    const f = finalFlows[m];
+    if (f) {
+      totalRevenue += f.subscription || 0;
+      totalOpex += f.opex || 0;
+      totalTax += f.tax || 0;
+      totalInterest += f.interest || 0;
+    }
+  }
+
+  // Convert to contract currency if EUR
+  const currencyMultiplier = currency === 'EUR' ? 1 / fxPlnEur : 1;
+  const currencyDisplay = currency;
+
+  console.log(`\n✅ WYNIKI SOLVERA (${iterations} iteracji):`);
+  console.log(`   Abonament roczny (rok 1): ${(optimalSubscription * currencyMultiplier / 1000).toFixed(0)} tys. ${currencyDisplay}`);
+  console.log(`   Abonament miesięczny: ${(monthlySubscription * currencyMultiplier / 1000).toFixed(1)} tys. ${currencyDisplay}`);
+  console.log(`   Cena EaaS: ${(pricePerMWh * currencyMultiplier).toFixed(0)} ${currencyDisplay}/MWh`);
+  console.log(`   Project IRR: ${(projectIrr * 100).toFixed(2)}%`);
+  console.log(`   Equity IRR: ${(equityIrr * 100).toFixed(2)}%`);
+  console.log(`   Przychód kontraktowy: ${(totalRevenue * currencyMultiplier / 1e6).toFixed(2)} mln ${currencyDisplay}`);
+
+  return {
+    // Subscription
+    annualSubscription: optimalSubscription * currencyMultiplier,
+    annualSubscriptionPLN: optimalSubscription,
+    monthlySubscription: monthlySubscription * currencyMultiplier,
+    pricePerMWh: pricePerMWh * currencyMultiplier,
+
+    // IRR
+    projectIrr,
+    equityIrr,
+    targetIrr,
+
+    // Financials
+    totalCapex: totalCapex * currencyMultiplier,
+    totalCapexPLN: totalCapex,
+    debtAmount: debtAmount * currencyMultiplier,
+    equityAmount: equityAmount * currencyMultiplier,
+    totalRevenue: totalRevenue * currencyMultiplier,
+    totalOpex: totalOpex * currencyMultiplier,
+    totalTax: totalTax * currencyMultiplier,
+    totalInterest: totalInterest * currencyMultiplier,
+
+    // Parameters
+    currency: currencyDisplay,
+    irrDriver,
+    contractDuration: N_contract,
+    projectLifetime: N_project,
+    indexationType,
+    leverageRatio: leverageRatio * 100,
+    citRate: citRate * 100,
+    expectedLossRate: expectedLossRate * 100,
+    degradationRate: degradationRate * 100,
+
+    // Residual value
+    residualValue: capacityKw * 1, // 1 PLN/kWp buyout
+    residualValueNote: 'Opcja wykupu przez klienta: 1 PLN/kWp',
+
+    // Monthly flows (for detailed analysis)
+    monthlyFlows: finalFlows,
+
+    // Solver info
+    solverIterations: iterations
+  };
+}
+
+/**
+ * Calculate EaaS annual subscription to achieve target IRR (LEGACY - simplified model)
  *
  * Implements financial model with proper annuity formula:
  * - FIXED mode: A = O + I₀ · [r(1+r)^N] / [(1+r)^N - 1]
@@ -718,10 +1670,15 @@ function hideNoData() {
 function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null) {
   console.log('💰 CENTRALIZED CALCULATION for variant:', variant.capacity, 'kWp');
 
+  // Apply production scenario factor
+  const scenarioFactor = window.currentScenarioFactor || 1.0;
+  const scenarioName = window.currentProductionScenario || 'P50';
+  console.log(`  📊 Using scenario: ${scenarioName} (factor: ${scenarioFactor})`);
+
   // Common parameters
   const capacityKwp = variant.capacity;
-  const productionKwh = variant.production;
-  const selfConsumedKwh = variant.self_consumed;
+  const productionKwh = variant.production * scenarioFactor;
+  const selfConsumedKwh = variant.self_consumed * scenarioFactor;
   const capexPerKwp = getCapexForCapacity(capacityKwp);
   const capex = capacityKwp * capexPerKwp;
 
@@ -2109,8 +3066,13 @@ function generateRevenueTable(data) {
 
   tableBody.innerHTML = '';
 
-  // Use centralized cash flows WITH inflation
-  const cashFlows = data.centralized_cash_flows || data.cash_flows;
+  // Prefer local cash_flows (which always have savings field) over backend centralized_cash_flows
+  const cashFlows = data.cash_flows || data.centralized_cash_flows;
+
+  if (!cashFlows || cashFlows.length === 0) {
+    console.warn('⚠️ No cash flows available for revenue table');
+    return;
+  }
 
   // Show first 10 years
   const yearsToShow = Math.min(10, cashFlows.length);
@@ -2122,14 +3084,15 @@ function generateRevenueTable(data) {
     const cf = cashFlows[i];
     const row = document.createElement('tr');
 
-    const savings = cf.savings;
-    const opex = cf.opex;
-    const profit = cf.net_cash_flow;
-    const margin = ((profit / savings) * 100);
+    // Handle different cash flow formats (local vs backend)
+    const savings = cf.savings ?? cf.revenue ?? (cf.net_cash_flow + (cf.opex || 0));
+    const opex = cf.opex ?? cf.costs ?? 0;
+    const profit = cf.net_cash_flow ?? (savings - opex);
+    const margin = savings > 0 ? ((profit / savings) * 100) : 0;
 
-    totalSavings += savings;
-    totalOpex += opex;
-    totalProfit += profit;
+    totalSavings += savings || 0;
+    totalOpex += opex || 0;
+    totalProfit += profit || 0;
 
     const profitClass = profit >= 0 ? 'positive' : 'negative';
     const marginClass = margin >= 0 ? 'positive' : 'negative';
@@ -2151,7 +3114,7 @@ function generateRevenueTable(data) {
   summaryRow.style.fontWeight = '600';
   summaryRow.style.borderTop = '2px solid #27ae60';
 
-  const avgMargin = ((totalProfit / totalSavings) * 100);
+  const avgMargin = totalSavings > 0 ? ((totalProfit / totalSavings) * 100) : 0;
   const avgMarginClass = avgMargin >= 0 ? 'positive' : 'negative';
 
   summaryRow.innerHTML = `
@@ -2390,13 +3353,15 @@ function calculateEaaSFinancialMetrics(params) {
       eaasEquivalentPaybackYears: eaasEquivalentPaybackYears,
       eaasEquivalentROI: eaasEquivalentROI,
       baselineEnergyCostPLN: baselineEnergyCostPLN,
-      breakdown: eaasResult.breakdown
+      breakdown: eaasResult.breakdown,
+      pvCapexPLN: pvCapexPLN  // Added CAPEX for payback/ROI calculations
     }
   };
 }
 
 /**
  * Format EaaS results for display
+ * Cards with ID prefixes "eaasCard_" are updated by selectProductionScenario()
  */
 function formatEaaSResults(result) {
   if (result.error) {
@@ -2407,57 +3372,89 @@ function formatEaaSResults(result) {
 
   const m = result.metrics;
 
+  // Store base metrics for scenario calculations
+  window.eaasBaseMetrics = {
+    gridPricePLNperMWh: m.gridPricePLNperKWh * 1000,
+    eaasPricePLNperMWh: m.eaasPricePLNperKWh * 1000,
+    annualSavingsPLN: m.annualSavingsPLN,
+    savingsPercent: m.savingsPercentageVsBaseline,
+    paybackYears: m.eaasEquivalentPaybackYears,
+    roi: m.eaasEquivalentROI,
+    capex: m.pvCapexPLN || 0,  // Use pvCapexPLN from metrics (was previously missing)
+    annualCost: m.breakdown?.totalAnnualCost || 0,
+    pvSelfConsumedMWh: (m.breakdown?.pvSelfConsumedKWh || 0) / 1000
+  };
+  console.log('📊 eaasBaseMetrics set with CAPEX:', window.eaasBaseMetrics.capex);
+
   return `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Cena energii z sieci</div>
         <div style="color:#2c3e50;font-size:24px;font-weight:600">${(m.gridPricePLNperKWh * 1000).toFixed(2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
 
-      <div style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
+      <div id="eaasCard_effectivePrice" style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Efektywna cena EaaS</div>
-        <div style="color:#27ae60;font-size:24px;font-weight:600">${(m.eaasPricePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_effectivePrice" style="color:#27ae60;font-size:24px;font-weight:600">${(m.eaasPricePLNperKWh * 1000).toFixed(2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
 
-      <div style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
+      <div id="eaasCard_priceDiff" style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Różnica cen</div>
-        <div style="color:#27ae60;font-size:24px;font-weight:600">${(m.priceDifferencePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_priceDiff" style="color:#27ae60;font-size:24px;font-weight:600">${(m.priceDifferencePLNperKWh * 1000).toFixed(2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px">
-      <div style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
+      <div id="eaasCard_annualSavings" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Roczne oszczędności</div>
-        <div style="color:#27ae60;font-size:24px;font-weight:600">${(m.annualSavingsPLN / 1000).toFixed(1)}</div>
-        <div style="color:#7f8c8d;font-size:11px">tys. PLN (${m.savingsPercentageVsBaseline.toFixed(1)}% kosztu energii)</div>
+        <div id="eaasVal_annualSavings" style="color:#27ae60;font-size:24px;font-weight:600">${(m.annualSavingsPLN / 1000).toFixed(1)}</div>
+        <div id="eaasVal_savingsPercent" style="color:#7f8c8d;font-size:11px">tys. PLN (${m.savingsPercentageVsBaseline.toFixed(1)}% kosztu energii)</div>
       </div>
 
-      ${m.eaasEquivalentPaybackYears !== null ? `
-      <div style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
+      <div id="eaasCard_payback" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Równoważny okres zwrotu</div>
-        <div style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentPaybackYears.toFixed(1)}</div>
+        <div id="eaasVal_payback" style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentPaybackYears !== null ? m.eaasEquivalentPaybackYears.toFixed(1) : '–'}</div>
         <div style="color:#7f8c8d;font-size:11px">lat (względem CAPEX)</div>
       </div>
 
-      <div style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
+      <div id="eaasCard_roi" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Równoważny ROI</div>
-        <div style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentROI.toFixed(1)}</div>
+        <div id="eaasVal_roi" style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentROI !== null ? m.eaasEquivalentROI.toFixed(1) : '–'}</div>
         <div style="color:#7f8c8d;font-size:11px">% rocznie</div>
       </div>
-      ` : '<div style="color:#e74c3c;padding:16px">Brak oszczędności - EaaS droższy od sieci</div>'}
     </div>
 
-    <div style="padding:16px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
-      <div style="color:#7f8c8d;font-size:12px;font-weight:600;margin-bottom:8px">Rozbicie kosztów EaaS (rocznych):</div>
-      <div style="font-size:13px;line-height:1.8;color:#2c3e50">
-        • <strong>Abonament:</strong> ${(m.breakdown.subscriptionCost / 1000).toFixed(1)} tys. PLN<br/>
-        • <strong>O&M:</strong> ${(m.breakdown.omCost / 1000).toFixed(1)} tys. PLN<br/>
-        • <strong>Ubezpieczenie (${(EAAS_CONFIG.INSURANCE_RATE * 100).toFixed(1)}% CAPEX):</strong> ${(m.breakdown.insuranceCost / 1000).toFixed(1)} tys. PLN<br/>
-        • <strong>Suma:</strong> ${(m.breakdown.totalAnnualCost / 1000).toFixed(1)} tys. PLN/rok<br/>
-        • <strong>Autokonsumpcja:</strong> ${(m.breakdown.pvSelfConsumedKWh / 1000).toFixed(1)} MWh/rok
+    <!-- Scenario metrics row - updated by P50/P75/P90 buttons -->
+    <div id="eaasScenarioRow" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
+      <div id="eaasCard_production" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
+        <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Produkcja roczna (<span id="eaasScenarioLabel">P50</span>)</div>
+        <div id="eaasVal_production" style="color:#3f51b5;font-size:24px;font-weight:600">${((m.breakdown?.pvSelfConsumedKWh || 0) / 1000).toFixed(0)}</div>
+        <div style="color:#7f8c8d;font-size:11px">MWh/rok</div>
+      </div>
+
+      <div id="eaasCard_subscription" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
+        <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Abonament EaaS</div>
+        <div id="eaasVal_subscription" style="color:#3f51b5;font-size:24px;font-weight:600">${((m.breakdown?.subscriptionCost || 0) / 1000).toFixed(0)}</div>
+        <div style="color:#7f8c8d;font-size:11px">tys. PLN/rok</div>
+      </div>
+
+      <div id="eaasCard_escoIrr" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
+        <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">ESCO IRR (fixed)</div>
+        <div id="eaasVal_escoIrr" style="color:#3f51b5;font-size:24px;font-weight:600">${((window.eaasEscoIrr || 0) * 100).toFixed(1)}</div>
+        <div style="color:#7f8c8d;font-size:11px">% (stała subskrypcja)</div>
+      </div>
+    </div>
+
+    <div style="padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0;font-size:12px">
+      <div style="color:#7f8c8d;font-weight:600;margin-bottom:6px">Rozbicie kosztów EaaS (rocznych):</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#2c3e50">
+        <span>• Abonament: <strong>${(m.breakdown.subscriptionCost / 1000).toFixed(1)}</strong> tys. PLN</span>
+        <span>• O&M: <strong>${(m.breakdown.omCost / 1000).toFixed(1)}</strong> tys. PLN</span>
+        <span>• Ubezpieczenie: <strong>${(m.breakdown.insuranceCost / 1000).toFixed(1)}</strong> tys. PLN</span>
+        <span>• Suma: <strong>${(m.breakdown.totalAnnualCost / 1000).toFixed(1)}</strong> tys. PLN/rok</span>
       </div>
     </div>
   `;
@@ -2488,6 +3485,225 @@ async function calculateEaaS() {
 
   const params = getEconomicParameters();
 
+  // ========== FULL MODEL CALCULATION ==========
+  // Calculate annual energy delivered to client (MWh)
+  const annualEnergyMWh = variant.self_consumed / 1000; // kWh -> MWh
+
+  // Run full investor model with all parameters from Settings
+  const fullModelResult = calculateEaasFullModel(
+    variant.capacity,
+    annualEnergyMWh,
+    systemSettings || {},
+    params
+  );
+
+  console.log('Full EaaS Model Result:', fullModelResult);
+
+  // ========== UPDATE BASIC DISPLAY ==========
+  const currency = fullModelResult.currency || 'PLN';
+
+  // Basic subscription display
+  document.getElementById('eaasAnnualSub').textContent =
+    fullModelResult.annualSubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
+  document.getElementById('eaasAnnualSubUnit').textContent = `${currency}/rok`;
+  document.getElementById('eaasMonthlySub').textContent =
+    fullModelResult.monthlySubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
+  document.getElementById('eaasMonthlySubUnit').textContent = `${currency}/mies`;
+  document.getElementById('eaasDurationDisplay').textContent = fullModelResult.contractDuration;
+
+  // Price per MWh
+  const pricePerMWhEl = document.getElementById('eaasPricePerMWh');
+  if (pricePerMWhEl) {
+    pricePerMWhEl.textContent = fullModelResult.pricePerMWh.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
+  }
+  const pricePerMWhUnitEl = document.getElementById('eaasPricePerMWhUnit');
+  if (pricePerMWhUnitEl) {
+    pricePerMWhUnitEl.textContent = `${currency}/MWh`;
+  }
+
+  // ========== UPDATE FULL MODEL DISPLAY ==========
+  const fullModelDisplay = document.getElementById('eaasFullModelDisplay');
+  if (fullModelDisplay) {
+    fullModelDisplay.style.display = 'block';
+
+    // IRR Metrics
+    const targetIrrEl = document.getElementById('eaasTargetIRR');
+    if (targetIrrEl) targetIrrEl.textContent = (fullModelResult.targetIrr * 100).toFixed(1);
+
+    const projectIrrEl = document.getElementById('eaasProjectIRR');
+    if (projectIrrEl) projectIrrEl.textContent = (fullModelResult.projectIrr * 100).toFixed(2);
+
+    const equityIrrEl = document.getElementById('eaasEquityIRR');
+    if (equityIrrEl) equityIrrEl.textContent = (fullModelResult.equityIrr * 100).toFixed(2);
+
+    const irrDriverEl = document.getElementById('eaasIrrDriver');
+    if (irrDriverEl) irrDriverEl.textContent = fullModelResult.irrDriver;
+
+    // Financing Structure (in millions PLN)
+    const totalCapexEl = document.getElementById('eaasTotalCapex');
+    if (totalCapexEl) totalCapexEl.textContent = (fullModelResult.totalCapexPLN / 1e6).toFixed(2);
+
+    const debtAmountEl = document.getElementById('eaasDebtAmount');
+    if (debtAmountEl) {
+      const debtPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.debtAmount * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.debtAmount;
+      debtAmountEl.textContent = (debtPLN / 1e6).toFixed(2);
+    }
+
+    const equityAmountEl = document.getElementById('eaasEquityAmount');
+    if (equityAmountEl) {
+      const equityPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.equityAmount * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.equityAmount;
+      equityAmountEl.textContent = (equityPLN / 1e6).toFixed(2);
+    }
+
+    const leverageEl = document.getElementById('eaasLeverageRatio');
+    if (leverageEl) leverageEl.textContent = fullModelResult.leverageRatio.toFixed(0);
+
+    // Contract Period Summary (in millions PLN)
+    const totalRevenueEl = document.getElementById('eaasTotalRevenue');
+    if (totalRevenueEl) {
+      const revPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.totalRevenue * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.totalRevenue;
+      totalRevenueEl.textContent = (revPLN / 1e6).toFixed(2);
+    }
+
+    const totalOpexEl = document.getElementById('eaasTotalOpex');
+    if (totalOpexEl) {
+      const opexPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.totalOpex * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.totalOpex;
+      totalOpexEl.textContent = (opexPLN / 1e6).toFixed(2);
+    }
+
+    const totalTaxEl = document.getElementById('eaasTotalTax');
+    if (totalTaxEl) {
+      const taxPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.totalTax * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.totalTax;
+      totalTaxEl.textContent = (taxPLN / 1e6).toFixed(2);
+    }
+
+    const totalInterestEl = document.getElementById('eaasTotalInterest');
+    if (totalInterestEl) {
+      const intPLN = fullModelResult.currency === 'EUR'
+        ? fullModelResult.totalInterest * (systemSettings?.fxPlnEur || 4.5)
+        : fullModelResult.totalInterest;
+      totalInterestEl.textContent = (intPLN / 1e6).toFixed(2);
+    }
+
+    // Model Parameters Info
+    const modelParamsEl = document.getElementById('eaasModelParams');
+    if (modelParamsEl) {
+      const indexationLabel = fullModelResult.indexationType === 'cpi' ? 'CPI' : 'Stała';
+      modelParamsEl.textContent =
+        `CIT: ${fullModelResult.citRate.toFixed(0)}% | ` +
+        `Amortyzacja: ${systemSettings?.depreciationPeriod || 20} lat | ` +
+        `Indeksacja: ${indexationLabel} | ` +
+        `Życie projektu: ${fullModelResult.projectLifetime} lat`;
+    }
+
+    // ========== P50/P75/P90 SCENARIOS - CLIENT PERSPECTIVE ==========
+    // In FIXED subscription model: ESCO IRR is constant (fixed revenue)
+    // But CLIENT sees different value depending on actual production:
+    // - Lower production = higher effective price per MWh
+    // - Lower production = lower savings vs grid
+
+    const p50Factor = systemSettings?.productionP50Factor || 1.00;
+    const p75Factor = systemSettings?.productionP75Factor || 0.97;
+    const p90Factor = systemSettings?.productionP90Factor || 0.94;
+
+    // Update global production factors from settings
+    window.productionFactors = {
+      P50: p50Factor,
+      P75: p75Factor,
+      P90: p90Factor
+    };
+
+    // Update P-factor display in global selector buttons
+    const btnP50 = document.getElementById('globalBtnP50');
+    const btnP75 = document.getElementById('globalBtnP75');
+    const btnP90 = document.getElementById('globalBtnP90');
+    if (btnP50) btnP50.innerHTML = `P50 <span style="font-size:10px;opacity:0.9">(${(p50Factor * 100).toFixed(0)}%)</span>`;
+    if (btnP75) btnP75.innerHTML = `P75 <span style="font-size:10px;opacity:0.9">(${(p75Factor * 100).toFixed(0)}%)</span>`;
+    if (btnP90) btnP90.innerHTML = `P90 <span style="font-size:10px;opacity:0.9">(${(p90Factor * 100).toFixed(0)}%)</span>`;
+
+    // Annual subscription (fixed for all scenarios)
+    const annualSubscriptionPLN = fullModelResult.annualSubscriptionPLN || fullModelResult.annualSubscription;
+
+    // Grid price for comparison (PLN/MWh)
+    const gridPricePLN = calculateTotalEnergyPrice(params);
+
+    // Calculate metrics for each scenario
+    const scenarios = {
+      P50: {
+        factor: p50Factor,
+        energyMWh: annualEnergyMWh * p50Factor,
+        pricePLN: annualEnergyMWh * p50Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p50Factor) : 0,
+      },
+      P75: {
+        factor: p75Factor,
+        energyMWh: annualEnergyMWh * p75Factor,
+        pricePLN: annualEnergyMWh * p75Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p75Factor) : 0,
+      },
+      P90: {
+        factor: p90Factor,
+        energyMWh: annualEnergyMWh * p90Factor,
+        pricePLN: annualEnergyMWh * p90Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p90Factor) : 0,
+      }
+    };
+
+    // Add derived metrics
+    Object.keys(scenarios).forEach(key => {
+      const s = scenarios[key];
+      s.savingsPerMWh = gridPricePLN - s.pricePLN;           // PLN/MWh saved vs grid
+      s.annualSavings = s.energyMWh * s.savingsPerMWh;       // PLN/year total savings
+      s.savingsPercent = gridPricePLN > 0 ? (s.savingsPerMWh / gridPricePLN * 100) : 0;
+    });
+
+    console.log('Production scenarios (client perspective):', {
+      gridPricePLN,
+      annualSubscriptionPLN,
+      scenarios
+    });
+
+    // Store scenarios globally for button handlers
+    window.eaasScenarios = scenarios;
+    window.eaasGridPrice = gridPricePLN;
+    window.eaasSubscription = annualSubscriptionPLN;
+    window.currentProductionScenario = window.currentProductionScenario || 'P50';
+
+    // Update production scenarios display (buttons are in HTML, only update metrics here)
+    // Trigger selectProductionScenario to update the metrics display with current scenario
+    const currentScenario = window.currentProductionScenario || 'P50';
+
+    // Store ESCO IRR for display
+    window.eaasEscoIrr = fullModelResult.projectIrr;
+
+    // Call selectProductionScenario to update metrics in the main cards
+    // This will update all eaasVal_* elements with scenario-adjusted values
+    selectProductionScenario(currentScenario);
+
+    console.log('📊 Production scenarios initialized - current:', currentScenario);
+
+    // Add residual value info
+    const residualEl = document.getElementById('eaasResidualValue');
+    if (residualEl) {
+      residualEl.innerHTML = `
+        <div style="font-size:12px;color:#666">
+          <span style="font-weight:600">Wartość rezydualna:</span>
+          ${(fullModelResult.residualValue || variant.capacity).toLocaleString('pl-PL')} PLN
+          <span style="color:#888">(1 PLN/kWp - wykup przez klienta)</span>
+        </div>
+      `;
+    }
+  }
+
+  // ========== LEGACY CALCULATIONS FOR COMPARISON TABLE ==========
+  // Also run the simpler model for NPV comparison from customer perspective
   let subscriptionData = null;
   try {
     const backendEaas = await fetchEaasMonthlyLog(variant, systemSettings || {}, params);
@@ -2510,23 +3726,20 @@ async function calculateEaaS() {
       dl.style.display = 'inline-block';
     }
   } catch (err) {
-    console.error('Backend EaaS solver failed, falling back to local:', err);
-    subscriptionData = calculateEaasSubscription(variant.capacity, systemSettings || {}, params);
+    console.log('Backend EaaS not available, using full model results');
+    subscriptionData = {
+      annualSubscription: fullModelResult.annualSubscriptionPLN,
+      annualSubscriptionPLN: fullModelResult.annualSubscriptionPLN,
+      monthlySubscription: fullModelResult.annualSubscriptionPLN / 12,
+      irr: fullModelResult.projectIrr,
+      duration: fullModelResult.contractDuration,
+      currency: fullModelResult.currency,
+    };
   }
-
-  console.log('Calculated EaaS subscription:', subscriptionData);
-
-  const currency = subscriptionData.currency || 'PLN';
-  document.getElementById('eaasAnnualSub').textContent = subscriptionData.annualSubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
-  document.getElementById('eaasAnnualSubUnit').textContent = `${currency}/rok`;
-  document.getElementById('eaasMonthlySub').textContent = subscriptionData.monthlySubscription.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
-  document.getElementById('eaasMonthlySubUnit').textContent = `${currency}/mies`;
-  document.getElementById('eaasTargetIRR').textContent = (subscriptionData.irr * 100).toFixed(1);
-  document.getElementById('eaasDurationDisplay').textContent = subscriptionData.duration;
 
   const eaasSubscriptionPLN = subscriptionData.annualSubscriptionPLN;
   const eaasOM = params.opex_per_kwp || (systemSettings?.opexPerKwp || 15);
-  const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value) || subscriptionData.duration || 10;
+  const eaasDuration = fullModelResult.contractDuration;
 
   const centralizedCalc = calculateCentralizedFinancialMetrics(variant, params, {
     subscription: eaasSubscriptionPLN,
@@ -2788,6 +4001,7 @@ function generateEaaSYearlyTable(params, result) {
   const eaasCashFlows = centralizedCalc.eaas.cashFlows;
   const discountRate = centralizedCalc.common.discountRate;
   const eaasDuration = centralizedCalc.eaas.duration;
+  const analysisPeriod = centralizedCalc.common.analysisPeriod;
 
   let cumulativeNPV = 0;
   let eaasPhaseSavings = 0;
@@ -2892,6 +4106,7 @@ function generateEaaSYearlyTable(params, result) {
   console.log('✅ EaaS yearly table generated. EaaS phase:', (eaasPhaseSavings / 1000).toFixed(0), 'tys. PLN, Ownership phase:', (ownershipPhaseSavings / 1000).toFixed(0), 'tys. PLN, NPV:', (cumulativeNPV / 1000000).toFixed(2), 'mln PLN');
 
   // Send economics data to shell for Reports module
+  // Use JSON.parse/stringify to ensure clean data without DOM references
   const economicsData = {
     variantKey: currentVariant,
     eaasDuration: eaasDuration,
@@ -2901,7 +4116,7 @@ function generateEaaSYearlyTable(params, result) {
     totalSavings: totalSavings,
     cumulativeNPV: cumulativeNPV,
     discountRate: discountRate,
-    cashFlows: eaasCashFlows,
+    cashFlows: JSON.parse(JSON.stringify(eaasCashFlows)),
     // CAPEX data from centralizedMetrics
     capexInvestment: centralizedCalc.capex?.investment || 0,
     capexNPV: centralizedCalc.capex?.npv || 0,
@@ -2912,10 +4127,14 @@ function generateEaaSYearlyTable(params, result) {
     inflationRate: centralizedCalc.common?.inflationRate || 0
   };
 
-  window.parent.postMessage({
-    type: 'ECONOMICS_CALCULATED',
-    data: economicsData
-  }, '*');
+  try {
+    window.parent.postMessage({
+      type: 'ECONOMICS_CALCULATED',
+      data: JSON.parse(JSON.stringify(economicsData))
+    }, '*');
+  } catch (e) {
+    console.warn('⚠️ Could not send economics data to shell:', e.message);
+  }
   console.log('📤 Economics data sent to shell:', economicsData);
 }
 
@@ -2948,7 +4167,7 @@ function exportEaaSToExcel() {
 
   const eaasSubscription = parseFloat(document.getElementById('eaasSubscription')?.value) || 800000;
   const eaasOM = parseFloat(document.getElementById('eaasOM')?.value) || 24;
-  const degradationRate = params.degradation_rate / 100;
+  const degradationRate = params.degradation_rate; // Already as fraction (e.g., 0.005 for 0.5%)
   const analysisPeriod = params.analysis_period;
 
   const capacityKwp = variant.capacity;
@@ -3131,6 +4350,96 @@ function exportEaaSToExcel() {
   ];
 
   XLSX.utils.book_append_sheet(wb, ws2, 'EaaS Rok po Roku');
+
+  // ========== SHEET 3: Monthly Cash Flows (Full Model) ==========
+  // Run full model to get monthly flows
+  const annualEnergyMWh = variant.self_consumed / 1000;
+  const fullModelResult = calculateEaasFullModel(
+    capacityKwp,
+    annualEnergyMWh,
+    systemSettings || {},
+    params
+  );
+
+  if (fullModelResult && fullModelResult.monthlyFlows && fullModelResult.monthlyFlows.length > 0) {
+    const monthlyData = [
+      ['MIESIĘCZNE PRZEPŁYWY PIENIĘŻNE (PEŁNY MODEL INWESTORA)'],
+      [''],
+      ['Moc instalacji [kWp]:', capacityKwp],
+      [`Waluta: ${fullModelResult.currency}`, `Target IRR: ${(fullModelResult.targetIrr * 100).toFixed(1)}%`],
+      [`Project IRR: ${(fullModelResult.projectIrr * 100).toFixed(2)}%`, `Equity IRR: ${(fullModelResult.equityIrr * 100).toFixed(2)}%`],
+      [''],
+      ['Miesiąc', 'Rok', 'Abonament', 'OPEX', 'EBITDA', 'Amortyzacja', 'EBIT', 'Odsetki', 'Kapitał', 'Podatek', 'CF Project', 'CF Equity', 'Saldo długu', 'CPI kum.']
+    ];
+
+    for (const flow of fullModelResult.monthlyFlows) {
+      if (flow.month === 0) {
+        // Initial investment row
+        monthlyData.push([
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          (flow.capex / 1000).toFixed(0),
+          ((flow.cfEquity || flow.capex + flow.debtDraw) / 1000).toFixed(0),
+          ((flow.debtDraw || 0) / 1000).toFixed(0),
+          ''
+        ]);
+      } else {
+        monthlyData.push([
+          flow.month,
+          flow.year,
+          (flow.subscription / 1000).toFixed(1),
+          (flow.opex / 1000).toFixed(1),
+          (flow.ebitda / 1000).toFixed(1),
+          (flow.depreciation / 1000).toFixed(1),
+          (flow.ebit / 1000).toFixed(1),
+          (flow.interest / 1000).toFixed(1),
+          (flow.principal / 1000).toFixed(1),
+          (flow.tax / 1000).toFixed(1),
+          (flow.cfProject / 1000).toFixed(1),
+          (flow.cfEquity / 1000).toFixed(1),
+          (flow.debtBalance / 1000).toFixed(0),
+          (flow.cumulativeCpi * 100).toFixed(1) + '%'
+        ]);
+      }
+    }
+
+    // Add residual value note
+    monthlyData.push(['']);
+    monthlyData.push([`Wartość rezydualna: ${(fullModelResult.residualValue || capacityKwp).toLocaleString()} PLN (wykup 1 PLN/kWp)`]);
+    monthlyData.push([`Expected Loss Rate: ${fullModelResult.expectedLossRate?.toFixed(1) || 0}%`]);
+    monthlyData.push([`Degradacja: ${fullModelResult.degradationRate?.toFixed(1) || 0.5}%/rok`]);
+
+    const ws3 = XLSX.utils.aoa_to_sheet(monthlyData);
+
+    // Set column widths
+    ws3['!cols'] = [
+      { wch: 8 },  // Miesiąc
+      { wch: 5 },  // Rok
+      { wch: 12 }, // Abonament
+      { wch: 10 }, // OPEX
+      { wch: 10 }, // EBITDA
+      { wch: 12 }, // Amortyzacja
+      { wch: 10 }, // EBIT
+      { wch: 10 }, // Odsetki
+      { wch: 10 }, // Kapitał
+      { wch: 10 }, // Podatek
+      { wch: 12 }, // CF Project
+      { wch: 12 }, // CF Equity
+      { wch: 12 }, // Saldo długu
+      { wch: 10 }  // CPI kum.
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws3, 'CF Miesięczny');
+    console.log('✅ Monthly cash flows sheet added');
+  }
 
   // Generate filename
   const timestamp = new Date().toISOString().slice(0, 10);

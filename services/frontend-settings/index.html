@@ -202,83 +202,266 @@
       <div class="section-header">
         <span class="section-icon">📋</span>
         <h2>Parametry EaaS (Energy-as-a-Service)</h2>
-        <span class="section-info">Model subskrypcyjny - kalkulacja abonamentu na podstawie docelowego IRR</span>
+        <span class="section-info">Pełny model inwestorski - kalkulacja abonamentu na podstawie docelowego IRR</span>
       </div>
 
       <div style="margin-bottom:20px;padding:16px;background:#e8f5e9;border-radius:8px;border-left:4px solid #4caf50">
         <div style="font-size:13px;font-weight:600;color:#2e7d32;margin-bottom:8px">💡 Jak działa kalkulacja EaaS?</div>
         <div style="font-size:12px;color:#1b5e20;line-height:1.6">
-          Abonament EaaS jest obliczany automatycznie aby zapewnić ESCO docelową stopę zwrotu (IRR).<br>
-          <strong>Wzór:</strong> Abonament = f(CAPEX, OPEX, Ubezpieczenie, Podatek, IRR docelowe, Okres umowy)<br>
-          System obliczy miesięczną ratę która po uwzględnieniu wszystkich kosztów operacyjnych zapewni założone IRR.
+          Model oblicza miesięczny abonament EaaS aby zapewnić ESCO docelową stopę zwrotu (IRR).<br>
+          <strong>Uwzględnia:</strong> CAPEX, OPEX, podatki, amortyzację, finansowanie dłużne, degradację i indeksację CPI.<br>
+          <strong>Wynik:</strong> Project IRR (przed długiem) i Equity IRR (po długu) + szczegółowe przepływy miesięczne.
         </div>
       </div>
 
-      <div class="settings-grid">
-        <div class="setting-item">
-          <label>Waluta kontraktu</label>
-          <select id="eaasCurrency" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
-            <option value="PLN">PLN (Złoty Polski)</option>
-            <option value="EUR">EUR (Euro)</option>
-          </select>
-          <span class="setting-hint">Waluta rozliczeń EaaS</span>
+      <!-- Subsection: Contract Basics -->
+      <div style="margin-bottom:20px;padding:15px;background:#f5f5f5;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #4caf50;padding-bottom:6px">
+          📝 Podstawowe parametry kontraktu
         </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Waluta kontraktu</label>
+            <select id="eaasCurrency" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="PLN">PLN (Złoty Polski)</option>
+              <option value="EUR">EUR (Euro)</option>
+            </select>
+            <span class="setting-hint">Waluta rozliczeń EaaS</span>
+          </div>
 
-        <div class="setting-item">
-          <label>Okres umowy EaaS [lat]</label>
-          <input type="number" id="eaasDuration" value="10" step="1" min="5" max="25">
-          <span class="setting-hint">Długość kontraktu subskrypcyjnego</span>
-        </div>
+          <div class="setting-item">
+            <label>IRR Driver</label>
+            <select id="irrDriver" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="PLN">PLN - optymalizuj IRR w PLN</option>
+              <option value="EUR">EUR - optymalizuj IRR w EUR</option>
+            </select>
+            <span class="setting-hint">Waluta do optymalizacji IRR</span>
+          </div>
 
-        <div class="setting-item">
-          <label>Typ abonamentu</label>
-          <select id="eaasIndexation" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
-            <option value="fixed">Fixed (stała rata)</option>
-            <option value="cpi">CPI (indeksacja inflacją)</option>
-          </select>
-          <span class="setting-hint">Czy abonament rośnie z inflacją</span>
-        </div>
+          <div class="setting-item">
+            <label>Okres umowy EaaS [lat]</label>
+            <input type="number" id="eaasDuration" value="10" step="1" min="5" max="25">
+            <span class="setting-hint">Długość kontraktu subskrypcyjnego</span>
+          </div>
 
-        <div class="setting-item">
-          <label>Docelowe IRR dla ESCO - PLN [%]</label>
-          <input type="number" id="eaasTargetIrrPln" value="12.0" step="0.5" min="5" max="25">
-          <span class="setting-hint">Wymagana stopa zwrotu dla kontraktów w PLN</span>
-        </div>
+          <div class="setting-item">
+            <label>Okres życia projektu [lat]</label>
+            <input type="number" id="projectLifetime" value="25" step="1" min="15" max="35">
+            <span class="setting-hint">Całkowity okres eksploatacji PV</span>
+          </div>
 
-        <div class="setting-item">
-          <label>Docelowe IRR dla ESCO - EUR [%]</label>
-          <input type="number" id="eaasTargetIrrEur" value="10.0" step="0.5" min="5" max="25">
-          <span class="setting-hint">Wymagana stopa zwrotu dla kontraktów w EUR</span>
-        </div>
+          <div class="setting-item">
+            <label>Typ abonamentu</label>
+            <select id="eaasIndexation" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="fixed">Fixed (stała rata nominalna)</option>
+              <option value="cpi">CPI (indeksacja inflacją)</option>
+            </select>
+            <span class="setting-hint">Czy abonament rośnie z inflacją</span>
+          </div>
 
-        <div class="setting-item">
-          <label>CPI PLN [%/rok]</label>
-          <input type="number" id="cpiPln" value="2.5" step="0.1" min="0" max="10">
-          <span class="setting-hint">Roczna inflacja dla PLN (do indeksacji CPI)</span>
-        </div>
+          <div class="setting-item">
+            <label>Docelowe IRR - PLN [%]</label>
+            <input type="number" id="eaasTargetIrrPln" value="12.0" step="0.5" min="5" max="30">
+            <span class="setting-hint">Target IRR dla kontraktów PLN</span>
+          </div>
 
-        <div class="setting-item">
-          <label>CPI EUR [%/rok]</label>
-          <input type="number" id="cpiEur" value="2.0" step="0.1" min="0" max="10">
-          <span class="setting-hint">Roczna inflacja dla EUR (do indeksacji CPI)</span>
-        </div>
+          <div class="setting-item">
+            <label>Docelowe IRR - EUR [%]</label>
+            <input type="number" id="eaasTargetIrrEur" value="10.0" step="0.5" min="5" max="25">
+            <span class="setting-hint">Target IRR dla kontraktów EUR</span>
+          </div>
 
-        <div class="setting-item">
-          <label>Kurs PLN/EUR</label>
-          <input type="number" id="fxPlnEur" value="4.5" step="0.01" min="3" max="6">
-          <span class="setting-hint">Kurs wymiany do przeliczeń EUR</span>
+          <div class="setting-item">
+            <label>Kurs PLN/EUR</label>
+            <input type="number" id="fxPlnEur" value="4.5" step="0.01" min="3" max="6">
+            <span class="setting-hint">Kurs wymiany walut</span>
+          </div>
         </div>
       </div>
 
-      <div style="margin-top:16px;padding:12px;background:#fff3e0;border-radius:8px;border-left:3px solid #ff9800">
-        <div style="font-size:12px;color:#e65100">
-          <strong>ℹ️ Koszty uwzględniane w kalkulacji IRR:</strong><br>
-          • CAPEX (z przedziałów dostosowanych do mocy instalacji)<br>
-          • OPEX (koszty operacyjne z sekcji NPV)<br>
-          • Ubezpieczenie (jeśli skonfigurowane)<br>
-          • Podatek od nieruchomości (jeśli skonfigurowany)<br>
-          • Degradacja produkcji w czasie<br><br>
-          <strong>Wynik:</strong> Roczny abonament który zapewni ESCO założony IRR przy danej wielkości instalacji
+      <!-- Subsection: Tax & Depreciation -->
+      <div style="margin-bottom:20px;padding:15px;background:#fff8e1;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #ffc107;padding-bottom:6px">
+          🏛️ Podatki i amortyzacja
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Stawka CIT [%]</label>
+            <input type="number" id="citRate" value="19.0" step="1" min="0" max="40">
+            <span class="setting-hint">Podatek dochodowy CIT (19% w PL)</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Metoda amortyzacji</label>
+            <select id="depreciationMethod" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="linear">Liniowa</option>
+              <option value="degressive">Degresywna</option>
+            </select>
+            <span class="setting-hint">Sposób naliczania amortyzacji</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Okres amortyzacji [lat]</label>
+            <input type="number" id="depreciationPeriod" value="20" step="1" min="5" max="30">
+            <span class="setting-hint">Roczna amortyzacja = CAPEX / okres</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subsection: Financing -->
+      <div style="margin-bottom:20px;padding:15px;background:#e3f2fd;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #2196f3;padding-bottom:6px">
+          🏦 Finansowanie (dług)
+        </div>
+        <div style="margin-bottom:12px;padding:10px;background:#bbdefb;border-radius:6px;font-size:12px;color:#1565c0">
+          <strong>💡 Uwaga:</strong> Leverage = 0% oznacza finansowanie 100% z equity. Zwiększenie leverage zmniejsza Equity IRR ale zwiększa ROE.
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Leverage [%]</label>
+            <input type="number" id="leverageRatio" value="0" step="5" min="0" max="80">
+            <span class="setting-hint">% CAPEX finansowany długiem (0-80%)</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Koszt długu [%/rok]</label>
+            <input type="number" id="costOfDebt" value="7.0" step="0.25" min="2" max="15">
+            <span class="setting-hint">Nominalna stopa procentowa</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Okres kredytu [lat]</label>
+            <input type="number" id="debtTenor" value="8" step="1" min="3" max="20">
+            <span class="setting-hint">Tenor kredytu</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Karencja [lat]</label>
+            <input type="number" id="debtGracePeriod" value="0" step="1" min="0" max="3">
+            <span class="setting-hint">Okres spłaty tylko odsetek</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Typ spłaty</label>
+            <select id="debtAmortization" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="annuity">Annuitetowa (równe raty)</option>
+              <option value="linear">Liniowa (malejące raty)</option>
+            </select>
+            <span class="setting-hint">Profil spłaty kapitału</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subsection: CPI Indexation -->
+      <div style="margin-bottom:20px;padding:15px;background:#fce4ec;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #e91e63;padding-bottom:6px">
+          📈 Indeksacja CPI
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>CPI PLN [%/rok]</label>
+            <input type="number" id="cpiPln" value="2.5" step="0.1" min="0" max="15">
+            <span class="setting-hint">Założona inflacja PLN</span>
+          </div>
+
+          <div class="setting-item">
+            <label>CPI EUR [%/rok]</label>
+            <input type="number" id="cpiEur" value="2.0" step="0.1" min="0" max="10">
+            <span class="setting-hint">Założona inflacja EUR</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Częstotliwość</label>
+            <select id="indexationFrequency" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+              <option value="annual">Roczna</option>
+              <option value="quarterly">Kwartalna</option>
+            </select>
+            <span class="setting-hint">Jak często indeksować</span>
+          </div>
+
+          <div class="setting-item">
+            <label>CPI Floor [%]</label>
+            <input type="number" id="cpiFloor" value="0" step="0.5" min="-5" max="5">
+            <span class="setting-hint">Minimalna indeksacja (np. 0%)</span>
+          </div>
+
+          <div class="setting-item">
+            <label>CPI Cap roczny [%]</label>
+            <input type="number" id="cpiCapAnnual" value="5.0" step="0.5" min="0" max="20">
+            <span class="setting-hint">Max indeksacja w jednym roku</span>
+          </div>
+
+          <div class="setting-item">
+            <label>CPI Cap całkowity [%]</label>
+            <input type="number" id="cpiCapTotal" value="50.0" step="5" min="0" max="100">
+            <span class="setting-hint">Max skumulowana indeksacja</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subsection: Technical & Risk -->
+      <div style="margin-bottom:20px;padding:15px;background:#f3e5f5;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #9c27b0;padding-bottom:6px">
+          ⚙️ Parametry techniczne i ryzyko
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Dostępność instalacji [%]</label>
+            <input type="number" id="availabilityFactor" value="98.0" step="0.5" min="90" max="100">
+            <span class="setting-hint">Uwzględnia awarie i przestoje</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Margines 0-export [%]</label>
+            <input type="number" id="zeroExportMargin" value="0" step="1" min="0" max="20">
+            <span class="setting-hint">Bezpiecznik przed przekroczeniem</span>
+          </div>
+
+          <div class="setting-item">
+            <label>Expected Loss Rate [%]</label>
+            <input type="number" id="expectedLossRate" value="0" step="0.5" min="0" max="10">
+            <span class="setting-hint">Ryzyko kredytowe klienta</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subsection: Production Scenarios -->
+      <div style="margin-bottom:20px;padding:15px;background:#e8eaf6;border-radius:8px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #3f51b5;padding-bottom:6px">
+          📊 Scenariusze produkcji (P-factors)
+        </div>
+        <div style="margin-bottom:12px;padding:10px;background:#c5cae9;border-radius:6px;font-size:12px;color:#283593">
+          <strong>💡 Objaśnienie:</strong> P50 = mediana (50% szans na niższą produkcję), P75 = 25% szans, P90 = 10% szans.
+          Model EaaS używa P50 do sizingu, ale raportuje IRR dla wszystkich scenariuszy.
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>P50 Factor</label>
+            <input type="number" id="productionP50Factor" value="1.00" step="0.01" min="0.80" max="1.10">
+            <span class="setting-hint">100% = mediana produkcji</span>
+          </div>
+          <div class="setting-item">
+            <label>P75 Factor</label>
+            <input type="number" id="productionP75Factor" value="0.97" step="0.01" min="0.80" max="1.05">
+            <span class="setting-hint">97% = konserwatywny scenariusz</span>
+          </div>
+          <div class="setting-item">
+            <label>P90 Factor</label>
+            <input type="number" id="productionP90Factor" value="0.94" step="0.01" min="0.80" max="1.00">
+            <span class="setting-hint">94% = bardzo konserwatywny</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding:12px;background:#e8f5e9;border-radius:8px;border-left:3px solid #4caf50">
+        <div style="font-size:12px;color:#2e7d32">
+          <strong>📊 Model generuje:</strong><br>
+          • Miesięczne przepływy pieniężne (CF) przez cały okres projektu<br>
+          • Project IRR (przed finansowaniem) i Equity IRR (po finansowaniu)<br>
+          • EBITDA, EBIT, podatek CIT z tarczą amortyzacyjną<br>
+          • Obsługę długu (odsetki + kapitał) jeśli leverage > 0<br>
+          • Wartość rezydualną po zakończeniu kontraktu<br>
+          • Cenę EaaS per MWh i porównanie do ceny z sieci
         </div>
       </div>
     </div>

@@ -85,7 +85,7 @@ const DEFAULT_CONFIG = {
   useInflation: false,   // false = real IRR (constant prices), true = nominal IRR (inflation-indexed)
   irrMode: 'real',       // 'real' or 'nominal' - alternative to useInflation for clarity
 
-  // EaaS Parameters
+  // EaaS Parameters - Contract Basics
   eaasCurrency: 'PLN',       // 'PLN' or 'EUR'
   eaasDuration: 10,          // Contract duration in years
   eaasIndexation: 'fixed',   // 'fixed' (constant) or 'cpi' (inflation-indexed)
@@ -94,6 +94,39 @@ const DEFAULT_CONFIG = {
   cpiPln: 2.5,               // Annual CPI inflation rate for PLN (%)
   cpiEur: 2.0,               // Annual CPI inflation rate for EUR (%)
   fxPlnEur: 4.5,             // FX rate PLN/EUR
+  irrDriver: 'PLN',          // 'PLN' or 'EUR' - currency for IRR optimization
+
+  // EaaS Parameters - Tax & Depreciation
+  citRate: 19.0,             // Corporate Income Tax rate (%)
+  projectLifetime: 25,       // Total project lifetime [years]
+  depreciationMethod: 'linear', // 'linear' or 'degressive'
+  depreciationPeriod: 20,    // Depreciation period [years]
+
+  // EaaS Parameters - Financing (Debt)
+  leverageRatio: 0,          // % of CAPEX financed by debt (0-80%)
+  costOfDebt: 7.0,           // Nominal debt interest rate (%)
+  debtTenor: 8,              // Debt repayment period [years]
+  debtGracePeriod: 0,        // Grace period - interest only [years]
+  debtAmortization: 'annuity', // 'annuity' or 'linear'
+
+  // EaaS Parameters - Technical
+  availabilityFactor: 98.0,  // Plant availability (%)
+  zeroExportMargin: 0,       // Safety margin for 0-export [%]
+
+  // EaaS Parameters - CPI Indexation Limits
+  indexationFrequency: 'annual', // 'annual' or 'quarterly'
+  cpiFloor: 0,               // Minimum CPI applied (%)
+  cpiCapAnnual: 5.0,         // Maximum annual CPI (%)
+  cpiCapTotal: 50.0,         // Maximum cumulative CPI over contract (%)
+
+  // EaaS Parameters - Risk
+  expectedLossRate: 0,       // Expected credit loss rate (%)
+
+  // Production Scenarios (P-factors for risk analysis)
+  // P50 = median, P75/P90 = lower percentiles (more conservative)
+  productionP50Factor: 1.00,  // 100% of expected production (median)
+  productionP75Factor: 0.97,  // 97% - 75th percentile (25% chance of being lower)
+  productionP90Factor: 0.94,  // 94% - 90th percentile (10% chance of being lower)
 
   // Weather Data Source
   weatherDataSource: 'pvgis', // 'pvgis' or 'clearsky'
@@ -235,12 +268,23 @@ function loadSettings() {
 
 // Apply configuration to UI inputs
 function applySettingsToUI(config) {
-  // Simple fields
+  // Simple fields (inputs with numeric or text values)
   const simpleFields = [
     'energyActive', 'distribution', 'qualityFee', 'ozeFee', 'cogenerationFee',
     'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate', 'landLeasePerKwp',
     'discountRate', 'degradationRate', 'analysisPeriod', 'inflationRate',
+    // EaaS basic
     'eaasDuration', 'eaasTargetIrrPln', 'eaasTargetIrrEur', 'cpiPln', 'cpiEur', 'fxPlnEur',
+    // EaaS tax & depreciation
+    'citRate', 'projectLifetime', 'depreciationPeriod',
+    // EaaS financing
+    'leverageRatio', 'costOfDebt', 'debtTenor', 'debtGracePeriod',
+    // EaaS technical
+    'availabilityFactor', 'zeroExportMargin',
+    // EaaS CPI limits
+    'cpiFloor', 'cpiCapAnnual', 'cpiCapTotal',
+    // EaaS risk
+    'expectedLossRate',
     // Environmental parameters
     'altitude', 'albedo', 'soilingLoss',
     // DC/AC Mode
@@ -250,6 +294,13 @@ function applySettingsToUI(config) {
     'pvYield_roof_ew', 'latitude_roof_ew', 'tilt_roof_ew', 'azimuth_roof_ew',
     'pvYield_ground_ew', 'latitude_ground_ew', 'tilt_ground_ew', 'azimuth_ground_ew',
     'capMin', 'capMax', 'capStep', 'thrA', 'thrB', 'thrC', 'thrD'
+  ];
+
+  // Select fields
+  const selectFields = [
+    'eaasCurrency', 'eaasIndexation', 'irrDriver',
+    'depreciationMethod', 'debtAmortization', 'indexationFrequency',
+    'weatherDataSource'
   ];
 
   // IRR mode checkbox
@@ -267,23 +318,13 @@ function applySettingsToUI(config) {
     }
   });
 
-  // EaaS currency (select element)
-  const eaasCurrencyEl = document.getElementById('eaasCurrency');
-  if (eaasCurrencyEl) {
-    eaasCurrencyEl.value = config.eaasCurrency || DEFAULT_CONFIG.eaasCurrency;
-  }
-
-  // EaaS indexation (select element)
-  const eaasIndexationEl = document.getElementById('eaasIndexation');
-  if (eaasIndexationEl) {
-    eaasIndexationEl.value = config.eaasIndexation || DEFAULT_CONFIG.eaasIndexation;
-  }
-
-  // Weather data source (select element)
-  const weatherDataSourceEl = document.getElementById('weatherDataSource');
-  if (weatherDataSourceEl) {
-    weatherDataSourceEl.value = config.weatherDataSource || DEFAULT_CONFIG.weatherDataSource;
-  }
+  // Apply select fields
+  selectFields.forEach(field => {
+    const el = document.getElementById(field);
+    if (el) {
+      el.value = config[field] !== undefined ? config[field] : DEFAULT_CONFIG[field];
+    }
+  });
 
   // CAPEX per type (NEW)
   applyCapexPerTypeToUI(config);
@@ -348,7 +389,7 @@ function getCurrentSettings() {
     useInflation: document.getElementById('useInflation')?.checked || false,
     irrMode: document.getElementById('useInflation')?.checked ? 'nominal' : 'real',
 
-    // EaaS
+    // EaaS - Contract Basics
     eaasCurrency: document.getElementById('eaasCurrency')?.value || DEFAULT_CONFIG.eaasCurrency,
     eaasDuration: parseInt(document.getElementById('eaasDuration')?.value || DEFAULT_CONFIG.eaasDuration),
     eaasIndexation: document.getElementById('eaasIndexation')?.value || DEFAULT_CONFIG.eaasIndexation,
@@ -357,6 +398,38 @@ function getCurrentSettings() {
     cpiPln: parseFloat(document.getElementById('cpiPln')?.value || DEFAULT_CONFIG.cpiPln),
     cpiEur: parseFloat(document.getElementById('cpiEur')?.value || DEFAULT_CONFIG.cpiEur),
     fxPlnEur: parseFloat(document.getElementById('fxPlnEur')?.value || DEFAULT_CONFIG.fxPlnEur),
+    irrDriver: document.getElementById('irrDriver')?.value || DEFAULT_CONFIG.irrDriver,
+
+    // EaaS - Tax & Depreciation
+    citRate: parseFloat(document.getElementById('citRate')?.value || DEFAULT_CONFIG.citRate),
+    projectLifetime: parseInt(document.getElementById('projectLifetime')?.value || DEFAULT_CONFIG.projectLifetime),
+    depreciationMethod: document.getElementById('depreciationMethod')?.value || DEFAULT_CONFIG.depreciationMethod,
+    depreciationPeriod: parseInt(document.getElementById('depreciationPeriod')?.value || DEFAULT_CONFIG.depreciationPeriod),
+
+    // EaaS - Financing (Debt)
+    leverageRatio: parseFloat(document.getElementById('leverageRatio')?.value || DEFAULT_CONFIG.leverageRatio),
+    costOfDebt: parseFloat(document.getElementById('costOfDebt')?.value || DEFAULT_CONFIG.costOfDebt),
+    debtTenor: parseInt(document.getElementById('debtTenor')?.value || DEFAULT_CONFIG.debtTenor),
+    debtGracePeriod: parseInt(document.getElementById('debtGracePeriod')?.value || DEFAULT_CONFIG.debtGracePeriod),
+    debtAmortization: document.getElementById('debtAmortization')?.value || DEFAULT_CONFIG.debtAmortization,
+
+    // EaaS - Technical
+    availabilityFactor: parseFloat(document.getElementById('availabilityFactor')?.value || DEFAULT_CONFIG.availabilityFactor),
+    zeroExportMargin: parseFloat(document.getElementById('zeroExportMargin')?.value || DEFAULT_CONFIG.zeroExportMargin),
+
+    // EaaS - CPI Indexation Limits
+    indexationFrequency: document.getElementById('indexationFrequency')?.value || DEFAULT_CONFIG.indexationFrequency,
+    cpiFloor: parseFloat(document.getElementById('cpiFloor')?.value || DEFAULT_CONFIG.cpiFloor),
+    cpiCapAnnual: parseFloat(document.getElementById('cpiCapAnnual')?.value || DEFAULT_CONFIG.cpiCapAnnual),
+    cpiCapTotal: parseFloat(document.getElementById('cpiCapTotal')?.value || DEFAULT_CONFIG.cpiCapTotal),
+
+    // EaaS - Risk
+    expectedLossRate: parseFloat(document.getElementById('expectedLossRate')?.value || DEFAULT_CONFIG.expectedLossRate),
+
+    // Production Scenarios (P-factors)
+    productionP50Factor: parseFloat(document.getElementById('productionP50Factor')?.value || DEFAULT_CONFIG.productionP50Factor),
+    productionP75Factor: parseFloat(document.getElementById('productionP75Factor')?.value || DEFAULT_CONFIG.productionP75Factor),
+    productionP90Factor: parseFloat(document.getElementById('productionP90Factor')?.value || DEFAULT_CONFIG.productionP90Factor),
 
     // Weather Data Source
     weatherDataSource: document.getElementById('weatherDataSource')?.value || DEFAULT_CONFIG.weatherDataSource,
