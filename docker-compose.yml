@@ -363,6 +363,26 @@ services:
       retries: 3
       start_period: 10s
 
+  # PVGIS Proxy Service (for Pxx calculation)
+  pvgis-proxy:
+    build:
+      context: ./services/pvgis-proxy
+      dockerfile: Dockerfile
+    container_name: pv-pvgis-proxy
+    ports:
+      - "8020:8020"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8020/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 networks:
   pv-network:
     driver: bridge

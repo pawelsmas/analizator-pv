@@ -425,34 +425,6 @@
         </div>
       </div>
 
-      <!-- Subsection: Production Scenarios -->
-      <div style="margin-bottom:20px;padding:15px;background:#e8eaf6;border-radius:8px">
-        <div style="font-weight:600;color:#333;margin-bottom:12px;border-bottom:2px solid #3f51b5;padding-bottom:6px">
-          📊 Scenariusze produkcji (P-factors)
-        </div>
-        <div style="margin-bottom:12px;padding:10px;background:#c5cae9;border-radius:6px;font-size:12px;color:#283593">
-          <strong>💡 Objaśnienie:</strong> P50 = mediana (50% szans na niższą produkcję), P75 = 25% szans, P90 = 10% szans.
-          Model EaaS używa P50 do sizingu, ale raportuje IRR dla wszystkich scenariuszy.
-        </div>
-        <div class="settings-grid">
-          <div class="setting-item">
-            <label>P50 Factor</label>
-            <input type="number" id="productionP50Factor" value="1.00" step="0.01" min="0.80" max="1.10">
-            <span class="setting-hint">100% = mediana produkcji</span>
-          </div>
-          <div class="setting-item">
-            <label>P75 Factor</label>
-            <input type="number" id="productionP75Factor" value="0.97" step="0.01" min="0.80" max="1.05">
-            <span class="setting-hint">97% = konserwatywny scenariusz</span>
-          </div>
-          <div class="setting-item">
-            <label>P90 Factor</label>
-            <input type="number" id="productionP90Factor" value="0.94" step="0.01" min="0.80" max="1.00">
-            <span class="setting-hint">94% = bardzo konserwatywny</span>
-          </div>
-        </div>
-      </div>
-
       <div style="padding:12px;background:#e8f5e9;border-radius:8px;border-left:3px solid #4caf50">
         <div style="font-size:12px;color:#2e7d32">
           <strong>📊 Model generuje:</strong><br>
@@ -466,28 +438,168 @@
       </div>
     </div>
 
-    <!-- Weather Data Source -->
+    <!-- Weather Data Source & Production Scenarios -->
     <div class="settings-section">
       <div class="section-header">
         <span class="section-icon">🌤️</span>
         <h2>Źródło Danych Meteorologicznych</h2>
-        <span class="section-info">Wybierz źródło danych do symulacji produkcji PV</span>
+        <span class="section-info">Dane pogodowe i scenariusze produkcji PV</span>
       </div>
 
-      <div class="setting-item" style="max-width:600px">
+      <div class="setting-item" style="max-width:600px;margin-bottom:20px">
         <label>Źródło danych pogodowych</label>
         <select id="weatherDataSource" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
           <option value="pvgis">PVGIS (Rekomendowane) - Dane TMY z EU</option>
-          <option value="clearsky">Clearsky Model - Symulacja bezc\u200bhmurnego nieba</option>
+          <option value="clearsky">Clearsky Model - Symulacja bezchmurnego nieba</option>
         </select>
         <span class="setting-hint">PVGIS: Rzeczywiste dane meteorologiczne dla Europy (dokładniejsze). Clearsky: Model teoretyczny (szybszy, mniej dokładny)</span>
       </div>
 
-      <div style="margin-top:16px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:3px solid #2196f3">
-        <div style="font-size:12px;color:#1565c0">
-          <strong>ℹ️ Informacja:</strong><br>
-          <strong>PVGIS (Photovoltaic Geographical Information System)</strong> - Darmowa usługa EU dostarczająca dane TMY (Typical Meteorological Year) z rozdzielczością ~5km. Zawiera rzeczywiste dane o nasłonecznieniu, temperaturze i wietrze. Poprawia dokładność prognoz o 15-25%.<br><br>
-          <strong>Clearsky Model</strong> - Teoretyczny model zakładający bezchmurne niebo. Szybszy, ale mniej dokładny, szczególnie w regionach z częstym zachmurzeniem.
+      <!-- Production Scenarios (P-factors) -->
+      <div style="margin-top:24px;padding:20px;background:#e8eaf6;border-radius:8px;border-left:4px solid #3f51b5">
+        <div style="font-weight:600;color:#1a237e;margin-bottom:12px;font-size:15px">
+          📊 Scenariusze produkcji (P-factors)
+        </div>
+        <div style="margin-bottom:16px;padding:12px;background:#c5cae9;border-radius:6px;font-size:12px;color:#283593;line-height:1.5">
+          Scenariusze P50/P75/P90 służą do modelowania niepewności produkcji energii.<br>
+          <strong>P50</strong> = scenariusz bazowy (mediana), <strong>P75</strong> i <strong>P90</strong> = coraz bardziej ostrożne warianty – z odpowiednio 25% i 10% szansą na niższą produkcję.
+        </div>
+
+        <!-- Source Selection -->
+        <div class="setting-item" style="margin-bottom:16px">
+          <label style="font-weight:600;color:#3f51b5">Źródło mnożników Pxx</label>
+          <select id="pxxSource" onchange="togglePxxSourceFields()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="manual">Manualne (stałe wartości 100/97/94%)</option>
+            <option value="pvgis_uncertainty">PVGIS Uncertainty (szybkie - PVcalc)</option>
+            <option value="pvgis_timeseries">PVGIS Timeseries (dokładne - seriescalc)</option>
+          </select>
+        </div>
+
+        <!-- Method descriptions -->
+        <div id="pxxMethodDescription" style="margin-bottom:16px;padding:10px;background:#fff;border-radius:6px;font-size:11px;color:#555;line-height:1.5">
+          <strong>PVGIS Uncertainty (szybkie)</strong> - Liczy P50/P75/P90 na podstawie średniej rocznej produkcji i niepewności modelu PVGIS. Idealne do codziennych symulacji.<br>
+          <strong>PVGIS Timeseries (dokładne)</strong> - Pobiera wieloletnią serię godzinową z PVGIS i liczy P50/P75/P90 z rzeczywistego rozkładu rocznej produkcji. Do analiz inwestorskich.
+        </div>
+
+        <!-- Manual Factors (shown when pxxSource = 'manual') -->
+        <div id="pxxManualSection">
+          <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#3f51b5">Mnożniki manualne:</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>P50 Factor</label>
+              <input type="number" id="productionP50Factor" value="1.00" step="0.01" min="0.80" max="1.10">
+              <span class="setting-hint">100% = mediana produkcji</span>
+            </div>
+            <div class="setting-item">
+              <label>P75 Factor</label>
+              <input type="number" id="productionP75Factor" value="0.97" step="0.01" min="0.80" max="1.05">
+              <span class="setting-hint">97% = konserwatywny</span>
+            </div>
+            <div class="setting-item">
+              <label>P90 Factor</label>
+              <input type="number" id="productionP90Factor" value="0.94" step="0.01" min="0.80" max="1.00">
+              <span class="setting-hint">94% = bardzo konserwatywny</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PVGIS Settings (shown when pxxSource != 'manual') -->
+        <div id="pxxPvgisSection" style="display:none">
+          <!-- Uncertainty Parameters -->
+          <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#3f51b5">Parametry niepewności:</div>
+          <div class="settings-grid" style="margin-bottom:16px">
+            <div class="setting-item">
+              <label>Niepewność modelu [%]</label>
+              <input type="number" id="pxxModelUncertaintyPct" value="3" step="0.5" min="0" max="10">
+              <span class="setting-hint">Błąd PR, invertera itp.</span>
+            </div>
+            <div class="setting-item">
+              <label>Inne niepewności [%]</label>
+              <input type="number" id="pxxOtherUncertaintyPct" value="2" step="0.5" min="0" max="10">
+              <span class="setting-hint">Soiling, konstrukcja itp.</span>
+            </div>
+          </div>
+
+          <!-- PVGIS Configuration -->
+          <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#3f51b5">Konfiguracja PVGIS:</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Baza danych radiacji</label>
+              <select id="pvgisRadDatabase" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+                <option value="PVGIS-SARAH3">PVGIS-SARAH3 (Europa, najnowsza)</option>
+                <option value="PVGIS-SARAH2">PVGIS-SARAH2 (Europa)</option>
+                <option value="PVGIS-ERA5">PVGIS-ERA5 (globalnie)</option>
+              </select>
+              <span class="setting-hint">Źródło danych nasłonecznienia</span>
+            </div>
+            <div class="setting-item">
+              <label>Straty systemowe [%]</label>
+              <input type="number" id="pvgisLossPct" value="14" step="1" min="5" max="25">
+              <span class="setting-hint">Sumaryczne straty PV</span>
+            </div>
+            <div class="setting-item">
+              <label>Technologia PV</label>
+              <select id="pvgisPvTechChoice" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+                <option value="crystSi">Krzemowy krystaliczny</option>
+                <option value="CIS">CIS</option>
+                <option value="CdTe">CdTe</option>
+              </select>
+              <span class="setting-hint">Typ modułów PV</span>
+            </div>
+            <div class="setting-item">
+              <label>Typ montażu</label>
+              <select id="pvgisMountingPlace" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+                <option value="free">Wolnostojące (grunt)</option>
+                <option value="building">Dach budynku</option>
+              </select>
+              <span class="setting-hint">Wpływa na chłodzenie modułów</span>
+            </div>
+          </div>
+
+          <!-- Timeseries-specific settings -->
+          <div id="pxxTimeseriesSettings" style="margin-top:16px;display:none">
+            <div style="margin-bottom:8px;font-size:12px;font-weight:600;color:#3f51b5">Zakres lat (timeseries):</div>
+            <div class="settings-grid">
+              <div class="setting-item">
+                <label>Rok początkowy</label>
+                <input type="number" id="pvgisStartYear" value="2005" step="1" min="2005" max="2020">
+                <span class="setting-hint">Min. 10 lat zakresu</span>
+              </div>
+              <div class="setting-item">
+                <label>Rok końcowy</label>
+                <input type="number" id="pvgisEndYear" value="2020" step="1" min="2015" max="2023">
+                <span class="setting-hint">Ostatnie dostępne dane</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Calculated Pxx Display -->
+          <div id="pxxCalculatedDisplay" style="margin-top:16px;padding:12px;background:#e8f5e9;border-radius:6px;display:none">
+            <div style="font-size:12px;font-weight:600;color:#2e7d32;margin-bottom:8px">📊 Wyliczone mnożniki Pxx:</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;text-align:center">
+              <div>
+                <div style="font-size:11px;color:#666">P50</div>
+                <div id="pxxCalcP50" style="font-size:18px;font-weight:700;color:#27ae60">100.0%</div>
+              </div>
+              <div>
+                <div style="font-size:11px;color:#666">P75</div>
+                <div id="pxxCalcP75" style="font-size:18px;font-weight:700;color:#3498db">–</div>
+              </div>
+              <div>
+                <div style="font-size:11px;color:#666">P90</div>
+                <div id="pxxCalcP90" style="font-size:18px;font-weight:700;color:#e74c3c">–</div>
+              </div>
+            </div>
+            <div id="pxxCalcInfo" style="margin-top:8px;font-size:10px;color:#666;text-align:center"></div>
+          </div>
+
+          <!-- Fetch Button -->
+          <div style="margin-top:16px;text-align:center">
+            <button onclick="fetchPxxFromPVGIS()" class="btn btn-primary" style="padding:10px 24px">
+              🔄 Pobierz Pxx z PVGIS
+            </button>
+            <div id="pxxFetchStatus" style="margin-top:8px;font-size:11px;color:#666"></div>
+          </div>
         </div>
       </div>
     </div>

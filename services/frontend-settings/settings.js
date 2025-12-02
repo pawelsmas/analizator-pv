@@ -124,9 +124,20 @@ const DEFAULT_CONFIG = {
 
   // Production Scenarios (P-factors for risk analysis)
   // P50 = median, P75/P90 = lower percentiles (more conservative)
-  productionP50Factor: 1.00,  // 100% of expected production (median)
-  productionP75Factor: 0.97,  // 97% - 75th percentile (25% chance of being lower)
-  productionP90Factor: 0.94,  // 94% - 90th percentile (10% chance of being lower)
+  pxxSource: 'manual',         // 'manual' | 'pvgis_uncertainty' | 'pvgis_timeseries'
+  productionP50Factor: 1.00,   // 100% of expected production (median)
+  productionP75Factor: 0.97,   // 97% - 75th percentile (25% chance of being lower)
+  productionP90Factor: 0.94,   // 94% - 90th percentile (10% chance of being lower)
+
+  // PVGIS Pxx Settings (used when pxxSource != 'manual')
+  pxxModelUncertaintyPct: 3,   // Model uncertainty (PR, etc.) [%]
+  pxxOtherUncertaintyPct: 2,   // Other uncertainties (soiling, construction) [%]
+  pvgisRadDatabase: 'PVGIS-SARAH3',  // Radiation database for Poland
+  pvgisLossPct: 14,            // System losses [%]
+  pvgisStartYear: 2005,        // Start year for timeseries (min 10 years range)
+  pvgisEndYear: 2020,          // End year for timeseries
+  pvgisPvTechChoice: 'crystSi', // PV technology: 'crystSi', 'CIS', 'CdTe'
+  pvgisMountingPlace: 'free',  // 'free' (ground) or 'building' (roof)
 
   // Weather Data Source
   weatherDataSource: 'pvgis', // 'pvgis' or 'clearsky'
@@ -285,6 +296,11 @@ function applySettingsToUI(config) {
     'cpiFloor', 'cpiCapAnnual', 'cpiCapTotal',
     // EaaS risk
     'expectedLossRate',
+    // Pxx manual factors
+    'productionP50Factor', 'productionP75Factor', 'productionP90Factor',
+    // Pxx PVGIS settings
+    'pxxModelUncertaintyPct', 'pxxOtherUncertaintyPct', 'pvgisLossPct',
+    'pvgisStartYear', 'pvgisEndYear',
     // Environmental parameters
     'altitude', 'albedo', 'soilingLoss',
     // DC/AC Mode
@@ -300,7 +316,9 @@ function applySettingsToUI(config) {
   const selectFields = [
     'eaasCurrency', 'eaasIndexation', 'irrDriver',
     'depreciationMethod', 'debtAmortization', 'indexationFrequency',
-    'weatherDataSource'
+    'weatherDataSource',
+    // Pxx select fields
+    'pxxSource', 'pvgisRadDatabase', 'pvgisPvTechChoice', 'pvgisMountingPlace'
   ];
 
   // IRR mode checkbox
@@ -426,10 +444,21 @@ function getCurrentSettings() {
     // EaaS - Risk
     expectedLossRate: parseFloat(document.getElementById('expectedLossRate')?.value || DEFAULT_CONFIG.expectedLossRate),
 
-    // Production Scenarios (P-factors)
+    // Production Scenarios (P-factors) - Manual values
+    pxxSource: document.getElementById('pxxSource')?.value || DEFAULT_CONFIG.pxxSource,
     productionP50Factor: parseFloat(document.getElementById('productionP50Factor')?.value || DEFAULT_CONFIG.productionP50Factor),
     productionP75Factor: parseFloat(document.getElementById('productionP75Factor')?.value || DEFAULT_CONFIG.productionP75Factor),
     productionP90Factor: parseFloat(document.getElementById('productionP90Factor')?.value || DEFAULT_CONFIG.productionP90Factor),
+
+    // PVGIS Pxx Settings
+    pxxModelUncertaintyPct: parseFloat(document.getElementById('pxxModelUncertaintyPct')?.value || DEFAULT_CONFIG.pxxModelUncertaintyPct),
+    pxxOtherUncertaintyPct: parseFloat(document.getElementById('pxxOtherUncertaintyPct')?.value || DEFAULT_CONFIG.pxxOtherUncertaintyPct),
+    pvgisRadDatabase: document.getElementById('pvgisRadDatabase')?.value || DEFAULT_CONFIG.pvgisRadDatabase,
+    pvgisLossPct: parseFloat(document.getElementById('pvgisLossPct')?.value || DEFAULT_CONFIG.pvgisLossPct),
+    pvgisStartYear: parseInt(document.getElementById('pvgisStartYear')?.value || DEFAULT_CONFIG.pvgisStartYear),
+    pvgisEndYear: parseInt(document.getElementById('pvgisEndYear')?.value || DEFAULT_CONFIG.pvgisEndYear),
+    pvgisPvTechChoice: document.getElementById('pvgisPvTechChoice')?.value || DEFAULT_CONFIG.pvgisPvTechChoice,
+    pvgisMountingPlace: document.getElementById('pvgisMountingPlace')?.value || DEFAULT_CONFIG.pvgisMountingPlace,
 
     // Weather Data Source
     weatherDataSource: document.getElementById('weatherDataSource')?.value || DEFAULT_CONFIG.weatherDataSource,
@@ -1276,6 +1305,200 @@ window.removeCapexTier = removeCapexTier;
 window.updateCapexTierRange = updateCapexTierRange;
 window.updateCapexTierValue = updateCapexTierValue;
 
+// ============================================================================
+// Pxx Source Selection (PVGIS Integration)
+// ============================================================================
+
+// Toggle visibility of Pxx sections based on source selection
+function togglePxxSourceFields() {
+  const source = document.getElementById('pxxSource')?.value || 'manual';
+  const manualSection = document.getElementById('pxxManualSection');
+  const pvgisSection = document.getElementById('pxxPvgisSection');
+  const timeseriesSettings = document.getElementById('pxxTimeseriesSettings');
+  const calculatedDisplay = document.getElementById('pxxCalculatedDisplay');
+
+  if (source === 'manual') {
+    // Show manual, hide PVGIS
+    if (manualSection) manualSection.style.display = 'block';
+    if (pvgisSection) pvgisSection.style.display = 'none';
+  } else {
+    // Hide manual, show PVGIS
+    if (manualSection) manualSection.style.display = 'none';
+    if (pvgisSection) pvgisSection.style.display = 'block';
+
+    // Show/hide timeseries-specific settings
+    if (timeseriesSettings) {
+      timeseriesSettings.style.display = source === 'pvgis_timeseries' ? 'block' : 'none';
+    }
+  }
+
+  // Reset calculated display when switching
+  if (calculatedDisplay) {
+    calculatedDisplay.style.display = 'none';
+  }
+
+  markUnsaved();
+}
+
+// PVGIS Proxy API base URL (backend service)
+const PVGIS_PROXY_BASE = 'http://localhost:8020';
+
+// Fetch Pxx factors from PVGIS via backend proxy
+async function fetchPxxFromPVGIS() {
+  const statusEl = document.getElementById('pxxFetchStatus');
+  const calculatedDisplay = document.getElementById('pxxCalculatedDisplay');
+  const source = document.getElementById('pxxSource')?.value;
+
+  if (source === 'manual') {
+    if (statusEl) statusEl.textContent = '⚠️ Wybierz źródło PVGIS';
+    return;
+  }
+
+  // Get settings
+  const settings = getCurrentSettings();
+
+  // Get location from the active PV type (use ground_s as default)
+  const lat = settings.latitude_ground_s || 52.0;
+  const lon = 21.0; // Default longitude for Poland (could be added to settings)
+
+  if (statusEl) statusEl.innerHTML = '⏳ <strong>Pobieranie danych z PVGIS...</strong>';
+
+  try {
+    let response;
+    let result;
+
+    if (source === 'pvgis_uncertainty') {
+      // Method 1: PVcalc endpoint - quick uncertainty-based calculation
+      response = await fetch(`${PVGIS_PROXY_BASE}/pvgis/pvcalc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: lat,
+          lon: lon,
+          peakpower: 1, // Normalize to 1 kWp
+          loss: settings.pvgisLossPct || 14,
+          pvtechchoice: settings.pvgisPvTechChoice || 'crystSi',
+          mountingplace: settings.pvgisMountingPlace || 'free',
+          raddatabase: settings.pvgisRadDatabase || 'PVGIS-SARAH3',
+          model_uncertainty_pct: settings.pxxModelUncertaintyPct || 3,
+          other_uncertainty_pct: settings.pxxOtherUncertaintyPct || 2
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`PVGIS PVcalc error: ${response.status}`);
+      }
+
+      result = await response.json();
+
+    } else if (source === 'pvgis_timeseries') {
+      // Method 2: Seriescalc endpoint - accurate timeseries-based calculation
+      response = await fetch(`${PVGIS_PROXY_BASE}/pvgis/seriescalc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: lat,
+          lon: lon,
+          peakpower: 1, // Normalize to 1 kWp
+          loss: settings.pvgisLossPct || 14,
+          pvtechchoice: settings.pvgisPvTechChoice || 'crystSi',
+          mountingplace: settings.pvgisMountingPlace || 'free',
+          raddatabase: settings.pvgisRadDatabase || 'PVGIS-SARAH3',
+          startyear: settings.pvgisStartYear || 2005,
+          endyear: settings.pvgisEndYear || 2020
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`PVGIS Seriescalc error: ${response.status}`);
+      }
+
+      result = await response.json();
+    }
+
+    // Display calculated factors
+    if (result && result.p50_factor !== undefined) {
+      // Update calculated display
+      document.getElementById('pxxCalcP50').textContent = (result.p50_factor * 100).toFixed(1) + '%';
+      document.getElementById('pxxCalcP75').textContent = (result.p75_factor * 100).toFixed(1) + '%';
+      document.getElementById('pxxCalcP90').textContent = (result.p90_factor * 100).toFixed(1) + '%';
+
+      // Update info
+      const infoEl = document.getElementById('pxxCalcInfo');
+      if (infoEl) {
+        const method = source === 'pvgis_uncertainty' ? 'Metoda: Uncertainty (σ=' + (result.sigma_rel * 100).toFixed(1) + '%)' :
+                       `Metoda: Timeseries (${result.years_count || '?'} lat)`;
+        infoEl.textContent = `${method} | DB: ${settings.pvgisRadDatabase} | Lok: ${lat.toFixed(2)}°N`;
+      }
+
+      // Show calculated display
+      if (calculatedDisplay) calculatedDisplay.style.display = 'block';
+
+      // Auto-update manual factors with calculated values
+      const p50Input = document.getElementById('productionP50Factor');
+      const p75Input = document.getElementById('productionP75Factor');
+      const p90Input = document.getElementById('productionP90Factor');
+
+      if (p50Input) p50Input.value = result.p50_factor.toFixed(3);
+      if (p75Input) p75Input.value = result.p75_factor.toFixed(3);
+      if (p90Input) p90Input.value = result.p90_factor.toFixed(3);
+
+      if (statusEl) {
+        statusEl.innerHTML = `✅ <strong>Pobrano pomyślnie!</strong> P50=${(result.p50_factor * 100).toFixed(1)}%, P75=${(result.p75_factor * 100).toFixed(1)}%, P90=${(result.p90_factor * 100).toFixed(1)}%`;
+      }
+
+      // Cache result
+      localStorage.setItem('pxx_pvgis_cache', JSON.stringify({
+        timestamp: Date.now(),
+        lat, lon, source,
+        factors: result
+      }));
+
+      markUnsaved();
+
+    } else {
+      throw new Error('Nieprawidłowa odpowiedź z PVGIS proxy');
+    }
+
+  } catch (error) {
+    console.error('PVGIS fetch error:', error);
+
+    // Try to use cached values
+    const cached = localStorage.getItem('pxx_pvgis_cache');
+    if (cached) {
+      try {
+        const cachedData = JSON.parse(cached);
+        const age = (Date.now() - cachedData.timestamp) / (1000 * 60 * 60); // hours
+        if (statusEl) {
+          statusEl.innerHTML = `⚠️ <strong>Błąd połączenia.</strong> Używam cache (${age.toFixed(0)}h temu): P50=${(cachedData.factors.p50_factor * 100).toFixed(1)}%, P75=${(cachedData.factors.p75_factor * 100).toFixed(1)}%, P90=${(cachedData.factors.p90_factor * 100).toFixed(1)}%`;
+        }
+        return;
+      } catch (e) {
+        // Cache parse error
+      }
+    }
+
+    if (statusEl) {
+      statusEl.innerHTML = `❌ <strong>Błąd:</strong> ${error.message}. Sprawdź czy backend PVGIS działa (port 8020).`;
+    }
+
+    // Fallback to manual defaults
+    if (calculatedDisplay) calculatedDisplay.style.display = 'none';
+  }
+}
+
+// Initialize Pxx source fields on load
+document.addEventListener('DOMContentLoaded', () => {
+  // Wait a bit for settings to load, then toggle
+  setTimeout(() => {
+    togglePxxSourceFields();
+  }, 200);
+});
+
+// Make Pxx functions globally available
+window.togglePxxSourceFields = togglePxxSourceFields;
+window.fetchPxxFromPVGIS = fetchPxxFromPVGIS;
+
 // Make settings globally available for other scripts
 window.PVSettings = {
   get: getCurrentSettings,
@@ -1291,5 +1514,8 @@ window.PVSettings = {
   isPeakHour: isPeakHour,
   calculateConsumptionProfile: calculateConsumptionProfile,
   classifyCapacityFeeGroup: classifyCapacityFeeGroup,
-  calculateCapacityFee: calculateCapacityFee
+  calculateCapacityFee: calculateCapacityFee,
+  // Pxx functions
+  togglePxxSourceFields: togglePxxSourceFields,
+  fetchPxxFromPVGIS: fetchPxxFromPVGIS
 };

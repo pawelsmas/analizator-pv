@@ -665,9 +665,9 @@ function getEconomicParameters() {
 
 // Calculate total energy price (PLN/MWh)
 function calculateTotalEnergyPrice(params) {
-  // Suma wszystkich składowych ceny energii
+  // Suma wszystkich składowych ceny energii (włącznie z opłatą mocową)
   return params.energy_active + params.distribution + params.quality_fee +
-         params.oze_fee + params.cogeneration_fee + params.excise_tax;
+         params.oze_fee + params.cogeneration_fee + params.capacity_fee + params.excise_tax;
 }
 
 // Calculate capacity fee
