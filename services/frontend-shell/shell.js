@@ -241,6 +241,22 @@ window.addEventListener('message', (event) => {
       });
       console.log('Master variant updated:', sharedData.masterVariantKey);
       break;
+    case 'ECONOMICS_CALCULATED':
+      // Store economics data from Economics module
+      if (event.data.data) {
+        sharedData.economics = event.data.data;
+        console.log('Economics data stored:', {
+          variantKey: event.data.data.variantKey,
+          eaasPhaseSavings: event.data.data.eaasPhaseSavings,
+          ownershipPhaseSavings: event.data.data.ownershipPhaseSavings
+        });
+      }
+      // Broadcast to other modules (e.g., Reports)
+      broadcastToModules({
+        type: 'ECONOMICS_UPDATED',
+        data: sharedData.economics
+      });
+      break;
     case 'DATA_CLEARED':
       // Clear all shared data
       sharedData = {
@@ -249,7 +265,8 @@ window.addEventListener('message', (event) => {
         consumptionData: null,
         hourlyData: null,
         masterVariant: null,
-        masterVariantKey: null
+        masterVariantKey: null,
+        economics: null
       };
       // Broadcast to all modules
       broadcastToModules({ type: 'DATA_CLEARED' });

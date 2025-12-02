@@ -192,7 +192,8 @@ function getReportConfig() {
         masterVariantKey: sharedData?.masterVariantKey || null,
         pvConfig: sharedData?.pvConfig || null,
         consumptionData: sharedData?.consumptionData || null,
-        settings: sharedData?.settings || null
+        settings: sharedData?.settings || null,
+        economics: sharedData?.economics || null  // EaaS comparison data from Economics module
     };
 
     return {

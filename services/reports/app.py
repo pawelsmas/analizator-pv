@@ -2220,11 +2220,108 @@ def generate_economics_capex_section(data: ReportData) -> str:
     return html
 
 
+def convert_frontend_economics_to_eaas_data(frontend_econ: Dict, capex_data: Dict) -> Dict:
+    """Convert frontend Economics module data to eaas_data format for report"""
+    try:
+        eaas_duration = frontend_econ.get('eaasDuration', 10)
+        analysis_period = frontend_econ.get('analysisPeriod', 25)
+        eaas_phase_savings = frontend_econ.get('eaasPhaseSavings', 0)
+        ownership_phase_savings = frontend_econ.get('ownershipPhaseSavings', 0)
+        total_savings = frontend_econ.get('totalSavings', eaas_phase_savings + ownership_phase_savings)
+        cumulative_npv = frontend_econ.get('cumulativeNPV', 0)
+        cash_flows = frontend_econ.get('cashFlows', [])
+        capex_investment = frontend_econ.get('capexInvestment', 0) or (capex_data.get('investment', 0) if capex_data else 0)
+        capex_npv = frontend_econ.get('capexNPV', 0)
+        capex_payback = frontend_econ.get('capexPayback', 0)
+
+        # Build cumulative cash flows from detailed cash flows
+        cumulative_capex = {}
+        cumulative_eaas = {}
+        cf_capex_cumul = -capex_investment
+        cf_eaas_cumul = 0
+
+        # Use cash flows from frontend if available
+        for cf in cash_flows:
+            year = cf.get('year', 0)
+            savings = cf.get('savings', 0)
+            cf_eaas_cumul += savings
+
+            # For CAPEX, estimate annual savings (use from capex_data if available)
+            if capex_data:
+                annual_capex_savings = capex_data.get('annual_savings', 0)
+                annual_opex = capex_investment * 0.015
+                net_capex_savings = annual_capex_savings - annual_opex
+            else:
+                net_capex_savings = savings * 1.3  # Rough estimate
+
+            cf_capex_cumul += net_capex_savings
+
+            if year <= 15:
+                cumulative_capex[year] = cf_capex_cumul
+                cumulative_eaas[year] = cf_eaas_cumul
+
+        # Calculate annual values for display
+        annual_eaas_savings = eaas_phase_savings / eaas_duration if eaas_duration > 0 else 0
+        annual_capex_savings = capex_data.get('annual_savings', 0) if capex_data else (total_savings / analysis_period)
+        annual_opex = capex_investment * 0.015
+        net_annual_capex = annual_capex_savings - annual_opex
+
+        # 15-year totals
+        # EaaS: sum of EaaS phase + part of ownership phase
+        years_in_ownership_for_15y = max(0, 15 - eaas_duration)
+        annual_ownership_savings = ownership_phase_savings / (analysis_period - eaas_duration) if (analysis_period - eaas_duration) > 0 else 0
+        total_savings_eaas_15y = eaas_phase_savings + (annual_ownership_savings * years_in_ownership_for_15y)
+        total_savings_capex_15y = net_annual_capex * 15
+        net_profit_capex_15y = total_savings_capex_15y - capex_investment
+        net_profit_eaas_15y = total_savings_eaas_15y
+
+        # Monthly fee estimation
+        monthly_fee = annual_eaas_savings / 12 * 3  # EaaS cost roughly 3x savings
+
+        return {
+            'monthly_fee': monthly_fee,
+            'eaas_price_per_kwh': 0.525,  # Typical EaaS price
+            'annual_eaas_cost': annual_eaas_savings * 3,
+            'annual_savings_eaas': annual_eaas_savings,
+            'annual_savings_capex': net_annual_capex,
+            'capex_investment': capex_investment,
+            'total_savings_capex_15y': total_savings_capex_15y,
+            'total_savings_eaas_15y': total_savings_eaas_15y,
+            'net_profit_capex_15y': net_profit_capex_15y,
+            'net_profit_eaas_15y': net_profit_eaas_15y,
+            'payback_capex': capex_payback,
+            'cumulative_capex': cumulative_capex,
+            'cumulative_eaas': cumulative_eaas,
+            # Additional data from frontend
+            'eaas_duration': eaas_duration,
+            'analysis_period': analysis_period,
+            'eaas_phase_savings': eaas_phase_savings,
+            'ownership_phase_savings': ownership_phase_savings,
+            'total_25y_savings': total_savings,
+            'npv_25y': cumulative_npv
+        }
+    except Exception as e:
+        print(f"Error converting frontend economics: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def generate_economics_eaas_section(data: ReportData) -> str:
     """Generate EaaS economics section"""
 
-    # Calculate EaaS parameters based on CAPEX data
-    eaas_data = calculate_eaas_economics(data.economics, data.selected_variant_data, data.consumption_stats)
+    # First try to use data from frontend Economics module
+    frontend_economics = None
+    if data.config.frontend_data:
+        frontend_economics = data.config.frontend_data.get('economics')
+        if frontend_economics:
+            print(f"✓ Using Economics data from frontend: eaasPhaseSavings={frontend_economics.get('eaasPhaseSavings')}, ownershipPhaseSavings={frontend_economics.get('ownershipPhaseSavings')}")
+
+    # Use frontend data if available, otherwise calculate
+    if frontend_economics and frontend_economics.get('eaasPhaseSavings') is not None:
+        eaas_data = convert_frontend_economics_to_eaas_data(frontend_economics, data.economics)
+    else:
+        eaas_data = calculate_eaas_economics(data.economics, data.selected_variant_data, data.consumption_stats)
 
     html = """
     <div class="section page-break">

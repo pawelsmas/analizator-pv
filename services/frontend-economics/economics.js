@@ -359,7 +359,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   // Verify IRR
   // Note: This calculates ESCO's IRR over contract period only (conservative approach)
   // In reality, ESCO may have residual value considerations, but this ensures subscription covers costs
-  const achievedIRR = calculateIRR();
+  const achievedIRR = calculateIRR(
     cashFlows.slice(1).map((cf, idx) => ({ year: idx + 1, net_cash_flow: cf })),
     I0_PLN
   );
@@ -2890,6 +2890,33 @@ function generateEaaSYearlyTable(params, result) {
   tableBody.appendChild(totalSummaryRow);
 
   console.log('✅ EaaS yearly table generated. EaaS phase:', (eaasPhaseSavings / 1000).toFixed(0), 'tys. PLN, Ownership phase:', (ownershipPhaseSavings / 1000).toFixed(0), 'tys. PLN, NPV:', (cumulativeNPV / 1000000).toFixed(2), 'mln PLN');
+
+  // Send economics data to shell for Reports module
+  const economicsData = {
+    variantKey: currentVariant,
+    eaasDuration: eaasDuration,
+    analysisPeriod: analysisPeriod,
+    eaasPhaseSavings: eaasPhaseSavings,
+    ownershipPhaseSavings: ownershipPhaseSavings,
+    totalSavings: totalSavings,
+    cumulativeNPV: cumulativeNPV,
+    discountRate: discountRate,
+    cashFlows: eaasCashFlows,
+    // CAPEX data from centralizedMetrics
+    capexInvestment: centralizedCalc.capex?.investment || 0,
+    capexNPV: centralizedCalc.capex?.npv || 0,
+    capexIRR: centralizedCalc.capex?.irr || 0,
+    capexPayback: centralizedCalc.capex?.simplePayback || 0,
+    // Common parameters
+    totalEnergyPrice: centralizedCalc.common?.totalEnergyPrice || 0,
+    inflationRate: centralizedCalc.common?.inflationRate || 0
+  };
+
+  window.parent.postMessage({
+    type: 'ECONOMICS_CALCULATED',
+    data: economicsData
+  }, '*');
+  console.log('📤 Economics data sent to shell:', economicsData);
 }
 
 /**

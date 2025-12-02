@@ -13,15 +13,60 @@ const DEFAULT_CONFIG = {
   capacityFee: 219,
   exciseTax: 5,
 
-  // CAPEX Tiers (PLN/kWp)
+  // CAPEX Power Ranges (shared for all types)
+  capexRanges: [
+    { min: 50, max: 150 },
+    { min: 150, max: 300 },
+    { min: 300, max: 1000 },
+    { min: 1000, max: 3000 },
+    { min: 3000, max: 10000 },
+    { min: 10000, max: Infinity }
+  ],
+
+  // CAPEX per Installation Type (cost, margin, sale = cost * (1 + margin/100))
+  capexPerType: {
+    ground_s: [
+      { cost: 2800, margin: 23, sale: 3444 },
+      { cost: 2400, margin: 20, sale: 2880 },
+      { cost: 2000, margin: 18, sale: 2360 },
+      { cost: 1700, margin: 16, sale: 1972 },
+      { cost: 1500, margin: 15, sale: 1725 },
+      { cost: 1400, margin: 13, sale: 1582 }
+    ],
+    ground_ew: [
+      { cost: 2744, margin: 23, sale: 3375 },
+      { cost: 2352, margin: 20, sale: 2822 },
+      { cost: 1960, margin: 18, sale: 2313 },
+      { cost: 1666, margin: 16, sale: 1933 },
+      { cost: 1470, margin: 15, sale: 1691 },
+      { cost: 1372, margin: 13, sale: 1550 }
+    ],
+    roof_ew: [
+      { cost: 3100, margin: 23, sale: 3813 },
+      { cost: 2700, margin: 20, sale: 3240 },
+      { cost: 2300, margin: 18, sale: 2714 },
+      { cost: 1950, margin: 16, sale: 2262 },
+      { cost: 1650, margin: 15, sale: 1898 },
+      null // No installations above 10 MWp for roof
+    ],
+    carport: [
+      { cost: 3500, margin: 23, sale: 4305 },
+      { cost: 3200, margin: 20, sale: 3840 },
+      { cost: 2800, margin: 18, sale: 3304 },
+      { cost: 2500, margin: 16, sale: 2900 },
+      { cost: 2200, margin: 15, sale: 2530 },
+      { cost: 2000, margin: 13, sale: 2260 }
+    ]
+  },
+
+  // Legacy CAPEX Tiers (for backwards compatibility)
   capexTiers: [
-    { min: 150, max: 500, capex: 4200, id: 'capex1' },
-    { min: 501, max: 1000, capex: 3800, id: 'capex2' },
-    { min: 1001, max: 2500, capex: 3500, id: 'capex3' },
-    { min: 2501, max: 5000, capex: 3200, id: 'capex4' },
-    { min: 5001, max: 10000, capex: 3000, id: 'capex5' },
-    { min: 10001, max: 15000, capex: 2850, id: 'capex6' },
-    { min: 15001, max: 50000, capex: 2700, id: 'capex7' }
+    { min: 50, max: 150, capex: 3444, id: 'capex1' },
+    { min: 150, max: 300, capex: 2880, id: 'capex2' },
+    { min: 300, max: 1000, capex: 2360, id: 'capex3' },
+    { min: 1000, max: 3000, capex: 1972, id: 'capex4' },
+    { min: 3000, max: 10000, capex: 1725, id: 'capex5' },
+    { min: 10000, max: 50000, capex: 1582, id: 'capex6' }
   ],
 
   // OPEX Parameters
@@ -106,6 +151,9 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   setupEventListeners();
   updateTotalEnergyPrice();
+  // Initialize and render dynamic CAPEX tables
+  initCapexData();
+  renderAllCapexTables();
 });
 
 // Setup event listeners for auto-save and calculations
@@ -237,14 +285,8 @@ function applySettingsToUI(config) {
     weatherDataSourceEl.value = config.weatherDataSource || DEFAULT_CONFIG.weatherDataSource;
   }
 
-  // CAPEX tiers
-  const capexTiers = config.capexTiers || DEFAULT_CONFIG.capexTiers;
-  capexTiers.forEach((tier, index) => {
-    const el = document.getElementById(`capex${index + 1}`);
-    if (el) {
-      el.value = tier.capex;
-    }
-  });
+  // CAPEX per type (NEW)
+  applyCapexPerTypeToUI(config);
 
   // DC/AC Ratio tiers
   const dcacTiers = config.dcacTiers || DEFAULT_CONFIG.dcacTiers;
@@ -273,16 +315,22 @@ function getCurrentSettings() {
     capacityFee: parseFloat(document.getElementById('capacityFee')?.value || DEFAULT_CONFIG.capacityFee),
     exciseTax: parseFloat(document.getElementById('exciseTax')?.value || DEFAULT_CONFIG.exciseTax),
 
-    // CAPEX Tiers
-    capexTiers: [
-      { min: 150, max: 500, capex: parseFloat(document.getElementById('capex1')?.value || 4200) },
-      { min: 501, max: 1000, capex: parseFloat(document.getElementById('capex2')?.value || 3800) },
-      { min: 1001, max: 2500, capex: parseFloat(document.getElementById('capex3')?.value || 3500) },
-      { min: 2501, max: 5000, capex: parseFloat(document.getElementById('capex4')?.value || 3200) },
-      { min: 5001, max: 10000, capex: parseFloat(document.getElementById('capex5')?.value || 3000) },
-      { min: 10001, max: 15000, capex: parseFloat(document.getElementById('capex6')?.value || 2850) },
-      { min: 15001, max: 50000, capex: parseFloat(document.getElementById('capex7')?.value || 2700) }
-    ],
+    // CAPEX Ranges (NEW)
+    capexRanges: getCapexRangesFromUI(),
+
+    // CAPEX per Type (NEW)
+    capexPerType: getCapexPerTypeFromUI(),
+
+    // Legacy CAPEX Tiers (for backwards compatibility - uses ground_s sale prices)
+    capexTiers: (function() {
+      const ranges = getCapexRangesFromUI();
+      const perType = getCapexPerTypeFromUI();
+      return ranges.map((range, i) => ({
+        min: range.min,
+        max: range.max === Infinity ? 50000 : range.max,
+        capex: perType.ground_s[i]?.sale || DEFAULT_CONFIG.capexPerType.ground_s[i]?.sale || 3000
+      }));
+    })(),
 
     // OPEX
     opexPerKwp: parseFloat(document.getElementById('opexPerKwp')?.value || DEFAULT_CONFIG.opexPerKwp),
@@ -409,6 +457,18 @@ function saveAllSettings() {
 
 // Save in legacy formats for backwards compatibility with other modules
 function saveLegacyFormats(settings) {
+  // Safely get capex value with fallback
+  const getCapex = (index) => {
+    if (settings.capexTiers && settings.capexTiers[index]) {
+      return settings.capexTiers[index].capex || settings.capexTiers[index].sale || 3000;
+    }
+    // Fallback to last available tier or default
+    const lastTier = settings.capexTiers && settings.capexTiers.length > 0
+      ? settings.capexTiers[settings.capexTiers.length - 1]
+      : null;
+    return lastTier ? (lastTier.capex || lastTier.sale || 3000) : 3000;
+  };
+
   // Legacy pv_config format (for Configuration module)
   const legacyConfig = {
     pvType: 'ground_s',
@@ -424,13 +484,13 @@ function saveLegacyFormats(settings) {
     optimizationStrategy: 'autoconsumption',
     npvEnergyPrice: settings.totalEnergyPrice,
     npvOpex: settings.opexPerKwp,
-    capex1: settings.capexTiers[0].capex,
-    capex2: settings.capexTiers[1].capex,
-    capex3: settings.capexTiers[2].capex,
-    capex4: settings.capexTiers[3].capex,
-    capex5: settings.capexTiers[4].capex,
-    capex6: settings.capexTiers[5].capex,
-    capex7: settings.capexTiers[6].capex
+    capex1: getCapex(0),
+    capex2: getCapex(1),
+    capex3: getCapex(2),
+    capex4: getCapex(3),
+    capex5: getCapex(4),
+    capex6: getCapex(5),
+    capex7: getCapex(6)
   };
   localStorage.setItem('pv_config', JSON.stringify(legacyConfig));
 }
@@ -763,10 +823,391 @@ function calculateCapacityFee(hourlyData, startDate = '2024-01-01') {
   };
 }
 
+// ============================================================================
+// CAPEX Per Type Management - Dynamic Tables with Add/Remove
+// ============================================================================
+
+// Type configurations with styling
+const CAPEX_TYPE_CONFIG = {
+  ground_s: {
+    name: 'Grunt Południe',
+    icon: '🌍',
+    colors: {
+      bg: '#e8f5e9', border: '#4caf50', headerBg: '#c8e6c9',
+      cellBorder: '#a5d6a7', saleBg: '#81c784', textColor: '#2e7d32'
+    }
+  },
+  ground_ew: {
+    name: 'Grunt Wschód-Zachód',
+    icon: '🌍',
+    colors: {
+      bg: '#fff3e0', border: '#ff9800', headerBg: '#ffe0b2',
+      cellBorder: '#ffcc80', saleBg: '#ffb74d', textColor: '#e65100'
+    }
+  },
+  roof_ew: {
+    name: 'Dach Wschód-Zachód',
+    icon: '🏠',
+    colors: {
+      bg: '#e3f2fd', border: '#2196f3', headerBg: '#90caf9',
+      cellBorder: '#64b5f6', saleBg: '#42a5f5', textColor: '#1565c0'
+    }
+  },
+  carport: {
+    name: 'Carport',
+    icon: '🚗',
+    colors: {
+      bg: '#f3e5f5', border: '#9c27b0', headerBg: '#e1bee7',
+      cellBorder: '#ce93d8', saleBg: '#ba68c8', textColor: '#7b1fa2'
+    }
+  }
+};
+
+// In-memory storage for CAPEX data per type
+let capexDataPerType = null;
+
+// Initialize CAPEX data from config or defaults
+function initCapexData() {
+  const saved = localStorage.getItem('pv_system_settings');
+  let config = DEFAULT_CONFIG;
+
+  if (saved) {
+    try {
+      config = { ...DEFAULT_CONFIG, ...JSON.parse(saved) };
+    } catch (e) {
+      console.error('Failed to parse saved settings:', e);
+    }
+  }
+
+  capexDataPerType = JSON.parse(JSON.stringify(config.capexPerType || DEFAULT_CONFIG.capexPerType));
+
+  // Ensure each type has ranges stored with tiers
+  const types = ['ground_s', 'ground_ew', 'roof_ew', 'carport'];
+  const defaultRanges = config.capexRanges || DEFAULT_CONFIG.capexRanges;
+
+  types.forEach(type => {
+    if (!capexDataPerType[type]) {
+      capexDataPerType[type] = [];
+    }
+    // Attach range info to each tier
+    capexDataPerType[type] = capexDataPerType[type].map((tier, i) => {
+      if (!tier) return null;
+      return {
+        ...tier,
+        min: tier.min !== undefined ? tier.min : (defaultRanges[i]?.min || 0),
+        max: tier.max !== undefined ? tier.max : (defaultRanges[i]?.max || Infinity)
+      };
+    });
+  });
+}
+
+// Render CAPEX table for a specific type
+function renderCapexTable(type) {
+  const container = document.getElementById(`capex_${type}`);
+  if (!container) return;
+
+  const cfg = CAPEX_TYPE_CONFIG[type];
+  const tiers = capexDataPerType[type] || [];
+
+  let html = `
+    <div style="padding:15px;background:${cfg.colors.bg};border-radius:8px;border-left:4px solid ${cfg.colors.border}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-weight:600;color:${cfg.colors.textColor}">${cfg.icon} ${cfg.name} - Przedziały CAPEX</div>
+        <button onclick="addCapexTier('${type}')" style="padding:6px 12px;background:${cfg.colors.border};color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
+          ➕ Dodaj przedział
+        </button>
+      </div>
+      <table class="capex-table" style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:${cfg.colors.headerBg}">
+            <th style="padding:8px;text-align:left;border:1px solid ${cfg.colors.cellBorder}">Od [kWp]</th>
+            <th style="padding:8px;text-align:left;border:1px solid ${cfg.colors.cellBorder}">Do [kWp]</th>
+            <th style="padding:8px;text-align:center;border:1px solid ${cfg.colors.cellBorder}">Koszt/kWp</th>
+            <th style="padding:8px;text-align:center;border:1px solid ${cfg.colors.cellBorder}">Marża [%]</th>
+            <th style="padding:8px;text-align:center;border:1px solid ${cfg.colors.cellBorder};background:${cfg.colors.saleBg}">Sprzedaż/kWp</th>
+            <th style="padding:8px;text-align:center;border:1px solid ${cfg.colors.cellBorder};width:50px">Akcje</th>
+          </tr>
+        </thead>
+        <tbody id="capex_tbody_${type}">
+  `;
+
+  tiers.forEach((tier, index) => {
+    if (!tier) return; // Skip null entries
+
+    const isLast = index === tiers.length - 1;
+    const maxDisplay = tier.max === Infinity ? '∞' : tier.max;
+
+    html += `
+      <tr data-tier-index="${index}">
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder}">
+          <input type="number" value="${tier.min}" step="10" style="width:70px;text-align:right"
+                 onchange="updateCapexTierRange('${type}', ${index}, 'min', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder}">
+          ${isLast ?
+            `<span style="font-weight:600;color:#666;padding:0 10px">∞</span>` :
+            `<input type="number" value="${tier.max}" step="10" style="width:70px;text-align:right"
+                    onchange="updateCapexTierRange('${type}', ${index}, 'max', this.value)">`
+          }
+        </td>
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder}">
+          <input type="number" value="${tier.cost}" step="10" style="width:80px;text-align:right"
+                 onchange="updateCapexTierValue('${type}', ${index}, 'cost', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder}">
+          <input type="number" value="${tier.margin}" step="0.1" min="0" max="100" style="width:70px;text-align:right"
+                 onchange="updateCapexTierValue('${type}', ${index}, 'margin', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder};background:${cfg.colors.bg}">
+          <input type="number" value="${tier.sale}" readonly
+                 style="width:80px;text-align:right;background:${cfg.colors.bg};font-weight:600;color:${cfg.colors.textColor};border:none">
+        </td>
+        <td style="padding:4px;border:1px solid ${cfg.colors.cellBorder};text-align:center">
+          ${tiers.filter(t => t !== null).length > 1 ?
+            `<button onclick="removeCapexTier('${type}', ${index})"
+                     style="padding:4px 8px;background:#f44336;color:white;border:none;border-radius:3px;cursor:pointer;font-size:11px"
+                     title="Usuń przedział">🗑️</button>` :
+            ''
+          }
+        </td>
+      </tr>
+    `;
+  });
+
+  html += `
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+// Render all CAPEX tables
+function renderAllCapexTables() {
+  if (!capexDataPerType) initCapexData();
+
+  const types = ['ground_s', 'ground_ew', 'roof_ew', 'carport'];
+  types.forEach(type => renderCapexTable(type));
+}
+
+// Show CAPEX tab
+function showCapexTab(type) {
+  // Hide all panels
+  document.querySelectorAll('.capex-panel').forEach(panel => {
+    panel.style.display = 'none';
+  });
+
+  // Show selected panel
+  const selectedPanel = document.getElementById(`capex_${type}`);
+  if (selectedPanel) {
+    selectedPanel.style.display = 'block';
+  }
+
+  // Update tab styles
+  const tabColors = {
+    ground_s: { active: '#4caf50' },
+    ground_ew: { active: '#ff9800' },
+    roof_ew: { active: '#2196f3' },
+    carport: { active: '#9c27b0' }
+  };
+
+  document.querySelectorAll('.capex-tab').forEach(tab => {
+    const tabType = tab.id.replace('tab_', '');
+    if (tabType === type) {
+      tab.style.background = tabColors[type].active;
+      tab.style.color = 'white';
+    } else {
+      tab.style.background = '#f5f5f5';
+      tab.style.color = '#666';
+    }
+  });
+}
+
+// Update tier range (min/max)
+function updateCapexTierRange(type, index, field, value) {
+  if (!capexDataPerType[type] || !capexDataPerType[type][index]) return;
+
+  const numValue = parseFloat(value) || 0;
+  capexDataPerType[type][index][field] = numValue;
+
+  markUnsaved();
+}
+
+// Update tier value (cost/margin) and recalculate sale
+// Marża handlowa: cena_sprzedaży = koszt / (1 - marża/100)
+// Przykład: koszt 2000, marża 20% → 2000 / 0.80 = 2500 PLN
+function updateCapexTierValue(type, index, field, value) {
+  if (!capexDataPerType[type] || !capexDataPerType[type][index]) return;
+
+  const tier = capexDataPerType[type][index];
+  tier[field] = parseFloat(value) || 0;
+
+  // Recalculate sale price using margin formula: sale = cost / (1 - margin/100)
+  if (tier.margin >= 100) {
+    tier.sale = 0; // Invalid margin (100% or more)
+  } else {
+    tier.sale = Math.round(tier.cost / (1 - tier.margin / 100));
+  }
+
+  // Re-render to update display
+  renderCapexTable(type);
+  markUnsaved();
+}
+
+// Add new tier to a type
+function addCapexTier(type) {
+  if (!capexDataPerType[type]) capexDataPerType[type] = [];
+
+  const tiers = capexDataPerType[type].filter(t => t !== null);
+  const lastTier = tiers[tiers.length - 1];
+
+  // Create new tier based on last one
+  const newMin = lastTier ? (lastTier.max === Infinity ? lastTier.min + 5000 : lastTier.max) : 0;
+  const newTier = {
+    min: newMin,
+    max: Infinity,
+    cost: lastTier ? Math.round(lastTier.cost * 0.9) : 2000,
+    margin: lastTier ? lastTier.margin : 15,
+    sale: 0
+  };
+  newTier.sale = Math.round(newTier.cost / (1 - newTier.margin / 100));
+
+  // Update previous last tier's max
+  if (lastTier && lastTier.max === Infinity) {
+    lastTier.max = newMin;
+  }
+
+  capexDataPerType[type].push(newTier);
+
+  renderCapexTable(type);
+  markUnsaved();
+}
+
+// Remove tier from a type
+function removeCapexTier(type, index) {
+  if (!capexDataPerType[type]) return;
+
+  const tiers = capexDataPerType[type];
+  if (tiers.filter(t => t !== null).length <= 1) {
+    alert('Musi pozostać przynajmniej jeden przedział!');
+    return;
+  }
+
+  // If removing last tier, make previous one extend to infinity
+  if (index === tiers.length - 1 && index > 0) {
+    tiers[index - 1].max = Infinity;
+  }
+
+  // Remove the tier
+  tiers.splice(index, 1);
+
+  renderCapexTable(type);
+  markUnsaved();
+}
+
+// Get CAPEX per type from in-memory data
+function getCapexPerTypeFromUI() {
+  if (!capexDataPerType) initCapexData();
+  return JSON.parse(JSON.stringify(capexDataPerType));
+}
+
+// Get CAPEX ranges from in-memory data (uses ground_s as reference)
+function getCapexRangesFromUI() {
+  if (!capexDataPerType) initCapexData();
+
+  const groundS = capexDataPerType.ground_s || [];
+  return groundS.filter(t => t !== null).map(tier => ({
+    min: tier.min,
+    max: tier.max
+  }));
+}
+
+// Apply CAPEX per type settings to UI (re-renders tables)
+function applyCapexPerTypeToUI(config) {
+  // Update in-memory data
+  if (config.capexPerType) {
+    capexDataPerType = JSON.parse(JSON.stringify(config.capexPerType));
+
+    // Ensure ranges are attached
+    const defaultRanges = config.capexRanges || DEFAULT_CONFIG.capexRanges;
+    const types = ['ground_s', 'ground_ew', 'roof_ew', 'carport'];
+
+    types.forEach(type => {
+      if (!capexDataPerType[type]) return;
+      capexDataPerType[type] = capexDataPerType[type].map((tier, i) => {
+        if (!tier) return null;
+        return {
+          ...tier,
+          min: tier.min !== undefined ? tier.min : (defaultRanges[i]?.min || 0),
+          max: tier.max !== undefined ? tier.max : (defaultRanges[i]?.max || Infinity)
+        };
+      });
+    });
+  }
+
+  // Re-render all tables
+  renderAllCapexTables();
+}
+
+// Get CAPEX for capacity and installation type (NEW)
+function getCapexForCapacityAndType(capacityKwp, pvType) {
+  const settings = getCurrentSettings();
+  const ranges = settings.capexRanges || DEFAULT_CONFIG.capexRanges;
+  const perType = settings.capexPerType || DEFAULT_CONFIG.capexPerType;
+
+  // Find the matching range
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i];
+    if (capacityKwp >= range.min && capacityKwp < range.max) {
+      const tierData = perType[pvType]?.[i];
+      if (tierData) {
+        return {
+          cost: tierData.cost,
+          margin: tierData.margin,
+          sale: tierData.sale,
+          rangeMin: range.min,
+          rangeMax: range.max
+        };
+      }
+    }
+  }
+
+  // Fallback to last tier for very large installations
+  const lastIndex = ranges.length - 1;
+  const tierData = perType[pvType]?.[lastIndex];
+  if (tierData) {
+    return {
+      cost: tierData.cost,
+      margin: tierData.margin,
+      sale: tierData.sale,
+      rangeMin: ranges[lastIndex].min,
+      rangeMax: ranges[lastIndex].max
+    };
+  }
+
+  // Ultimate fallback - use ground_s
+  return {
+    cost: DEFAULT_CONFIG.capexPerType.ground_s[0].cost,
+    margin: DEFAULT_CONFIG.capexPerType.ground_s[0].margin,
+    sale: DEFAULT_CONFIG.capexPerType.ground_s[0].sale,
+    rangeMin: 50,
+    rangeMax: 150
+  };
+}
+
+// Make CAPEX management functions globally available
+window.showCapexTab = showCapexTab;
+window.addCapexTier = addCapexTier;
+window.removeCapexTier = removeCapexTier;
+window.updateCapexTierRange = updateCapexTierRange;
+window.updateCapexTierValue = updateCapexTierValue;
+
 // Make settings globally available for other scripts
 window.PVSettings = {
   get: getCurrentSettings,
   getCapexForCapacity: getCapexForCapacity,
+  getCapexForCapacityAndType: getCapexForCapacityAndType,
   getDcacForCapacity: getDcacForCapacity,
   DEFAULT: DEFAULT_CONFIG,
   // NEW functions
