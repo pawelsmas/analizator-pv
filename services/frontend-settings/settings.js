@@ -168,15 +168,19 @@ const DEFAULT_CONFIG = {
   azimuth_ground_ew: 90,  // East (will also calculate West at 270)
 
   // DC/AC Ratio Tiers - by capacity range and installation type
+  // Predefiniowane wartości bazowe (typowe dla polskiego rynku)
   dcacTiers: [
-    { min: 150, max: 500, ground_s: 1.15, roof_ew: 1.20, ground_ew: 1.25 },
-    { min: 501, max: 1000, ground_s: 1.20, roof_ew: 1.25, ground_ew: 1.30 },
-    { min: 1001, max: 2500, ground_s: 1.25, roof_ew: 1.30, ground_ew: 1.35 },
-    { min: 2501, max: 5000, ground_s: 1.30, roof_ew: 1.35, ground_ew: 1.40 },
-    { min: 5001, max: 10000, ground_s: 1.30, roof_ew: 1.35, ground_ew: 1.40 },
-    { min: 10001, max: 15000, ground_s: 1.35, roof_ew: 1.40, ground_ew: 1.45 },
+    { min: 150, max: 300, ground_s: 1.10, roof_ew: 1.15, ground_ew: 1.20 },
+    { min: 301, max: 600, ground_s: 1.15, roof_ew: 1.20, ground_ew: 1.25 },
+    { min: 601, max: 1200, ground_s: 1.20, roof_ew: 1.25, ground_ew: 1.30 },
+    { min: 1201, max: 3000, ground_s: 1.25, roof_ew: 1.30, ground_ew: 1.35 },
+    { min: 3001, max: 7000, ground_s: 1.30, roof_ew: 1.35, ground_ew: 1.40 },
+    { min: 7001, max: 15000, ground_s: 1.35, roof_ew: 1.40, ground_ew: 1.45 },
     { min: 15001, max: 50000, ground_s: 1.40, roof_ew: 1.45, ground_ew: 1.50 }
   ],
+
+  // DC/AC Slider Adjustment (zaawansowani użytkownicy mogą przesunąć ±0.1)
+  dcacAdjustment: 0,  // Korekta stosowana do wszystkich wartości z tabeli
 
   // Analysis Range
   capMin: 1000,
@@ -192,6 +196,8 @@ const DEFAULT_CONFIG = {
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
+  // Initialize DC/AC tiers BEFORE loadSettings (so data is available)
+  initDcacTiers();
   loadSettings();
   setupEventListeners();
   updateTotalEnergyPrice();
@@ -347,17 +353,23 @@ function applySettingsToUI(config) {
   // CAPEX per type (NEW)
   applyCapexPerTypeToUI(config);
 
-  // DC/AC Ratio tiers
-  const dcacTiers = config.dcacTiers || DEFAULT_CONFIG.dcacTiers;
-  dcacTiers.forEach((tier, index) => {
-    const tierNum = index + 1;
-    const groundS = document.getElementById(`dcac_ground_s_${tierNum}`);
-    const roofEw = document.getElementById(`dcac_roof_ew_${tierNum}`);
-    const groundEw = document.getElementById(`dcac_ground_ew_${tierNum}`);
-    if (groundS) groundS.value = tier.ground_s;
-    if (roofEw) roofEw.value = tier.roof_ew;
-    if (groundEw) groundEw.value = tier.ground_ew;
-  });
+  // DC/AC Ratio tiers - load into dynamic table
+  if (config.dcacTiers && config.dcacTiers.length > 0) {
+    dcacTiersData = config.dcacTiers;
+    saveDcacTiers();
+  }
+  renderDcacTable();
+
+  // DC/AC Adjustment slider
+  const dcacSlider = document.getElementById('dcacAdjustment');
+  const dcacDisplay = document.getElementById('dcacAdjustmentDisplay');
+  if (dcacSlider) {
+    dcacSlider.value = config.dcacAdjustment !== undefined ? config.dcacAdjustment : 0;
+    if (dcacDisplay) {
+      const val = parseFloat(dcacSlider.value);
+      dcacDisplay.textContent = (val >= 0 ? '+' : '') + val.toFixed(2);
+    }
+  }
 
   updateTotalEnergyPrice();
 }
@@ -488,37 +500,11 @@ function getCurrentSettings() {
     tilt_ground_ew: parseFloat(document.getElementById('tilt_ground_ew')?.value || DEFAULT_CONFIG.tilt_ground_ew),
     azimuth_ground_ew: parseFloat(document.getElementById('azimuth_ground_ew')?.value || DEFAULT_CONFIG.azimuth_ground_ew),
 
-    // DC/AC Ratio Tiers
-    dcacTiers: [
-      { min: 150, max: 500,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_1')?.value || 1.15),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_1')?.value || 1.20),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_1')?.value || 1.25) },
-      { min: 501, max: 1000,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_2')?.value || 1.20),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_2')?.value || 1.25),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_2')?.value || 1.30) },
-      { min: 1001, max: 2500,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_3')?.value || 1.25),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_3')?.value || 1.30),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_3')?.value || 1.35) },
-      { min: 2501, max: 5000,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_4')?.value || 1.30),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_4')?.value || 1.35),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_4')?.value || 1.40) },
-      { min: 5001, max: 10000,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_5')?.value || 1.30),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_5')?.value || 1.35),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_5')?.value || 1.40) },
-      { min: 10001, max: 15000,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_6')?.value || 1.35),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_6')?.value || 1.40),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_6')?.value || 1.45) },
-      { min: 15001, max: 50000,
-        ground_s: parseFloat(document.getElementById('dcac_ground_s_7')?.value || 1.40),
-        roof_ew: parseFloat(document.getElementById('dcac_roof_ew_7')?.value || 1.45),
-        ground_ew: parseFloat(document.getElementById('dcac_ground_ew_7')?.value || 1.50) }
-    ],
+    // DC/AC Ratio Tiers (z dynamicznej tabeli)
+    dcacTiers: dcacTiersData.length > 0 ? dcacTiersData : DEFAULT_CONFIG.dcacTiers,
+
+    // DC/AC Adjustment (slider korekty)
+    dcacAdjustment: parseFloat(document.getElementById('dcacAdjustment')?.value || 0),
 
     // Analysis Range
     capMin: parseFloat(document.getElementById('capMin')?.value || DEFAULT_CONFIG.capMin),
@@ -715,22 +701,250 @@ function getCapexForCapacity(capacityKwp) {
 }
 
 // Utility function to get DC/AC ratio for capacity and installation type
+// Uwzględnia slider korekty (dcacAdjustment)
 function getDcacForCapacity(capacityKwp, pvType) {
   const settings = getCurrentSettings();
   const dcacTiers = settings.dcacTiers || DEFAULT_CONFIG.dcacTiers;
+  const adjustment = settings.dcacAdjustment || 0;
+
+  let baseValue = dcacTiers[0][pvType] || dcacTiers[0].ground_s;
 
   for (const tier of dcacTiers) {
     if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
-      return tier[pvType] || tier.ground_s;
+      baseValue = tier[pvType] || tier.ground_s;
+      break;
     }
   }
+
   // Fallback - use last tier for very large installations
-  if (capacityKwp > 50000) {
-    return dcacTiers[6][pvType] || dcacTiers[6].ground_s;
+  if (capacityKwp > 50000 && dcacTiers.length > 0) {
+    const lastTier = dcacTiers[dcacTiers.length - 1];
+    baseValue = lastTier[pvType] || lastTier.ground_s;
   }
-  // Fallback - use first tier for very small installations
-  return dcacTiers[0][pvType] || dcacTiers[0].ground_s;
+
+  // Apply adjustment (slider korekty)
+  return Math.round((baseValue + adjustment) * 100) / 100;
 }
+
+// ============================================================================
+// DC/AC Ratio Tiers Management (dynamiczna tabela)
+// ============================================================================
+
+// Global storage for DC/AC tiers
+let dcacTiersData = [];
+
+// Initialize DC/AC tiers from DEFAULT_CONFIG or localStorage
+function initDcacTiers() {
+  const saved = localStorage.getItem('pv_dcac_tiers');
+  if (saved) {
+    try {
+      dcacTiersData = JSON.parse(saved);
+    } catch (e) {
+      dcacTiersData = [...DEFAULT_CONFIG.dcacTiers];
+    }
+  } else {
+    dcacTiersData = [...DEFAULT_CONFIG.dcacTiers];
+  }
+  renderDcacTable();
+}
+
+// Render DC/AC tiers table
+function renderDcacTable() {
+  const container = document.getElementById('dcac_tiers_container');
+  if (!container) return;
+
+  let html = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-weight:600;color:#333">Przedziały DC/AC Ratio</div>
+      <div style="display:flex;gap:8px">
+        <button onclick="resetDcacToDefaults()" style="padding:6px 12px;background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600" title="Przywróć domyślne wartości">
+          🔄 Resetuj
+        </button>
+        <button onclick="addDcacTier()" style="padding:6px 12px;background:#4caf50;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
+          ➕ Dodaj przedział
+        </button>
+      </div>
+    </div>
+    <table class="dcac-table" style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:#f5f5f5">
+          <th style="padding:8px;text-align:left;border:1px solid #ddd;width:70px">Od [kWp]</th>
+          <th style="padding:8px;text-align:left;border:1px solid #ddd;width:70px">Do [kWp]</th>
+          <th style="padding:8px;text-align:center;border:1px solid #ddd;background:#e8f5e9">Grunt Płd</th>
+          <th style="padding:8px;text-align:center;border:1px solid #ddd;background:#e3f2fd">Dach E-W</th>
+          <th style="padding:8px;text-align:center;border:1px solid #ddd;background:#fff3e0">Grunt E-W</th>
+          <th style="padding:8px;text-align:center;border:1px solid #ddd;width:50px">Akcje</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  dcacTiersData.forEach((tier, index) => {
+    const isLast = index === dcacTiersData.length - 1;
+    const maxDisplay = tier.max === Infinity || tier.max >= 999999 ? '∞' : tier.max;
+
+    html += `
+      <tr data-tier-index="${index}">
+        <td style="padding:4px;border:1px solid #ddd">
+          <input type="number" value="${tier.min}" step="100" min="0" style="width:65px;text-align:right"
+                 onchange="updateDcacTierRange(${index}, 'min', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid #ddd">
+          ${isLast ?
+            `<span style="display:inline-block;width:65px;text-align:right;color:#666">∞</span>` :
+            `<input type="number" value="${tier.max}" step="100" min="0" style="width:65px;text-align:right"
+                    onchange="updateDcacTierRange(${index}, 'max', this.value)">`
+          }
+        </td>
+        <td style="padding:4px;border:1px solid #ddd;background:#f1f8e9">
+          <input type="number" value="${tier.ground_s}" step="0.05" min="1.0" max="2.0" style="width:60px;text-align:center"
+                 onchange="updateDcacTierValue(${index}, 'ground_s', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid #ddd;background:#e3f2fd">
+          <input type="number" value="${tier.roof_ew}" step="0.05" min="1.0" max="2.0" style="width:60px;text-align:center"
+                 onchange="updateDcacTierValue(${index}, 'roof_ew', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid #ddd;background:#fff8e1">
+          <input type="number" value="${tier.ground_ew}" step="0.05" min="1.0" max="2.0" style="width:60px;text-align:center"
+                 onchange="updateDcacTierValue(${index}, 'ground_ew', this.value)">
+        </td>
+        <td style="padding:4px;border:1px solid #ddd;text-align:center">
+          ${dcacTiersData.length > 1 ?
+            `<button onclick="removeDcacTier(${index})" style="padding:4px 8px;background:#f44336;color:white;border:none;border-radius:3px;cursor:pointer;font-size:11px" title="Usuń przedział">✕</button>` :
+            `<span style="color:#ccc">–</span>`
+          }
+        </td>
+      </tr>
+    `;
+  });
+
+  html += `
+      </tbody>
+    </table>
+  `;
+
+  container.innerHTML = html;
+}
+
+// Add new DC/AC tier
+function addDcacTier() {
+  const lastTier = dcacTiersData[dcacTiersData.length - 1];
+
+  // Update previous last tier's max
+  const newMin = lastTier ? (lastTier.max === Infinity || lastTier.max >= 999999 ? lastTier.min + 5000 : lastTier.max + 1) : 150;
+
+  if (lastTier && (lastTier.max === Infinity || lastTier.max >= 999999)) {
+    lastTier.max = newMin - 1;
+  }
+
+  // Create new tier with slightly higher ratios
+  const newTier = {
+    min: newMin,
+    max: Infinity,
+    ground_s: lastTier ? Math.round((lastTier.ground_s + 0.05) * 100) / 100 : 1.10,
+    roof_ew: lastTier ? Math.round((lastTier.roof_ew + 0.05) * 100) / 100 : 1.15,
+    ground_ew: lastTier ? Math.round((lastTier.ground_ew + 0.05) * 100) / 100 : 1.20
+  };
+
+  dcacTiersData.push(newTier);
+  saveDcacTiers();
+  renderDcacTable();
+  markUnsaved();
+}
+
+// Remove DC/AC tier
+function removeDcacTier(index) {
+  if (dcacTiersData.length <= 1) return;
+
+  // If removing last tier, make previous one extend to infinity
+  if (index === dcacTiersData.length - 1 && index > 0) {
+    dcacTiersData[index - 1].max = Infinity;
+  }
+
+  // If removing middle tier, adjust ranges
+  if (index < dcacTiersData.length - 1 && index > 0) {
+    dcacTiersData[index + 1].min = dcacTiersData[index].min;
+  }
+
+  dcacTiersData.splice(index, 1);
+  saveDcacTiers();
+  renderDcacTable();
+  markUnsaved();
+}
+
+// Update DC/AC tier range (min/max)
+function updateDcacTierRange(index, field, value) {
+  const numValue = parseInt(value) || 0;
+  dcacTiersData[index][field] = numValue;
+
+  // Auto-adjust adjacent tiers
+  if (field === 'max' && index < dcacTiersData.length - 1) {
+    dcacTiersData[index + 1].min = numValue + 1;
+  }
+  if (field === 'min' && index > 0) {
+    dcacTiersData[index - 1].max = numValue - 1;
+  }
+
+  saveDcacTiers();
+  renderDcacTable();
+  markUnsaved();
+}
+
+// Update DC/AC tier value (ground_s, roof_ew, ground_ew)
+function updateDcacTierValue(index, field, value) {
+  dcacTiersData[index][field] = parseFloat(value) || 1.0;
+  saveDcacTiers();
+  markUnsaved();
+}
+
+// Reset DC/AC tiers to defaults
+function resetDcacToDefaults() {
+  if (confirm('Czy na pewno chcesz przywrócić domyślne wartości DC/AC Ratio?')) {
+    dcacTiersData = JSON.parse(JSON.stringify(DEFAULT_CONFIG.dcacTiers));
+    saveDcacTiers();
+    renderDcacTable();
+
+    // Reset slider too
+    const slider = document.getElementById('dcacAdjustment');
+    const display = document.getElementById('dcacAdjustmentDisplay');
+    if (slider) slider.value = 0;
+    if (display) display.textContent = '0.00';
+
+    markUnsaved();
+  }
+}
+
+// Save DC/AC tiers to localStorage
+function saveDcacTiers() {
+  localStorage.setItem('pv_dcac_tiers', JSON.stringify(dcacTiersData));
+}
+
+// Get current DC/AC tiers
+function getDcacTiers() {
+  return dcacTiersData;
+}
+
+// Update slider display
+function updateDcacSlider(value) {
+  const display = document.getElementById('dcacAdjustmentDisplay');
+  if (display) {
+    const numVal = parseFloat(value);
+    display.textContent = (numVal >= 0 ? '+' : '') + numVal.toFixed(2);
+    display.style.color = numVal > 0 ? '#4caf50' : (numVal < 0 ? '#f44336' : '#666');
+  }
+  markUnsaved();
+}
+
+// Make DC/AC management functions globally available
+window.initDcacTiers = initDcacTiers;
+window.renderDcacTable = renderDcacTable;
+window.addDcacTier = addDcacTier;
+window.removeDcacTier = removeDcacTier;
+window.updateDcacTierRange = updateDcacTierRange;
+window.updateDcacTierValue = updateDcacTierValue;
+window.resetDcacToDefaults = resetDcacToDefaults;
+window.getDcacTiers = getDcacTiers;
+window.updateDcacSlider = updateDcacSlider;
 
 // ============================================================================
 // NEW: CPH Tariff Management

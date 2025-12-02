@@ -732,69 +732,46 @@
         <span class="section-info">Współczynnik DC/AC dla każdego przedziału mocy i typu montażu</span>
       </div>
 
-      <div style="margin-bottom:16px;padding:12px;background:#f5f5f5;border-radius:8px">
-        <label style="font-weight:600;margin-bottom:8px;display:block">Tryb doboru DC/AC Ratio</label>
-        <select id="dcacMode" style="width:100%;max-width:400px;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
-          <option value="manual">Ręczne przedziały (z tabeli poniżej)</option>
-          <option value="auto">Automatyczny dobór (w przyszłości)</option>
-        </select>
-        <span style="display:block;margin-top:8px;font-size:12px;color:#666">W trybie automatycznym użyte DC/AC ratio będzie pokazane w wynikach analizy</span>
+      <!-- Info Box -->
+      <div style="margin-bottom:16px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-size:12px;color:#1565c0;line-height:1.5">
+          <strong>💡 DC/AC Ratio (Oversizing)</strong> to stosunek mocy DC paneli do mocy AC falownika.<br>
+          Wyższe ratio (np. 1.4) = więcej paneli na falownik = więcej energii rano/wieczorem, ale curtailment w szczycie.<br>
+          <strong>Grunt Płd</strong> = panele na południe (najwyższa produkcja w szczycie) → niższe ratio.<br>
+          <strong>Dach/Grunt E-W</strong> = panele wschód-zachód (rozproszona produkcja) → wyższe ratio.
+        </div>
       </div>
 
-      <table class="dcac-table" style="width:100%;border-collapse:collapse;margin-top:10px">
-        <thead>
-          <tr style="background:#f5f5f5">
-            <th style="padding:10px;text-align:left;border:1px solid #ddd">Moc [kWp]</th>
-            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#e8f5e9">Grunt Płd</th>
-            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#e3f2fd">Dach E-W</th>
-            <th style="padding:10px;text-align:center;border:1px solid #ddd;background:#fff3e0">Grunt E-W</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">150 - 500</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_1" value="1.15" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_1" value="1.20" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_1" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">501 - 1 000</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_2" value="1.20" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_2" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_2" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">1 001 - 2 500</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_3" value="1.25" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_3" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_3" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">2 501 - 5 000</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_4" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_4" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_4" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">5 001 - 10 000</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_5" value="1.30" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_5" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_5" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">10 001 - 15 000</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_6" value="1.35" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_6" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_6" value="1.45" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-          <tr>
-            <td style="padding:8px;border:1px solid #ddd">15 001 - 50 000</td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_s_7" value="1.40" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_roof_ew_7" value="1.45" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-            <td style="padding:4px;border:1px solid #ddd"><input type="number" id="dcac_ground_ew_7" value="1.50" step="0.05" min="1" max="2" style="width:70px;text-align:center"></td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- Slider korekty DC/AC -->
+      <div style="margin-bottom:20px;padding:16px;background:#fff8e1;border-radius:8px;border-left:4px solid #ffc107">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <label style="font-weight:600;color:#f57c00;display:block;margin-bottom:8px">
+              🎚️ Korekta DC/AC (dla zaawansowanych)
+            </label>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="font-size:12px;color:#666">-0.10</span>
+              <input type="range" id="dcacAdjustment"
+                     min="-0.10" max="0.10" step="0.01" value="0"
+                     style="flex:1;cursor:pointer"
+                     oninput="updateDcacSlider(this.value)">
+              <span style="font-size:12px;color:#666">+0.10</span>
+            </div>
+          </div>
+          <div style="text-align:center;min-width:80px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Korekta</div>
+            <div id="dcacAdjustmentDisplay" style="font-size:24px;font-weight:700;color:#666">0.00</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#795548">
+          Przesuń w lewo (-) jeśli masz curtailment/ograniczenia sieciowe. Przesuń w prawo (+) jeśli masz niską cenę modułów lub PPA z płaską ceną.
+        </div>
+      </div>
+
+      <!-- Dynamic DC/AC Tiers Table Container -->
+      <div id="dcac_tiers_container">
+        <!-- Tabela będzie renderowana dynamicznie przez JavaScript -->
+      </div>
     </div>
 
     <!-- Analysis Range -->

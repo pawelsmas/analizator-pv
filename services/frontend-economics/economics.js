@@ -1947,26 +1947,38 @@ async function performEconomicAnalysis() {
     let cash_flows = [];
     let cumulative_cash_flow = -capex; // Start with negative CAPEX
 
+    // Check if inflation should be applied (nominal IRR mode)
+    const useInflation = window.economicsSettings?.useInflation || false;
+    const inflationRate = useInflation ? (window.economicsSettings?.inflationRate || 0.025) : 0;
+
     for (let year = 1; year <= params.analysis_period; year++) {
       // Degradacja produkcji
       const degradation_factor = Math.pow(1 - params.degradation_rate, year - 1);
       const production_year = production_annual * degradation_factor;
       const self_consumed_year = self_consumed_annual * degradation_factor;
 
-      // Oszczędności w danym roku
-      const savings_year = self_consumed_year * totalEnergyPriceWithCapacity;
+      // Inflation factor (applied only in nominal IRR mode)
+      const inflation_factor = Math.pow(1 + inflationRate, year - 1);
+
+      // Oszczędności w danym roku (z inflacją cen energii jeśli włączona)
+      const adjustedEnergyPrice = totalEnergyPriceWithCapacity * inflation_factor;
+      const savings_year = self_consumed_year * adjustedEnergyPrice;
+
+      // OPEX z inflacją jeśli włączona
+      const opex_year = opex_annual * inflation_factor;
 
       // Przepływ netto = oszczędności - OPEX
-      const net_cash_flow = savings_year - opex_annual;
+      const net_cash_flow = savings_year - opex_year;
       cumulative_cash_flow += net_cash_flow;
 
       cash_flows.push({
         year: year,
         savings: savings_year,
-        opex: opex_annual,
+        opex: opex_year,
         net_cash_flow: net_cash_flow,
         cumulative_cash_flow: cumulative_cash_flow,
-        production: production_year
+        production: production_year,
+        self_consumed: self_consumed_year  // Dodajemy dla tabeli
       });
     }
 
@@ -3038,18 +3050,37 @@ function generatePaybackTable(data, capacity_kwp, params) {
     const degradationPct = ((1 - Math.pow(1 - params.degradation_rate, cf.year - 1)) * 100).toFixed(1);
     const cfClass = cumulativeCF >= 0 ? 'positive' : 'negative';
 
-    // Calculate inflation factor for this year to show adjusted energy price
-    const inflationFactor = Math.pow(1 + (window.economicsSettings?.inflationRate || 0.025), cf.year - 1);
-    const adjustedEnergyPrice = totalEnergyPriceWithCapacity * inflationFactor;
+    // Backend returns:
+    // - production: in kWh (needs /1000 for MWh)
+    // - revenue: savings in PLN (backend calls it 'revenue', frontend expects 'savings')
+    // - self_consumed: NOT sent by backend - must calculate from revenue/price
+
+    // Convert production from kWh to MWh
+    const productionRaw = cf.production || 0;
+    const productionMwh = productionRaw > 1000 ? productionRaw / 1000 : productionRaw;
+
+    // Get savings value - backend sends 'revenue', local cash flows use 'savings'
+    const savingsValue = cf.revenue ?? cf.savings ?? 0;
+
+    // Calculate self_consumed from savings (revenue = self_consumed_MWh * price_per_MWh)
+    // If self_consumed is explicitly provided, use it; otherwise calculate
+    let selfConsumedMwh = 0;
+    if (cf.self_consumed !== undefined && cf.self_consumed !== null) {
+      // Local cash flows provide self_consumed in MWh
+      selfConsumedMwh = cf.self_consumed > 1000 ? cf.self_consumed / 1000 : cf.self_consumed;
+    } else if (totalEnergyPriceWithCapacity > 0 && savingsValue > 0) {
+      // Calculate from revenue/price (savings = self_consumed_MWh * price_PLN_per_MWh)
+      selfConsumedMwh = savingsValue / totalEnergyPriceWithCapacity;
+    }
 
     row.innerHTML = `
       <td>${cf.year}</td>
-      <td>${cf.production.toFixed(1)}</td>
-      <td>${(cf.savings / adjustedEnergyPrice).toFixed(1)}</td>
+      <td>${productionMwh.toFixed(1)}</td>
+      <td>${selfConsumedMwh.toFixed(1)}</td>
       <td>${degradationPct}%</td>
-      <td>${(cf.savings / 1000).toFixed(0)}</td>
-      <td>${(cf.opex / 1000).toFixed(0)}</td>
-      <td class="${cf.net_cash_flow >= 0 ? 'positive' : 'negative'}">${(cf.net_cash_flow / 1000).toFixed(0)}</td>
+      <td>${((savingsValue || 0) / 1000).toFixed(0)}</td>
+      <td>${((cf.opex || 0) / 1000).toFixed(0)}</td>
+      <td class="${cf.net_cash_flow >= 0 ? 'positive' : 'negative'}">${((cf.net_cash_flow || 0) / 1000).toFixed(0)}</td>
       <td class="${cfClass}">${(cumulativeCF / 1000000).toFixed(2)}</td>
     `;
 

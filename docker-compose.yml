@@ -140,7 +140,6 @@ services:
       - frontend-comparison
       - frontend-economics
       - frontend-settings
-      - frontend-insights
       - data-analysis
       - pv-calculation
       - economics
@@ -272,24 +271,6 @@ services:
     container_name: pv-frontend-settings
     ports:
       - "9007:80"
-    networks:
-      - pv-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-  # Insights Module
-  frontend-insights:
-    build:
-      context: ./services/frontend-insights
-      dockerfile: Dockerfile
-    container_name: pv-frontend-insights
-    ports:
-      - "9008:80"
     networks:
       - pv-network
     restart: unless-stopped

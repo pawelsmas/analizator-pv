@@ -9,7 +9,6 @@ const MODULES = {
   comparison: 'http://localhost:9005',
   economics: 'http://localhost:9006',
   settings: 'http://localhost:9007',
-  insights: 'http://localhost:9008',
   energyprices: 'http://localhost:9009',
   reports: 'http://localhost:9010'
 };
