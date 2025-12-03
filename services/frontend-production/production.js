@@ -1,4 +1,4 @@
-console.log('🚀 production.js v12 LOADED - 7-day moving average trend lines - timestamp:', new Date().toISOString());
+console.log('🚀 production.js v16 LOADED - Fixed: use actualProduction from hourly data - timestamp:', new Date().toISOString());
 
 // Chart.js instances
 let dailyProductionChart, monthlyProductionChart, energyBalanceChart, hourlyProfileChart, daylightProfileChart;
@@ -10,6 +10,125 @@ let pvConfig = null;
 let analysisResults = null;
 let currentVariant = 'A'; // Default variant
 let variants = {};
+let systemSettings = null;
+
+// ============================================
+// PRODUCTION SCENARIO P50/P75/P90
+// ============================================
+
+// Current production scenario
+let currentScenario = 'P50';
+
+// Production factors (can be overwritten by settings)
+let productionFactors = {
+  P50: 1.00,   // 100% - median/expected production
+  P75: 0.97,   // 97% - conservative (75th percentile)
+  P90: 0.94    // 94% - cautious (90th percentile)
+};
+
+// Base production values (before scenario adjustment)
+let baseProductionKwh = 0;
+
+/**
+ * Format number in European style
+ * - Decimal separator: comma (,)
+ * - Thousands separator: non-breaking space
+ */
+function formatNumberEU(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) {
+    return '-';
+  }
+  const fixed = Number(value).toFixed(decimals);
+  const parts = fixed.split('.');
+  let integerPart = parts[0];
+  const decimalPart = parts[1];
+  integerPart = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00A0');
+  if (decimals > 0 && decimalPart) {
+    return integerPart + ',' + decimalPart;
+  }
+  return integerPart;
+}
+
+/**
+ * Set production scenario and recalculate all data
+ */
+function setProductionScenario(scenario) {
+  console.log(`📊 Setting production scenario: ${scenario}`);
+  currentScenario = scenario;
+
+  // Update floating button styles
+  updateFloatingButtonStyles(scenario);
+
+  // Update factor display
+  const factorDisplay = document.getElementById('scenarioFactorDisplay');
+  if (factorDisplay) {
+    const factor = productionFactors[scenario] || 1.0;
+    factorDisplay.textContent = `${Math.round(factor * 100)}%`;
+  }
+
+  // Recalculate and update all displays
+  performAnalysis();
+
+  // Notify shell about scenario change (for cross-module sync)
+  if (window.parent !== window) {
+    window.parent.postMessage({
+      type: 'PRODUCTION_SCENARIO_CHANGED',
+      data: {
+        scenario: scenario,
+        factor: productionFactors[scenario],
+        source: 'production'
+      }
+    }, '*');
+  }
+
+  console.log(`✅ Scenario ${scenario} applied with factor ${productionFactors[scenario]}`);
+}
+
+/**
+ * Update floating scenario button styles
+ */
+function updateFloatingButtonStyles(scenario) {
+  const btnConfig = {
+    P50: { borderColor: '#27ae60', activeBackground: '#27ae60', textColor: '#27ae60' },
+    P75: { borderColor: '#3498db', activeBackground: '#3498db', textColor: '#3498db' },
+    P90: { borderColor: '#e74c3c', activeBackground: '#e74c3c', textColor: '#e74c3c' }
+  };
+
+  ['P50', 'P75', 'P90'].forEach(s => {
+    const btn = document.getElementById(`btn${s}`);
+    if (btn) {
+      const isActive = s === scenario;
+      const cfg = btnConfig[s];
+      btn.style.borderColor = cfg.borderColor;
+      btn.style.background = isActive ? cfg.activeBackground : 'white';
+      btn.style.color = isActive ? 'white' : cfg.textColor;
+    }
+  });
+}
+
+/**
+ * Initialize scenario selector with values from settings
+ */
+function initializeScenarioSelector() {
+  // Load factors from settings if available
+  if (systemSettings) {
+    productionFactors.P50 = systemSettings.productionP50Factor || 1.00;
+    productionFactors.P75 = systemSettings.productionP75Factor || 0.97;
+    productionFactors.P90 = systemSettings.productionP90Factor || 0.94;
+  }
+
+  // Update floating button styles
+  updateFloatingButtonStyles(currentScenario);
+
+  // Update factor display
+  const factorDisplay = document.getElementById('scenarioFactorDisplay');
+  if (factorDisplay) {
+    const factor = productionFactors[currentScenario] || 1.0;
+    factorDisplay.textContent = `${Math.round(factor * 100)}%`;
+  }
+
+  console.log('📊 Scenario selector initialized with factors:', productionFactors);
+}
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -17,8 +136,14 @@ document.addEventListener('DOMContentLoaded', () => {
   loadAllData();
   // Request shared data from parent shell
   requestSharedData();
+  // Request settings from shell
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+  }
   // Setup sticky variant selector
   setupStickyVariantSelector();
+  // Initialize scenario selector
+  initializeScenarioSelector();
 });
 
 // Setup sticky variant selector with scroll animation
@@ -115,6 +240,11 @@ window.addEventListener('message', (event) => {
           };
           console.log('  - consumptionData loaded:', consumptionData.dataPoints, 'points');
         }
+        // Load settings if available
+        if (event.data.data.settings) {
+          systemSettings = event.data.data.settings;
+          initializeScenarioSelector();
+        }
         // Load master variant if available
         if (event.data.data.masterVariantKey) {
           currentVariant = event.data.data.masterVariantKey;
@@ -127,6 +257,38 @@ window.addEventListener('message', (event) => {
         }
         console.log('🚀 Calling performAnalysis() from SHARED_DATA_RESPONSE');
         performAnalysis();
+      }
+      break;
+    case 'SETTINGS_UPDATED':
+      // Settings were changed in Settings module
+      console.log('📨 SETTINGS_UPDATED received:', event.data.data);
+      if (event.data.data) {
+        systemSettings = event.data.data;
+        initializeScenarioSelector();
+        performAnalysis();
+      }
+      break;
+    case 'SCENARIO_CHANGED':
+      // Scenario was changed from another module (Economics or shell)
+      console.log('📨 SCENARIO_CHANGED received:', event.data.data);
+      if (event.data.data && event.data.data.scenario) {
+        const newScenario = event.data.data.scenario;
+        const source = event.data.data.source || 'unknown';
+
+        // Only update if scenario is different and not from production itself
+        if (newScenario !== currentScenario && source !== 'production') {
+          currentScenario = newScenario;
+          // Update floating button styles
+          updateFloatingButtonStyles(currentScenario);
+          // Update factor display
+          const factorDisplay = document.getElementById('scenarioFactorDisplay');
+          if (factorDisplay) {
+            const factor = productionFactors[currentScenario] || 1.0;
+            factorDisplay.textContent = `${Math.round(factor * 100)}%`;
+          }
+          performAnalysis();
+          console.log(`✅ Scenario synced to ${currentScenario} from ${source}`);
+        }
       }
       break;
   }
@@ -407,6 +569,10 @@ function performAnalysis() {
     }
   }
 
+  // Get current scenario factor
+  const scenarioFactor = productionFactors[currentScenario] || 1.0;
+  console.log(`📊 Using scenario ${currentScenario} with factor ${scenarioFactor}`);
+
   if (analysisResults && variants && currentVariant && consumptionData) {
     console.log('✓ All conditions met, attempting to generate hourly production');
     const variant = variants[currentVariant];
@@ -416,22 +582,30 @@ function performAnalysis() {
     console.log('  - Timestamps count:', consumptionData.hourlyData?.timestamps?.length);
 
     if (variant && consumptionData.hourlyData && consumptionData.hourlyData.timestamps) {
-      console.log('🚀 Generating hourly production...');
-      const hourlyProduction = generateHourlyProduction(
+      console.log('🚀 Generating hourly production with scenario factor...');
+
+      // Generate base hourly production (P50)
+      const baseHourlyProduction = generateHourlyProduction(
         variant.capacity,
         consumptionData.hourlyData.timestamps
       );
 
+      // Apply scenario factor to hourly production
+      const hourlyProduction = baseHourlyProduction.map(val => val * scenarioFactor);
+
       console.log('✅ Generated hourly production:');
       console.log('  - Data points:', hourlyProduction.length);
-      console.log('  - First 5 values:', hourlyProduction.slice(0, 5));
-      console.log('  - Sum:', hourlyProduction.reduce((a, b) => a + b, 0).toFixed(2), 'kWh');
+      console.log('  - Scenario factor:', scenarioFactor);
+      console.log('  - Sum (base):', baseHourlyProduction.reduce((a, b) => a + b, 0).toFixed(2), 'kWh');
+      console.log('  - Sum (adjusted):', hourlyProduction.reduce((a, b) => a + b, 0).toFixed(2), 'kWh');
       console.log('  - Max:', Math.max(...hourlyProduction).toFixed(2), 'kW');
 
       productionData = {
-        filename: `Generated for Variant ${currentVariant}`,
+        filename: `Generated for Variant ${currentVariant} (${currentScenario})`,
         hourlyProduction: hourlyProduction,
-        dataPoints: hourlyProduction.length
+        dataPoints: hourlyProduction.length,
+        scenario: currentScenario,
+        scenarioFactor: scenarioFactor
       };
 
       // Save to localStorage for persistence
@@ -465,21 +639,108 @@ function performAnalysis() {
 
 // Calculate statistics
 function calculateStatistics() {
-  // Try to get data from selected variant first
-  if (analysisResults && analysisResults.key_variants && analysisResults.key_variants[currentVariant]) {
-    const variant = analysisResults.key_variants[currentVariant];
+  // Get current scenario factor
+  const scenarioFactor = productionFactors[currentScenario] || 1.0;
+  console.log(`📊 Calculating statistics with scenario ${currentScenario} (factor: ${scenarioFactor})`);
+  console.log('📊 variants object:', variants);
+  console.log('📊 currentVariant:', currentVariant);
+
+  // Try to get data from selected variant first - use variants object (not analysisResults.key_variants)
+  if (variants && variants[currentVariant]) {
+    const variant = variants[currentVariant];
+    console.log('📊 Found variant:', variant);
+
+    // Store base production for info panel (P50 baseline)
+    baseProductionKwh = variant.production || 0;
+
+    // Apply scenario factor to production values
+    const adjustedProduction = (variant.production || 0) * scenarioFactor;
+
+    // Calculate self-consumption, export and import dynamically from hourly data
+    let selfConsumedKwh = 0;
+    let gridExportKwh = 0;
+    let gridImportKwh = 0;
+    let totalConsumptionKwh = 0;
+    let totalProductionFromHourly = 0;
+
+    if (productionData && productionData.hourlyProduction && consumptionData && consumptionData.hourlyData) {
+      const production = productionData.hourlyProduction;
+      const consumption = consumptionData.hourlyData.values;
+
+      console.log('📊 Hourly data check:', {
+        productionLength: production.length,
+        consumptionLength: consumption.length,
+        productionFirst5: production.slice(0, 5),
+        consumptionFirst5: consumption.slice(0, 5),
+        productionScenario: productionData.scenario,
+        productionFactor: productionData.scenarioFactor
+      });
+
+      for (let i = 0; i < Math.min(production.length, consumption.length); i++) {
+        const prod = production[i]; // Already has scenario factor applied
+        const cons = consumption[i];
+        totalProductionFromHourly += prod;
+
+        if (prod >= cons) {
+          selfConsumedKwh += cons;
+          gridExportKwh += (prod - cons);
+        } else {
+          selfConsumedKwh += prod;
+          gridImportKwh += (cons - prod);
+        }
+        totalConsumptionKwh += cons;
+      }
+
+      console.log('📊 Loop results:', {
+        totalProductionFromHourly,
+        adjustedProductionFromVariant: adjustedProduction,
+        difference: Math.abs(totalProductionFromHourly - adjustedProduction),
+        selfConsumedKwh,
+        gridExportKwh,
+        gridImportKwh,
+        totalConsumptionKwh
+      });
+    } else {
+      // Fallback to variant data if no hourly data available
+      console.log('⚠️ Using fallback - no hourly data available');
+      selfConsumedKwh = (variant.self_consumed || 0) * scenarioFactor;
+      gridExportKwh = (variant.exported || 0) * scenarioFactor;
+      totalConsumptionKwh = analysisResults?.totalConsumption_kWh || 0;
+      gridImportKwh = Math.max(0, totalConsumptionKwh - selfConsumedKwh);
+      totalProductionFromHourly = adjustedProduction;
+    }
+
+    // Use actual production from hourly data for percentage calculations
+    const actualProduction = totalProductionFromHourly > 0 ? totalProductionFromHourly : adjustedProduction;
+
+    // Calculate percentages
+    const selfConsumptionPct = actualProduction > 0 ? (selfConsumedKwh / actualProduction) * 100 : 0;
+    const selfSufficiencyPct = totalConsumptionKwh > 0 ? (selfConsumedKwh / totalConsumptionKwh) * 100 : 0;
+
+    console.log('📊 Final calculated values:', {
+      actualProduction,
+      adjustedProduction,
+      selfConsumedKwh,
+      gridExportKwh,
+      gridImportKwh,
+      totalConsumptionKwh,
+      selfConsumptionPct: selfConsumptionPct.toFixed(2),
+      selfSufficiencyPct: selfSufficiencyPct.toFixed(2),
+      capacity: variant.capacity,
+      scenario: currentScenario
+    });
 
     return {
-      annualProduction: (variant.production / 1000000).toFixed(2), // kWh -> GWh
-      installedCapacity: (variant.capacity / 1000).toFixed(2), // kWp -> MWp
-      specificYield: (variant.production / variant.capacity).toFixed(0), // kWh/kWp
-      performanceRatio: (variant.auto_consumption_pct || 85).toFixed(1),
-      selfConsumption: (variant.self_consumed / 1000000).toFixed(2), // GWh
-      selfSufficiency: (variant.coverage_pct || 0).toFixed(1),
-      gridExport: (variant.exported / 1000000).toFixed(2), // GWh
-      gridImport: 0, // TODO: calculate
-      peakPower: (variant.capacity / 1000).toFixed(2), // MWp
-      fullLoadHours: (variant.production / variant.capacity).toFixed(0)
+      annualProduction: formatNumberEU(actualProduction / 1000000, 2), // kWh -> GWh (from hourly data)
+      installedCapacity: formatNumberEU((variant.capacity || 0) / 1000, 2), // kWp -> MWp
+      specificYield: formatNumberEU(variant.capacity > 0 ? (actualProduction / variant.capacity) : 0, 0), // kWh/kWp (from hourly)
+      performanceRatio: formatNumberEU(selfConsumptionPct, 1), // % - using actual self-consumption
+      selfConsumption: `${formatNumberEU(selfConsumptionPct, 1)}%`, // %
+      selfSufficiency: `${formatNumberEU(selfSufficiencyPct, 1)}%`, // %
+      gridExport: `${formatNumberEU(gridExportKwh / 1000000, 2)} GWh`, // GWh (from hourly calculation)
+      gridImport: `${formatNumberEU(gridImportKwh / 1000000, 2)} GWh`, // GWh (from hourly calculation)
+      peakPower: `${formatNumberEU((variant.capacity || 0) / 1000, 2)} MW`, // MW
+      fullLoadHours: `${formatNumberEU(variant.capacity > 0 ? (actualProduction / variant.capacity) : 0, 0)} h` // from hourly
     };
   }
 
@@ -574,9 +835,19 @@ function updateStatistics(stats) {
 
 // Update data info
 function updateDataInfo() {
-  const info = productionData ?
-    `Moc: ${(pvConfig?.installedCapacity / 1000 || 0).toFixed(1)} MWp • ${productionData.hourlyProduction.length} punktów` :
-    'Konfiguracja PV dostępna';
+  // Get capacity from current variant if available
+  let capacity = 0;
+  if (variants && variants[currentVariant]) {
+    capacity = variants[currentVariant].capacity || 0;
+  } else if (pvConfig?.installedCapacity) {
+    capacity = pvConfig.installedCapacity;
+  }
+
+  const dataPoints = productionData?.hourlyProduction?.length ||
+                     consumptionData?.hourlyData?.timestamps?.length ||
+                     8760;
+
+  const info = `Moc: ${formatNumberEU(capacity / 1000, 1)} MWp • ${dataPoints} punktów`;
   document.getElementById('dataInfo').textContent = info;
 }
 
@@ -672,10 +943,10 @@ function generateMonthlyProduction() {
   const totalHoursCount = hoursPerMonth.reduce((sum, val) => sum + val, 0);
   const tbody = document.getElementById('monthlyDebugBody');
   tbody.innerHTML = monthlyTotals.map((total, i) => {
-    const mwh = (total / 1000).toFixed(2);
+    const mwh = formatNumberEU(total / 1000, 2);
     const hours = hoursPerMonth[i];
-    const avgKW = hours > 0 ? (total / hours).toFixed(2) : '0.00';
-    const percent = totalAnnual > 0 ? ((total / totalAnnual) * 100).toFixed(1) : '0.0';
+    const avgKW = hours > 0 ? formatNumberEU(total / hours, 2) : '0,00';
+    const percent = totalAnnual > 0 ? formatNumberEU((total / totalAnnual) * 100, 1) : '0,0';
 
     // Color coding based on expected values
     let rowColor = '';
@@ -695,9 +966,9 @@ function generateMonthlyProduction() {
   }).join('');
 
   // Update footer totals
-  document.getElementById('totalProduction').textContent = (totalAnnual / 1000).toFixed(2) + ' MWh';
+  document.getElementById('totalProduction').textContent = formatNumberEU(totalAnnual / 1000, 2) + ' MWh';
   document.getElementById('totalHours').textContent = totalHoursCount;
-  document.getElementById('avgPower').textContent = totalHoursCount > 0 ? (totalAnnual / totalHoursCount).toFixed(2) + ' kW' : '0.00 kW';
+  document.getElementById('avgPower').textContent = totalHoursCount > 0 ? formatNumberEU(totalAnnual / totalHoursCount, 2) + ' kW' : '0,00 kW';
 
   const ctx = document.getElementById('monthlyProduction').getContext('2d');
 
@@ -860,6 +1131,17 @@ function generateHourlyProfile() {
     return;
   }
 
+  // Save current checkbox states BEFORE destroying chart
+  const checkboxStates = {
+    load: document.getElementById('toggleLoad')?.checked ?? true,
+    pv: document.getElementById('togglePV')?.checked ?? true,
+    selfcons: document.getElementById('toggleSelfCons')?.checked ?? true,
+    trendload: document.getElementById('toggleTrendLoad')?.checked ?? false,
+    trendpv: document.getElementById('toggleTrendPV')?.checked ?? false,
+    trendselfcons: document.getElementById('toggleTrendSelfCons')?.checked ?? false
+  };
+  console.log('📊 Saved checkbox states:', checkboxStates);
+
   const production = productionData.hourlyProduction;
   const consumption = consumptionData.hourlyData.values;
   const timestamps = consumptionData.hourlyData.timestamps;
@@ -955,7 +1237,8 @@ function generateHourlyProfile() {
           fill: true,
           pointRadius: 0,
           order: 6, // Bottom layer
-          tension: 0.2
+          tension: 0.2,
+          hidden: !checkboxStates.selfcons // Use saved state
         },
         {
           label: 'Produkcja PV [MW]',
@@ -966,7 +1249,8 @@ function generateHourlyProfile() {
           fill: true,
           pointRadius: 0,
           order: 5, // Middle layer
-          tension: 0.2
+          tension: 0.2,
+          hidden: !checkboxStates.pv // Use saved state
         },
         {
           label: 'Zużycie (Load) [MW]',
@@ -977,7 +1261,8 @@ function generateHourlyProfile() {
           fill: false,
           pointRadius: 0,
           order: 4, // Top layer - most visible
-          tension: 0.2
+          tension: 0.2,
+          hidden: !checkboxStates.load // Use saved state
         },
         // TREND LINES (7-day moving average)
         {
@@ -991,7 +1276,7 @@ function generateHourlyProfile() {
           pointRadius: 0,
           order: 3,
           tension: 0.4,
-          hidden: true // Start hidden
+          hidden: !checkboxStates.trendselfcons // Use saved state
         },
         {
           label: 'Trend PV (7d MA)',
@@ -1004,7 +1289,7 @@ function generateHourlyProfile() {
           pointRadius: 0,
           order: 2,
           tension: 0.4,
-          hidden: true // Start hidden
+          hidden: !checkboxStates.trendpv // Use saved state
         },
         {
           label: 'Trend Load (7d MA)',
@@ -1017,7 +1302,7 @@ function generateHourlyProfile() {
           pointRadius: 0,
           order: 1,
           tension: 0.4,
-          hidden: true // Start hidden
+          hidden: !checkboxStates.trendload // Use saved state
         }
       ]
     },
@@ -1125,6 +1410,17 @@ function generateDaylightProfile() {
     return;
   }
 
+  // Save current checkbox states BEFORE destroying chart
+  const checkboxStates = {
+    load: document.getElementById('toggleLoadDaylight')?.checked ?? true,
+    pv: document.getElementById('togglePVDaylight')?.checked ?? true,
+    selfcons: document.getElementById('toggleSelfConsDaylight')?.checked ?? true,
+    trendload: document.getElementById('toggleTrendLoadDaylight')?.checked ?? false,
+    trendpv: document.getElementById('toggleTrendPVDaylight')?.checked ?? false,
+    trendselfcons: document.getElementById('toggleTrendSelfConsDaylight')?.checked ?? false
+  };
+  console.log('📊 Daylight saved checkbox states:', checkboxStates);
+
   const production = productionData.hourlyProduction;
   const consumption = consumptionData.hourlyData.values;
   const timestamps = consumptionData.hourlyData.timestamps;
@@ -1206,7 +1502,8 @@ function generateDaylightProfile() {
           fill: true,
           pointRadius: 0,
           tension: 0,
-          order: 6
+          order: 6,
+          hidden: !checkboxStates.selfcons // Use saved state
         },
         // Dataset 1: PV Production data (middle layer, orange)
         {
@@ -1218,7 +1515,8 @@ function generateDaylightProfile() {
           fill: true,
           pointRadius: 0,
           tension: 0,
-          order: 5
+          order: 5,
+          hidden: !checkboxStates.pv // Use saved state
         },
         // Dataset 2: Load data (top layer, red)
         {
@@ -1230,7 +1528,8 @@ function generateDaylightProfile() {
           fill: false,
           pointRadius: 0,
           tension: 0,
-          order: 4
+          order: 4,
+          hidden: !checkboxStates.load // Use saved state
         },
         // Dataset 3: Trend Self-consumption (7d MA, dashed green)
         {
@@ -1243,7 +1542,7 @@ function generateDaylightProfile() {
           fill: false,
           pointRadius: 0,
           tension: 0.4,
-          hidden: true,
+          hidden: !checkboxStates.trendselfcons, // Use saved state
           order: 3
         },
         // Dataset 4: Trend PV (7d MA, dashed orange)
@@ -1257,7 +1556,7 @@ function generateDaylightProfile() {
           fill: false,
           pointRadius: 0,
           tension: 0.4,
-          hidden: true,
+          hidden: !checkboxStates.trendpv, // Use saved state
           order: 2
         },
         // Dataset 5: Trend Load (7d MA, dashed red)
@@ -1271,7 +1570,7 @@ function generateDaylightProfile() {
           fill: false,
           pointRadius: 0,
           tension: 0.4,
-          hidden: true,
+          hidden: !checkboxStates.trendload, // Use saved state
           order: 1
         }
       ]

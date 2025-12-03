@@ -140,6 +140,7 @@ services:
       - frontend-comparison
       - frontend-economics
       - frontend-settings
+      - frontend-esg
       - data-analysis
       - pv-calculation
       - economics
@@ -271,6 +272,24 @@ services:
     container_name: pv-frontend-settings
     ports:
       - "9007:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ESG Module
+  frontend-esg:
+    build:
+      context: ./services/frontend-esg
+      dockerfile: Dockerfile
+    container_name: pv-frontend-esg
+    ports:
+      - "9008:80"
     networks:
       - pv-network
     restart: unless-stopped

@@ -774,6 +774,170 @@
       </div>
     </div>
 
+    <!-- ESG - Environmental, Social, Governance -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🌱</span>
+        <h2>ESG – Emisje i Klimat</h2>
+        <span class="section-info">Parametry śladu węglowego i zgodności ESG</span>
+      </div>
+
+      <!-- Info Box -->
+      <div style="margin-bottom:20px;padding:14px;background:linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);border-radius:10px;border-left:4px solid #4caf50">
+        <div style="font-size:12px;color:#2e7d32;line-height:1.6">
+          <strong>🌍 Sekcja ESG</strong> umożliwia raportowanie wpływu środowiskowego projektu PV zgodnie z wymogami CSRD, EU Taxonomy i GHG Protocol.<br>
+          • <strong>Scope 2</strong> – emisje pośrednie z zakupionej energii elektrycznej<br>
+          • <strong>Embodied carbon</strong> – ślad węglowy produkcji modułów PV (LCA)<br>
+          • <strong>Carbon payback</strong> – czas "spłaty" emisji z produkcji modułów
+        </div>
+      </div>
+
+      <!-- Grid Emission Factor - Electricity Maps -->
+      <div style="margin-bottom:24px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1b5e20;margin-bottom:12px;font-size:14px">
+          ⚡ Współczynnik emisji sieci (EF_grid)
+        </div>
+
+        <div class="setting-item" style="margin-bottom:12px">
+          <label>Źródło danych</label>
+          <div style="padding:10px;background:#e8f5e9;border-radius:6px;color:#2e7d32;font-weight:600">
+            Electricity Maps API
+          </div>
+        </div>
+
+        <!-- Electricity Maps API settings -->
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>API Key</label>
+            <input type="text" id="electricitymapsApiKey" value="zKpYPh29dwX3dtT3StlM" readonly style="background:#f5f5f5">
+            <span class="setting-hint"><a href="https://www.electricitymaps.com/" target="_blank">electricitymaps.com</a></span>
+          </div>
+          <div class="setting-item">
+            <label>Strefa (Zone)</label>
+            <select id="electricitymapsZone" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px">
+              <option value="PL">Polska (PL)</option>
+              <option value="DE">Niemcy (DE)</option>
+              <option value="CZ">Czechy (CZ)</option>
+              <option value="SK">Słowacja (SK)</option>
+              <option value="UA">Ukraina (UA)</option>
+              <option value="LT">Litwa (LT)</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label>Typ emisji</label>
+            <select id="electricitymapsEmissionType" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px">
+              <option value="lifecycle">Lifecycle (pełny LCA)</option>
+              <option value="direct">Direct (tylko spalanie)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Current EF_grid value -->
+        <div style="margin-top:16px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>EF_grid [kgCO2e/kWh]</label>
+              <input type="number" id="esgGridEmissionFactor" value="0.658" step="0.001" min="0" max="2">
+              <span class="setting-hint">Aktualna wartość dla obliczeń</span>
+            </div>
+            <div class="setting-item">
+              <label>Źródło</label>
+              <input type="text" id="esgGridEmissionSource" value="Electricity Maps" readonly style="background:#f5f5f5">
+            </div>
+          </div>
+        </div>
+
+        <!-- Hidden fields for compatibility -->
+        <input type="hidden" id="esgGridEmissionProvider" value="electricitymaps">
+        <input type="hidden" id="esgGridEmissionYear" value="2023">
+      </div>
+
+      <!-- Embodied Carbon (LCA) -->
+      <div style="margin-bottom:24px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1565c0;margin-bottom:12px;font-size:14px">
+          🏭 Embodied Carbon (LCA modułów PV)
+        </div>
+
+        <div class="setting-item" style="margin-bottom:12px">
+          <label>Technologia PV projektu</label>
+          <select id="esgPvTechnology" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px">
+            <option value="crystalline">Krzemowe krystaliczne (c-Si) – najpopularniejsze</option>
+            <option value="CIS">CIS/CIGS (Copper Indium Selenide)</option>
+            <option value="CdTe">CdTe (Cadmium Telluride) – thin-film</option>
+          </select>
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>c-Si [kgCO₂e/kWp]</label>
+            <input type="number" id="esgEmbodiedCarbonCrystalline" value="700" step="10" min="300" max="1200">
+            <span class="setting-hint">Typowo: 600-800</span>
+          </div>
+          <div class="setting-item">
+            <label>CIS [kgCO₂e/kWp]</label>
+            <input type="number" id="esgEmbodiedCarbonCIS" value="600" step="10" min="300" max="1000">
+            <span class="setting-hint">Typowo: 500-700</span>
+          </div>
+          <div class="setting-item">
+            <label>CdTe [kgCO₂e/kWp]</label>
+            <input type="number" id="esgEmbodiedCarbonCdTe" value="500" step="10" min="200" max="800">
+            <span class="setting-hint">Typowo: 400-600</span>
+          </div>
+        </div>
+
+        <div class="setting-item" style="margin-top:12px">
+          <label>Źródło danych LCA</label>
+          <input type="text" id="esgEmbodiedCarbonSource" value="IEA PVPS Task 12 / NREL" style="width:100%">
+        </div>
+      </div>
+
+      <!-- EU Taxonomy & Governance -->
+      <div style="padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#7b1fa2;margin-bottom:12px;font-size:14px">
+          📋 Governance / Compliance
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="esgTaxonomyAligned" checked style="width:18px;height:18px">
+              Zgodność z EU Taxonomy
+            </label>
+            <span class="setting-hint">Działalność 4.1 – Wytwarzanie energii z PV</span>
+          </div>
+          <div class="setting-item">
+            <label>Kod działalności</label>
+            <input type="text" id="esgTaxonomyActivityCode" value="4.1" style="width:100px">
+          </div>
+          <div class="setting-item">
+            <label>Metoda raportowania</label>
+            <select id="esgReportingMethod" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px">
+              <option value="location">Location-based (EF z sieci krajowej)</option>
+              <option value="market">Market-based (EF z kontraktów/GO)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-item" style="margin-top:12px">
+          <label>Certyfikaty komponentów</label>
+          <input type="text" id="esgComponentCompliance" value="Tier 1, EPD, RoHS, ISO 9001/14001" style="width:100%">
+          <span class="setting-hint">Deklaracja zgodności komponentów PV</span>
+        </div>
+      </div>
+
+      <!-- ESG Summary Info -->
+      <div style="margin-top:20px;padding:14px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-size:12px;color:#1565c0;line-height:1.5">
+          <strong>📊 Obliczane KPI ESG:</strong><br>
+          • <strong>CO₂ reduction/year</strong> – roczna redukcja emisji Scope 2<br>
+          • <strong>CO₂ lifetime</strong> – łączna redukcja w okresie życia projektu<br>
+          • <strong>Carbon payback</strong> – lata do "spłaty" embodied carbon<br>
+          • <strong>Share RES</strong> – udział OZE w zużyciu energii po wdrożeniu PV<br>
+          • <strong>Net CO₂</strong> – bilans netto (avoided - embodied)
+        </div>
+      </div>
+    </div>
+
     <!-- Analysis Range -->
     <div class="settings-section">
       <div class="section-header">

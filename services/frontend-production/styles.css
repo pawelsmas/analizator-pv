@@ -342,6 +342,184 @@ canvas {
   display: none;
 }
 
+/* ============================================
+   SCENARIO SELECTOR P50/P75/P90
+   ============================================ */
+
+.scenario-selector {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  border-left: 4px solid #3498db;
+}
+
+.scenario-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.scenario-icon {
+  font-size: 24px;
+}
+
+.scenario-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.scenario-current {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: #3498db;
+  color: white;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scenario-buttons {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.scenario-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 12px;
+  background: #f8f9fa;
+  border: 2px solid #e8ecf1;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-family: inherit;
+}
+
+.scenario-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* P50 - Green (median/expected) */
+.scenario-btn.p50 {
+  border-color: #27ae60;
+}
+
+.scenario-btn.p50:hover {
+  background: #e8f8f0;
+}
+
+.scenario-btn.p50.active {
+  background: linear-gradient(135deg, #27ae60 0%, #219a52 100%);
+  border-color: #219a52;
+  color: white;
+  box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+}
+
+/* P75 - Blue (conservative) */
+.scenario-btn.p75 {
+  border-color: #3498db;
+}
+
+.scenario-btn.p75:hover {
+  background: #e8f4fc;
+}
+
+.scenario-btn.p75.active {
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+  border-color: #2980b9;
+  color: white;
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+}
+
+/* P90 - Red (cautious/pessimistic) */
+.scenario-btn.p90 {
+  border-color: #e74c3c;
+}
+
+.scenario-btn.p90:hover {
+  background: #fceae8;
+}
+
+.scenario-btn.p90.active {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  border-color: #c0392b;
+  color: white;
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+}
+
+.scenario-name {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.scenario-factor {
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.9;
+  margin-bottom: 2px;
+}
+
+.scenario-desc {
+  font-size: 11px;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.scenario-btn.active .scenario-desc,
+.scenario-btn.active .scenario-factor {
+  opacity: 1;
+}
+
+/* Scenario Info Panel */
+.scenario-info-panel {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.scenario-info-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.info-label {
+  font-size: 11px;
+  color: #7f8c8d;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+
+.info-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.info-value.highlight {
+  color: #27ae60;
+  font-size: 18px;
+}
+
+.info-value.negative {
+  color: #e74c3c;
+}
+
 /* Responsywność */
 @media (max-width: 768px) {
   .content-grid {
@@ -354,5 +532,14 @@ canvas {
 
   .details-grid {
     grid-template-columns: 1fr;
+  }
+
+  .scenario-buttons {
+    flex-direction: column;
+  }
+
+  .scenario-info-panel {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 }

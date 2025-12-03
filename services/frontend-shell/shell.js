@@ -9,6 +9,7 @@ const MODULES = {
   comparison: 'http://localhost:9005',
   economics: 'http://localhost:9006',
   settings: 'http://localhost:9007',
+  esg: 'http://localhost:9008',
   energyprices: 'http://localhost:9009',
   reports: 'http://localhost:9010'
 };
@@ -35,7 +36,8 @@ let sharedData = {
   hourlyData: null,
   masterVariant: null,
   masterVariantKey: null,
-  settings: null // System settings from Settings module
+  settings: null, // System settings from Settings module
+  currentScenario: 'P50' // Current production scenario (P50/P75/P90)
 };
 
 // Also save settings to shell's localStorage as central storage
@@ -84,7 +86,7 @@ function loadModule(moduleName, event) {
   const iframe = document.getElementById('module-frame');
   iframe.src = MODULES[moduleName];
 
-  // When iframe loads, send it the current settings
+  // When iframe loads, send it the current settings and scenario
   iframe.onload = () => {
     if (sharedData.settings) {
       iframe.contentWindow.postMessage({
@@ -93,6 +95,15 @@ function loadModule(moduleName, event) {
       }, '*');
       console.log('Sent settings to loaded module:', moduleName);
     }
+    // Send current scenario to module
+    iframe.contentWindow.postMessage({
+      type: 'SCENARIO_CHANGED',
+      data: {
+        scenario: sharedData.currentScenario,
+        source: 'shell'
+      }
+    }, '*');
+    console.log('Sent scenario to loaded module:', moduleName, sharedData.currentScenario);
   };
 
   console.log(`Ładowanie modułu: ${moduleName} z ${MODULES[moduleName]}`);
@@ -143,6 +154,17 @@ async function checkBackendServices() {
   document.getElementById('servicesStatus').innerHTML = statusHTML;
 }
 
+// Load scenario from localStorage
+function loadScenarioFromShell() {
+  const saved = localStorage.getItem('pv_current_scenario');
+  if (saved && ['P50', 'P75', 'P90'].includes(saved)) {
+    sharedData.currentScenario = saved;
+    console.log('Scenario loaded from shell localStorage:', saved);
+    return saved;
+  }
+  return 'P50';
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   checkBackendServices();
@@ -150,11 +172,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load saved settings from shell's localStorage
   loadSettingsFromShell();
 
+  // Load saved scenario from shell's localStorage
+  loadScenarioFromShell();
+
   // Load default module - Config
   const iframe = document.getElementById('module-frame');
   iframe.src = MODULES['config'];
 
-  // When iframe loads, send it the current settings
+  // When iframe loads, send it the current settings and scenario
   iframe.onload = () => {
     if (sharedData.settings) {
       iframe.contentWindow.postMessage({
@@ -163,6 +188,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }, '*');
       console.log('Sent settings to initial module');
     }
+    // Send current scenario to module
+    iframe.contentWindow.postMessage({
+      type: 'SCENARIO_CHANGED',
+      data: {
+        scenario: sharedData.currentScenario,
+        source: 'shell'
+      }
+    }, '*');
+    console.log('Sent scenario to initial module:', sharedData.currentScenario);
   };
 
   console.log('Ładowanie domyślnego modułu: Configuration');
@@ -257,7 +291,9 @@ window.addEventListener('message', (event) => {
       });
       break;
     case 'DATA_CLEARED':
-      // Clear all shared data
+      // Clear all shared data (preserve settings and scenario)
+      const savedSettings = sharedData.settings;
+      const savedScenario = sharedData.currentScenario;
       sharedData = {
         analysisResults: null,
         pvConfig: null,
@@ -265,11 +301,13 @@ window.addEventListener('message', (event) => {
         hourlyData: null,
         masterVariant: null,
         masterVariantKey: null,
-        economics: null
+        economics: null,
+        settings: savedSettings,
+        currentScenario: savedScenario
       };
       // Broadcast to all modules
       broadcastToModules({ type: 'DATA_CLEARED' });
-      console.log('All shared data cleared');
+      console.log('All shared data cleared (settings and scenario preserved)');
       break;
     case 'SETTINGS_CHANGED':
       // Store settings in shell's localStorage and memory
@@ -290,6 +328,34 @@ window.addEventListener('message', (event) => {
         });
         console.log('Sent settings on request');
       }
+      break;
+    case 'PRODUCTION_SCENARIO_CHANGED':
+      // Store production scenario and broadcast to all modules
+      if (event.data.data) {
+        sharedData.currentScenario = event.data.data.scenario;
+        // Save to localStorage for persistence
+        localStorage.setItem('pv_current_scenario', event.data.data.scenario);
+        // Broadcast to all modules (including Economics)
+        broadcastToModules({
+          type: 'SCENARIO_CHANGED',
+          data: {
+            scenario: event.data.data.scenario,
+            source: event.data.data.source || 'production'
+          }
+        });
+        console.log('Production scenario changed:', event.data.data.scenario);
+      }
+      break;
+    case 'REQUEST_SCENARIO':
+      // Module requests current scenario
+      broadcastToModules({
+        type: 'SCENARIO_CHANGED',
+        data: {
+          scenario: sharedData.currentScenario,
+          source: 'shell'
+        }
+      });
+      console.log('Sent current scenario on request:', sharedData.currentScenario);
       break;
   }
 });

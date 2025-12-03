@@ -191,7 +191,41 @@ const DEFAULT_CONFIG = {
   thrA: 95,
   thrB: 90,
   thrC: 85,
-  thrD: 80
+  thrD: 80,
+
+  // ============================================================================
+  // ESG - Environmental, Social, Governance Parameters
+  // ============================================================================
+
+  // ESG - Grid Emission Factor (Scope 2, Location-based)
+  esgGridEmissionProvider: 'manual',  // 'manual' | 'climatiq' | 'electricitymaps'
+  esgGridEmissionFactor: 0.658,       // kgCO2e/kWh (Poland 2023 average, source: KOBiZE)
+  esgGridEmissionYear: 2023,          // Reference year for emission factor
+  esgGridEmissionSource: 'KOBiZE',    // Source description
+
+  // ESG - Embodied Carbon (PV Manufacturing LCA)
+  // Values in kgCO2e/kWp, source: IEA PVPS Task 12, NREL
+  esgEmbodiedCarbonCrystalline: 700,  // Crystalline silicon (c-Si) - most common
+  esgEmbodiedCarbonCIS: 600,          // Copper Indium Selenide (CIS/CIGS)
+  esgEmbodiedCarbonCdTe: 500,         // Cadmium Telluride (thin-film)
+  esgEmbodiedCarbonSource: 'IEA PVPS Task 12 / NREL',
+
+  // ESG - Project PV Technology (for embodied carbon calculation)
+  esgPvTechnology: 'crystalline',     // 'crystalline' | 'CIS' | 'CdTe'
+
+  // ESG - EU Taxonomy Compliance
+  esgTaxonomyAligned: true,           // Project meets EU Taxonomy criteria
+  esgTaxonomyActivityCode: '4.1',     // Activity code (4.1 = Electricity generation using solar PV)
+
+  // ESG - Reporting Method
+  esgReportingMethod: 'location',     // 'location' (location-based) | 'market' (market-based)
+
+  // ESG - Component Compliance
+  esgComponentCompliance: 'Tier 1, EPD, RoHS, ISO 9001/14001',  // Compliance note
+
+  // ESG - Electricity Maps API
+  electricitymapsApiKey: '',          // Electricity Maps API key
+  electricitymapsZone: 'PL'           // Default zone for Poland
 };
 
 // Initialize on load
@@ -515,7 +549,24 @@ function getCurrentSettings() {
     thrA: parseFloat(document.getElementById('thrA')?.value || DEFAULT_CONFIG.thrA),
     thrB: parseFloat(document.getElementById('thrB')?.value || DEFAULT_CONFIG.thrB),
     thrC: parseFloat(document.getElementById('thrC')?.value || DEFAULT_CONFIG.thrC),
-    thrD: parseFloat(document.getElementById('thrD')?.value || DEFAULT_CONFIG.thrD)
+    thrD: parseFloat(document.getElementById('thrD')?.value || DEFAULT_CONFIG.thrD),
+
+    // ESG Parameters
+    esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
+    esgGridEmissionFactor: parseFloat(document.getElementById('esgGridEmissionFactor')?.value || DEFAULT_CONFIG.esgGridEmissionFactor),
+    esgGridEmissionYear: parseInt(document.getElementById('esgGridEmissionYear')?.value || DEFAULT_CONFIG.esgGridEmissionYear),
+    esgGridEmissionSource: document.getElementById('esgGridEmissionSource')?.value || DEFAULT_CONFIG.esgGridEmissionSource,
+    esgEmbodiedCarbonCrystalline: parseFloat(document.getElementById('esgEmbodiedCarbonCrystalline')?.value || DEFAULT_CONFIG.esgEmbodiedCarbonCrystalline),
+    esgEmbodiedCarbonCIS: parseFloat(document.getElementById('esgEmbodiedCarbonCIS')?.value || DEFAULT_CONFIG.esgEmbodiedCarbonCIS),
+    esgEmbodiedCarbonCdTe: parseFloat(document.getElementById('esgEmbodiedCarbonCdTe')?.value || DEFAULT_CONFIG.esgEmbodiedCarbonCdTe),
+    esgEmbodiedCarbonSource: document.getElementById('esgEmbodiedCarbonSource')?.value || DEFAULT_CONFIG.esgEmbodiedCarbonSource,
+    esgPvTechnology: document.getElementById('esgPvTechnology')?.value || DEFAULT_CONFIG.esgPvTechnology,
+    esgTaxonomyAligned: document.getElementById('esgTaxonomyAligned')?.checked ?? DEFAULT_CONFIG.esgTaxonomyAligned,
+    esgTaxonomyActivityCode: document.getElementById('esgTaxonomyActivityCode')?.value || DEFAULT_CONFIG.esgTaxonomyActivityCode,
+    esgReportingMethod: document.getElementById('esgReportingMethod')?.value || DEFAULT_CONFIG.esgReportingMethod,
+    esgComponentCompliance: document.getElementById('esgComponentCompliance')?.value || DEFAULT_CONFIG.esgComponentCompliance,
+    electricitymapsApiKey: document.getElementById('electricitymapsApiKey')?.value || DEFAULT_CONFIG.electricitymapsApiKey,
+    electricitymapsZone: document.getElementById('electricitymapsZone')?.value || DEFAULT_CONFIG.electricitymapsZone
   };
 
   // Add calculated total energy price
@@ -1731,5 +1782,347 @@ window.PVSettings = {
   calculateCapacityFee: calculateCapacityFee,
   // Pxx functions
   togglePxxSourceFields: togglePxxSourceFields,
-  fetchPxxFromPVGIS: fetchPxxFromPVGIS
+  fetchPxxFromPVGIS: fetchPxxFromPVGIS,
+  // ESG functions
+  calculateESGMetrics: calculateESGMetrics,
+  getEmbodiedCarbonForTechnology: getEmbodiedCarbonForTechnology,
+  toggleEsgEmissionProvider: toggleEsgEmissionProvider
 };
+
+// ============================================================================
+// ESG Calculation Functions
+// ============================================================================
+
+/**
+ * Get embodied carbon value for PV technology
+ * @param {string} technology - 'crystalline' | 'CIS' | 'CdTe'
+ * @returns {number} kgCO2e/kWp
+ */
+function getEmbodiedCarbonForTechnology(technology) {
+  const settings = getCurrentSettings();
+  switch (technology) {
+    case 'CIS':
+      return settings.esgEmbodiedCarbonCIS;
+    case 'CdTe':
+      return settings.esgEmbodiedCarbonCdTe;
+    case 'crystalline':
+    default:
+      return settings.esgEmbodiedCarbonCrystalline;
+  }
+}
+
+/**
+ * Calculate all ESG metrics for a PV project
+ * @param {Object} params - Project parameters
+ * @param {number} params.capacityKwp - Installed capacity [kWp]
+ * @param {number} params.annualProductionMwh - Annual production [MWh] (P50)
+ * @param {number} params.selfConsumedMwh - Annual self-consumed energy [MWh]
+ * @param {number} params.gridConsumptionBeforeMwh - Grid consumption before PV [MWh/year]
+ * @param {number} params.gridConsumptionAfterMwh - Grid consumption after PV [MWh/year]
+ * @param {number} params.projectLifetimeYears - Project lifetime [years]
+ * @param {number} params.degradationRate - Annual degradation [decimal, e.g. 0.005]
+ * @returns {Object} ESG metrics
+ */
+function calculateESGMetrics(params) {
+  const settings = getCurrentSettings();
+
+  const {
+    capacityKwp = 0,
+    annualProductionMwh = 0,
+    selfConsumedMwh = 0,
+    gridConsumptionBeforeMwh = 0,
+    gridConsumptionAfterMwh = 0,
+    projectLifetimeYears = settings.analysisPeriod || 25,
+    degradationRate = (settings.degradationRate || 0.5) / 100
+  } = params;
+
+  // Get emission factor (kgCO2e/kWh → tCO2e/MWh)
+  const efGrid = settings.esgGridEmissionFactor; // kgCO2e/kWh
+  const efGridTonnesPerMwh = efGrid; // kgCO2e/kWh = tCO2e/MWh (same numeric value)
+
+  // Get embodied carbon for selected technology
+  const embodiedCarbonPerKwp = getEmbodiedCarbonForTechnology(settings.esgPvTechnology);
+
+  // [E1] Annual CO2 reduction (Scope 2, location-based)
+  // CO2_baseline = MWh_baseline × EF_grid (in tonnes)
+  // CO2_after = MWh_grid_after × EF_grid
+  // CO2_reduction_year = CO2_baseline - CO2_after
+  const co2BaselineYear = gridConsumptionBeforeMwh * efGridTonnesPerMwh / 1000; // tonnes CO2e
+  const co2AfterYear = gridConsumptionAfterMwh * efGridTonnesPerMwh / 1000; // tonnes CO2e
+  const co2ReductionYear = co2BaselineYear - co2AfterYear; // tonnes CO2e/year
+
+  // Alternative calculation: based on self-consumed PV energy
+  const co2AvoidedFromPV = selfConsumedMwh * efGridTonnesPerMwh / 1000; // tonnes CO2e/year
+
+  // [E2] Lifetime CO2 reduction (with degradation)
+  let co2ReductionLifetime = 0;
+  for (let year = 1; year <= projectLifetimeYears; year++) {
+    const degradationFactor = Math.pow(1 - degradationRate, year - 1);
+    co2ReductionLifetime += co2ReductionYear * degradationFactor;
+  }
+
+  // [E3] Share of RES in energy consumption after PV
+  // Share_RES = MWh_EaaS / (MWh_EaaS + MWh_grid_after) × 100%
+  const totalConsumptionAfter = selfConsumedMwh + gridConsumptionAfterMwh;
+  const shareRES = totalConsumptionAfter > 0
+    ? (selfConsumedMwh / totalConsumptionAfter) * 100
+    : 0;
+
+  // [E4] Carbon payback (years to "repay" embodied carbon)
+  // CO2_embodied = kWp × EF_PV_embodied (in kg → convert to tonnes)
+  const co2Embodied = (capacityKwp * embodiedCarbonPerKwp) / 1000; // tonnes CO2e
+  const carbonPaybackYears = co2ReductionYear > 0
+    ? co2Embodied / co2ReductionYear
+    : Infinity;
+
+  // Net CO2 over lifetime (avoided - embodied)
+  const co2NetLifetime = co2ReductionLifetime - co2Embodied;
+
+  // Carbon intensity of PV electricity (gCO2e/kWh)
+  // = embodied carbon / lifetime production
+  let lifetimeProductionMwh = 0;
+  for (let year = 1; year <= projectLifetimeYears; year++) {
+    const degradationFactor = Math.pow(1 - degradationRate, year - 1);
+    lifetimeProductionMwh += annualProductionMwh * degradationFactor;
+  }
+  const carbonIntensityPV = lifetimeProductionMwh > 0
+    ? (co2Embodied * 1000000) / (lifetimeProductionMwh * 1000) // gCO2e/kWh
+    : 0;
+
+  return {
+    // Annual metrics
+    co2BaselineYear,              // tonnes CO2e/year (grid before PV)
+    co2AfterYear,                 // tonnes CO2e/year (grid after PV)
+    co2ReductionYear,             // tonnes CO2e/year (avoided)
+    co2AvoidedFromPV,             // tonnes CO2e/year (from self-consumption)
+
+    // Lifetime metrics
+    co2ReductionLifetime,         // tonnes CO2e (total avoided over lifetime)
+    co2Embodied,                  // tonnes CO2e (manufacturing footprint)
+    co2NetLifetime,               // tonnes CO2e (net = avoided - embodied)
+
+    // Ratios and payback
+    shareRES,                     // % of energy from RES after PV
+    carbonPaybackYears,           // years to repay embodied carbon
+    carbonIntensityPV,            // gCO2e/kWh of PV electricity
+
+    // Metadata
+    efGrid,                       // kgCO2e/kWh (grid emission factor)
+    efGridSource: settings.esgGridEmissionSource,
+    embodiedCarbonPerKwp,         // kgCO2e/kWp
+    embodiedCarbonSource: settings.esgEmbodiedCarbonSource,
+    pvTechnology: settings.esgPvTechnology,
+    projectLifetimeYears,
+    reportingMethod: settings.esgReportingMethod,
+    taxonomyAligned: settings.esgTaxonomyAligned,
+    taxonomyActivityCode: settings.esgTaxonomyActivityCode,
+    componentCompliance: settings.esgComponentCompliance
+  };
+}
+
+/**
+ * Toggle ESG emission provider settings visibility
+ */
+function toggleEsgEmissionProvider() {
+  const provider = document.getElementById('esgGridEmissionProvider')?.value || 'manual';
+  const manualSection = document.getElementById('esgManualEmissionSection');
+  const apiSection = document.getElementById('esgApiEmissionSection');
+
+  if (provider === 'manual') {
+    if (manualSection) manualSection.style.display = 'block';
+    if (apiSection) apiSection.style.display = 'none';
+  } else {
+    if (manualSection) manualSection.style.display = 'none';
+    if (apiSection) apiSection.style.display = 'block';
+  }
+
+  markUnsaved();
+}
+
+// Make ESG functions globally available
+window.calculateESGMetrics = calculateESGMetrics;
+window.getEmbodiedCarbonForTechnology = getEmbodiedCarbonForTechnology;
+window.toggleEsgEmissionProvider = toggleEsgEmissionProvider;
+
+// ============================================================================
+// Electricity Maps API Integration
+// ============================================================================
+
+// Store for last fetched data
+let lastElectricityMapsData = null;
+
+/**
+ * Fetch data from Electricity Maps API
+ * Endpoints used:
+ * - /v3/carbon-intensity/latest - current carbon intensity
+ * - /v3/renewable-percentage-level/latest - current renewable %
+ * - /v3/carbon-intensity-fossil-only/latest - fossil fuels only CI
+ */
+async function fetchElectricityMapsData() {
+  const apiKey = document.getElementById('electricitymapsApiKey')?.value?.trim();
+  const zone = document.getElementById('electricitymapsZone')?.value || 'PL';
+  const emissionType = document.getElementById('electricitymapsEmissionType')?.value || 'lifecycle';
+  const statusEl = document.getElementById('emFetchStatus');
+
+  if (!apiKey) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:#e74c3c">❌ Wprowadź API Key</span>';
+    return;
+  }
+
+  if (statusEl) statusEl.innerHTML = '<span style="color:#3498db">⏳ Pobieranie danych...</span>';
+
+  try {
+    // Fetch all three endpoints in parallel
+    const [carbonIntensityRes, renewableRes, fossilCIRes] = await Promise.all([
+      fetchElectricityMapsEndpoint(apiKey, `/v3/carbon-intensity/latest?zone=${zone}&emissionFactorType=${emissionType}`),
+      fetchElectricityMapsEndpoint(apiKey, `/v3/renewable-percentage-level/latest?zone=${zone}`),
+      fetchElectricityMapsEndpoint(apiKey, `/v3/carbon-intensity-fossil-only/latest?zone=${zone}&emissionFactorType=${emissionType}`)
+    ]);
+
+    // Store data
+    lastElectricityMapsData = {
+      carbonIntensity: carbonIntensityRes?.carbonIntensity ?? null,
+      renewablePercentage: renewableRes?.renewablePercentage ?? null,
+      fossilCarbonIntensity: fossilCIRes?.carbonIntensity ?? null,
+      zone: zone,
+      timestamp: new Date().toISOString(),
+      isEstimated: carbonIntensityRes?.isEstimated ?? false
+    };
+
+    // Update UI
+    updateElectricityMapsUI(lastElectricityMapsData);
+
+    if (statusEl) statusEl.innerHTML = '<span style="color:#27ae60">✅ Dane pobrane</span>';
+    console.log('✅ Electricity Maps data fetched:', lastElectricityMapsData);
+
+  } catch (error) {
+    console.error('❌ Error fetching Electricity Maps data:', error);
+    if (statusEl) statusEl.innerHTML = `<span style="color:#e74c3c">❌ Błąd: ${error.message}</span>`;
+  }
+}
+
+/**
+ * Fetch single endpoint from Electricity Maps API
+ */
+async function fetchElectricityMapsEndpoint(apiKey, endpoint) {
+  const baseUrl = 'https://api.electricitymaps.com';
+  const url = baseUrl + endpoint;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'auth-token': apiKey,
+      'Accept': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`API error ${response.status}: ${errorText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update Electricity Maps live data UI
+ */
+function updateElectricityMapsUI(data) {
+  const liveDataSection = document.getElementById('electricitymapsLiveData');
+  if (liveDataSection) {
+    liveDataSection.style.display = 'block';
+  }
+
+  // Carbon Intensity (gCO2eq/kWh)
+  const ciEl = document.getElementById('emLiveCarbonIntensity');
+  if (ciEl && data.carbonIntensity !== null) {
+    ciEl.textContent = data.carbonIntensity.toFixed(0);
+    // Color based on value (green < 200, yellow < 400, red > 400)
+    if (data.carbonIntensity < 200) {
+      ciEl.style.color = '#388e3c';
+    } else if (data.carbonIntensity < 400) {
+      ciEl.style.color = '#ffa000';
+    } else {
+      ciEl.style.color = '#d32f2f';
+    }
+  }
+
+  // Renewable Percentage
+  const renewEl = document.getElementById('emLiveRenewable');
+  if (renewEl && data.renewablePercentage !== null) {
+    renewEl.textContent = data.renewablePercentage.toFixed(1);
+    // Color based on value (green > 50%, yellow > 25%, red < 25%)
+    if (data.renewablePercentage > 50) {
+      renewEl.style.color = '#388e3c';
+    } else if (data.renewablePercentage > 25) {
+      renewEl.style.color = '#ffa000';
+    } else {
+      renewEl.style.color = '#d32f2f';
+    }
+  }
+
+  // Fossil Fuels Carbon Intensity
+  const fossilEl = document.getElementById('emLiveFossilCI');
+  if (fossilEl && data.fossilCarbonIntensity !== null) {
+    fossilEl.textContent = data.fossilCarbonIntensity.toFixed(0);
+  }
+
+  // Timestamp
+  const timestampEl = document.getElementById('emLiveTimestamp');
+  if (timestampEl && data.timestamp) {
+    const ts = new Date(data.timestamp);
+    timestampEl.textContent = `Ostatnia aktualizacja: ${ts.toLocaleString('pl-PL')}`;
+    if (data.isEstimated) {
+      timestampEl.textContent += ' (szacunek)';
+    }
+  }
+
+  // Zone
+  const zoneEl = document.getElementById('emLiveZone');
+  if (zoneEl) {
+    zoneEl.textContent = `Zone: ${data.zone}`;
+  }
+}
+
+/**
+ * Apply Electricity Maps Carbon Intensity to manual EF_grid field
+ */
+function applyElectricityMapsToManual() {
+  if (!lastElectricityMapsData || lastElectricityMapsData.carbonIntensity === null) {
+    alert('⚠️ Najpierw pobierz dane z Electricity Maps');
+    return;
+  }
+
+  // Convert gCO2eq/kWh to kgCO2e/kWh (divide by 1000)
+  const efGridKg = lastElectricityMapsData.carbonIntensity / 1000;
+
+  // Update manual fields
+  const efGridEl = document.getElementById('esgGridEmissionFactor');
+  if (efGridEl) {
+    efGridEl.value = efGridKg.toFixed(3);
+  }
+
+  const yearEl = document.getElementById('esgGridEmissionYear');
+  if (yearEl) {
+    yearEl.value = new Date().getFullYear();
+  }
+
+  const sourceEl = document.getElementById('esgGridEmissionSource');
+  if (sourceEl) {
+    sourceEl.value = `Electricity Maps (${lastElectricityMapsData.zone})`;
+  }
+
+  // Switch back to manual mode
+  const providerEl = document.getElementById('esgGridEmissionProvider');
+  if (providerEl) {
+    providerEl.value = 'manual';
+    toggleEsgEmissionProvider();
+  }
+
+  markUnsaved();
+  showStatus('✅ EF_grid zaktualizowany z Electricity Maps', 'success');
+}
+
+// Make Electricity Maps functions globally available
+window.fetchElectricityMapsData = fetchElectricityMapsData;
+window.applyElectricityMapsToManual = applyElectricityMapsToManual;

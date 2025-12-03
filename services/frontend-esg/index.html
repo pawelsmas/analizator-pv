@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ESG Dashboard - PV Optimizer Pro</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="esg-container">
+  <!-- Header -->
+  <div class="page-header">
+    <h1>ESG Dashboard</h1>
+    <div class="header-info">
+      Wskazniki Srodowiskowe, Spoleczne i Zarzadcze | EU Taxonomy
+    </div>
+  </div>
+
+  <!-- No Data State -->
+  <div id="noDataState" class="no-data active">
+    <div class="no-data-icon">🌱</div>
+    <h3>Brak danych do analizy ESG</h3>
+    <p>Wgraj dane zuzywania w module ZUZYCIE i przeprowadz analize w module PRODUKCJA PV</p>
+  </div>
+
+  <!-- Main Content Grid -->
+  <div id="mainContent" class="content-grid hidden">
+
+    <!-- Main KPI Cards -->
+    <div class="stats-section">
+      <h2>🎯 Kluczowe Wskazniki ESG</h2>
+      <div class="stats-cards">
+        <div class="stat-card esg-card">
+          <div class="stat-icon">🌍</div>
+          <div class="stat-content">
+            <div class="stat-label">Redukcja CO2 Rocznie</div>
+            <div class="stat-value" id="esgCo2ReductionYear">-</div>
+            <div class="stat-unit">tCO2e/rok</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card">
+          <div class="stat-icon">🌳</div>
+          <div class="stat-content">
+            <div class="stat-label">Redukcja CO2 Lifetime</div>
+            <div class="stat-value" id="esgCo2ReductionLifetime">-</div>
+            <div class="stat-unit">tCO2e (25 lat)</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card">
+          <div class="stat-icon">☀️</div>
+          <div class="stat-content">
+            <div class="stat-label">Udzial OZE</div>
+            <div class="stat-value" id="esgShareRes">-</div>
+            <div class="stat-unit">% energii z PV</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card">
+          <div class="stat-icon">⏱️</div>
+          <div class="stat-content">
+            <div class="stat-label">Carbon Payback</div>
+            <div class="stat-value" id="esgCarbonPayback">-</div>
+            <div class="stat-unit">lat</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scope 2 Emissions Section -->
+    <div class="details-section">
+      <h2>📊 Emisje Scope 2 (Location-Based)</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">CO2 przed instalacj PV</span>
+          <span class="detail-value" id="esgCo2Before">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">CO2 po instalacji PV</span>
+          <span class="detail-value" id="esgCo2After">-</span>
+        </div>
+        <div class="detail-item highlight">
+          <span class="detail-label">Redukcja emisji</span>
+          <span class="detail-value positive" id="esgCo2ReductionPct">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Embodied Carbon Section -->
+    <div class="details-section">
+      <h2>🏭 Embodied Carbon (LCA)</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">Technologia PV</span>
+          <span class="detail-value" id="esgPvTechnology">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Embodied Carbon calkowity</span>
+          <span class="detail-value" id="esgEmbodiedCarbon">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Embodied Carbon / kWp</span>
+          <span class="detail-value" id="esgEmbodiedPerKwp">-</span>
+        </div>
+        <div class="detail-item highlight">
+          <span class="detail-label">Net CO2 (25 lat)</span>
+          <span class="detail-value positive" id="esgNetCo2">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- EU Taxonomy Section -->
+    <div class="stats-section taxonomy-section">
+      <h2>🇪🇺 EU Taxonomy Compliance</h2>
+      <div class="taxonomy-content">
+        <div class="taxonomy-badge" id="esgTaxonomyBadge">
+          <div class="badge-icon">✓</div>
+          <div class="badge-text">
+            <div class="badge-title">Zgodne z Taxonomy 4.1</div>
+            <div class="badge-subtitle">Wytwarzanie energii ze zródel odnawialnych</div>
+          </div>
+        </div>
+        <div class="taxonomy-details">
+          <div class="taxonomy-item">
+            <span class="taxonomy-label">Cel klimatyczny</span>
+            <span class="taxonomy-value">Lagodzenie zmian klimatu</span>
+          </div>
+          <div class="taxonomy-item">
+            <span class="taxonomy-label">Kryteria DNSH</span>
+            <span class="taxonomy-value">Spelnia warunki</span>
+          </div>
+          <div class="taxonomy-item">
+            <span class="taxonomy-label">Minimalne gwarancje</span>
+            <span class="taxonomy-value">Do weryfikacji</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Technical Parameters Section -->
+    <div class="details-section">
+      <h2>⚙️ Parametry Techniczne ESG</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">EF_grid (Polska)</span>
+          <span class="detail-value" id="esgEfGrid">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Zródlo EF</span>
+          <span class="detail-value" id="esgEfSource">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Zródlo Embodied Carbon</span>
+          <span class="detail-value" id="esgEmbodiedSource">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Moc instalacji PV</span>
+          <span class="detail-value" id="esgPvCapacity">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export Section -->
+    <div class="actions-section">
+      <button class="btn" onclick="exportESGReport()">📊 Eksportuj Raport ESG</button>
+      <button class="btn btn-secondary" onclick="refreshESGData()">🔄 Odswież Dane</button>
+    </div>
+
+  </div>
+</div>
+
+<script src="esg.js"></script>
+</body>
+</html>
