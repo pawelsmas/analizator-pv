@@ -1165,6 +1165,95 @@ async def get_heatmap_data(month: int = 0):
         month_day_matrix=month_day_matrix.tolist()
     )
 
+class RestoreDataRequest(BaseModel):
+    """Request to restore consumption data from project storage"""
+    timestamps: List[str]
+    values: List[float]
+    analytical_year: Optional[dict] = None
+
+@app.post("/restore-data")
+async def restore_data(request: RestoreDataRequest):
+    """
+    Przywróć dane zużycia z zapisanego projektu.
+
+    Endpoint używany przy wczytywaniu projektu - pozwala przywrócić
+    dane godzinowe do pamięci data-analysis service bez ponownego
+    wgrywania pliku Excel/CSV.
+    """
+    if not request.timestamps or not request.values:
+        raise HTTPException(status_code=400, detail="Both timestamps and values are required")
+
+    if len(request.timestamps) != len(request.values):
+        raise HTTPException(status_code=400, detail="Timestamps and values must have the same length")
+
+    # Przywróć dane do pamięci
+    data_store.hourly_data = request.values
+    data_store.year_hours = request.timestamps
+    data_store.raw_dataframe = None  # Raw DataFrame nie jest zapisywany
+
+    # Przywróć analytical year jeśli podano
+    if request.analytical_year:
+        ay = request.analytical_year
+        data_store.analytical_year = AnalyticalYear(
+            start_date=ay.get('start_date', request.timestamps[0][:10]),
+            end_date=ay.get('end_date', request.timestamps[-1][:10]),
+            total_days=ay.get('total_days', len(request.timestamps) // 24),
+            total_hours=ay.get('total_hours', len(request.timestamps)),
+            is_complete=ay.get('is_complete', len(request.timestamps) >= 8760),
+            is_leap_year=ay.get('is_leap_year', False),
+            months_coverage=ay.get('months_coverage', [])
+        )
+        data_store.start_date = datetime.fromisoformat(data_store.analytical_year.start_date)
+        data_store.end_date = datetime.fromisoformat(data_store.analytical_year.end_date)
+    else:
+        # Oblicz analytical year z timestampów
+        start_dt = datetime.fromisoformat(request.timestamps[0].replace('Z', ''))
+        end_dt = datetime.fromisoformat(request.timestamps[-1].replace('Z', ''))
+        data_store.start_date = start_dt
+        data_store.end_date = end_dt
+        data_store.analytical_year = calculate_analytical_year(start_dt, end_dt)
+
+    print(f"✅ Przywrócono dane: {len(request.values)} godzin")
+    print(f"📅 Zakres: {data_store.analytical_year.start_date} do {data_store.analytical_year.end_date}")
+
+    return {
+        "success": True,
+        "message": f"Data restored successfully",
+        "data_points": len(request.values),
+        "analytical_year": {
+            "start_date": data_store.analytical_year.start_date,
+            "end_date": data_store.analytical_year.end_date,
+            "total_days": data_store.analytical_year.total_days,
+            "total_hours": data_store.analytical_year.total_hours
+        }
+    }
+
+@app.get("/export-data")
+async def export_data():
+    """
+    Eksportuj dane zużycia do zapisania w projekcie.
+
+    Zwraca pełne dane godzinowe z timestamps i values
+    gotowe do zapisania w bazie projektów.
+    """
+    if not data_store.hourly_data:
+        raise HTTPException(status_code=400, detail="No data loaded")
+
+    return {
+        "timestamps": data_store.year_hours,
+        "values": data_store.hourly_data,
+        "analytical_year": {
+            "start_date": data_store.analytical_year.start_date if data_store.analytical_year else None,
+            "end_date": data_store.analytical_year.end_date if data_store.analytical_year else None,
+            "total_days": data_store.analytical_year.total_days if data_store.analytical_year else None,
+            "total_hours": data_store.analytical_year.total_hours if data_store.analytical_year else None,
+            "is_complete": data_store.analytical_year.is_complete if data_store.analytical_year else None,
+            "is_leap_year": data_store.analytical_year.is_leap_year if data_store.analytical_year else None,
+            "months_coverage": data_store.analytical_year.months_coverage if data_store.analytical_year else []
+        } if data_store.analytical_year else None,
+        "data_points": len(data_store.hourly_data)
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)

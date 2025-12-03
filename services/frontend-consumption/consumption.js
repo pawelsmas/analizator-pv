@@ -19,6 +19,11 @@ window.addEventListener('message', (event) => {
     case 'DATA_CLEARED':
       clearAnalysis();
       break;
+    case 'PROJECT_LOADED':
+      // Project was loaded - reload consumption data
+      console.log('📂 Consumption: Project loaded, reloading data');
+      loadConsumptionData();
+      break;
   }
 });
 

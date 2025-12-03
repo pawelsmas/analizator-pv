@@ -1,16 +1,55 @@
-# Testing Guide - PV Optimizer
+# Testing Guide - PV Optimizer v1.8
 
-## 🧪 Testing Strategy
+## Testing Strategy
 
-This document describes how to test the PV Optimizer microservices.
+This document describes how to test the PV Optimizer micro-frontend application.
+
+## Service Health Tests
+
+### Backend Services
+
+```bash
+# Data Analysis
+curl http://localhost:8001/health
+
+# PV Calculation (includes pvlib version)
+curl http://localhost:8002/health
+
+# Economics
+curl http://localhost:8003/health
+
+# Advanced Analytics
+curl http://localhost:8004/health
+
+# Typical Days
+curl http://localhost:8005/health
+
+# Energy Prices
+curl http://localhost:8010/health
+
+# Reports
+curl http://localhost:8011/health
+```
+
+### Frontend Modules
+
+```bash
+# Shell
+curl http://localhost:9000
+
+# All modules (9001-9010)
+for port in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
+  echo "Testing port $port..."
+  curl -s -o /dev/null -w "%{http_code}" http://localhost:$port
+  echo ""
+done
+```
 
 ## Unit Testing (Individual Services)
 
-### Data Analysis Service
+### Data Analysis Service (8001)
 
 ```bash
-cd services/data-analysis
-
 # Test health endpoint
 curl http://localhost:8001/health
 
@@ -22,7 +61,7 @@ curl -X POST http://localhost:8001/upload/csv \
   -F "file=@sample_data.csv"
 ```
 
-### PV Calculation Service
+### PV Calculation Service (8002)
 
 ```bash
 # Test health
@@ -38,18 +77,19 @@ curl -X POST http://localhost:8002/generate-profile \
     "latitude": 52.0
   }'
 
-# Test simulation
-curl -X POST http://localhost:8002/simulate \
+# Test with scenario
+curl -X POST http://localhost:8002/generate-profile \
   -H "Content-Type: application/json" \
   -d '{
-    "capacity": 10000,
-    "pv_profile": [0.0, 0.0, 0.1, 0.3, 0.5, 0.6],
-    "consumption": [1000, 900, 800, 850, 900, 950],
-    "dc_ac_ratio": 1.2
+    "pv_type": "ground_s",
+    "yield_target": 1050,
+    "dc_ac_ratio": 1.2,
+    "latitude": 52.0,
+    "scenario": "P75"
   }'
 ```
 
-### Economics Service
+### Economics Service (8003)
 
 ```bash
 # Test health
@@ -104,44 +144,75 @@ curl -X POST http://localhost:8002/generate-profile \
   -o pv_profile.json
 
 # 5. Run analysis
-# (combine consumption from step 3 with PV config)
 curl -X POST http://localhost:8002/analyze \
   -H "Content-Type: application/json" \
   -d @analysis_request.json \
   -o analysis_results.json
 
-# 6. Economic analysis on variant B
-# (use variant data from step 5)
+# 6. Economic analysis
 curl -X POST http://localhost:8003/analyze \
   -H "Content-Type: application/json" \
   -d @economics_request.json \
   -o economics_results.json
 ```
 
-## Load Testing
+## Frontend Testing
 
-### Using Apache Bench
+### P50/P75/P90 Scenario Testing
 
-```bash
-# Test data analysis endpoint
-ab -n 100 -c 10 http://localhost:8001/health
+1. **Open Production Module**: http://localhost:9000 → Production tab
 
-# Test PV calculation
-ab -n 100 -c 10 -p pv_profile.json \
-  -T application/json \
-  http://localhost:8002/generate-profile
+2. **Test Scenario Selector**:
+   - Click P50 button → verify green active state
+   - Click P75 button → verify blue active state
+   - Click P90 button → verify red active state
+
+3. **Verify Statistics Update**:
+   - Check "Roczna Produkcja" changes with scenario
+   - Check "Autokonsumpcja" percentage changes
+   - Check "Samowystarczalnosc" percentage changes
+   - Check "Pobor z Sieci" updates
+
+4. **Console Verification**:
+```javascript
+// Open browser console (F12)
+// Should see logs like:
+// 📊 Scenario changed to: P75
+// 📊 Final calculated values: {...}
 ```
 
-### Using wrk
+### Inter-Module Communication Testing
 
-```bash
-# Install wrk first
-# Test frontend
-wrk -t4 -c100 -d30s http://localhost/
+1. **Scenario Sync Test**:
+   - Change scenario in Production module
+   - Switch to Economics module
+   - Verify Economics uses same scenario
 
-# Test API endpoint
-wrk -t2 -c50 -d30s http://localhost:8001/health
+2. **Console Test**:
+```javascript
+// In shell's console
+localStorage.getItem('pv_current_scenario')
+// Should return current scenario: "P50", "P75", or "P90"
 ```
+
+3. **postMessage Test**:
+```javascript
+// In any module's console
+window.addEventListener('message', e => console.log('Received:', e.data));
+// Change scenario and watch for SCENARIO_CHANGED messages
+```
+
+### European Number Formatting Test
+
+1. **Production Table**:
+   - Open Production module
+   - Check monthly production table
+   - Values should use comma as decimal (e.g., "142,27" not "142.27")
+   - Thousands should use space (e.g., "1 234,56")
+
+2. **Statistics Cards**:
+   - All values should use EU formatting
+   - Example: "6,75 GWh" not "6.75 GWh"
 
 ## Docker Container Testing
 
@@ -149,7 +220,7 @@ wrk -t2 -c50 -d30s http://localhost:8001/health
 
 ```bash
 # Check container health
-docker inspect pv-data-analysis | grep -A5 Health
+docker inspect pv-frontend-production | grep -A5 Health
 
 # Check all container statuses
 docker-compose ps
@@ -164,122 +235,16 @@ docker-compose ps
 docker stats --no-stream
 
 # Check specific container
-docker stats pv-data-analysis --no-stream
+docker stats pv-frontend-production --no-stream
 ```
 
 ### Network Tests
 
 ```bash
 # Test inter-container communication
-docker exec pv-frontend curl http://data-analysis:8001/health
-docker exec pv-frontend curl http://pv-calculation:8002/health
-docker exec pv-frontend curl http://economics:8003/health
-```
-
-## Kubernetes Testing
-
-### Pod Health Tests
-
-```bash
-# Check pod status
-kubectl get pods -n pv-optimizer
-
-# Check pod health
-kubectl get pods -n pv-optimizer \
-  -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready
-
-# Describe pod
-kubectl describe pod <pod-name> -n pv-optimizer
-```
-
-### Service Tests
-
-```bash
-# List services
-kubectl get svc -n pv-optimizer
-
-# Test service from another pod
-kubectl run -it --rm debug --image=curlimages/curl --restart=Never -n pv-optimizer -- \
-  curl http://data-analysis:8001/health
-
-# Port forward and test locally
-kubectl port-forward svc/data-analysis 8001:8001 -n pv-optimizer
-curl http://localhost:8001/health
-```
-
-### Scaling Tests
-
-```bash
-# Scale up
-kubectl scale deployment/data-analysis --replicas=5 -n pv-optimizer
-
-# Watch scaling
-kubectl get pods -n pv-optimizer -w
-
-# Test load distribution
-for i in {1..10}; do
-  kubectl run test-$i -it --rm --image=curlimages/curl --restart=Never -n pv-optimizer -- \
-    curl http://data-analysis:8001/health
-done
-```
-
-## Frontend Testing
-
-### Browser Tests
-
-1. **Manual UI Test**:
-   - Open http://localhost
-   - Check all tabs load
-   - Upload sample file
-   - Run analysis
-   - Check charts render
-   - Export results
-
-2. **Console Tests**:
-```javascript
-// Open browser console on http://localhost
-
-// Test API client
-await apiClient.checkHealth()
-
-// Test file upload (need file input)
-const file = document.getElementById('loadFile').files[0];
-await apiClient.uploadCSV(file)
-
-// Test statistics
-await apiClient.getStatistics()
-```
-
-### Automated Browser Tests (Selenium example)
-
-```python
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-driver = webdriver.Chrome()
-driver.get("http://localhost")
-
-# Wait for page load
-wait = WebDriverWait(driver, 10)
-element = wait.until(EC.presence_of_element_located((By.ID, "loadFile")))
-
-# Test file upload
-file_input = driver.find_element(By.ID, "loadFile")
-file_input.send_keys("/path/to/test_data.csv")
-
-# Wait for upload
-wait.until(EC.presence_of_element_located((By.CLASS_NAME, "success")))
-
-# Click run analysis
-run_button = driver.find_element(By.XPATH, "//button[contains(text(), 'RUN ANALYSIS')]")
-run_button.click()
-
-# Wait for results
-wait.until(EC.presence_of_element_located((By.ID, "variantResults")))
-
-driver.quit()
+docker exec pv-frontend-shell curl http://data-analysis:8001/health
+docker exec pv-frontend-shell curl http://pv-calculation:8002/health
+docker exec pv-frontend-shell curl http://economics:8003/health
 ```
 
 ## Performance Benchmarks
@@ -294,15 +259,18 @@ driver.quit()
 | /generate-profile | < 500ms | 2s |
 | /analyze (full) | < 10s | 30s |
 | /economics/analyze | < 200ms | 1s |
+| Scenario change (frontend) | < 100ms | 500ms |
 
 ### Memory Usage
 
 | Service | Expected RAM | Max RAM |
 |---------|--------------|---------|
-| Frontend | 50MB | 128MB |
+| Frontend modules | 50MB | 128MB |
 | Data Analysis | 200MB | 512MB |
 | PV Calculation | 150MB | 512MB |
 | Economics | 100MB | 512MB |
+| Energy Prices | 100MB | 256MB |
+| Reports | 150MB | 512MB |
 
 ## Error Testing
 
@@ -312,63 +280,28 @@ driver.quit()
 # Test with invalid file
 curl -X POST http://localhost:8001/upload/csv \
   -F "file=@invalid_file.txt"
-
 # Expected: 400 Bad Request with error message
 
 # Test with missing data
 curl -X POST http://localhost:8002/simulate \
   -H "Content-Type: application/json" \
   -d '{}'
-
 # Expected: 422 Validation Error
 
 # Test non-existent endpoint
 curl http://localhost:8001/nonexistent
-
 # Expected: 404 Not Found
 ```
 
-## Continuous Integration Tests
+### Frontend Error Scenarios
 
-### GitHub Actions Example
+1. **No Data Loaded**:
+   - Open Production without uploading data
+   - Should show "Brak Danych Produkcji PV" message
 
-```yaml
-name: Test PV Optimizer
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v2
-
-    - name: Build images
-      run: docker-compose build
-
-    - name: Start services
-      run: docker-compose up -d
-
-    - name: Wait for services
-      run: sleep 30
-
-    - name: Test health endpoints
-      run: |
-        curl -f http://localhost:8001/health
-        curl -f http://localhost:8002/health
-        curl -f http://localhost:8003/health
-
-    - name: Test frontend
-      run: curl -f http://localhost/
-
-    - name: Check container logs
-      if: failure()
-      run: docker-compose logs
-
-    - name: Cleanup
-      run: docker-compose down
-```
+2. **Module Offline**:
+   - Stop backend service
+   - Verify error handling in console
 
 ## Test Data
 
@@ -399,7 +332,7 @@ weekly_pattern = 100 * np.sin(2 * np.pi * (hours % (24*7)) / (24*7))
 noise = np.random.normal(0, 50, len(dates))
 
 power = daily_pattern + weekly_pattern + noise
-power = np.maximum(power, 0)  # No negative values
+power = np.maximum(power, 0)
 
 df = pd.DataFrame({'Timestamp': dates, 'kW': power})
 df.to_csv('test_consumption_data.csv', index=False)
@@ -411,32 +344,37 @@ df.to_csv('test_consumption_data.csv', index=False)
 
 1. **Service not responding**:
 ```bash
-# Check if container is running
 docker ps | grep pv-
-
-# Check logs
 docker logs <container-name>
-
-# Restart service
 docker-compose restart <service-name>
 ```
 
-2. **Timeout errors**:
+2. **Scenario not syncing**:
 ```bash
-# Increase timeout
-curl --max-time 60 http://localhost:8001/health
+# Check localStorage
+# In browser console:
+localStorage.getItem('pv_current_scenario')
 
-# Check resource usage
-docker stats
+# Check shell logs
+docker logs pv-frontend-shell
 ```
 
-3. **Connection refused**:
+3. **Cache issues**:
+```bash
+# Rebuild with no cache
+docker-compose build frontend-production --no-cache
+docker-compose up -d frontend-production
+
+# Or update timestamp in index.html
+```
+
+4. **Connection refused**:
 ```bash
 # Check if port is bound
-netstat -tulpn | grep 8001
+netstat -an | findstr 8001
 
-# Check firewall
-sudo ufw status
+# Check container network
+docker network inspect pv-optimizer-network
 ```
 
 ## Test Reports
@@ -445,8 +383,8 @@ sudo ufw status
 
 ```bash
 #!/bin/bash
-echo "PV Optimizer Test Report"
-echo "========================"
+echo "PV Optimizer v1.8 Test Report"
+echo "============================="
 echo ""
 
 echo "Service Health:"
@@ -466,21 +404,36 @@ echo ""
 echo "Test Date: $(date)"
 ```
 
-## Monitoring Tests
+## Checklist: v1.8 Features
 
-### Prometheus Queries (if configured)
+### P50/P75/P90 Scenarios
+- [ ] Floating selector visible in Production module
+- [ ] P50 shows 100% factor
+- [ ] P75 shows 97% factor
+- [ ] P90 shows 94% factor
+- [ ] Button colors correct (green/blue/red)
+- [ ] Statistics recalculate on change
+- [ ] Scenario persists in localStorage
+- [ ] Economics module receives scenario changes
 
-```promql
-# Request rate
-rate(http_requests_total[5m])
+### European Number Formatting
+- [ ] Monthly production table uses comma decimal
+- [ ] Statistics cards use comma decimal
+- [ ] Thousands separator is space
+- [ ] All modules consistent
 
-# Error rate
-rate(http_requests_total{status=~"5.."}[5m])
+### ESG Module
+- [ ] CO2 reduction displays
+- [ ] Tree equivalent calculates
+- [ ] Water savings shows
+- [ ] Values update with scenario
 
-# Response time
-histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
-```
+### Inter-Module Communication
+- [ ] Shell receives PRODUCTION_SCENARIO_CHANGED
+- [ ] Shell broadcasts SCENARIO_CHANGED
+- [ ] Economics handles scenario updates
+- [ ] Settings sync works
 
 ---
 
-**Testing is complete when all endpoints respond correctly and performance meets benchmarks.**
+**v1.8** - PV Optimizer Testing Guide

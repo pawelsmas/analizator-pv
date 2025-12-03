@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projekty - PV Optimizer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header with actions -->
+        <div class="header">
+            <h1>Projekty</h1>
+            <div class="header-actions">
+                <button class="btn btn-primary" onclick="openNewProjectModal()">
+                    + Nowy Projekt
+                </button>
+                <button class="btn btn-secondary" onclick="saveCurrentProject()">
+                    Zapisz Bieżący
+                </button>
+            </div>
+        </div>
+
+        <!-- Search and filters -->
+        <div class="filters-bar">
+            <input type="text" id="searchInput" placeholder="Szukaj projektu, klienta lub NIP..."
+                   onkeyup="debounceSearch()">
+            <select id="statusFilter" onchange="loadProjects()">
+                <option value="">Wszystkie statusy</option>
+                <option value="active">Aktywne</option>
+                <option value="archived">Zarchiwizowane</option>
+            </select>
+            <button class="btn btn-icon" onclick="loadProjects()" title="Odśwież">
+                ↻
+            </button>
+        </div>
+
+        <!-- Projects list -->
+        <div class="projects-list" id="projectsList">
+            <div class="loading">Ładowanie projektów...</div>
+        </div>
+
+        <!-- Empty state -->
+        <div class="empty-state" id="emptyState" style="display: none;">
+            <div class="empty-icon">📁</div>
+            <h3>Brak projektów</h3>
+            <p>Utwórz nowy projekt lub zapisz bieżącą analizę</p>
+            <button class="btn btn-primary" onclick="openNewProjectModal()">
+                + Utwórz pierwszy projekt
+            </button>
+        </div>
+
+        <!-- Current project indicator -->
+        <div class="current-project-bar" id="currentProjectBar" style="display: none;">
+            <span class="current-label">Aktualny projekt:</span>
+            <span class="current-name" id="currentProjectName">-</span>
+            <span class="current-client" id="currentProjectClient">-</span>
+            <button class="btn btn-sm" onclick="saveCurrentProject()">Zapisz zmiany</button>
+        </div>
+    </div>
+
+    <!-- New Project Modal -->
+    <div class="modal" id="newProjectModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Nowy Projekt</h2>
+                <button class="modal-close" onclick="closeModal('newProjectModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="projectName">Nazwa projektu *</label>
+                    <input type="text" id="projectName" placeholder="np. Instalacja PV Firma ABC">
+                </div>
+                <div class="form-group">
+                    <label for="clientName">Nazwa klienta *</label>
+                    <input type="text" id="clientName" placeholder="np. Firma ABC Sp. z o.o.">
+                </div>
+                <div class="form-group">
+                    <label for="clientNip">NIP klienta</label>
+                    <input type="text" id="clientNip" placeholder="np. 1234567890">
+                </div>
+                <div class="form-group">
+                    <label for="projectDescription">Opis</label>
+                    <textarea id="projectDescription" rows="3"
+                              placeholder="Opcjonalny opis projektu..."></textarea>
+                </div>
+                <div class="form-check">
+                    <input type="checkbox" id="saveCurrentData" checked>
+                    <label for="saveCurrentData">Zapisz bieżące dane analizy</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newProjectModal')">Anuluj</button>
+                <button class="btn btn-primary" onclick="createProject()">Utwórz projekt</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project Details Modal -->
+    <div class="modal" id="projectDetailsModal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="detailsProjectName">Szczegóły projektu</h2>
+                <button class="modal-close" onclick="closeModal('projectDetailsModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="project-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Klient:</span>
+                        <span class="detail-value" id="detailsClientName">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">NIP:</span>
+                        <span class="detail-value" id="detailsClientNip">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Status:</span>
+                        <span class="detail-value" id="detailsStatus">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Utworzono:</span>
+                        <span class="detail-value" id="detailsCreated">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Ostatnia zmiana:</span>
+                        <span class="detail-value" id="detailsUpdated">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Opis:</span>
+                        <span class="detail-value" id="detailsDescription">-</span>
+                    </div>
+                </div>
+
+                <h3>Zapisane dane</h3>
+                <div class="data-types-list" id="dataTypesList">
+                    <div class="loading">Ładowanie...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-danger" onclick="deleteCurrentProject()">Usuń</button>
+                <button class="btn btn-secondary" onclick="archiveCurrentProject()">Archiwizuj</button>
+                <button class="btn btn-secondary" onclick="exportCurrentProject()">Eksportuj JSON</button>
+                <button class="btn btn-primary" onclick="loadCurrentProject()">Wczytaj do analizy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="projects.js?t=1733300000"></script>
+</body>
+</html>

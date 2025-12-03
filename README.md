@@ -1,300 +1,239 @@
 # PV Optimizer Pro - Microservices Edition
 
-Advanced PV (Photovoltaic) system optimization tool built with microservices architecture.
+**Wersja 1.8** - Zaawansowane narzedzie do optymalizacji systemow fotowoltaicznych z architektura mikroserwisow.
 
-## 🏗️ Architecture
+## 🏗️ Architektura
 
-The application is divided into the following microservices:
+Aplikacja zbudowana jest w architekturze micro-frontend z modularnym backendem:
 
 ### Backend Services (Python/FastAPI)
-- **data-analysis** (Port 8001): Consumption data processing and analysis
-- **pv-calculation** (Port 8002): PV generation simulations and calculations
-- **economics** (Port 8003): Economic analysis and financial modeling
+| Serwis | Port | Opis |
+|--------|------|------|
+| **data-analysis** | 8001 | Przetwarzanie i analiza danych zuzycia |
+| **pv-calculation** | 8002 | Symulacje produkcji PV (pvlib) |
+| **economics** | 8003 | Analizy ekonomiczne i modelowanie finansowe |
+| **advanced-analytics** | 8004 | Zaawansowana analityka |
+| **typical-days** | 8005 | Analiza dni typowych |
+| **energy-prices** | 8010 | Pobieranie cen energii (TGE/ENTSO-E) |
+| **reports** | 8011 | Generowanie raportow PDF |
 
-### Frontend Service
-- **frontend** (Port 80): Web UI built with HTML/JS and Nginx
+### Frontend Modules (HTML/JS/Nginx)
+| Modul | Port | Opis |
+|-------|------|------|
+| **Shell** | 9000 | Glowna powloka aplikacji, routing |
+| **Admin** | 9001 | Panel administracyjny |
+| **Config** | 9002 | Konfiguracja instalacji PV |
+| **Consumption** | 9003 | Analiza danych zuzycia energii |
+| **Production** | 9004 | Produkcja PV z scenariuszami P50/P75/P90 |
+| **Comparison** | 9005 | Porownanie wariantow |
+| **Economics** | 9006 | Analiza ekonomiczna EaaS/Wlasnosc |
+| **Settings** | 9007 | Ustawienia systemowe |
+| **ESG** | 9008 | Wskazniki srodowiskowe (CO2, drzewa) |
+| **Energy Prices** | 9009 | Ceny energii elektrycznej |
+| **Reports** | 9010 | Generowanie raportow PDF |
 
-## 📋 Prerequisites
+## 🌟 Glowne Funkcjonalnosci
 
-### For Docker Deployment
+### Analiza Zuzycia
+- Import danych z plikow CSV/Excel
+- Automatyczne wykrywanie formatu danych
+- Analiza profilu godzinowego/dobowego/miesiecznego
+- Identyfikacja szczytow zuzycia
+
+### Symulacja Produkcji PV
+- Integracja z PVGIS dla danych naslonienia
+- Scenariusze produkcji P50/P75/P90
+- Zarzadzanie DC/AC Ratio
+- Obliczanie autokonsumpcji i samowystarczalnosci
+- Eksport/Import z sieci
+
+### Analiza Ekonomiczna
+- Model EaaS (Energy as a Service)
+- Model wlasnosci instalacji
+- Analiza NPV, IRR, LCOE
+- Prognozowanie oszczednosci 25-letnich
+- Integracja z cenami rynkowymi TGE
+
+### Wskazniki ESG
+- Redukcja emisji CO2
+- Ekwiwalent posadzonych drzew
+- Oszczednosci wody
+- Raportowanie srodowiskowe
+
+### Raporty
+- Generowanie PDF z pelna analiza
+- Wykresy i wizualizacje
+- Eksport danych do Excel
+
+## 📋 Wymagania
+
+### Docker Deployment
 - Docker 20.10+
 - Docker Compose 2.0+
+- 8 GB RAM (zalecane)
 
-### For Kubernetes Deployment
-- Kubernetes cluster (minikube, k3s, or cloud provider)
-- kubectl configured
-- Docker for building images
+## 🚀 Szybki Start
 
-## 🚀 Quick Start
+### 1. Uruchomienie aplikacji
 
-### Option 1: Docker Compose (Recommended for Development)
+```bash
+# Zbuduj i uruchom wszystkie serwisy
+docker-compose up -d --build
 
-1. **Build images:**
-   ```bash
-   # Linux/Mac
-   ./deployment/build.sh
+# Lub tylko uruchom (jesli juz zbudowane)
+docker-compose up -d
+```
 
-   # Windows
-   deployment\build.bat
-   ```
+### 2. Dostep do aplikacji
 
-2. **Deploy with Docker Compose:**
-   ```bash
-   # Linux/Mac
-   ./deployment/deploy-docker.sh
+- **Glowna aplikacja**: http://localhost:9000
+- **API Documentation**:
+  - Data Analysis: http://localhost:8001/docs
+  - PV Calculation: http://localhost:8002/docs
+  - Economics: http://localhost:8003/docs
+  - Energy Prices: http://localhost:8010/docs
+  - Reports: http://localhost:8011/docs
 
-   # Windows
-   docker-compose up -d
-   ```
-
-3. **Access the application:**
-   - Frontend: http://localhost
-   - Data Analysis API: http://localhost:8001/docs
-   - PV Calculation API: http://localhost:8002/docs
-   - Economics API: http://localhost:8003/docs
-
-### Option 2: Kubernetes (Production)
-
-1. **Build images:**
-   ```bash
-   ./deployment/build.sh
-   ```
-
-2. **Deploy to Kubernetes:**
-   ```bash
-   ./deployment/deploy-k8s.sh
-   ```
-
-3. **Add to /etc/hosts (Linux/Mac) or C:\Windows\System32\drivers\etc\hosts (Windows):**
-   ```
-   127.0.0.1 pv-optimizer.local
-   ```
-
-4. **Access the application:**
-   - Frontend: http://pv-optimizer.local
-
-## 📁 Project Structure
+## 📁 Struktura Projektu
 
 ```
 ANALIZATOR PV/
 ├── services/
-│   ├── data-analysis/       # Data processing service
-│   │   ├── app.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   ├── pv-calculation/      # PV calculation service
-│   │   ├── app.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   ├── economics/           # Economics service
-│   │   ├── app.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   └── frontend/            # Frontend service
-│       ├── index.html
-│       ├── styles.css
-│       ├── api.js
-│       ├── app.js
-│       ├── nginx.conf
-│       └── Dockerfile
-├── k8s/                     # Kubernetes manifests
-│   ├── namespace.yaml
-│   ├── data-analysis-deployment.yaml
-│   ├── pv-calculation-deployment.yaml
-│   ├── economics-deployment.yaml
-│   ├── frontend-deployment.yaml
-│   ├── ingress.yaml
-│   └── kustomization.yaml
-├── deployment/              # Deployment scripts
-│   ├── build.sh
-│   ├── build.bat
-│   ├── deploy-docker.sh
-│   └── deploy-k8s.sh
-├── docker-compose.yml       # Docker Compose configuration
+│   ├── data-analysis/          # Analiza danych zuzycia
+│   ├── pv-calculation/         # Obliczenia PV (pvlib)
+│   ├── economics/              # Analizy ekonomiczne
+│   ├── advanced-analytics/     # Zaawansowana analityka
+│   ├── typical-days/           # Dni typowe
+│   ├── energy-prices/          # Ceny energii
+│   ├── reports/                # Generowanie PDF
+│   ├── frontend-shell/         # Glowna powloka
+│   ├── frontend-admin/         # Panel admina
+│   ├── frontend-config/        # Konfiguracja PV
+│   ├── frontend-consumption/   # Zuzycie energii
+│   ├── frontend-production/    # Produkcja PV
+│   ├── frontend-comparison/    # Porownanie wariantow
+│   ├── frontend-economics/     # Ekonomia
+│   ├── frontend-settings/      # Ustawienia
+│   ├── frontend-esg/           # Wskazniki ESG
+│   ├── frontend-energy-prices/ # Ceny energii UI
+│   └── frontend-reports/       # Raporty UI
+├── docker-compose.yml
 └── README.md
 ```
 
-## 🔧 Development
+## 🐳 Komendy Docker
 
-### Running Individual Services Locally
-
-#### Data Analysis Service
+### Logi serwisow
 ```bash
-cd services/data-analysis
-pip install -r requirements.txt
-python app.py
-```
-
-#### PV Calculation Service
-```bash
-cd services/pv-calculation
-pip install -r requirements.txt
-python app.py
-```
-
-#### Economics Service
-```bash
-cd services/economics
-pip install -r requirements.txt
-python app.py
-```
-
-#### Frontend Service
-```bash
-cd services/frontend
-# Use any static file server, e.g.:
-python -m http.server 8080
-```
-
-## 🐳 Docker Commands
-
-### View logs
-```bash
-# All services
+# Wszystkie serwisy
 docker-compose logs -f
 
-# Specific service
-docker-compose logs -f data-analysis
+# Konkretny serwis
+docker-compose logs -f frontend-production
+docker-compose logs -f pv-calculation
 ```
 
-### Restart services
+### Restart serwisow
 ```bash
+# Wszystkie
 docker-compose restart
+
+# Konkretny
+docker-compose restart frontend-production
 ```
 
-### Stop services
+### Przebudowa po zmianach
+```bash
+# Pojedynczy serwis
+docker-compose build frontend-production
+docker-compose up -d frontend-production
+
+# Wszystkie
+docker-compose up -d --build
+```
+
+### Zatrzymanie
 ```bash
 docker-compose down
 ```
 
-### Rebuild specific service
-```bash
-docker-compose build data-analysis
-docker-compose up -d data-analysis
-```
-
-## ☸️ Kubernetes Commands
-
-### Check deployment status
-```bash
-kubectl get all -n pv-optimizer
-```
-
-### View logs
-```bash
-# Specific pod
-kubectl logs -f <pod-name> -n pv-optimizer
-
-# Deployment
-kubectl logs -f deployment/data-analysis -n pv-optimizer
-```
-
-### Scale deployment
-```bash
-kubectl scale deployment/data-analysis --replicas=3 -n pv-optimizer
-```
-
-### Delete deployment
-```bash
-kubectl delete -f k8s/ -n pv-optimizer
-```
-
-### Port forward (for testing)
-```bash
-kubectl port-forward svc/frontend 8080:80 -n pv-optimizer
-```
-
-## 📊 API Documentation
-
-Each backend service provides interactive API documentation via FastAPI:
-
-- Data Analysis: http://localhost:8001/docs
-- PV Calculation: http://localhost:8002/docs
-- Economics: http://localhost:8003/docs
-
 ## 🔍 Health Checks
 
-All services provide health check endpoints:
+Wszystkie serwisy posiadaja endpointy health check:
 
 ```bash
 curl http://localhost:8001/health  # Data Analysis
-curl http://localhost:8002/health  # PV Calculation
+curl http://localhost:8002/health  # PV Calculation (+ pvlib version)
 curl http://localhost:8003/health  # Economics
+curl http://localhost:8010/health  # Energy Prices
+curl http://localhost:8011/health  # Reports
 ```
 
-## 🧪 Testing
+## 📊 Komunikacja Miedzymodulowa
 
-### Test Data Analysis Service
+Moduly frontendowe komunikuja sie przez Shell za pomoca postMessage API:
+
+| Event | Opis |
+|-------|------|
+| `DATA_UPLOADED` | Dane zuzycia zaladowane |
+| `ANALYSIS_COMPLETE` | Analiza PV zakonczona |
+| `MASTER_VARIANT_SELECTED` | Wybrany wariant glowny |
+| `SCENARIO_CHANGED` | Zmiana scenariusza P50/P75/P90 |
+| `SETTINGS_UPDATED` | Ustawienia zaktualizowane |
+| `ECONOMICS_CALCULATED` | Obliczenia ekonomiczne gotowe |
+
+## 🛠️ Rozwiazywanie Problemow
+
+### Serwisy nie startuja
 ```bash
-curl -X POST http://localhost:8001/upload/csv \
-  -F "file=@sample_data.csv"
-```
-
-### Test PV Calculation Service
-```bash
-curl -X POST http://localhost:8002/generate-profile \
-  -H "Content-Type: application/json" \
-  -d '{"pv_type": "ground_s", "yield_target": 1050, "dc_ac_ratio": 1.2}'
-```
-
-### Test Economics Service
-```bash
-curl http://localhost:8003/default-parameters
-```
-
-## 🔐 Security Considerations
-
-- All services run as non-root users in containers
-- CORS is configured for local development (adjust for production)
-- No sensitive data is stored in containers (stateless design)
-- Health checks ensure service availability
-- Resource limits are set in Kubernetes deployments
-
-## 🌟 Features
-
-- **Modular Architecture**: Each service can be developed, deployed, and scaled independently
-- **Containerized**: Full Docker support for consistent deployments
-- **Kubernetes Ready**: Production-ready Kubernetes manifests
-- **Auto-scaling**: Horizontal Pod Autoscaling support in Kubernetes
-- **Health Monitoring**: Built-in health checks and readiness probes
-- **API Documentation**: Auto-generated API docs with FastAPI
-- **Responsive UI**: Modern web interface with real-time charts
-
-## 🛠️ Troubleshooting
-
-### Services not starting
-```bash
-# Check logs
 docker-compose logs
-
-# Check service health
 docker-compose ps
 ```
 
-### Port conflicts
-If ports 80, 8001, 8002, or 8003 are already in use, modify the port mappings in `docker-compose.yml`.
-
-### Kubernetes pods not running
+### Cache przegladarki
+Po aktualizacji kodu frontend, wyczysc cache lub:
 ```bash
-# Describe pod to see events
-kubectl describe pod <pod-name> -n pv-optimizer
-
-# Check events
-kubectl get events -n pv-optimizer --sort-by='.lastTimestamp'
+docker-compose build frontend-production --no-cache
+docker-compose up -d frontend-production
 ```
 
-## 📝 License
+### Konflikty portow
+Zmodyfikuj mapowania portow w `docker-compose.yml` jesli porty 8001-8011 lub 9000-9010 sa zajete.
 
-This project is proprietary software.
+## 📝 Historia Wersji
 
-## 👥 Authors
+### v1.8 (Aktualna)
+- Selektor scenariuszy P50/P75/P90 w module Produkcja PV
+- Modul ESG ze wskaznikami srodowiskowymi
+- Dynamiczne obliczenia autokonsumpcji z danych godzinowych
+- Synchronizacja scenariuszy miedzy modulami
+- Naprawy formatowania liczb (format europejski)
+
+### v1.7
+- Zarzadzanie DC/AC Ratio
+- Naprawy modulu Ekonomia
+
+### v1.6
+- Integracja PVGIS dla scenariuszy P50/P75/P90
+
+### v1.5
+- Globalny selektor scenariuszy
+
+### v1.4
+- Modul Raportow PDF
+- Integracja Economics z Reports
+
+## 🔐 Bezpieczenstwo
+
+- Serwisy uruchamiane jako non-root w kontenerach
+- CORS skonfigurowany dla srodowiska deweloperskiego
+- Stateless design - brak przechowywania danych wrazliwych
+- Health checks dla monitorowania dostepnosci
+
+## 👥 Autorzy
 
 PV Optimizer Development Team
 
-## 🔄 Version
-
-**v2.0** - Microservices Edition
-
 ---
 
-For more information, visit the project documentation or contact the development team.
+**v1.8** - PV Optimizer Pro Microservices Edition

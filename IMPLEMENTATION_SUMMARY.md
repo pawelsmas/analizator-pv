@@ -1,327 +1,309 @@
-# PV Optimizer v2.1 - Implementation Summary
+# PV Optimizer v1.8 - Implementation Summary
 
 ## Overview
-Successfully implemented all advanced features from `pv_optimizer_v21_advanced_kpi.html` with significant accuracy improvements and microservices architecture.
 
-## New Services Created
+Professional PV analysis system with micro-frontend architecture, advanced physics-based modeling, and comprehensive economic analysis.
 
-### 1. Advanced Analytics Service (Port 8004)
-**Purpose**: Advanced KPI analysis and load profiling
+## Version 1.8 New Features
 
-**Endpoints**:
-- `POST /analyze-kpi` - Comprehensive advanced KPI analysis
+### 1. Production Scenario Selector (P50/P75/P90)
 
-**Features**:
-- **Load Duration Curve**: Accurate sorting and analysis of demand distribution
-  - Percentile calculations (P01, P05, P10, P50, P90, P95, P99)
-  - Peak demand and base load identification
-  - Load factor analysis
-
-- **Hourly Statistics**: Hour-by-hour consumption/production patterns
-  - Average, max values for each hour
-  - Self-consumption rate by hour
-
-- **Curtailment Analysis**: Exact measurement of unused PV production
-  - Total curtailed energy
-  - Monthly curtailment breakdown
-  - Hourly curtailment patterns
-  - Percentage of total production
-
-- **Energy Balance**: Detailed grid interaction tracking
-  - Total consumption, production, self-consumed
-  - Grid import/export
-  - Self-sufficiency and self-consumption rates
-  - Monthly balance breakdown
-
-- **Weekend vs Workday Analysis**:
-  - Separate patterns for weekdays and weekends
-  - Consumption/production differences
-  - Excess production analysis
-
-- **AI-Generated Insights**: Actionable recommendations based on data
-
-### 2. Typical Days Service (Port 8005)
-**Purpose**: Daily pattern analysis and seasonal variations
-
-**Endpoints**:
-- `POST /analyze-typical-days` - Comprehensive daily pattern analysis
+**Module**: `frontend-production`
 
 **Features**:
-- **Best/Worst Day Identification**: Statistical analysis to find extreme cases
-  - Uses Euclidean distance in normalized consumption/production space
-  - Identifies optimization opportunities
+- Floating scenario selector in top-right corner
+- Three probability scenarios:
+  - **P50** (100%) - Median expected production
+  - **P75** (97%) - 75% probability of achieving
+  - **P90** (94%) - Conservative estimate
+- Real-time recalculation of all statistics
+- Synchronization with Economics module via Shell
 
-- **Typical Day Detection**:
-  - Typical workday profile
-  - Typical weekend profile
-  - Based on statistical distance from mean patterns
+**Key Code** (production.js):
+```javascript
+// Scenario factors
+const SCENARIO_FACTORS = {
+  'P50': 1.00,
+  'P75': 0.97,
+  'P90': 0.94
+};
 
-- **Seasonal Patterns**:
-  - Winter, Spring, Summer, Fall analysis
-  - Seasonal consumption/production averages
-  - Peak production/consumption hours by season
-  - Typical day for each season
+// Dynamic calculation from hourly data
+for (let i = 0; i < production.length; i++) {
+  const prod = production[i];
+  const cons = consumption[i];
 
-- **Workday/Weekend Comparison**:
-  - 24-hour average profiles
-  - Peak hour identification
-  - Pattern differences quantified
+  if (prod >= cons) {
+    selfConsumedKwh += cons;
+    gridExportKwh += (prod - cons);
+  } else {
+    selfConsumedKwh += prod;
+    gridImportKwh += (cons - prod);
+  }
+}
+```
 
-- **Insights Generation**:
-  - Improvement potential identification
-  - Seasonal variation analysis
-  - Load shifting recommendations
-  - Peak hour alignment suggestions
+### 2. ESG Module
 
-## Improved Existing Services
-
-### 3. PV Calculation Service (Port 8002) - MAJOR ACCURACY IMPROVEMENTS
-
-**Old Implementation** (Simplified):
-- Basic solar declination formula
-- Simple 1/sin(elevation) air mass
-- Exponential irradiance approximation: `900 * exp(-0.13 * air_mass)`
-- Fixed 85% system efficiency
-- No temperature effects
-- No angle of incidence losses
-
-**New Implementation** (Industry Standard):
-
-**Solar Position**:
-- ✅ Equation of Time correction for Earth's elliptical orbit
-- ✅ Accurate solar declination (Cooper's equation with 365.25 day year)
-- ✅ Local solar time calculation with longitude correction
-- ✅ Precise azimuth and elevation angles
-
-**Irradiance Modeling**:
-- ✅ Kasten-Young air mass model (NREL standard)
-- ✅ Ineichen clear sky model for irradiance
-  - Direct Normal Irradiance (DNI)
-  - Diffuse Horizontal Irradiance (DHI)
-  - Global Horizontal Irradiance (GHI)
-- ✅ Linke turbidity factor for Poland (3.5)
-- ✅ Altitude correction
-
-**Loss Factors**:
-- ✅ Physical Incidence Angle Modifier (IAM)
-  - Fresnel equations for glass reflection
-  - Snell's law refraction
-  - Accounts for reflection losses at non-normal incidence
-
-- ✅ Temperature Derating:
-  - Cell temperature estimation using NOCT
-  - Monthly temperature profiles for Poland
-  - -0.4%/°C temperature coefficient
-
-- ✅ System Losses:
-  - Soiling: 2%
-  - Mismatch: 2%
-  - Wiring: 2%
-  - Inverter efficiency: 98%
-
-**Result**: Expected 15-20% improvement in prediction accuracy compared to simplified model.
-
-### 4. Economics Service (Port 8003) - Enhanced Sensitivity Analysis
-
-**New Endpoint**:
-- `POST /comprehensive-sensitivity` - Multi-parameter sensitivity analysis
+**Module**: `frontend-esg` (Port 9008)
 
 **Features**:
-- **Multi-Parameter Analysis**:
-  - Energy price
-  - Investment cost
-  - Feed-in tariff
-  - Discount rate
-  - Degradation rate
-  - OPEX per kWp
+- CO2 emission reduction calculation
+- Tree equivalent calculation
+- Water savings estimation
+- Environmental impact reporting
 
-- **Tornado Chart Data**:
-  - Impact quantification for each parameter
-  - High/low impact values
-  - Sensitivity index calculation
+### 3. European Number Formatting
 
-- **Most Sensitive Parameter Identification**
-
-- **Project Robustness Check**:
-  - Tests if project remains profitable across all variations
-  - Identifies risky parameters
-
-- **Insights Generation**:
-  - Sensitivity rankings
-  - Risk warnings
-  - IRR variability analysis
-
-## Architecture Updates
-
-### Docker Compose
-**services/docker-compose.yml**:
-```yaml
-services:
-  data-analysis:     # Port 8001
-  pv-calculation:    # Port 8002
-  economics:         # Port 8003
-  advanced-analytics: # Port 8004 (NEW)
-  typical-days:      # Port 8005 (NEW)
-  frontend:          # Port 80
+**Function**: `formatNumberEU()`
+```javascript
+function formatNumberEU(value, decimals = 2) {
+  return value.toLocaleString('pl-PL', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+}
+// Result: "1 234,56" instead of "1,234.56"
 ```
 
-All services:
-- Have health checks using curl
-- Auto-restart policy
-- Connected to pv-network bridge
-- Properly configured resource limits
+### 4. Inter-Module Scenario Synchronization
 
-### Kubernetes
-**k8s/** directory:
-- `advanced-analytics-deployment.yaml` (NEW)
-- `typical-days-deployment.yaml` (NEW)
-- Updated `kustomization.yaml` with new services
-
-All deployments:
-- 2 replicas for high availability
-- Liveness and readiness probes
-- Resource requests and limits
-- ClusterIP services
-
-## Technical Improvements Summary
-
-### Accuracy Enhancements
-1. **Solar Physics**: From simplified to NREL-standard models
-2. **Atmospheric Effects**: Proper turbidity and air mass modeling
-3. **Temperature Effects**: Cell temperature estimation and derating
-4. **Optical Losses**: Fresnel reflection and angle of incidence
-5. **System Losses**: Comprehensive loss factor modeling
-
-### Analysis Capabilities
-1. **Load Profiling**: Duration curves and percentile analysis
-2. **Temporal Patterns**: Hourly, daily, seasonal analysis
-3. **Energy Balance**: Detailed import/export tracking
-4. **Economic Risk**: Multi-parameter sensitivity analysis
-5. **AI Insights**: Automated recommendation generation
-
-### Performance
-1. **Microservices**: Each feature is independent service
-2. **Parallel Processing**: NumPy/SciPy for fast calculations
-3. **Scalability**: Kubernetes-ready with replicas
-4. **Health Monitoring**: Comprehensive health checks
-
-## Next Steps
-
-### Frontend Integration (Pending)
-The frontend needs to be updated to add three new tabs:
-
-1. **Advanced KPI Tab**:
-   - Load duration curve visualization
-   - Energy balance charts
-   - Curtailment analysis
-   - Weekend vs workday comparison
-
-2. **Typical Days Tab**:
-   - Best/worst day comparison
-   - Typical workday/weekend profiles
-   - Seasonal pattern charts
-   - Insights display
-
-3. **Sensitivity Analysis Tab**:
-   - Tornado chart
-   - Parameter variation sliders
-   - NPV/IRR sensitivity graphs
-   - Risk assessment display
-
-### Deployment
-
-**Using Docker Compose** (Recommended for local testing):
-```bash
-cd "c:\Users\Pawel Smas\ANALIZATOR PV"
-docker-compose build
-docker-compose up -d
+**Flow**:
+```
+Production → PRODUCTION_SCENARIO_CHANGED → Shell
+Shell → localStorage + sharedData update
+Shell → SCENARIO_CHANGED → All Modules
+Economics → Recalculate with new factor
 ```
 
-Access at: `http://localhost`
+## Architecture (v1.8)
 
-**Using Kubernetes**:
-```bash
-cd "c:\Users\Pawel Smas\ANALIZATOR PV\k8s"
-kubectl apply -k .
+### Frontend Modules (11 containers)
+
+| Module | Port | Key Features |
+|--------|------|--------------|
+| Shell | 9000 | Routing, scenario sync, shared data |
+| Admin | 9001 | User management |
+| Config | 9002 | Data upload, PVGIS integration |
+| Consumption | 9003 | Charts, heatmaps |
+| **Production** | 9004 | **P50/P75/P90 scenarios** |
+| Comparison | 9005 | Variant analysis |
+| Economics | 9006 | EaaS/Ownership models |
+| Settings | 9007 | System parameters |
+| **ESG** | 9008 | **Environmental indicators** |
+| Energy Prices | 9009 | TGE/ENTSO-E data |
+| Reports | 9010 | PDF generation |
+
+### Backend Services (7 containers)
+
+| Service | Port | Technology |
+|---------|------|------------|
+| data-analysis | 8001 | Python/FastAPI, Pandas |
+| pv-calculation | 8002 | Python/FastAPI, pvlib |
+| economics | 8003 | Python/FastAPI, NumPy |
+| advanced-analytics | 8004 | Python/FastAPI |
+| typical-days | 8005 | Python/FastAPI |
+| energy-prices | 8010 | Python/FastAPI |
+| reports | 8011 | Python/FastAPI, ReportLab |
+
+## Key Technical Improvements
+
+### 1. Accurate Statistics Calculation
+
+**Before** (static from variant):
+```javascript
+// Used fixed values from variant
+selfConsumption: variant.autoconsumption,
+gridImport: 0 // Always zero!
 ```
+
+**After** (dynamic from hourly data):
+```javascript
+// Loop through 8760 hourly values
+for (let i = 0; i < production.length; i++) {
+  const prod = production[i];
+  const cons = consumption[i];
+
+  totalProductionFromHourly += prod;
+
+  if (prod >= cons) {
+    selfConsumedKwh += cons;
+    gridExportKwh += (prod - cons);
+  } else {
+    selfConsumedKwh += prod;
+    gridImportKwh += (cons - prod);
+  }
+  totalConsumptionKwh += cons;
+}
+
+// Accurate percentages
+const selfConsumptionPct = (selfConsumedKwh / actualProduction) * 100;
+const selfSufficiencyPct = (selfConsumedKwh / totalConsumptionKwh) * 100;
+```
+
+### 2. Scenario-Aware Hourly Production
+
+**Backend applies scenario factor**:
+```python
+# In pv-calculation service
+hourly_production = base_hourly * scenario_factor
+```
+
+**Frontend uses pre-adjusted values**:
+```javascript
+// production[] already has scenario factor applied
+const prod = production[i];
+```
+
+### 3. Shell Shared Data Management
+
+```javascript
+let sharedData = {
+  analysisResults: null,
+  pvConfig: null,
+  consumptionData: null,
+  hourlyData: null,
+  masterVariant: null,
+  masterVariantKey: null,
+  economics: null,
+  settings: null,
+  currentScenario: 'P50'  // NEW in v1.8
+};
+```
+
+## PV Calculation Accuracy (from v2.1)
+
+### Solar Position
+- Equation of Time correction
+- Cooper's equation for declination
+- Local solar time with longitude correction
+
+### Irradiance Modeling
+- Kasten-Young air mass model (NREL standard)
+- Ineichen clear sky model (DNI, DHI, GHI)
+- Linke turbidity factor for Poland (3.5)
+
+### Loss Factors
+- Incidence Angle Modifier (IAM) - Fresnel equations
+- Temperature derating (-0.4%/C)
+- System losses: soiling (2%), mismatch (2%), wiring (2%)
+- Inverter efficiency: 98%
+
+## Economic Analysis
+
+### EaaS Model (Energy as a Service)
+- 10-year service agreement
+- Monthly fee calculation
+- No upfront investment
+
+### Ownership Model
+- Full investment analysis
+- NPV, IRR, LCOE calculation
+- 25-year cash flow projection
+
+### Sensitivity Analysis
+- Multi-parameter analysis
+- Tornado chart data
+- Risk assessment
+
+## Files Modified in v1.8
+
+### Frontend Production
+- `services/frontend-production/production.js` (v16)
+  - `calculateStatistics()` - dynamic hourly calculation
+  - `generateMonthlyProduction()` - EU number formatting
+  - `setProductionScenario()` - scenario handling
+
+- `services/frontend-production/index.html`
+  - Floating scenario selector
+  - Cache busting timestamp
+
+- `services/frontend-production/styles.css`
+  - Scenario button styles (P50 green, P75 blue, P90 red)
+
+### Shell
+- `services/frontend-shell/shell.js`
+  - `PRODUCTION_SCENARIO_CHANGED` handler
+  - `REQUEST_SCENARIO` handler
+  - `loadScenarioFromShell()` function
+  - Scenario persistence in localStorage
+
+### ESG Module (NEW)
+- `services/frontend-esg/index.html`
+- `services/frontend-esg/esg.js`
+- `services/frontend-esg/styles.css`
+- `services/frontend-esg/Dockerfile`
+- `services/frontend-esg/nginx.conf`
+
+### Docker
+- `docker-compose.yml`
+  - Added frontend-esg service
+  - Updated shell dependencies
 
 ## API Documentation
 
-All services have:
-- OpenAPI/Swagger documentation at `http://localhost:PORT/docs`
-- Health endpoints at `/health`
-- Root endpoint at `/` with service info
+All services provide OpenAPI docs at `http://localhost:PORT/docs`
 
-### Example API Calls
+### Key Endpoints
 
-**Advanced KPI Analysis**:
+**PV Calculation**:
 ```bash
-curl -X POST http://localhost:8004/analyze-kpi \
-  -H "Content-Type: application/json" \
-  -d '{
-    "consumption": [...],
-    "pv_production": [...],
-    "capacity": 10.0,
-    "include_curtailment": true,
-    "include_weekend": true
-  }'
+POST /analyze
+POST /generate-profile
+GET /monthly-production
 ```
 
-**Typical Days Analysis**:
+**Economics**:
 ```bash
-curl -X POST http://localhost:8005/analyze-typical-days \
-  -H "Content-Type: application/json" \
-  -d '{
-    "consumption": [...],
-    "pv_production": [...],
-    "start_date": "2024-01-01"
-  }'
+POST /analyze
+POST /comprehensive-sensitivity
+GET /default-parameters
 ```
 
-**Sensitivity Analysis**:
+**Energy Prices**:
 ```bash
-curl -X POST http://localhost:8003/comprehensive-sensitivity \
-  -H "Content-Type: application/json" \
-  -d '{
-    "base_request": {...},
-    "parameters_to_analyze": ["energy_price", "investment_cost"],
-    "variation_range": 20.0
-  }'
+GET /tge/current
+GET /tge/historical
+GET /entso-e/prices
 ```
 
-## Files Created/Modified
+## Deployment
 
-### New Files
-- `services/advanced-analytics/app.py`
-- `services/advanced-analytics/requirements.txt`
-- `services/advanced-analytics/Dockerfile`
-- `services/typical-days/app.py`
-- `services/typical-days/requirements.txt`
-- `services/typical-days/Dockerfile`
-- `k8s/advanced-analytics-deployment.yaml`
-- `k8s/typical-days-deployment.yaml`
+### Docker Compose
+```bash
+# Build and run
+docker-compose up -d --build
 
-### Modified Files
-- `services/pv-calculation/app.py` (Major improvements)
-- `services/economics/app.py` (Added comprehensive sensitivity)
-- `docker-compose.yml` (Added new services)
-- `k8s/kustomization.yaml` (Added new resources)
+# Rebuild single module
+docker-compose build frontend-production
+docker-compose up -d frontend-production
+```
 
-## Validation
+### Access Points
+- Application: http://localhost:9000
+- API Docs: http://localhost:800X/docs
 
-To validate accuracy improvements:
-1. Compare PV generation predictions with actual data
-2. Expected improvement: 15-20% reduction in RMSE
-3. Temperature effects should show ~10% seasonal variation
-4. AOI losses should be visible during morning/evening hours
+## Version History
+
+| Version | Features |
+|---------|----------|
+| v1.8 | P50/P75/P90 scenarios, ESG module, EU formatting |
+| v1.7 | DC/AC Ratio management, Economics fixes |
+| v1.6 | PVGIS integration for scenarios |
+| v1.5 | Global scenario selector |
+| v1.4 | PDF Reports, Energy Prices |
 
 ## Summary
 
-✅ All v21 features implemented
-✅ Each feature as separate microservice
-✅ Significantly improved calculation accuracy
-✅ Industry-standard models implemented
-✅ Comprehensive documentation
-✅ Production-ready deployment configs
+- 11 frontend micro-services
+- 7 backend micro-services
+- P50/P75/P90 production scenarios
+- Dynamic hourly calculations
+- ESG environmental indicators
+- European number formatting
+- Inter-module synchronization
+- Professional-grade PV analysis
 
-**Result**: A professional-grade PV analysis system with accurate physics-based modeling and advanced analytics capabilities.
+---
+
+**v1.8** - PV Optimizer Implementation Summary

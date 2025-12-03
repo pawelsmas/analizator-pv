@@ -60,6 +60,13 @@ window.addEventListener('message', (event) => {
     case 'DATA_CLEARED':
       clearComparison();
       break;
+    case 'PROJECT_LOADED':
+      // Project was loaded - request shared data to refresh
+      console.log('📂 Comparison: Project loaded, requesting shared data');
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+      }
+      break;
   }
 });
 

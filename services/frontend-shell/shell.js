@@ -11,7 +11,8 @@ const MODULES = {
   settings: 'http://localhost:9007',
   esg: 'http://localhost:9008',
   energyprices: 'http://localhost:9009',
-  reports: 'http://localhost:9010'
+  reports: 'http://localhost:9010',
+  projects: 'http://localhost:9011'
 };
 
 // Backend services
@@ -22,7 +23,8 @@ const BACKEND = {
   advancedAnalytics: 'http://localhost:8004',
   typicalDays: 'http://localhost:8005',
   energyPrices: 'http://localhost:8010',
-  reports: 'http://localhost:8011'
+  reports: 'http://localhost:8011',
+  projectsDb: 'http://localhost:8012'
 };
 
 // Current module
@@ -37,7 +39,9 @@ let sharedData = {
   masterVariant: null,
   masterVariantKey: null,
   settings: null, // System settings from Settings module
-  currentScenario: 'P50' // Current production scenario (P50/P75/P90)
+  economics: null, // Economics calculation results
+  currentScenario: 'P50', // Current production scenario (P50/P75/P90)
+  currentProject: null // Current project info { id, name, client }
 };
 
 // Also save settings to shell's localStorage as central storage
@@ -60,6 +64,116 @@ function loadSettingsFromShell() {
     }
   }
   return null;
+}
+
+// Load current project from localStorage
+function loadCurrentProjectFromShell() {
+  const saved = localStorage.getItem('pv_current_project');
+  if (saved) {
+    try {
+      sharedData.currentProject = JSON.parse(saved);
+      console.log('Current project loaded from shell localStorage:', sharedData.currentProject);
+      return sharedData.currentProject;
+    } catch (e) {
+      console.error('Failed to load current project:', e);
+    }
+  }
+  return null;
+}
+
+// ============== Fetch and save full consumption data ==============
+async function fetchAndSaveFullConsumptionData() {
+  // Only save if we have a current project
+  if (!sharedData.currentProject || !sharedData.currentProject.id) {
+    console.log('fetchAndSaveFullConsumptionData: No current project, skipping');
+    return;
+  }
+
+  try {
+    // Fetch full hourly data from data-analysis service
+    const response = await fetch(`${BACKEND.dataAnalysis}/export-data`);
+    if (!response.ok) {
+      console.error('Failed to fetch full consumption data:', response.status);
+      return;
+    }
+
+    const fullData = await response.json();
+    console.log(`✅ Fetched full consumption data: ${fullData.data_points} points`);
+
+    // Save full data to project (includes timestamps, values, analytical_year)
+    await autoSaveToProject('rawConsumptionData', fullData);
+
+    // Also save metadata
+    if (sharedData.consumptionData) {
+      await autoSaveToProject('consumptionData', {
+        ...sharedData.consumptionData,
+        data_points: fullData.data_points
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching full consumption data:', error);
+  }
+}
+
+// ============== Restore consumption data to data-analysis ==============
+async function restoreConsumptionData(rawData) {
+  if (!rawData || !rawData.timestamps || !rawData.values) {
+    console.log('restoreConsumptionData: No valid data to restore');
+    return false;
+  }
+
+  try {
+    const response = await fetch(`${BACKEND.dataAnalysis}/restore-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        timestamps: rawData.timestamps,
+        values: rawData.values,
+        analytical_year: rawData.analytical_year || null
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to restore consumption data:', response.status);
+      return false;
+    }
+
+    const result = await response.json();
+    console.log(`✅ Restored consumption data: ${result.data_points} points`);
+    return true;
+  } catch (error) {
+    console.error('Error restoring consumption data:', error);
+    return false;
+  }
+}
+
+// ============== Auto-save to current project ==============
+async function autoSaveToProject(dataType, data) {
+  // Only save if we have a current project
+  if (!sharedData.currentProject || !sharedData.currentProject.id) {
+    console.log(`Auto-save skipped (no current project): ${dataType}`);
+    return;
+  }
+
+  try {
+    const response = await fetch(`${BACKEND.projectsDb}/projects/${sharedData.currentProject.id}/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data_type: dataType,
+        data: data
+      })
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      console.log(`✅ Auto-saved ${dataType} to project ${sharedData.currentProject.id}`);
+    } else {
+      console.error(`❌ Failed to auto-save ${dataType}:`, result);
+    }
+  } catch (error) {
+    console.error(`❌ Error auto-saving ${dataType}:`, error);
+  }
 }
 
 // Load module into iframe
@@ -175,6 +289,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load saved scenario from shell's localStorage
   loadScenarioFromShell();
 
+  // Load current project from shell's localStorage
+  loadCurrentProjectFromShell();
+
   // Load default module - Config
   const iframe = document.getElementById('module-frame');
   iframe.src = MODULES['config'];
@@ -225,9 +342,12 @@ window.addEventListener('message', (event) => {
       }
       break;
     case 'DATA_UPLOADED':
-      // Store consumption data
+      // Store consumption data and fetch full hourly data for project storage
       if (event.data.data) {
         sharedData.consumptionData = event.data.data;
+
+        // Fetch full hourly data from data-analysis for project storage
+        fetchAndSaveFullConsumptionData();
       }
       // Broadcast to all modules
       broadcastToModules({ type: 'DATA_AVAILABLE', data: event.data.data });
@@ -238,6 +358,10 @@ window.addEventListener('message', (event) => {
         sharedData.analysisResults = event.data.data.fullResults;
         sharedData.pvConfig = event.data.data.pvConfig;
         sharedData.hourlyData = event.data.data.hourlyData;
+        // Auto-save all analysis data to current project
+        autoSaveToProject('analysisResults', event.data.data.fullResults);
+        autoSaveToProject('pvConfig', event.data.data.pvConfig);
+        autoSaveToProject('hourlyData', event.data.data.hourlyData);
       }
       // Broadcast complete data to all modules
       broadcastToModules({
@@ -263,6 +387,11 @@ window.addEventListener('message', (event) => {
       if (event.data.data) {
         sharedData.masterVariant = event.data.data.variantData;
         sharedData.masterVariantKey = event.data.data.variantKey;
+        // Auto-save to current project
+        autoSaveToProject('masterVariant', {
+          variantKey: event.data.data.variantKey,
+          variantData: event.data.data.variantData
+        });
       }
       // Broadcast to all modules
       broadcastToModules({
@@ -283,6 +412,8 @@ window.addEventListener('message', (event) => {
           eaasPhaseSavings: event.data.data.eaasPhaseSavings,
           ownershipPhaseSavings: event.data.data.ownershipPhaseSavings
         });
+        // Auto-save to current project
+        autoSaveToProject('economics', event.data.data);
       }
       // Broadcast to other modules (e.g., Reports)
       broadcastToModules({
@@ -312,6 +443,8 @@ window.addEventListener('message', (event) => {
     case 'SETTINGS_CHANGED':
       // Store settings in shell's localStorage and memory
       saveSettingsToShell(event.data.data);
+      // Auto-save to current project
+      autoSaveToProject('settings', event.data.data);
       // Broadcast to all modules
       broadcastToModules({
         type: 'SETTINGS_UPDATED',
@@ -335,6 +468,8 @@ window.addEventListener('message', (event) => {
         sharedData.currentScenario = event.data.data.scenario;
         // Save to localStorage for persistence
         localStorage.setItem('pv_current_scenario', event.data.data.scenario);
+        // Auto-save to current project
+        autoSaveToProject('currentScenario', { scenario: event.data.data.scenario });
         // Broadcast to all modules (including Economics)
         broadcastToModules({
           type: 'SCENARIO_CHANGED',
@@ -356,6 +491,152 @@ window.addEventListener('message', (event) => {
         }
       });
       console.log('Sent current scenario on request:', sharedData.currentScenario);
+      break;
+
+    // ============== Project Management Messages ==============
+    case 'PROJECT_CREATED':
+      // New project created
+      if (event.data.data) {
+        sharedData.currentProject = {
+          id: event.data.data.projectId,
+          name: event.data.data.projectName,
+          client: event.data.data.clientName
+        };
+        localStorage.setItem('pv_current_project', JSON.stringify(sharedData.currentProject));
+        console.log('Project created and set as current:', sharedData.currentProject);
+        // Broadcast to all modules
+        broadcastToModules({
+          type: 'PROJECT_CHANGED',
+          data: sharedData.currentProject
+        });
+      }
+      break;
+
+    case 'PROJECT_LOAD_REQUEST':
+      // Load project data into shared state
+      if (event.data.data) {
+        const projectData = event.data.data;
+
+        // Update current project info
+        sharedData.currentProject = {
+          id: projectData.projectId,
+          name: projectData.projectName,
+          client: projectData.clientName
+        };
+        localStorage.setItem('pv_current_project', JSON.stringify(sharedData.currentProject));
+
+        // Load all data from project
+        if (projectData.consumptionData) {
+          sharedData.consumptionData = projectData.consumptionData;
+        }
+        if (projectData.pvConfig) {
+          sharedData.pvConfig = projectData.pvConfig;
+        }
+        if (projectData.analysisResults) {
+          sharedData.analysisResults = projectData.analysisResults;
+        }
+        if (projectData.hourlyData) {
+          sharedData.hourlyData = projectData.hourlyData;
+        }
+        if (projectData.settings) {
+          sharedData.settings = projectData.settings;
+          saveSettingsToShell(projectData.settings);
+        }
+        if (projectData.economics) {
+          sharedData.economics = projectData.economics;
+        }
+        if (projectData.masterVariant) {
+          // masterVariant jest zapisany jako {variantKey, variantData}
+          // Musimy rozdzielić te dane poprawnie
+          if (projectData.masterVariant.variantData) {
+            sharedData.masterVariant = projectData.masterVariant.variantData;
+            sharedData.masterVariantKey = projectData.masterVariant.variantKey || null;
+          } else {
+            // Fallback: jeśli struktura jest inna (bezpośrednio dane wariantu)
+            sharedData.masterVariant = projectData.masterVariant;
+            sharedData.masterVariantKey = projectData.masterVariant.variantKey || null;
+          }
+          console.log('📊 masterVariant loaded:', {
+            key: sharedData.masterVariantKey,
+            data: sharedData.masterVariant
+          });
+        }
+        if (projectData.currentScenario) {
+          sharedData.currentScenario = projectData.currentScenario;
+          localStorage.setItem('pv_current_scenario', projectData.currentScenario);
+        }
+
+        console.log('Project loaded into sharedData:', sharedData.currentProject);
+
+        // KLUCZOWE: Przywróć dane zużycia do data-analysis service
+        // Bez tego moduły nie będą mogły wykonać analiz
+        if (projectData.rawConsumptionData) {
+          console.log('🔄 Restoring raw consumption data to data-analysis service...');
+          restoreConsumptionData(projectData.rawConsumptionData).then(success => {
+            if (success) {
+              console.log('✅ Consumption data restored to data-analysis');
+              // Broadcast that data is available
+              broadcastToModules({ type: 'DATA_AVAILABLE', data: sharedData.consumptionData });
+            } else {
+              console.error('❌ Failed to restore consumption data');
+            }
+          });
+        }
+
+        // Broadcast loaded data to all modules
+        broadcastToModules({
+          type: 'PROJECT_LOADED',
+          data: {
+            projectId: projectData.projectId,
+            projectName: projectData.projectName,
+            clientName: projectData.clientName
+          }
+        });
+
+        // Send shared data to modules so they can refresh
+        broadcastToModules({
+          type: 'SHARED_DATA_RESPONSE',
+          data: sharedData
+        });
+
+        // If we have analysis results, notify modules
+        if (sharedData.analysisResults) {
+          broadcastToModules({
+            type: 'ANALYSIS_RESULTS',
+            data: {
+              fullResults: sharedData.analysisResults,
+              pvConfig: sharedData.pvConfig,
+              hourlyData: sharedData.hourlyData,
+              sharedData: sharedData
+            }
+          });
+        }
+
+        // Send settings update
+        if (sharedData.settings) {
+          broadcastToModules({
+            type: 'SETTINGS_UPDATED',
+            data: sharedData.settings
+          });
+        }
+
+        // Send scenario update
+        broadcastToModules({
+          type: 'SCENARIO_CHANGED',
+          data: {
+            scenario: sharedData.currentScenario,
+            source: 'shell'
+          }
+        });
+      }
+      break;
+
+    case 'REQUEST_PROJECT':
+      // Module requests current project info
+      broadcastToModules({
+        type: 'PROJECT_CHANGED',
+        data: sharedData.currentProject
+      });
       break;
   }
 });

@@ -104,6 +104,13 @@ window.addEventListener('message', (event) => {
     case 'DATA_CLEARED':
       clearData();
       break;
+    case 'PROJECT_LOADED':
+      // Project was loaded - request shared data to refresh
+      console.log('📂 ESG: Project loaded, requesting shared data');
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+      }
+      break;
   }
 });
 
@@ -360,8 +367,13 @@ function calculateESGMetrics(params) {
 
 // Update ESG UI elements
 function updateESGUI(metrics) {
+  console.log('🎯 updateESGUI called with metrics:', JSON.stringify(metrics, null, 2));
+
   // Main KPIs - European format
-  setElementValue('esgCo2ReductionYear', formatNumber(metrics.co2ReductionYear, 2));
+  const co2YearFormatted = formatNumber(metrics.co2ReductionYear, 2);
+  console.log('🎯 CO2 Year value:', metrics.co2ReductionYear, '-> formatted:', co2YearFormatted);
+
+  setElementValue('esgCo2ReductionYear', co2YearFormatted);
   setElementValue('esgCo2ReductionLifetime', formatNumber(metrics.co2ReductionLifetime, 1));
   setElementValue('esgShareRes', formatNumber(metrics.shareRES, 1));
   setElementValue('esgCarbonPayback', formatNumber(metrics.carbonPayback, 1));

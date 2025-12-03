@@ -141,11 +141,13 @@ services:
       - frontend-economics
       - frontend-settings
       - frontend-esg
+      - frontend-projects
       - data-analysis
       - pv-calculation
       - economics
       - advanced-analytics
       - typical-days
+      - projects-db
     networks:
       - pv-network
     restart: unless-stopped
@@ -363,6 +365,49 @@ services:
       retries: 3
       start_period: 10s
 
+  # Projects Database Service
+  projects-db:
+    build:
+      context: ./services/projects-db
+      dockerfile: Dockerfile
+    container_name: pv-projects-db
+    ports:
+      - "8012:8012"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_PATH=/app/data/projects.db
+    volumes:
+      - projects-data:/app/data
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Projects Frontend Module
+  frontend-projects:
+    build:
+      context: ./services/frontend-projects
+      dockerfile: Dockerfile
+    container_name: pv-frontend-projects
+    ports:
+      - "9011:80"
+    depends_on:
+      - projects-db
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # PVGIS Proxy Service (for Pxx calculation)
   pvgis-proxy:
     build:
@@ -395,3 +440,5 @@ volumes:
     name: pv-energy-prices-cache
   reports-output:
     name: pv-reports-output
+  projects-data:
+    name: pv-projects-data

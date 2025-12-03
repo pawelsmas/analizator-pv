@@ -291,6 +291,13 @@ window.addEventListener('message', (event) => {
         }
       }
       break;
+    case 'PROJECT_LOADED':
+      // Project was loaded - request shared data to refresh
+      console.log('📂 Production: Project loaded, requesting shared data');
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+      }
+      break;
   }
 });
 

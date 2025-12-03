@@ -1179,5 +1179,80 @@ window.addEventListener('message', (event) => {
       applySettingsFromShell(event.data.data);
       console.log('System settings received from shell');
       break;
+    case 'PROJECT_LOADED':
+      // Project was loaded - request shared data to refresh UI
+      console.log('📂 Project loaded, requesting shared data');
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+      }
+      break;
+    case 'SHARED_DATA_RESPONSE':
+      // Received shared data - apply to UI
+      if (event.data.data) {
+        console.log('📥 Received SHARED_DATA_RESPONSE');
+        // Apply settings if present
+        if (event.data.data.settings) {
+          applySettingsFromShell(event.data.data.settings);
+        }
+        // Apply consumption data if present
+        if (event.data.data.consumptionData) {
+          uploadedData = true;
+          updateStatistics(event.data.data.consumptionData);
+        }
+        // Apply PV config if present
+        if (event.data.data.pvConfig) {
+          console.log('📥 Applying PV config from project:', event.data.data.pvConfig);
+          applyPvConfigFromProject(event.data.data.pvConfig);
+        }
+      }
+      break;
   }
 });
+
+// Apply PV configuration from loaded project
+function applyPvConfigFromProject(pvConfig) {
+  if (!pvConfig) return;
+
+  // Apply capacity type
+  if (pvConfig.capacityType) {
+    document.getElementById('capacityType').value = pvConfig.capacityType;
+    toggleCapacityMode();
+  }
+
+  // Apply power values
+  if (pvConfig.powerDC) {
+    document.getElementById('powerDC').value = pvConfig.powerDC;
+  }
+  if (pvConfig.powerAC) {
+    document.getElementById('powerAC').value = pvConfig.powerAC;
+  }
+
+  // Apply installation type
+  if (pvConfig.pvType) {
+    document.getElementById('pvType').value = pvConfig.pvType;
+  }
+
+  // Apply strategy
+  if (pvConfig.strategy) {
+    document.getElementById('strategy').value = pvConfig.strategy;
+    toggleStrategyOptions(pvConfig.strategy);
+  }
+
+  // Apply location
+  if (pvConfig.latitude) {
+    document.getElementById('latitude').value = pvConfig.latitude;
+  }
+  if (pvConfig.longitude) {
+    document.getElementById('longitude').value = pvConfig.longitude;
+  }
+  if (pvConfig.tilt) {
+    document.getElementById('tilt').value = pvConfig.tilt;
+  }
+  if (pvConfig.azimuth) {
+    document.getElementById('azimuth').value = pvConfig.azimuth;
+  }
+
+  // Save to localStorage
+  saveLocalConfig();
+  console.log('✅ PV config applied from project');
+}

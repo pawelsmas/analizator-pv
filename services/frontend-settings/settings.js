@@ -720,6 +720,8 @@ function showStatus(message, type) {
 
 // Listen for messages from shell
 window.addEventListener('message', (event) => {
+  console.log('Received message:', event.data.type);
+
   switch (event.data.type) {
     case 'REQUEST_SETTINGS':
       // Send current settings to requesting module
@@ -734,6 +736,36 @@ window.addEventListener('message', (event) => {
 
     case 'RELOAD_SETTINGS':
       loadSettings();
+      break;
+
+    case 'SETTINGS_UPDATED':
+      // Settings updated from project load or other source
+      if (event.data.data) {
+        console.log('📥 Applying settings from SETTINGS_UPDATED');
+        applySettingsToUI(event.data.data);
+        // Also save to localStorage for persistence
+        localStorage.setItem('pv_system_settings', JSON.stringify(event.data.data));
+        // Recalculate totals
+        setTimeout(updateTotalEnergyPrice, 100);
+      }
+      break;
+
+    case 'PROJECT_LOADED':
+      // Project was loaded - request fresh settings from shell
+      console.log('📂 Project loaded, requesting settings refresh');
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+      }
+      break;
+
+    case 'SHARED_DATA_RESPONSE':
+      // Received shared data from shell - apply settings if present
+      if (event.data.data && event.data.data.settings) {
+        console.log('📥 Applying settings from SHARED_DATA_RESPONSE');
+        applySettingsToUI(event.data.data.settings);
+        localStorage.setItem('pv_system_settings', JSON.stringify(event.data.data.settings));
+        setTimeout(updateTotalEnergyPrice, 100);
+      }
       break;
   }
 });
