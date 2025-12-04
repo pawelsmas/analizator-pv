@@ -230,16 +230,22 @@ function loadModule(moduleName, event) {
   const iframe = document.getElementById('module-frame');
   iframe.src = MODULES[moduleName];
 
-  // When iframe loads, send it the current settings and scenario
+  // When iframe loads, send it ALL shared data immediately
   iframe.onload = () => {
-    if (sharedData.settings) {
-      iframe.contentWindow.postMessage({
-        type: 'SETTINGS_UPDATED',
-        data: sharedData.settings
-      }, '*');
-      console.log('Sent settings to loaded module:', moduleName);
-    }
-    // Send current scenario to module
+    // Send ALL shared data to the module (proactive push)
+    // This eliminates the need for module to REQUEST_SHARED_DATA
+    iframe.contentWindow.postMessage({
+      type: 'SHARED_DATA_RESPONSE',
+      data: sharedData
+    }, '*');
+    console.log('📤 Sent all shared data to loaded module:', moduleName, {
+      hasSettings: !!sharedData.settings,
+      hasAnalysisResults: !!sharedData.analysisResults,
+      hasConsumptionData: !!sharedData.consumptionData,
+      hasPvConfig: !!sharedData.pvConfig
+    });
+
+    // Also send scenario separately (some modules expect this format)
     iframe.contentWindow.postMessage({
       type: 'SCENARIO_CHANGED',
       data: {
@@ -247,7 +253,6 @@ function loadModule(moduleName, event) {
         source: 'shell'
       }
     }, '*');
-    console.log('Sent scenario to loaded module:', moduleName, sharedData.currentScenario);
   };
 
   console.log(`Ładowanie modułu: ${moduleName} z ${MODULES[moduleName]}`);
@@ -326,16 +331,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const iframe = document.getElementById('module-frame');
   iframe.src = MODULES['config'];
 
-  // When iframe loads, send it the current settings and scenario
+  // When iframe loads, send it ALL shared data immediately
   iframe.onload = () => {
-    if (sharedData.settings) {
-      iframe.contentWindow.postMessage({
-        type: 'SETTINGS_UPDATED',
-        data: sharedData.settings
-      }, '*');
-      console.log('Sent settings to initial module');
-    }
-    // Send current scenario to module
+    // Send ALL shared data to the module (proactive push)
+    iframe.contentWindow.postMessage({
+      type: 'SHARED_DATA_RESPONSE',
+      data: sharedData
+    }, '*');
+    console.log('📤 Sent all shared data to initial module (config)');
+
+    // Also send scenario separately
     iframe.contentWindow.postMessage({
       type: 'SCENARIO_CHANGED',
       data: {
@@ -343,7 +348,6 @@ document.addEventListener('DOMContentLoaded', () => {
         source: 'shell'
       }
     }, '*');
-    console.log('Sent scenario to initial module:', sharedData.currentScenario);
   };
 
   console.log('Ładowanie domyślnego modułu: Configuration');
@@ -527,6 +531,34 @@ window.addEventListener('message', (event) => {
         }
       });
       console.log('Sent current scenario on request:', sharedData.currentScenario);
+      break;
+    case 'PV_TYPE_CHANGED':
+      // Store PV type and broadcast to all modules (especially Economics)
+      if (event.data.data) {
+        const newPvType = event.data.data.pvType || event.data.data.pv_type;
+        console.log('📋 PV type changed to:', newPvType);
+
+        // Update pvConfig with new type
+        if (!sharedData.pvConfig) {
+          sharedData.pvConfig = {};
+        }
+        sharedData.pvConfig.pvType = newPvType;
+        sharedData.pvConfig.pv_type = newPvType;
+
+        // Auto-save to current project
+        autoSaveToProject('pvConfig', sharedData.pvConfig);
+
+        // Broadcast to all modules so they can update CAPEX calculations
+        broadcastToModules({
+          type: 'PV_TYPE_UPDATED',
+          data: {
+            pvType: newPvType,
+            pv_type: newPvType,
+            pvConfig: sharedData.pvConfig
+          }
+        });
+        console.log('📢 Broadcasted PV type change to all modules:', newPvType);
+      }
       break;
 
     // ============== Project Management Messages ==============

@@ -1,4 +1,5 @@
-console.log('🚀 economics.js LOADED - timestamp:', new Date().toISOString());
+console.log('🚀 economics.js LOADED v=FINAL - timestamp:', new Date().toISOString());
+console.log('💡💡💡 NOWA WERSJA: v=20241204-FINAL - Obsługa CAPEX per typ instalacji 💡💡💡');
 
 // ============================================
 // NUMBER FORMATTING - European format (global)
@@ -62,6 +63,7 @@ let variants = {};
 let currentVariant = 'A'; // Default variant
 let consumptionData = null;
 let systemSettings = null; // Settings from Settings module
+let hourlyData = null; // Hourly consumption/production data
 
 // CENTRALIZED FINANCIAL METRICS STORAGE
 // This is the SINGLE SOURCE OF TRUTH for all NPV calculations
@@ -690,58 +692,154 @@ function getInsuranceRate(settings) {
   return raw > 1 ? raw / 100 : raw;
 }
 
+// Default CAPEX per type (fallback when systemSettings doesn't have capexPerType)
+const DEFAULT_CAPEX_PER_TYPE = {
+  ground_s: [
+    { cost: 2800, margin: 23, sale: 3444 },  // 50-150 kWp
+    { cost: 2400, margin: 20, sale: 2880 },  // 150-300 kWp
+    { cost: 2000, margin: 18, sale: 2360 },  // 300-1000 kWp
+    { cost: 1700, margin: 16, sale: 1972 },  // 1000-3000 kWp
+    { cost: 1500, margin: 15, sale: 1725 },  // 3000-10000 kWp
+    { cost: 1400, margin: 13, sale: 1582 }   // 10000+ kWp
+  ],
+  ground_ew: [
+    { cost: 2744, margin: 23, sale: 3375 },
+    { cost: 2352, margin: 20, sale: 2822 },
+    { cost: 1960, margin: 18, sale: 2313 },
+    { cost: 1666, margin: 16, sale: 1933 },
+    { cost: 1470, margin: 15, sale: 1691 },
+    { cost: 1372, margin: 13, sale: 1550 }
+  ],
+  roof_ew: [
+    { cost: 3100, margin: 23, sale: 3813 },  // 50-150 kWp
+    { cost: 2700, margin: 20, sale: 3240 },  // 150-300 kWp
+    { cost: 2300, margin: 18, sale: 2714 },  // 300-1000 kWp
+    { cost: 1950, margin: 16, sale: 2262 },  // 1000-3000 kWp
+    { cost: 1650, margin: 15, sale: 1898 },  // 3000-10000 kWp
+    null  // No installations above 10 MWp for roof
+  ],
+  carport: [
+    { cost: 3500, margin: 23, sale: 4305 },
+    { cost: 3200, margin: 20, sale: 3840 },
+    { cost: 2800, margin: 18, sale: 3304 },
+    { cost: 2500, margin: 16, sale: 2900 },
+    { cost: 2200, margin: 15, sale: 2530 },
+    { cost: 2000, margin: 13, sale: 2260 }
+  ]
+};
+
+const DEFAULT_CAPEX_RANGES = [
+  { min: 50, max: 150 },
+  { min: 150, max: 300 },
+  { min: 300, max: 1000 },
+  { min: 1000, max: 3000 },
+  { min: 3000, max: 10000 },
+  { min: 10000, max: Infinity }
+];
+
 // Get CAPEX per kWp based on capacity using tiered pricing
 function getCapexForCapacity(capacityKwp) {
-  // Try to get CAPEX tiers from systemSettings first, then analysisResults
-  const capexTiers = systemSettings?.capexTiers || analysisResults?.economicParams?.capexTiers;
+  // Get current PV type from pvConfig or default to ground_s
+  const currentPvType = pvConfig?.pvType || pvConfig?.pv_type || 'ground_s';
 
-  console.log('💰 getCapexForCapacity DEBUG:', {
-    capacityKwp,
-    hasSystemSettings: !!systemSettings,
-    hasCapexTiers: !!capexTiers,
-    capexTiersLength: capexTiers?.length,
-    tiers: capexTiers?.map(t => ({ min: t.min, max: t.max, sale: t.sale }))
+  // DEBUG: Log pvConfig to see what we have
+  console.log('🔍 pvConfig DEBUG:', {
+    pvConfig_exists: !!pvConfig,
+    pvConfig_pvType: pvConfig?.pvType,
+    pvConfig_pv_type: pvConfig?.pv_type,
+    resolved_currentPvType: currentPvType
   });
 
+  // Try to get CAPEX data - prefer capexPerType (new format) over capexTiers (legacy)
+  // Use defaults if systemSettings doesn't have the new format
+  const capexPerType = systemSettings?.capexPerType || DEFAULT_CAPEX_PER_TYPE;
+  const capexRanges = systemSettings?.capexRanges || DEFAULT_CAPEX_RANGES;
+  const capexTiers = systemSettings?.capexTiers || analysisResults?.economicParams?.capexTiers;
+
+  const usingDefaultCapex = !systemSettings?.capexPerType;
+  console.log('💰 getCapexForCapacity DEBUG:', {
+    capacityKwp,
+    currentPvType,
+    usingDefaultCapex,
+    hasSystemSettings: !!systemSettings,
+    typeTiersAvailable: capexPerType[currentPvType] ? capexPerType[currentPvType].filter(t => t !== null).length : 0
+  });
+
+  // NEW FORMAT: Use capexPerType with capexRanges
+  if (capexPerType && capexRanges && capexRanges.length > 0) {
+    // Get tiers for current PV type
+    const typeTiers = capexPerType[currentPvType] || capexPerType.ground_s;
+    if (typeTiers && typeTiers.length > 0) {
+      // Find matching tier by range
+      for (let i = 0; i < capexRanges.length; i++) {
+        const range = capexRanges[i];
+        const tier = typeTiers[i];
+        if (!tier || !range) continue;
+
+        const minVal = range.min || 0;
+        const maxVal = (range.max === null || range.max === undefined || range.max === Infinity || range.max >= 999999)
+                       ? Infinity : range.max;
+
+        if (capacityKwp >= minVal && capacityKwp <= maxVal) {
+          const price = tier.sale || tier.capex || tier.cost || 3500;
+          console.log(`  ✓ MATCHED (capexPerType/${currentPvType}): ${minVal}-${maxVal} kWp, price: ${price} PLN/kWp`);
+          return price;
+        }
+      }
+
+      // Fallback: use last non-null tier for large installations
+      // Find the last valid (non-null) tier
+      let lastValidTierIndex = -1;
+      for (let i = typeTiers.length - 1; i >= 0; i--) {
+        if (typeTiers[i] !== null) {
+          lastValidTierIndex = i;
+          break;
+        }
+      }
+
+      if (lastValidTierIndex >= 0) {
+        const lastTier = typeTiers[lastValidTierIndex];
+        const lastRange = capexRanges[lastValidTierIndex];
+        if (lastTier && capacityKwp >= (lastRange?.min || 0)) {
+          const price = lastTier.sale || lastTier.capex || lastTier.cost || 3500;
+          console.log(`  → Using last valid tier (capexPerType/${currentPvType}): ${lastRange?.min}-${lastRange?.max} kWp, price: ${price} PLN/kWp`);
+          return price;
+        }
+      }
+    }
+  }
+
+  // LEGACY FORMAT: Use capexTiers
   if (capexTiers && capexTiers.length > 0) {
-    // Sort tiers by min value to ensure correct order
     const sortedTiers = [...capexTiers].sort((a, b) => a.min - b.min);
 
     for (const tier of sortedTiers) {
-      // Handle max value - treat null, undefined, Infinity, "∞", or very large numbers as no upper limit
       const maxValue = (tier.max === null || tier.max === undefined ||
                        tier.max === Infinity || tier.max === '∞' ||
                        tier.max === 'Infinity' || tier.max >= 999999)
                        ? Infinity : tier.max;
 
-      console.log(`  → Checking tier: ${tier.min}-${maxValue} kWp for capacity ${capacityKwp}`);
+      console.log(`  → Checking tier (legacy): ${tier.min}-${maxValue} kWp for capacity ${capacityKwp}`);
 
       if (capacityKwp >= tier.min && capacityKwp <= maxValue) {
-        // Support both old format (tier.capex) and new format (tier.sale or tier.cost)
-        const price = tier.sale || tier.capex || tier.cost || 3500;
-        console.log(`  ✓ MATCHED tier: ${tier.min}-${maxValue} kWp, price: ${price} PLN/kWp`);
+        const price = tier.capex || tier.sale || tier.cost || 3500;
+        console.log(`  ✓ MATCHED tier (legacy): ${tier.min}-${maxValue} kWp, price: ${price} PLN/kWp`);
         return price;
       }
     }
 
-    // If no tier matched and capacity is large, use the last (highest) tier
+    // Fallback to last tier for large installations
     const lastTier = sortedTiers[sortedTiers.length - 1];
     if (capacityKwp >= lastTier.min) {
-      const price = lastTier.sale || lastTier.capex || lastTier.cost || 3500;
-      console.log(`  → Using last tier (capacity >= ${lastTier.min}): price: ${price} PLN/kWp`);
+      const price = lastTier.capex || lastTier.sale || lastTier.cost || 3500;
+      console.log(`  → Using last tier (legacy): price: ${price} PLN/kWp`);
       return price;
     }
-
-    // Fallback: use first tier for very small installations
-    const firstTier = sortedTiers[0];
-    const price = firstTier.sale || firstTier.capex || firstTier.cost || 3500;
-    console.log(`  → Using first tier (fallback): price: ${price} PLN/kWp`);
-    return price;
   }
 
-  // Fallback to default investment cost from input
+  // Ultimate fallback
   const fallback = parseFloat(document.getElementById('investmentCost')?.value || 3500);
-  console.log(`  → No tiers, using fallback: ${fallback} PLN/kWp`);
+  console.log(`  → No valid tiers found, using fallback: ${fallback} PLN/kWp`);
   return fallback;
 }
 
@@ -1442,11 +1540,44 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
   console.log('📱 DOMContentLoaded event fired in economics.js');
-  loadAllData();
-  // Request shared data and settings from parent shell
+
+  // Show loading state first
+  showLoadingState();
+
+  // Request shared data and settings from parent shell FIRST
+  // Data from shell has priority over localStorage
   requestSharedData();
   requestSettingsFromShell();
+
+  // Fallback: try to load from localStorage after a short delay
+  // (in case shell doesn't respond)
+  setTimeout(() => {
+    if (!analysisResults || Object.keys(variants).length === 0) {
+      console.log('⏳ No data from shell yet, trying localStorage...');
+      loadAllData();
+    }
+  }, 500);
 });
+
+// Show loading state
+function showLoadingState() {
+  const noDataDiv = document.getElementById('noData');
+  const contentDiv = document.getElementById('economicsContent');
+
+  if (noDataDiv) {
+    noDataDiv.innerHTML = `
+      <div style="text-align:center;padding:40px">
+        <div style="font-size:24px;margin-bottom:10px">⏳</div>
+        <h3>Ładowanie danych...</h3>
+        <p style="color:#888">Pobieranie wyników analizy</p>
+      </div>
+    `;
+    noDataDiv.style.display = 'block';
+  }
+  if (contentDiv) {
+    contentDiv.style.display = 'none';
+  }
+}
 
 // Request shared data from shell
 function requestSharedData() {
@@ -1556,8 +1687,16 @@ window.addEventListener('message', (event) => {
       }
 
       if (event.data.data.pvConfig) {
+        // Take pvType from sharedData.pvConfig - this is updated by PV_TYPE_CHANGED in shell
+        // The shell maintains the most recent pvType selection from Configuration module
+        const shellPvType = event.data.data.pvConfig.pvType || event.data.data.pvConfig.pv_type;
         pvConfig = event.data.data.pvConfig;
-        console.log('  - pvConfig loaded:', !!pvConfig);
+        // Ensure both fields are set
+        if (shellPvType) {
+          pvConfig.pvType = shellPvType;
+          pvConfig.pv_type = shellPvType;
+        }
+        console.log('  - pvConfig loaded:', !!pvConfig, 'pvType:', pvConfig?.pvType || pvConfig?.pv_type);
       }
 
       if (event.data.data.consumptionData) {
@@ -1598,14 +1737,64 @@ window.addEventListener('message', (event) => {
       performEconomicAnalysis();
       break;
 
+    case 'ANALYSIS_RESULTS':
+      // Received directly from shell after ANALYSIS_COMPLETE
+      console.log('📊 ANALYSIS_RESULTS received from shell');
+      if (event.data.data) {
+        // Load analysis results
+        if (event.data.data.fullResults) {
+          analysisResults = event.data.data.fullResults;
+          if (analysisResults.key_variants) {
+            variants = analysisResults.key_variants;
+          }
+          console.log('  - analysisResults loaded:', Object.keys(analysisResults));
+        }
+        // Load PV config - use pvType from shell's sharedData
+        if (event.data.data.pvConfig) {
+          const shellPvType = event.data.data.pvConfig.pvType || event.data.data.pvConfig.pv_type;
+          pvConfig = event.data.data.pvConfig;
+          if (shellPvType) {
+            pvConfig.pvType = shellPvType;
+            pvConfig.pv_type = shellPvType;
+          }
+          console.log('  - pvConfig loaded, pvType:', pvConfig?.pvType || pvConfig?.pv_type);
+        }
+        // Load hourly data
+        if (event.data.data.hourlyData) {
+          hourlyData = event.data.data.hourlyData;
+          console.log('  - hourlyData loaded');
+        }
+        // Load shared data (includes settings, consumptionData, etc.)
+        if (event.data.data.sharedData) {
+          if (event.data.data.sharedData.settings) {
+            systemSettings = event.data.data.sharedData.settings;
+            applySettingsToUI(systemSettings);
+          }
+          if (event.data.data.sharedData.consumptionData) {
+            consumptionData = event.data.data.sharedData.consumptionData;
+          }
+        }
+        console.log('🚀 Calling performEconomicAnalysis() from ANALYSIS_RESULTS');
+        performEconomicAnalysis();
+      }
+      break;
+
     case 'ECONOMIC_DATA_UPDATED':
     case 'PV_CONFIG_UPDATED':
     case 'DATA_AVAILABLE':
       console.log('🔄 Data updated, reloading...');
       loadAllData();
       break;
+
+    case 'VARIANT_ADDED':
+    case 'VARIANT_UPDATED':
+      console.log('🔄 Variant change notification, reloading...');
+      loadAllData();
+      break;
+
     case 'DATA_CLEARED':
       clearAnalysis();
+      clearEconomicsData();
       break;
     case 'SETTINGS_UPDATED':
       console.log('📊 Settings received from shell');
@@ -1614,6 +1803,32 @@ window.addEventListener('message', (event) => {
       // Recalculate if we have analysis data
       if (analysisResults) {
         performEconomicAnalysis();
+      }
+      break;
+    case 'PV_TYPE_UPDATED':
+      // PV type changed in Configuration module - update local pvConfig and recalculate
+      console.log('📋 PV type updated from config:', event.data.data);
+      if (event.data.data) {
+        const newPvType = event.data.data.pvType || event.data.data.pv_type;
+        // Update local pvConfig
+        if (!pvConfig) {
+          pvConfig = {};
+        }
+        pvConfig.pvType = newPvType;
+        pvConfig.pv_type = newPvType;
+
+        // If we have full pvConfig from message, use it
+        if (event.data.data.pvConfig) {
+          pvConfig = { ...pvConfig, ...event.data.data.pvConfig };
+        }
+
+        console.log('📋 Updated pvConfig.pvType to:', pvConfig.pvType);
+
+        // Recalculate CAPEX if we have analysis data
+        if (analysisResults) {
+          console.log('🔄 Recalculating economics with new PV type:', newPvType);
+          performEconomicAnalysis();
+        }
       }
       break;
     case 'SCENARIO_CHANGED':
@@ -1649,10 +1864,21 @@ async function loadAllData() {
   const storedProduction = localStorage.getItem('pvProductionData');
   const storedAnalysisResults = localStorage.getItem('analysisResults') || localStorage.getItem('pv_analysis_results');
 
+  // Preserve current pvType if already set (e.g., from PV_TYPE_UPDATED message)
+  const currentPvType = pvConfig?.pvType || pvConfig?.pv_type;
+
   if (storedEconomic || storedConfig) {
     try {
       if (storedEconomic) economicData = JSON.parse(storedEconomic);
-      if (storedConfig) pvConfig = JSON.parse(storedConfig);
+      if (storedConfig) {
+        const loadedConfig = JSON.parse(storedConfig);
+        // Preserve pvType from shell if it was set more recently
+        if (currentPvType) {
+          loadedConfig.pvType = currentPvType;
+          loadedConfig.pv_type = currentPvType;
+        }
+        pvConfig = loadedConfig;
+      }
       if (storedProduction) productionData = JSON.parse(storedProduction);
 
       // Load variants from analysis results
@@ -1708,11 +1934,19 @@ async function loadAllData() {
       const capacity = 1000; // Default 1 MWp
       pvConfig = {
         installedCapacity: capacity,
-        name: 'Domyślna konfiguracja'
+        name: 'Domyślna konfiguracja',
+        pvType: currentPvType || 'ground_s',
+        pv_type: currentPvType || 'ground_s'
       };
     } else if (storedConfig) {
       try {
-        pvConfig = JSON.parse(storedConfig);
+        const loadedConfig = JSON.parse(storedConfig);
+        // Preserve pvType from shell if it was set more recently
+        if (currentPvType) {
+          loadedConfig.pvType = currentPvType;
+          loadedConfig.pv_type = currentPvType;
+        }
+        pvConfig = loadedConfig;
       } catch (e) {
         console.error('Błąd parsowania konfiguracji:', e);
       }
@@ -4711,137 +4945,10 @@ function exportEaaSToExcel() {
 // ============================================================================
 
 // ============================================================================
-// === MODULE INITIALIZATION ===
+// === HELPER FUNCTIONS (used by main initialization) ===
 // ============================================================================
 
-// Request shared data from shell on load
-function requestSharedData() {
-  if (window.parent !== window) {
-    console.log('📤 Requesting shared data from shell...');
-    window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
-  }
-}
-
-// Listen for messages from shell
-window.addEventListener('message', (event) => {
-  console.log('📨 Economics received message:', event.data.type);
-
-  switch (event.data.type) {
-    case 'SHARED_DATA_RESPONSE':
-      console.log('✅ Received shared data:', event.data.data);
-      if (event.data.data) {
-        // Store settings
-        if (event.data.data.settings) {
-          systemSettings = event.data.data.settings;
-          localStorage.setItem('pv_settings', JSON.stringify(systemSettings));
-          console.log('💾 Stored settings');
-        }
-
-        // Store analysis results
-        if (event.data.data.analysisResults) {
-          analysisResults = event.data.data.analysisResults;
-          localStorage.setItem('pv_analysis_results', JSON.stringify(analysisResults));
-          console.log('💾 Stored analysis results');
-        }
-
-        // Store consumption data
-        if (event.data.data.consumptionData) {
-          consumptionData = event.data.data.consumptionData;
-          localStorage.setItem('pv_consumption_data', JSON.stringify(consumptionData));
-          console.log('💾 Stored consumption data');
-        }
-
-        // Store PV config
-        if (event.data.data.pvConfig) {
-          pvConfig = event.data.data.pvConfig;
-          localStorage.setItem('pv_config', JSON.stringify(pvConfig));
-          console.log('💾 Stored PV config');
-        }
-
-        // Load and display data
-        loadStoredData();
-      }
-      break;
-
-    case 'VARIANT_ADDED':
-    case 'VARIANT_UPDATED':
-    case 'DATA_AVAILABLE':
-    case 'ANALYSIS_RESULTS':
-      console.log('🔄 Data update notification, reloading...');
-      loadStoredData();
-      break;
-
-    case 'SETTINGS_UPDATED':
-      console.log('⚙️ Settings updated:', event.data.data);
-      systemSettings = event.data.data;
-      // Reload data to apply new settings
-      loadStoredData();
-      break;
-
-    case 'DATA_CLEARED':
-      console.log('🧹 Data cleared');
-      clearEconomicsData();
-      break;
-  }
-});
-
-// Load data from localStorage
-function loadStoredData() {
-  console.log('📂 Loading stored data...');
-
-  try {
-    // Load system settings
-    const storedSettings = localStorage.getItem('pv_settings');
-    if (storedSettings) {
-      systemSettings = JSON.parse(storedSettings);
-      console.log('✅ Loaded system settings:', systemSettings);
-    } else {
-      console.log('⚠️ No settings in localStorage, will request from shell');
-    }
-
-    // Load analysis results
-    const storedResults = localStorage.getItem('pv_analysis_results');
-    if (storedResults) {
-      analysisResults = JSON.parse(storedResults);
-      console.log('✅ Loaded analysis results:', Object.keys(analysisResults.variants || {}).length, 'variants');
-
-      // Extract variants
-      if (analysisResults.variants) {
-        variants = analysisResults.variants;
-        populateVariantSelector();
-      }
-    }
-
-    // Load consumption data
-    const storedConsumption = localStorage.getItem('pv_consumption_data');
-    if (storedConsumption) {
-      consumptionData = JSON.parse(storedConsumption);
-      console.log('✅ Loaded consumption data:', consumptionData.annual_consumption_kwh?.toLocaleString(), 'kWh/year');
-    }
-
-    // Load PV config
-    const storedConfig = localStorage.getItem('pv_config');
-    if (storedConfig) {
-      pvConfig = JSON.parse(storedConfig);
-      console.log('✅ Loaded PV config:', pvConfig.pv_type);
-    }
-
-    // If we have data, perform initial analysis
-    if (analysisResults && variants && Object.keys(variants).length > 0) {
-      console.log('✅ Data loaded successfully, performing initial analysis...');
-      performEconomicAnalysis();
-    } else {
-      console.log('⚠️ No complete data available yet');
-      showNoData();
-    }
-
-  } catch (error) {
-    console.error('❌ Error loading stored data:', error);
-    showNoData();
-  }
-}
-
-// Populate variant selector
+// Populate variant selector (used in performEconomicAnalysis)
 function populateVariantSelector() {
   const selector = document.getElementById('variantSelector');
   if (!selector) return;
@@ -5256,17 +5363,7 @@ function updateElectricityMapsUIInEconomics(data) {
   }
 }
 
-// Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
-  console.log('🚀 Economics module initializing...');
-
-  // Try to load from localStorage first
-  loadStoredData();
-
-  // Request fresh data from shell
-  requestSharedData();
-
-  console.log('✅ Economics module initialized');
-});
+// Note: Main initialization is at line ~1443 (DOMContentLoaded)
+// This file uses single unified event handling defined earlier
 
 console.log('📦 economics.js fully loaded');

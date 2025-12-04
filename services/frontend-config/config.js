@@ -28,9 +28,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize NPV mode hint
   updateNpvModeHint();
 
-  // Check if data already exists
+  // Request shared data from shell FIRST (this has priority over localStorage)
+  requestSharedDataFromShell();
+
+  // Check if data already exists (fallback to localStorage)
   checkExistingData();
 });
+
+// Request shared data from shell
+function requestSharedDataFromShell() {
+  if (window.parent !== window) {
+    console.log('📤 Requesting shared data from shell...');
+    window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+  }
+}
 
 // Request settings from shell via postMessage
 function requestSettingsFromShell() {
@@ -55,13 +66,22 @@ function setupEventListeners() {
     }
   });
 
-  // When PV type changes, update displayed parameters
+  // When PV type changes, update displayed parameters and notify shell
   const pvTypeSelect = document.getElementById('pvType');
   if (pvTypeSelect) {
     pvTypeSelect.addEventListener('change', () => {
+      const newPvType = pvTypeSelect.value;
+      console.log('📋 PV type changed to:', newPvType);
+
       if (systemSettings) {
         applySystemSettingsToUI(systemSettings);
       }
+
+      // Notify shell about PV type change so other modules can update
+      notifyShell('PV_TYPE_CHANGED', {
+        pvType: newPvType,
+        pv_type: newPvType  // Both formats for compatibility
+      });
     });
   }
 }
@@ -522,8 +542,8 @@ async function handleFileUpload(event) {
     fileUploadedThisSession = true; // Mark that file was uploaded THIS session
     sessionStorage.setItem('file_uploaded', 'true'); // Session flag
 
-    // Update statistics
-    await updateStatisticsFromAPI();
+    // Update statistics and get them for shell
+    const stats = await updateStatisticsFromAPI();
 
     // Save to localStorage
     localStorage.setItem('pv_data_uploaded', 'true');
@@ -534,11 +554,16 @@ async function handleFileUpload(event) {
       uploadedAt: new Date().toISOString()
     }));
 
-    // Notify parent shell that data is available
+    // Notify parent shell that data is available - include consumption data
     notifyShell('DATA_UPLOADED', {
       filename: file.name,
       dataPoints: result.data_points,
-      year: result.year
+      year: result.year,
+      // Include consumption statistics for economics module
+      annual_consumption_kwh: stats ? stats.total_consumption_gwh * 1000000 : null, // GWh -> kWh
+      total_consumption_gwh: stats?.total_consumption_gwh,
+      peak_power_mw: stats?.peak_power_mw,
+      avg_power_mw: stats?.avg_power_mw
     });
 
   } catch (error) {
@@ -548,7 +573,7 @@ async function handleFileUpload(event) {
   }
 }
 
-// Update statistics from API
+// Update statistics from API - returns stats for use elsewhere
 async function updateStatisticsFromAPI() {
   try {
     const response = await fetch(`${API.dataAnalysis}/statistics`);
@@ -556,8 +581,10 @@ async function updateStatisticsFromAPI() {
 
     const stats = await response.json();
     updateStatistics(stats);
+    return stats; // Return stats for shell notification
   } catch (error) {
     console.error('Failed to update statistics:', error);
+    return null;
   }
 }
 
@@ -1189,20 +1216,58 @@ window.addEventListener('message', (event) => {
     case 'SHARED_DATA_RESPONSE':
       // Received shared data - apply to UI
       if (event.data.data) {
-        console.log('📥 Received SHARED_DATA_RESPONSE');
+        console.log('📥 Received SHARED_DATA_RESPONSE:', Object.keys(event.data.data));
+
         // Apply settings if present
         if (event.data.data.settings) {
           applySettingsFromShell(event.data.data.settings);
         }
+
         // Apply consumption data if present
         if (event.data.data.consumptionData) {
           uploadedData = true;
+          fileUploadedThisSession = true;
+          sessionStorage.setItem('file_uploaded', 'true');
+
+          // Update statistics display
           updateStatistics(event.data.data.consumptionData);
+
+          // Update load status
+          const loadStatus = document.getElementById('loadStatus');
+          if (loadStatus && event.data.data.consumptionData.filename) {
+            loadStatus.innerHTML = `
+              <div class="success">
+                ✓ Załadowano: ${event.data.data.consumptionData.filename}<br>
+                ${event.data.data.consumptionData.dataPoints || '?'} godzin danych
+              </div>
+            `;
+          }
+          console.log('  ✅ consumptionData applied');
         }
+
         // Apply PV config if present
         if (event.data.data.pvConfig) {
-          console.log('📥 Applying PV config from project:', event.data.data.pvConfig);
+          console.log('📥 Applying PV config from shell:', event.data.data.pvConfig);
           applyPvConfigFromProject(event.data.data.pvConfig);
+        }
+
+        // Apply analysis results if present - show results screen
+        if (event.data.data.analysisResults) {
+          console.log('📥 Applying analysis results from shell');
+          // Save to localStorage for compatibility
+          localStorage.setItem('pv_analysis_results', JSON.stringify(event.data.data.analysisResults));
+
+          // Show analysis results screen with variant selector
+          showAnalysisResults(event.data.data.analysisResults);
+
+          // Restore master variant if present
+          if (event.data.data.masterVariantKey) {
+            const selector = document.getElementById('masterVariantSelector');
+            if (selector) {
+              selector.value = event.data.data.masterVariantKey;
+            }
+          }
+          console.log('  ✅ analysisResults applied');
         }
       }
       break;
