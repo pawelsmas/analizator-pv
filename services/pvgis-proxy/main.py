@@ -38,6 +38,8 @@ Z_P90 = 1.2816  # 90th percentile
 
 class PVCalcRequest(BaseModel):
     """Request model for PVcalc endpoint (uncertainty method)"""
+    model_config = {"protected_namespaces": ()}  # Allow field names starting with "model_"
+
     lat: float = Field(..., description="Latitude", ge=-90, le=90)
     lon: float = Field(..., description="Longitude", ge=-180, le=180)
     peakpower: float = Field(default=1.0, description="Peak power [kWp]")

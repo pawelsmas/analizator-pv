@@ -6,9 +6,7 @@ RUN apk add --no-cache curl
 # Copy files
 COPY index.html /usr/share/nginx/html/
 COPY styles.css /usr/share/nginx/html/
-COPY api.js /usr/share/nginx/html/
-COPY shell.js /usr/share/nginx/html/
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY estimator.js /usr/share/nginx/html/
 
 # Expose port
 EXPOSE 80

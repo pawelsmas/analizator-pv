@@ -1,0 +1,21 @@
+{
+  "name": "pv-optimizer",
+  "version": "2.0.0",
+  "description": "PV Optimizer Pro - Micro-Frontend Architecture",
+  "private": true,
+  "scripts": {
+    "lint": "eslint 'services/frontend-*/**/*.js'",
+    "lint:fix": "eslint 'services/frontend-*/**/*.js' --fix",
+    "format": "prettier --write 'services/frontend-*/**/*.{js,css,html}'",
+    "format:check": "prettier --check 'services/frontend-*/**/*.{js,css,html}'",
+    "test": "node scripts/check_js_syntax.js",
+    "smoke": "python scripts/smoke_test.py"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

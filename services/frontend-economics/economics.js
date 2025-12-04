@@ -257,10 +257,8 @@ function calculateScenarioAdjustedEconomicData(variant, params, factor) {
   const adjustedProductionMwh = adjustedProductionKwh / 1000;
   const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
 
-  // Energy prices
-  const energyPricePLN = calculateTotalEnergyPrice(params);
-  const capacityFeePLN = params.capacity_fee || 219;
-  const totalPricePerMwh = energyPricePLN + capacityFeePLN;
+  // Energy prices - calculateTotalEnergyPrice() already includes capacity_fee
+  const totalPricePerMwh = calculateTotalEnergyPrice(params);
 
   // CAPEX
   const capexPerKwp = getCapexForCapacity(capacityKwp);
@@ -351,15 +349,13 @@ function updateCapexMetricsWithScenario(factor) {
   const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
   console.log('  📊 Self-consumed: base=', baseAnnualSelfConsumedKwh, 'adjusted=', adjustedSelfConsumedKwh);
 
-  // Get energy price using properly formatted params
-  const energyPricePLN = calculateTotalEnergyPrice(params); // PLN/MWh
-  const capacityFeePLN = params.capacity_fee || 219; // PLN/MWh for 7-21
-  console.log('  📊 Energy price:', energyPricePLN, 'PLN/MWh, capacity fee:', capacityFeePLN);
+  // Get total energy price (already includes all components: energy_active, distribution, fees, capacity_fee, excise)
+  const totalPricePerMwh = calculateTotalEnergyPrice(params); // PLN/MWh
+  console.log('  📊 Total energy price:', totalPricePerMwh, 'PLN/MWh');
 
-  // Calculate adjusted annual savings (self-consumed energy * full price with capacity fee)
-  const totalPricePerMwh = energyPricePLN + capacityFeePLN;
+  // Calculate adjusted annual savings (self-consumed energy * full price)
   const annualSavings = adjustedSelfConsumedMwh * totalPricePerMwh;
-  console.log('  📊 Total price:', totalPricePerMwh, 'PLN/MWh, annual savings:', annualSavings);
+  console.log('  📊 Annual savings:', annualSavings, 'PLN');
 
   // Get CAPEX using getCapexForCapacity function
   const capacityKwp = variant.capacity || 0;

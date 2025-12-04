@@ -150,20 +150,23 @@ const DEFAULT_CONFIG = {
   // DC/AC Ratio Mode
   dcacMode: 'manual', // 'manual' (use tiers table) or 'auto' (automatic selection in future)
 
-  // PV Installation Defaults - per type (Yield, Latitude, Tilt, Azimuth)
+  // PV Installation Defaults - per type (Yield, Latitude, Longitude, Tilt, Azimuth)
   // Ground South
   pvYield_ground_s: 1050,
   latitude_ground_s: 52.0,
+  longitude_ground_s: 21.0,
   tilt_ground_s: 0,       // 0 = auto (uses latitude)
   azimuth_ground_s: 180,  // South
   // Roof East-West
   pvYield_roof_ew: 950,
   latitude_roof_ew: 52.0,
+  longitude_roof_ew: 21.0,
   tilt_roof_ew: 10,       // Low tilt for E-W
   azimuth_roof_ew: 90,    // East (will also calculate West at 270)
   // Ground East-West
   pvYield_ground_ew: 980,
   latitude_ground_ew: 52.0,
+  longitude_ground_ew: 21.0,
   tilt_ground_ew: 15,
   azimuth_ground_ew: 90,  // East (will also calculate West at 270)
 
@@ -192,6 +195,15 @@ const DEFAULT_CONFIG = {
   thrB: 90,
   thrC: 85,
   thrD: 80,
+
+  // Operational Calendar
+  operatingMode: '24_7',   // '24_7' | 'workdays' | 'custom'
+  workHourStart: 6,        // Start hour (for custom mode)
+  workHourEnd: 22,         // End hour (for custom mode)
+  workOnSaturdays: false,  // Work on Saturdays (for custom mode)
+  workOnSundays: false,    // Work on Sundays (for custom mode)
+  peakHourStart: 7,        // Capacity fee peak start (URE standard: 7)
+  peakHourEnd: 21,         // Capacity fee peak end (URE standard: 21)
 
   // ============================================================================
   // ESG - Environmental, Social, Governance Parameters
@@ -345,10 +357,10 @@ function applySettingsToUI(config) {
     'altitude', 'albedo', 'soilingLoss',
     // DC/AC Mode
     'dcacMode',
-    // PV params per type (Yield, Latitude, Tilt, Azimuth)
-    'pvYield_ground_s', 'latitude_ground_s', 'tilt_ground_s', 'azimuth_ground_s',
-    'pvYield_roof_ew', 'latitude_roof_ew', 'tilt_roof_ew', 'azimuth_roof_ew',
-    'pvYield_ground_ew', 'latitude_ground_ew', 'tilt_ground_ew', 'azimuth_ground_ew',
+    // PV params per type (Yield, Latitude, Longitude, Tilt, Azimuth)
+    'pvYield_ground_s', 'latitude_ground_s', 'longitude_ground_s', 'tilt_ground_s', 'azimuth_ground_s',
+    'pvYield_roof_ew', 'latitude_roof_ew', 'longitude_roof_ew', 'tilt_roof_ew', 'azimuth_roof_ew',
+    'pvYield_ground_ew', 'latitude_ground_ew', 'longitude_ground_ew', 'tilt_ground_ew', 'azimuth_ground_ew',
     'capMin', 'capMax', 'capStep', 'thrA', 'thrB', 'thrC', 'thrD'
   ];
 
@@ -517,20 +529,23 @@ function getCurrentSettings() {
     // DC/AC Ratio Mode
     dcacMode: document.getElementById('dcacMode')?.value || DEFAULT_CONFIG.dcacMode,
 
-    // PV Installation - per type (Yield, Latitude, Tilt, Azimuth)
+    // PV Installation - per type (Yield, Latitude, Longitude, Tilt, Azimuth)
     // Ground South
     pvYield_ground_s: parseFloat(document.getElementById('pvYield_ground_s')?.value || DEFAULT_CONFIG.pvYield_ground_s),
     latitude_ground_s: parseFloat(document.getElementById('latitude_ground_s')?.value || DEFAULT_CONFIG.latitude_ground_s),
+    longitude_ground_s: parseFloat(document.getElementById('longitude_ground_s')?.value || DEFAULT_CONFIG.longitude_ground_s),
     tilt_ground_s: parseFloat(document.getElementById('tilt_ground_s')?.value || DEFAULT_CONFIG.tilt_ground_s),
     azimuth_ground_s: parseFloat(document.getElementById('azimuth_ground_s')?.value || DEFAULT_CONFIG.azimuth_ground_s),
     // Roof East-West
     pvYield_roof_ew: parseFloat(document.getElementById('pvYield_roof_ew')?.value || DEFAULT_CONFIG.pvYield_roof_ew),
     latitude_roof_ew: parseFloat(document.getElementById('latitude_roof_ew')?.value || DEFAULT_CONFIG.latitude_roof_ew),
+    longitude_roof_ew: parseFloat(document.getElementById('longitude_roof_ew')?.value || DEFAULT_CONFIG.longitude_roof_ew),
     tilt_roof_ew: parseFloat(document.getElementById('tilt_roof_ew')?.value || DEFAULT_CONFIG.tilt_roof_ew),
     azimuth_roof_ew: parseFloat(document.getElementById('azimuth_roof_ew')?.value || DEFAULT_CONFIG.azimuth_roof_ew),
     // Ground East-West
     pvYield_ground_ew: parseFloat(document.getElementById('pvYield_ground_ew')?.value || DEFAULT_CONFIG.pvYield_ground_ew),
     latitude_ground_ew: parseFloat(document.getElementById('latitude_ground_ew')?.value || DEFAULT_CONFIG.latitude_ground_ew),
+    longitude_ground_ew: parseFloat(document.getElementById('longitude_ground_ew')?.value || DEFAULT_CONFIG.longitude_ground_ew),
     tilt_ground_ew: parseFloat(document.getElementById('tilt_ground_ew')?.value || DEFAULT_CONFIG.tilt_ground_ew),
     azimuth_ground_ew: parseFloat(document.getElementById('azimuth_ground_ew')?.value || DEFAULT_CONFIG.azimuth_ground_ew),
 
@@ -1656,7 +1671,7 @@ async function fetchPxxFromPVGIS() {
 
   // Get location from the active PV type (use ground_s as default)
   const lat = settings.latitude_ground_s || 52.0;
-  const lon = 21.0; // Default longitude for Poland (could be added to settings)
+  const lon = settings.longitude_ground_s || 21.0;
 
   if (statusEl) statusEl.innerHTML = '⏳ <strong>Pobieranie danych z PVGIS...</strong>';
 
@@ -2158,3 +2173,259 @@ function applyElectricityMapsToManual() {
 // Make Electricity Maps functions globally available
 window.fetchElectricityMapsData = fetchElectricityMapsData;
 window.applyElectricityMapsToManual = applyElectricityMapsToManual;
+
+// ============================================================================
+// Location Resolver (Geo-Service Integration)
+// ============================================================================
+
+// Store last resolved location
+let resolvedGeoLocation = null;
+
+// Geo-service endpoint (direct or via nginx proxy)
+const GEO_SERVICE_URL = 'http://localhost:8021';
+
+/**
+ * Load Polish cities list for autocomplete
+ */
+async function loadPolishCitiesList() {
+  try {
+    const response = await fetch(GEO_SERVICE_URL + '/geo/cities/pl');
+    if (response.ok) {
+      const data = await response.json();
+      const datalist = document.getElementById('polishCitiesList');
+      if (datalist && data.cities) {
+        datalist.innerHTML = data.cities.map(function(city) {
+          return '<option value="' + city + '">';
+        }).join('');
+        console.log('📍 Loaded ' + data.cities.length + ' Polish cities for autocomplete');
+      }
+    }
+  } catch (err) {
+    console.warn('Could not load Polish cities list:', err.message);
+  }
+}
+
+/**
+ * Resolve location using geo-service
+ */
+async function resolveLocation() {
+  const country = document.getElementById('geoCountry')?.value || 'PL';
+  const postalCode = document.getElementById('geoPostalCode')?.value?.trim() || '';
+  const city = document.getElementById('geoCity')?.value?.trim() || '';
+
+  if (!postalCode && !city) {
+    showGeoStatus('⚠️ Wprowadź kod pocztowy lub nazwę miejscowości', 'warning');
+    return;
+  }
+
+  showGeoStatus('🔄 Szukam lokalizacji...', 'info');
+
+  try {
+    let url = GEO_SERVICE_URL + '/geo/resolve?country=' + encodeURIComponent(country);
+    if (postalCode) url += '&postal_code=' + encodeURIComponent(postalCode);
+    if (city) url += '&city=' + encodeURIComponent(city);
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        showGeoStatus('❌ Nie znaleziono lokalizacji. Sprawdź dane.', 'error');
+      } else {
+        const error = await response.text();
+        showGeoStatus('❌ Błąd: ' + error, 'error');
+      }
+      return;
+    }
+
+    const location = await response.json();
+    resolvedGeoLocation = location;
+
+    // Display resolved location
+    displayResolvedLocation(location);
+    showGeoStatus(location.cached ? '✅ Lokalizacja z cache' : '✅ Lokalizacja znaleziona', 'success');
+
+  } catch (err) {
+    console.error('Geo resolve error:', err);
+    showGeoStatus('❌ Błąd połączenia z geo-service: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Display resolved location in UI
+ */
+function displayResolvedLocation(location) {
+  const section = document.getElementById('geoResolvedSection');
+  if (!section) return;
+
+  section.style.display = 'block';
+
+  // Display name (city or display_name)
+  const nameEl = document.getElementById('geoResolvedName');
+  if (nameEl) {
+    nameEl.textContent = location.city || (location.display_name ? location.display_name.split(',')[0] : '–');
+  }
+
+  // Latitude
+  const latEl = document.getElementById('geoResolvedLat');
+  if (latEl) {
+    latEl.textContent = location.latitude ? location.latitude.toFixed(4) + '°' : '–';
+  }
+
+  // Longitude
+  const lonEl = document.getElementById('geoResolvedLon');
+  if (lonEl) {
+    lonEl.textContent = location.longitude ? location.longitude.toFixed(4) + '°' : '–';
+  }
+
+  // Elevation
+  const elevEl = document.getElementById('geoResolvedElev');
+  if (elevEl) {
+    if (location.elevation !== null && location.elevation !== undefined) {
+      elevEl.textContent = Math.round(location.elevation) + ' m';
+    } else {
+      elevEl.textContent = '–';
+    }
+  }
+}
+
+/**
+ * Apply resolved location to all PV installation types
+ */
+function applyResolvedLocation() {
+  if (!resolvedGeoLocation) {
+    showGeoStatus('⚠️ Najpierw znajdź lokalizację', 'warning');
+    return;
+  }
+
+  const lat = resolvedGeoLocation.latitude;
+  const lon = resolvedGeoLocation.longitude;
+  const elev = resolvedGeoLocation.elevation;
+
+  // Apply latitude to all installation types
+  const latFields = ['latitude_ground_s', 'latitude_roof_ew', 'latitude_ground_ew'];
+  latFields.forEach(function(fieldId) {
+    const el = document.getElementById(fieldId);
+    if (el) {
+      el.value = lat.toFixed(2);
+    }
+  });
+
+  // Apply longitude to all installation types (if fields exist)
+  const lonFields = ['longitude_ground_s', 'longitude_roof_ew', 'longitude_ground_ew'];
+  lonFields.forEach(function(fieldId) {
+    const el = document.getElementById(fieldId);
+    if (el) {
+      el.value = lon.toFixed(2);
+    }
+  });
+
+  // Apply elevation to altitude field
+  if (elev !== null && elev !== undefined) {
+    const altEl = document.getElementById('altitude');
+    if (altEl) {
+      altEl.value = Math.round(elev);
+    }
+  }
+
+  // Mark as unsaved and show status
+  markUnsaved();
+
+  const applyStatus = document.getElementById('geoApplyStatus');
+  if (applyStatus) {
+    let statusText = '✅ Zastosowano: lat=' + lat.toFixed(2) + '°, lon=' + lon.toFixed(2) + '°';
+    if (elev !== null && elev !== undefined) {
+      statusText += ', wysokość=' + Math.round(elev) + 'm';
+    }
+    applyStatus.textContent = statusText;
+  }
+
+  showStatus('✅ Lokalizacja zastosowana do parametrów instalacji', 'success');
+}
+
+/**
+ * Clear resolved location
+ */
+function clearResolvedLocation() {
+  resolvedGeoLocation = null;
+
+  const section = document.getElementById('geoResolvedSection');
+  if (section) {
+    section.style.display = 'none';
+  }
+
+  // Clear input fields
+  const postalEl = document.getElementById('geoPostalCode');
+  if (postalEl) postalEl.value = '';
+
+  const cityEl = document.getElementById('geoCity');
+  if (cityEl) cityEl.value = '';
+
+  const applyStatus = document.getElementById('geoApplyStatus');
+  if (applyStatus) applyStatus.textContent = '';
+
+  showGeoStatus('', '');
+}
+
+/**
+ * Show geo status message
+ */
+function showGeoStatus(message, type) {
+  const statusEl = document.getElementById('geoStatus');
+  if (!statusEl) return;
+
+  statusEl.textContent = message;
+
+  // Apply color based on type
+  switch (type) {
+    case 'error':
+      statusEl.style.color = '#d32f2f';
+      break;
+    case 'warning':
+      statusEl.style.color = '#f57c00';
+      break;
+    case 'success':
+      statusEl.style.color = '#388e3c';
+      break;
+    case 'info':
+      statusEl.style.color = '#1976d2';
+      break;
+    default:
+      statusEl.style.color = '#666';
+  }
+}
+
+// Initialize location resolver on load
+document.addEventListener('DOMContentLoaded', function() {
+  // Try to load Polish cities list for autocomplete
+  setTimeout(loadPolishCitiesList, 500);
+});
+
+// Make functions globally available
+window.resolveLocation = resolveLocation;
+window.applyResolvedLocation = applyResolvedLocation;
+window.clearResolvedLocation = clearResolvedLocation;
+
+// ============================================================================
+// Operational Calendar UI
+// ============================================================================
+
+/**
+ * Toggle operating mode fields visibility
+ */
+function toggleOperatingModeFields() {
+  const mode = document.getElementById('operatingMode')?.value || '24_7';
+  const customSection = document.getElementById('customHoursSection');
+
+  if (customSection) {
+    customSection.style.display = (mode === 'custom') ? 'block' : 'none';
+  }
+}
+
+// Initialize operational calendar on load
+document.addEventListener('DOMContentLoaded', function() {
+  toggleOperatingModeFields();
+});
+
+// Make function globally available
+window.toggleOperatingModeFields = toggleOperatingModeFields;
+

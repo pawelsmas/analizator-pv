@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Szybki Kalkulator PV</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="estimator-container">
+  <div class="estimator-header">
+    <div class="header-icon">⚡</div>
+    <h1>Szybki Kalkulator PV</h1>
+    <p>Szacunkowa wycena instalacji fotowoltaicznej</p>
+  </div>
+
+  <!-- Settings Info Banner -->
+  <div id="settingsInfo" class="settings-info-banner"></div>
+
+  <div class="estimator-content">
+    <!-- Input Section -->
+    <div class="input-section">
+      <div class="section-header">
+        <span class="section-icon">🔧</span>
+        <h2>Parametry</h2>
+      </div>
+
+      <!-- Power Input with Presets -->
+      <div class="input-group power-group">
+        <label for="powerKwp">Moc instalacji</label>
+        <div class="power-input-wrapper">
+          <input type="number" id="powerKwp" value="100" min="10" max="50000" step="10">
+          <span class="unit-badge">kWp</span>
+        </div>
+        <div class="power-presets">
+          <button type="button" class="preset-btn" data-power="50">50</button>
+          <button type="button" class="preset-btn" data-power="100">100</button>
+          <button type="button" class="preset-btn" data-power="250">250</button>
+          <button type="button" class="preset-btn" data-power="500">500</button>
+          <button type="button" class="preset-btn" data-power="1000">1 MW</button>
+          <button type="button" class="preset-btn" data-power="5000">5 MW</button>
+        </div>
+      </div>
+
+      <!-- Installation Type -->
+      <div class="input-group">
+        <label for="installationType">Typ montażu</label>
+        <div class="type-cards">
+          <label class="type-card selected" data-type="ground_s">
+            <input type="radio" name="installationType" value="ground_s" checked>
+            <span class="type-icon">🏔️</span>
+            <span class="type-name">Grunt S</span>
+            <span class="type-yield">1050 kWh/kWp</span>
+          </label>
+          <label class="type-card" data-type="ground_ew">
+            <input type="radio" name="installationType" value="ground_ew">
+            <span class="type-icon">↔️</span>
+            <span class="type-name">Grunt E-W</span>
+            <span class="type-yield">980 kWh/kWp</span>
+          </label>
+          <label class="type-card" data-type="roof_ew">
+            <input type="radio" name="installationType" value="roof_ew">
+            <span class="type-icon">🏠</span>
+            <span class="type-name">Dach E-W</span>
+            <span class="type-yield">950 kWh/kWp</span>
+          </label>
+          <label class="type-card" data-type="carport">
+            <input type="radio" name="installationType" value="carport">
+            <span class="type-icon">🚗</span>
+            <span class="type-name">Carport</span>
+            <span class="type-yield">900 kWh/kWp</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Scenario Pills -->
+      <div class="input-group">
+        <label>Scenariusz produkcji</label>
+        <div class="scenario-pills">
+          <label class="scenario-pill selected" data-scenario="P50">
+            <input type="radio" name="scenario" value="P50" checked>
+            <span class="pill-label">P50</span>
+            <span class="pill-desc">bazowy</span>
+          </label>
+          <label class="scenario-pill" data-scenario="P75">
+            <input type="radio" name="scenario" value="P75">
+            <span class="pill-label">P75</span>
+            <span class="pill-desc">-3%</span>
+          </label>
+          <label class="scenario-pill" data-scenario="P90">
+            <input type="radio" name="scenario" value="P90">
+            <span class="pill-label">P90</span>
+            <span class="pill-desc">-6%</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Advanced Options (Collapsible) -->
+      <details class="advanced-options">
+        <summary>
+          <span class="summary-icon">⚙️</span>
+          Zaawansowane
+          <span class="summary-arrow">▼</span>
+        </summary>
+        <div class="advanced-content">
+          <div class="input-group compact">
+            <label for="energyPrice">Cena energii</label>
+            <div class="inline-input">
+              <input type="number" id="energyPrice" value="1000" min="300" max="2000" step="25">
+              <span class="unit">PLN/MWh</span>
+            </div>
+          </div>
+
+          <div class="input-group compact">
+            <label for="curtailmentLoss">Straty sieciowe</label>
+            <div class="inline-input">
+              <input type="number" id="curtailmentLoss" value="0" min="0" max="50" step="0.5">
+              <span class="unit">%</span>
+            </div>
+            <span class="hint">0-export, clipping, ograniczenia</span>
+          </div>
+        </div>
+      </details>
+
+      <button onclick="calculate()" class="btn-calculate">
+        <span class="btn-icon">📊</span>
+        Oblicz wycenę
+      </button>
+    </div>
+
+    <!-- Results Section -->
+    <div class="results-section">
+      <div class="section-header">
+        <span class="section-icon">📈</span>
+        <h2>Wyniki szacunkowe</h2>
+      </div>
+
+      <!-- Primary Results Row -->
+      <div class="primary-results">
+        <div class="primary-card production">
+          <div class="primary-icon">☀️</div>
+          <div class="primary-value" id="resultProduction">–</div>
+          <div class="primary-unit">MWh/rok</div>
+          <div class="primary-label">Produkcja roczna</div>
+        </div>
+        <div class="primary-card flh">
+          <div class="primary-icon">⏱️</div>
+          <div class="primary-value" id="resultFLH">–</div>
+          <div class="primary-unit">h/rok</div>
+          <div class="primary-label">Godziny pełnego obciążenia</div>
+        </div>
+      </div>
+
+      <!-- Financial Results Grid -->
+      <div class="financial-grid">
+        <div class="finance-card savings">
+          <div class="finance-header">
+            <span class="finance-icon">💰</span>
+            <span class="finance-title">Oszczędności</span>
+          </div>
+          <div class="finance-value" id="resultSavings">–</div>
+          <div class="finance-period">rocznie</div>
+        </div>
+
+        <div class="finance-card capex">
+          <div class="finance-header">
+            <span class="finance-icon">🏗️</span>
+            <span class="finance-title">CAPEX</span>
+          </div>
+          <div class="finance-value" id="resultCapex">–</div>
+          <div class="finance-period">całkowity</div>
+        </div>
+
+        <div class="finance-card payback">
+          <div class="finance-header">
+            <span class="finance-icon">🔄</span>
+            <span class="finance-title">Zwrot</span>
+          </div>
+          <div class="finance-value" id="resultPayback">–</div>
+          <div class="finance-period">lat</div>
+        </div>
+
+        <div class="finance-card npv">
+          <div class="finance-header">
+            <span class="finance-icon">📊</span>
+            <span class="finance-title">NPV</span>
+          </div>
+          <div class="finance-value" id="resultNPV">–</div>
+          <div class="finance-period" id="npvPeriod">25 lat</div>
+        </div>
+      </div>
+
+      <!-- Summary Bar -->
+      <div class="summary-bar" id="summaryBar" style="display:none">
+        <div class="summary-item">
+          <span class="summary-label">CAPEX/kWp:</span>
+          <span class="summary-value" id="summaryCapexKwp">–</span>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-item">
+          <span class="summary-label">IRR:</span>
+          <span class="summary-value" id="summaryIRR">–</span>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-item">
+          <span class="summary-label">LCOE:</span>
+          <span class="summary-value" id="summaryLCOE">–</span>
+        </div>
+      </div>
+
+      <!-- Expandable Details -->
+      <details class="result-details" id="resultDetails">
+        <summary>
+          <span>📋 Szczegóły kalkulacji</span>
+          <span class="details-arrow">▼</span>
+        </summary>
+        <table id="detailsTable">
+          <tbody></tbody>
+        </table>
+      </details>
+    </div>
+  </div>
+
+  <div class="estimator-footer">
+    <div class="footer-badge">
+      <span class="footer-icon">💡</span>
+      <span>Dane z modułu <strong>USTAWIENIA</strong></span>
+    </div>
+  </div>
+</div>
+
+<script src="estimator.js"></script>
+</body>
+</html>

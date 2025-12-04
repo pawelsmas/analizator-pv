@@ -1,7 +1,25 @@
 // Micro-Frontend Shell - Routes to individual modules
 
-// Module URLs (running on different ports)
-const MODULES = {
+// Proxy mode: use path-based routing via nginx reverse proxy
+// When USE_PROXY=true, all URLs use /modules/* and /api/* paths
+// When USE_PROXY=false, direct port access for development
+const USE_PROXY = false; // TODO: Set to true for production with nginx reverse proxy
+
+// Module URLs
+const MODULES = USE_PROXY ? {
+  admin: '/modules/admin/',
+  config: '/modules/config/',
+  consumption: '/modules/consumption/',
+  production: '/modules/production/',
+  comparison: '/modules/comparison/',
+  economics: '/modules/economics/',
+  settings: '/modules/settings/',
+  esg: '/modules/esg/',
+  energyprices: '/modules/energyprices/',
+  reports: '/modules/reports/',
+  projects: '/modules/projects/',
+  estimator: '/modules/estimator/'
+} : {
   admin: 'http://localhost:9001',
   config: 'http://localhost:9002',
   consumption: 'http://localhost:9003',
@@ -12,11 +30,21 @@ const MODULES = {
   esg: 'http://localhost:9008',
   energyprices: 'http://localhost:9009',
   reports: 'http://localhost:9010',
-  projects: 'http://localhost:9011'
+  projects: 'http://localhost:9011',
+  estimator: 'http://localhost:9012'
 };
 
-// Backend services
-const BACKEND = {
+// Backend API URLs
+const BACKEND = USE_PROXY ? {
+  dataAnalysis: '/api/data',
+  pvCalculation: '/api/pv',
+  economics: '/api/economics',
+  advancedAnalytics: '/api/analytics',
+  typicalDays: '/api/typical-days',
+  energyPrices: '/api/energy-prices',
+  reports: '/api/reports',
+  projectsDb: '/api/projects'
+} : {
   dataAnalysis: 'http://localhost:8001',
   pvCalculation: 'http://localhost:8002',
   economics: 'http://localhost:8003',
@@ -41,7 +69,9 @@ let sharedData = {
   settings: null, // System settings from Settings module
   economics: null, // Economics calculation results
   currentScenario: 'P50', // Current production scenario (P50/P75/P90)
-  currentProject: null // Current project info { id, name, client }
+  currentProject: null, // Current project info { id, name, client }
+  // Data coverage metadata - indicates actual data range (may be <8760h)
+  analyticalYear: null // { start_date, end_date, total_hours, total_days, is_complete }
 };
 
 // Also save settings to shell's localStorage as central storage
@@ -346,6 +376,12 @@ window.addEventListener('message', (event) => {
       if (event.data.data) {
         sharedData.consumptionData = event.data.data;
 
+        // Store analytical year metadata if present
+        if (event.data.data.analytical_year) {
+          sharedData.analyticalYear = event.data.data.analytical_year;
+          console.log('📅 Analytical year stored:', sharedData.analyticalYear);
+        }
+
         // Fetch full hourly data from data-analysis for project storage
         fetchAndSaveFullConsumptionData();
       }
@@ -641,10 +677,40 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// Broadcast message to all modules
-function broadcastToModules(message) {
+/**
+ * Get the target origin for postMessage based on current module.
+ * In proxy mode, all modules are same-origin.
+ * In direct mode, each module has its own port.
+ */
+function getModuleOrigin(moduleName) {
+  if (USE_PROXY) {
+    // All modules served from same origin via nginx proxy
+    return window.location.origin;
+  }
+  // Direct port access - construct origin from module URL
+  const moduleUrl = MODULES[moduleName || currentModule];
+  if (moduleUrl && moduleUrl.startsWith('http')) {
+    const url = new URL(moduleUrl);
+    return url.origin;
+  }
+  return '*'; // Fallback for relative URLs
+}
+
+/**
+ * Post message to the currently active module iframe.
+ * Note: This is NOT a true broadcast to multiple modules.
+ * Only the currently loaded module in 'module-frame' receives the message.
+ * Other modules will request data via REQUEST_SHARED_DATA when they load.
+ *
+ * Security: Uses specific targetOrigin instead of '*' to prevent message leakage.
+ */
+function postToActiveModule(message) {
   const iframe = document.getElementById('module-frame');
-  if (iframe.contentWindow) {
-    iframe.contentWindow.postMessage(message, '*');
+  if (iframe && iframe.contentWindow) {
+    const targetOrigin = getModuleOrigin(currentModule);
+    iframe.contentWindow.postMessage(message, targetOrigin);
   }
 }
+
+// Legacy alias for backward compatibility
+const broadcastToModules = postToActiveModule;

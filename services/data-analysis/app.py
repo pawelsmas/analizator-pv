@@ -698,7 +698,11 @@ def process_uploaded_data(df: pd.DataFrame):
 
     kwh_cols = [col for col in df.columns if (
         'kwh' in col.lower() or
-        ('energia' in col.lower() and 'energy' in col.lower())
+        'energia' in col.lower() or
+        'energy' in col.lower() or
+        'zużycie' in col.lower() or
+        'zuzycie' in col.lower() or
+        'consumption' in col.lower()
     )]
 
     kw_key = kw_cols[0] if kw_cols else None
@@ -930,11 +934,20 @@ async def upload_csv(file: UploadFile = File(...)):
 
         hourly_data, year_hours = process_uploaded_data(df)
 
+        # Include analytical year metadata in response
+        ay = data_store.analytical_year
         return {
             "success": True,
             "message": f"Data loaded successfully",
             "data_points": len(hourly_data),
-            "year": pd.to_datetime(year_hours[0]).year
+            "year": pd.to_datetime(year_hours[0]).year,
+            "analytical_year": {
+                "start_date": ay.start_date if ay else None,
+                "end_date": ay.end_date if ay else None,
+                "total_days": ay.total_days if ay else None,
+                "total_hours": ay.total_hours if ay else len(hourly_data),
+                "is_complete": ay.is_complete if ay else False
+            } if ay else None
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -952,11 +965,20 @@ async def upload_excel(file: UploadFile = File(...)):
 
         hourly_data, year_hours = process_uploaded_data(df)
 
+        # Include analytical year metadata in response
+        ay = data_store.analytical_year
         return {
             "success": True,
             "message": f"Data loaded successfully",
             "data_points": len(hourly_data),
-            "year": pd.to_datetime(year_hours[0]).year
+            "year": pd.to_datetime(year_hours[0]).year,
+            "analytical_year": {
+                "start_date": ay.start_date if ay else None,
+                "end_date": ay.end_date if ay else None,
+                "total_days": ay.total_days if ay else None,
+                "total_hours": ay.total_hours if ay else len(hourly_data),
+                "is_complete": ay.is_complete if ay else False
+            } if ay else None
         }
     except Exception as e:
         import traceback
@@ -1253,6 +1275,248 @@ async def export_data():
         } if data_store.analytical_year else None,
         "data_points": len(data_store.hourly_data)
     }
+
+
+# ============== IMPUTATION (Missing Data) ==============
+
+class ImputationRequest(BaseModel):
+    """Request for data imputation"""
+    method: str = "seasonal_average"  # "seasonal_average" | "linear" | "week_profile"
+    apply: bool = False  # If True, apply imputation to data_store
+
+class GapInfo(BaseModel):
+    """Information about a gap in data"""
+    start_index: int
+    end_index: int
+    start_timestamp: str
+    end_timestamp: str
+    hours_missing: int
+
+class ImputationResult(BaseModel):
+    """Result of imputation analysis"""
+    gaps_found: int
+    total_hours_missing: int
+    gaps: List[GapInfo]
+    imputation_method: str
+    applied: bool
+    message: str
+
+
+def detect_gaps_in_data(timestamps: List[str], values: List[float]) -> List[dict]:
+    """
+    Detect gaps in hourly data.
+    A gap is defined as:
+    1. Missing timestamps (holes in the time series)
+    2. Zero or NaN values for extended periods (>= 3 consecutive hours)
+    """
+    gaps = []
+
+    if not timestamps or not values:
+        return gaps
+
+    # Convert timestamps to datetime
+    datetimes = []
+    for ts in timestamps:
+        try:
+            dt = datetime.fromisoformat(ts.replace('Z', '').replace('+00:00', ''))
+            datetimes.append(dt)
+        except:
+            datetimes.append(None)
+
+    # Check for zero/NaN sequences (potential gaps)
+    in_gap = False
+    gap_start = 0
+
+    for i, val in enumerate(values):
+        is_missing = val is None or np.isnan(val) if isinstance(val, float) else False
+        is_zero = val == 0 if not is_missing else False
+
+        if is_missing or is_zero:
+            if not in_gap:
+                in_gap = True
+                gap_start = i
+        else:
+            if in_gap:
+                gap_length = i - gap_start
+                # Only consider gaps of 3+ hours
+                if gap_length >= 3:
+                    gaps.append({
+                        "start_index": gap_start,
+                        "end_index": i - 1,
+                        "start_timestamp": timestamps[gap_start] if gap_start < len(timestamps) else "",
+                        "end_timestamp": timestamps[i - 1] if i - 1 < len(timestamps) else "",
+                        "hours_missing": gap_length
+                    })
+                in_gap = False
+
+    # Handle gap at end
+    if in_gap:
+        gap_length = len(values) - gap_start
+        if gap_length >= 3:
+            gaps.append({
+                "start_index": gap_start,
+                "end_index": len(values) - 1,
+                "start_timestamp": timestamps[gap_start] if gap_start < len(timestamps) else "",
+                "end_timestamp": timestamps[-1] if timestamps else "",
+                "hours_missing": gap_length
+            })
+
+    return gaps
+
+
+def impute_seasonal_average(values: List[float], timestamps: List[str], gaps: List[dict]) -> List[float]:
+    """
+    Impute missing values using seasonal average.
+    For each missing hour, use the average of the same hour from other weeks.
+    """
+    imputed = list(values)
+
+    # Convert timestamps to datetime for analysis
+    datetimes = []
+    for ts in timestamps:
+        try:
+            dt = datetime.fromisoformat(ts.replace('Z', '').replace('+00:00', ''))
+            datetimes.append(dt)
+        except:
+            datetimes.append(None)
+
+    # Calculate hourly averages by day_of_week and hour
+    hourly_avg = {}  # (dayofweek, hour) -> list of values
+
+    for i, (dt, val) in enumerate(zip(datetimes, values)):
+        if dt is None:
+            continue
+        if val is not None and val > 0:
+            key = (dt.weekday(), dt.hour)
+            if key not in hourly_avg:
+                hourly_avg[key] = []
+            hourly_avg[key].append(val)
+
+    # Calculate averages
+    for key in hourly_avg:
+        hourly_avg[key] = np.mean(hourly_avg[key])
+
+    # Fill gaps
+    for gap in gaps:
+        for i in range(gap["start_index"], gap["end_index"] + 1):
+            if i < len(datetimes) and datetimes[i] is not None:
+                key = (datetimes[i].weekday(), datetimes[i].hour)
+                if key in hourly_avg:
+                    imputed[i] = float(hourly_avg[key])
+
+    return imputed
+
+
+@app.get("/data-quality")
+async def analyze_data_quality():
+    """
+    Analyze data quality and detect gaps/missing periods.
+    Returns information about data completeness.
+    """
+    if not data_store.hourly_data:
+        raise HTTPException(status_code=400, detail="No data loaded")
+
+    values = data_store.hourly_data
+    timestamps = data_store.year_hours
+
+    # Detect gaps
+    gaps = detect_gaps_in_data(timestamps, values)
+
+    # Calculate statistics
+    total_hours = len(values)
+    total_missing = sum(g["hours_missing"] for g in gaps)
+    zero_count = sum(1 for v in values if v == 0)
+    nan_count = sum(1 for v in values if v is None or (isinstance(v, float) and np.isnan(v)))
+
+    # Data quality score (0-100)
+    valid_data_ratio = 1 - (total_missing / total_hours) if total_hours > 0 else 0
+    quality_score = round(valid_data_ratio * 100, 1)
+
+    return {
+        "total_hours": total_hours,
+        "valid_hours": total_hours - total_missing,
+        "missing_hours": total_missing,
+        "zero_values": zero_count,
+        "nan_values": nan_count,
+        "gaps_count": len(gaps),
+        "gaps": [GapInfo(**g) for g in gaps],
+        "quality_score": quality_score,
+        "quality_status": "good" if quality_score >= 95 else "fair" if quality_score >= 80 else "poor",
+        "recommendation": "Dane wyglądają dobrze." if quality_score >= 95 else
+                         "Zalecana imputacja brakujących okresów." if quality_score >= 80 else
+                         "Dane wymagają uzupełnienia przed analizą."
+    }
+
+
+@app.post("/impute", response_model=ImputationResult)
+async def impute_missing_data(request: ImputationRequest):
+    """
+    Impute missing data using specified method.
+
+    Methods:
+    - seasonal_average: Use average from same day-of-week and hour (recommended)
+    - linear: Linear interpolation between valid values
+    - week_profile: Use weekly profile from valid data
+
+    If apply=True, the imputed data replaces the original in data_store.
+    """
+    if not data_store.hourly_data:
+        raise HTTPException(status_code=400, detail="No data loaded")
+
+    values = data_store.hourly_data
+    timestamps = data_store.year_hours
+
+    # Detect gaps
+    gaps = detect_gaps_in_data(timestamps, values)
+
+    if not gaps:
+        return ImputationResult(
+            gaps_found=0,
+            total_hours_missing=0,
+            gaps=[],
+            imputation_method=request.method,
+            applied=False,
+            message="Nie wykryto brakujących danych. Imputacja nie jest wymagana."
+        )
+
+    total_missing = sum(g["hours_missing"] for g in gaps)
+
+    # Perform imputation
+    if request.method == "seasonal_average":
+        imputed_values = impute_seasonal_average(values, timestamps, gaps)
+    elif request.method == "linear":
+        # Simple linear interpolation using numpy
+        imputed_values = list(values)
+        for gap in gaps:
+            start_idx = gap["start_index"]
+            end_idx = gap["end_index"]
+            # Get boundary values
+            start_val = values[start_idx - 1] if start_idx > 0 else values[end_idx + 1] if end_idx + 1 < len(values) else 0
+            end_val = values[end_idx + 1] if end_idx + 1 < len(values) else start_val
+            # Interpolate
+            gap_length = end_idx - start_idx + 1
+            for i, idx in enumerate(range(start_idx, end_idx + 1)):
+                ratio = i / gap_length
+                imputed_values[idx] = start_val + ratio * (end_val - start_val)
+    else:
+        imputed_values = impute_seasonal_average(values, timestamps, gaps)
+
+    # Apply if requested
+    if request.apply:
+        data_store.hourly_data = imputed_values
+        message = f"Uzupełniono {total_missing} godzin danych metodą '{request.method}'."
+    else:
+        message = f"Wykryto {len(gaps)} luk ({total_missing} godzin). Użyj apply=true aby zastosować imputację."
+
+    return ImputationResult(
+        gaps_found=len(gaps),
+        total_hours_missing=total_missing,
+        gaps=[GapInfo(**g) for g in gaps],
+        imputation_method=request.method,
+        applied=request.apply,
+        message=message
+    )
+
 
 if __name__ == "__main__":
     import uvicorn

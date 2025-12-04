@@ -104,8 +104,8 @@
         <h2 style="margin: 0;">Profil Godzinowy Roczny: Load vs PV Production vs Self-Consumption</h2>
         <button class="btn" onclick="exportHourlyProfileToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
       </div>
-      <div class="chart-info">
-        Pełny rok (8760h) - trzy krzywe nałożone: 🔴 <strong>Zużycie (Load)</strong> - linia na wierzchu, 🟠 <strong>Produkcja PV AC</strong> (z inverter clipping DC/AC=1.2) - wypełnienie pomarańczowe, 🟢 <strong>Autokonsumpcja</strong> (Self-Consumption = min(Load, PV AC)) - wypełnienie zielone
+      <div class="chart-info" id="hourlyProfileInfo">
+        Dane godzinowe - trzy krzywe nałożone: 🔴 <strong>Zużycie (Load)</strong> - linia na wierzchu, 🟠 <strong>Produkcja PV AC</strong> (z inverter clipping DC/AC) - wypełnienie pomarańczowe, 🟢 <strong>Autokonsumpcja</strong> (Self-Consumption = min(Load, PV AC)) - wypełnienie zielone
         <br><em>Warstwy: autokonsumpcja (dół) → produkcja PV (środek) → zużycie (góra)</em>
       </div>
 
@@ -152,9 +152,9 @@
         <h2 style="margin: 0;">Profil Godzinowy: TYLKO Godziny Produkcji PV (Daylight Analysis)</h2>
         <button class="btn" onclick="exportDaylightProfileToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
       </div>
-      <div class="chart-info">
+      <div class="chart-info" id="daylightProfileInfo">
         Analiza tylko w godzinach gdy PV produkuje energię (5:00-20:00 latem, 8:00-16:00 zimą) - łatwiej zobaczyć bezpośrednie pokrycie Load przez PV i self-consumption bez nocnych godzin zero
-        <br><em>Pełny rok (tylko godziny dzienne, ~5000-6000h z 8760h) - zmienne godziny sunrise/sunset według sezonu</em>
+        <br><em>Tylko godziny dzienne (~5000-6000h) - zmienne godziny sunrise/sunset według sezonu</em>
       </div>
 
       <!-- Visibility Controls -->

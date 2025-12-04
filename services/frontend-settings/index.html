@@ -688,6 +688,88 @@
       </div>
     </div>
 
+    <!-- Location Resolver Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📍</span>
+        <h2>Lokalizacja Instalacji</h2>
+        <span class="section-info">Wpisz miejscowość lub kod pocztowy, aby automatycznie pobrać współrzędne i wysokość</span>
+      </div>
+
+      <!-- Info Box -->
+      <div style="margin-bottom:16px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-size:12px;color:#1565c0;line-height:1.5">
+          <strong>💡 Location Resolver</strong> automatycznie pobiera:<br>
+          • Szerokość geograficzną (latitude) - używaną do symulacji PV<br>
+          • Długość geograficzną (longitude) - dla PVGIS<br>
+          • Wysokość n.p.m. - wpływającą na irradiancję<br>
+          <em>Dane z OpenStreetMap Nominatim + Open-Elevation API</em>
+        </div>
+      </div>
+
+      <!-- Location Input -->
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:20px">
+        <div class="setting-item" style="flex:1;min-width:200px">
+          <label>Kraj</label>
+          <select id="geoCountry" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+            <option value="PL">🇵🇱 Polska</option>
+            <option value="DE">🇩🇪 Niemcy</option>
+            <option value="CZ">🇨🇿 Czechy</option>
+            <option value="SK">🇸🇰 Słowacja</option>
+            <option value="LT">🇱🇹 Litwa</option>
+            <option value="UA">🇺🇦 Ukraina</option>
+          </select>
+        </div>
+        <div class="setting-item" style="flex:1;min-width:150px">
+          <label>Kod pocztowy</label>
+          <input type="text" id="geoPostalCode" placeholder="np. 00-001" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+        </div>
+        <div class="setting-item" style="flex:2;min-width:200px">
+          <label>Miejscowość</label>
+          <input type="text" id="geoCity" placeholder="np. Warszawa" list="polishCitiesList" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+          <datalist id="polishCitiesList"></datalist>
+        </div>
+        <button onclick="resolveLocation()" class="btn btn-primary" style="padding:10px 24px;white-space:nowrap">
+          🔍 Znajdź lokalizację
+        </button>
+      </div>
+
+      <!-- Resolved Location Display -->
+      <div id="geoResolvedSection" style="display:none;padding:16px;background:#e8f5e9;border-radius:8px;border-left:4px solid #4caf50;margin-bottom:16px">
+        <div style="font-weight:600;color:#2e7d32;margin-bottom:12px">✅ Znaleziona lokalizacja:</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:16px">
+          <div>
+            <div style="font-size:11px;color:#666">Miejscowość</div>
+            <div id="geoResolvedName" style="font-size:16px;font-weight:600;color:#333">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#666">Szerokość (lat)</div>
+            <div id="geoResolvedLat" style="font-size:16px;font-weight:600;color:#1565c0">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#666">Długość (lon)</div>
+            <div id="geoResolvedLon" style="font-size:16px;font-weight:600;color:#1565c0">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#666">Wysokość n.p.m.</div>
+            <div id="geoResolvedElev" style="font-size:16px;font-weight:600;color:#7b1fa2">–</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px">
+          <button onclick="applyResolvedLocation()" class="btn btn-primary" style="padding:8px 16px">
+            ✓ Zastosuj do wszystkich typów instalacji
+          </button>
+          <button onclick="clearResolvedLocation()" class="btn btn-secondary" style="padding:8px 16px">
+            ✕ Wyczyść
+          </button>
+        </div>
+        <div id="geoApplyStatus" style="margin-top:8px;font-size:11px;color:#666"></div>
+      </div>
+
+      <!-- Status message -->
+      <div id="geoStatus" style="font-size:12px;color:#666;margin-bottom:8px"></div>
+    </div>
+
     <!-- Environmental Parameters -->
     <div class="settings-section">
       <div class="section-header">
@@ -938,6 +1020,86 @@
       </div>
     </div>
 
+    <!-- Operational Calendar Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🏭</span>
+        <h2>Kalendarz Operacyjny</h2>
+        <span class="section-info">Godziny pracy zakładu i tryb zmianowy</span>
+      </div>
+
+      <!-- Info Box -->
+      <div style="margin-bottom:16px;padding:12px;background:#fff3e0;border-radius:8px;border-left:4px solid #ff9800">
+        <div style="font-size:12px;color:#e65100;line-height:1.5">
+          <strong>💡 Kalendarz operacyjny</strong> określa, kiedy zakład zużywa energię.<br>
+          Używany do dokładniejszej kalkulacji autokonsumpcji i opłaty mocowej (godziny szczytu 7-21 w dni robocze).<br>
+          <em>Polskie święta są automatycznie uwzględniane.</em>
+        </div>
+      </div>
+
+      <!-- Operating Mode Selection -->
+      <div class="setting-item" style="margin-bottom:16px">
+        <label style="font-weight:600;color:#e65100">Tryb pracy zakładu</label>
+        <select id="operatingMode" onchange="toggleOperatingModeFields()" style="width:100%;max-width:400px;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+          <option value="24_7">Praca ciągła 24/7 (całodobowo)</option>
+          <option value="workdays">Tylko dni robocze (Pn-Pt, bez świąt)</option>
+          <option value="custom">Niestandardowe godziny pracy</option>
+        </select>
+      </div>
+
+      <!-- Custom Hours Section (hidden by default) -->
+      <div id="customHoursSection" style="display:none;padding:16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:16px">
+        <div style="font-weight:600;color:#333;margin-bottom:12px">⏰ Godziny pracy zakładu</div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Początek pracy (godzina)</label>
+            <input type="number" id="workHourStart" value="6" step="1" min="0" max="23">
+            <span class="setting-hint">Np. 6 = 06:00</span>
+          </div>
+          <div class="setting-item">
+            <label>Koniec pracy (godzina)</label>
+            <input type="number" id="workHourEnd" value="22" step="1" min="1" max="24">
+            <span class="setting-hint">Np. 22 = 22:00</span>
+          </div>
+          <div class="setting-item">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="workOnSaturdays" style="width:18px;height:18px">
+              Praca w soboty
+            </label>
+          </div>
+          <div class="setting-item">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" id="workOnSundays" style="width:18px;height:18px">
+              Praca w niedziele
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Peak Hours (Capacity Fee) -->
+      <div style="padding:16px;background:#e3f2fd;border-radius:8px;border-left:4px solid #2196f3">
+        <div style="font-weight:600;color:#1565c0;margin-bottom:12px">⚡ Godziny szczytu (opłata mocowa)</div>
+        <div style="margin-bottom:12px;font-size:12px;color:#666">
+          Opłata mocowa naliczana jest tylko za energię pobraną w godzinach szczytu w dni robocze.
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Początek szczytu</label>
+            <input type="number" id="peakHourStart" value="7" step="1" min="0" max="23">
+            <span class="setting-hint">Domyślnie: 7 (07:00)</span>
+          </div>
+          <div class="setting-item">
+            <label>Koniec szczytu</label>
+            <input type="number" id="peakHourEnd" value="21" step="1" min="1" max="24">
+            <span class="setting-hint">Domyślnie: 21 (21:00)</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:#666">
+          <strong>Uwaga:</strong> Zgodnie z URE, godziny szczytu to 7:00-21:00 w dni robocze (bez świąt).
+        </div>
+      </div>
+    </div>
+
     <!-- Analysis Range -->
     <div class="settings-section">
       <div class="section-header">
@@ -1004,26 +1166,72 @@
 </div>
 
 <script>
-// Password protection for EaaS section
+// Feature flag based access control for EaaS section
+// TODO: Replace with proper backend JWT auth when available
+// For now, uses a simple role check from localStorage
+
+const USER_ROLES = {
+  ADMIN: 'admin',
+  ENGINEER: 'engineer',
+  SALES: 'sales'
+};
+
+// Check if user has elevated access (engineer or admin role)
+function hasEaasAccess() {
+  const userRole = localStorage.getItem('pv_user_role');
+  return userRole === USER_ROLES.ADMIN || userRole === USER_ROLES.ENGINEER;
+}
+
+// Unlock EaaS section with role verification
 function unlockEaasSection() {
-  const password = prompt('Wprowadź hasło aby odblokować parametry EaaS:');
+  // First check if user already has access via role
+  if (hasEaasAccess()) {
+    showEaasSection();
+    return;
+  }
 
-  // Check password (change 'admin123' to your desired password)
-  if (password === 'admin123') {
-    document.getElementById('eaasPasswordSection').style.display = 'none';
-    document.getElementById('eaasParamsSection').style.display = 'block';
+  // Fallback: prompt for role selection (temporary until auth is implemented)
+  const roleOptions = ['admin', 'engineer', 'sales'];
+  const selectedRole = prompt(
+    'Wybierz swoją rolę:\n' +
+    '• admin - pełny dostęp\n' +
+    '• engineer - dostęp do parametrów technicznych\n' +
+    '• sales - podstawowy dostęp\n\n' +
+    'Wprowadź rolę:'
+  );
 
-    // Show success message
-    const saveStatus = document.getElementById('saveStatus');
-    saveStatus.textContent = '✅ Parametry EaaS odblokowane';
-    saveStatus.className = 'save-status success';
-    setTimeout(() => {
-      saveStatus.className = 'save-status';
-    }, 3000);
-  } else if (password !== null) {
-    alert('❌ Nieprawidłowe hasło!');
+  if (selectedRole && roleOptions.includes(selectedRole.toLowerCase())) {
+    localStorage.setItem('pv_user_role', selectedRole.toLowerCase());
+
+    if (selectedRole.toLowerCase() === 'admin' || selectedRole.toLowerCase() === 'engineer') {
+      showEaasSection();
+    } else {
+      alert('⚠️ Rola "sales" nie ma dostępu do parametrów EaaS.\nSkontaktuj się z administratorem.');
+    }
+  } else if (selectedRole !== null) {
+    alert('❌ Nieznana rola. Dostępne: admin, engineer, sales');
   }
 }
+
+function showEaasSection() {
+  document.getElementById('eaasPasswordSection').style.display = 'none';
+  document.getElementById('eaasParamsSection').style.display = 'block';
+
+  // Show success message
+  const saveStatus = document.getElementById('saveStatus');
+  saveStatus.textContent = '✅ Parametry EaaS odblokowane';
+  saveStatus.className = 'save-status success';
+  setTimeout(() => {
+    saveStatus.className = 'save-status';
+  }, 3000);
+}
+
+// Auto-unlock if user already has access
+document.addEventListener('DOMContentLoaded', function() {
+  if (hasEaasAccess()) {
+    showEaasSection();
+  }
+});
 </script>
 
 <script src="settings.js"></script>

@@ -1,8 +1,8 @@
-# PV Optimizer v1.8 - Micro-Frontend Architecture
+# PV Optimizer v1.9 - Micro-Frontend Architecture
 
 ## Architektura
 
-System zbudowany jest w architekturze **micro-frontend** z **11 niezaleznymi kontenerami frontend** + **7 kontenerami backend**:
+System zbudowany jest w architekturze **micro-frontend** z **12 niezaleznymi kontenerami frontend** + **8 kontenerami backend**:
 
 ### Frontend Modules (Micro-Frontends)
 
@@ -19,6 +19,7 @@ System zbudowany jest w architekturze **micro-frontend** z **11 niezaleznymi kon
 | **ESG** | 9008 | Environmental indicators (CO2, trees, water) | `pv-frontend-esg` |
 | **Energy Prices** | 9009 | Energy prices from TGE/ENTSO-E | `pv-frontend-energy-prices` |
 | **Reports** | 9010 | PDF report generation | `pv-frontend-reports` |
+| **Projects** | 9011 | Project management, save/load | `pv-frontend-projects` |
 
 ### Backend Services
 
@@ -31,8 +32,16 @@ System zbudowany jest w architekturze **micro-frontend** z **11 niezaleznymi kon
 | typical-days | 8005 | Typical day patterns, seasonal analysis |
 | energy-prices | 8010 | TGE/ENTSO-E price fetching |
 | reports | 8011 | PDF generation with ReportLab |
+| projects-db | 8012 | Project persistence (SQLite) |
+| pvgis-proxy | 8020 | PVGIS API proxy for P50/P75/P90 |
 
 ## Communication Pattern
+
+### Important: postToActiveModule (not true broadcast)
+
+Shell uses `postToActiveModule()` function (alias: `broadcastToModules`) to send messages.
+**Note**: This is NOT a true broadcast - only the currently loaded module in the iframe receives the message.
+Other modules request data via `REQUEST_SHARED_DATA` when they load.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

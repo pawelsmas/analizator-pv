@@ -1,8 +1,8 @@
-# PV Optimizer v1.8 - Architecture Documentation
+# PV Optimizer v1.9 - Architecture Documentation
 
 ## Overview
 
-PV Optimizer is a micro-frontend application for photovoltaic system analysis and optimization. The system consists of 11 frontend modules and 7 backend services running in Docker containers.
+PV Optimizer is a micro-frontend application for photovoltaic system analysis and optimization. The system consists of 12 frontend modules and 8 backend services running in Docker containers.
 
 ## System Architecture
 
@@ -96,7 +96,14 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 - Water savings estimation
 - Environmental impact reporting
 
-#### 7. Other Modules
+#### 7. Projects Module (Port 9011)
+**Responsibilities**:
+- Project management (create, load, delete)
+- Client identification (name + NIP)
+- Project data overview
+- Auto-save status display
+
+#### 8. Other Modules
 - **Admin** (9001) - User management
 - **Comparison** (9005) - Variant analysis
 - **Settings** (9007) - System parameters
@@ -170,9 +177,36 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 - Charts and visualizations
 - Data export
 
-#### 6. Supporting Services
+#### 6. Projects DB Service (Port 8012)
+**Technology**: Python 3.11 + FastAPI + SQLite
+**Responsibilities**:
+- Project persistence (SQLite database)
+- CRUD operations for projects
+- Data storage per project type
+- Full project load/save
+
+**API Endpoints**:
+- `POST /projects` - Create new project
+- `GET /projects` - List all projects
+- `GET /projects/{id}` - Get project details
+- `GET /projects/{id}/load-full` - Load complete project data
+- `POST /projects/{id}/data` - Save data to project
+- `DELETE /projects/{id}` - Delete project
+- `GET /health` - Health check
+
+**Data Types Stored**:
+- `rawConsumptionData` - Full hourly consumption (timestamps + values)
+- `consumptionData` - Consumption metadata
+- `analysisResults` - Full analysis output
+- `pvConfig` - PV system configuration
+- `settings` - User settings
+- `economics` - Economic calculations
+- `masterVariant` - Selected variant
+
+#### 7. Supporting Services
 - **Advanced Analytics** (8004) - Load duration curves, KPIs
 - **Typical Days** (8005) - Daily pattern analysis
+- **PVGIS Proxy** (8020) - PVGIS API proxy for P50/P75/P90 factors
 
 ## Data Flow
 
@@ -272,10 +306,21 @@ All Modules (via iframe postMessage)
 - Only frontend modules exposed externally
 - CORS configured for API access
 
-### Data Security
-- Stateless design (no persistent data in containers)
-- Uploaded data stored in memory only
-- Settings in browser localStorage
+### Data Security & Persistence
+**Stateful Services**:
+- `Projects DB` (8012) - SQLite database with project data (mounted volume)
+- `Data Analysis` (8001) - In-memory storage of uploaded consumption data
+
+**Stateless Services**:
+- All other backend services (PV Calculation, Economics, Reports, etc.)
+
+**Data Restoration**:
+When loading a project, raw consumption data is restored to Data Analysis service
+via `POST /restore-data` endpoint, enabling full recalculation capability.
+
+**Browser Storage**:
+- Settings persisted in localStorage
+- Current project ID in localStorage
 
 ## Monitoring & Health
 

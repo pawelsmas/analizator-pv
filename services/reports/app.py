@@ -1497,8 +1497,7 @@ def generate_pv_assumptions_section(data: ReportData) -> str:
 
     location = data.config.location or 'Polska'
     latitude = pv_config.get('latitude', 52.0)
-    # Longitude is not in pvConfig, use default for Poland
-    longitude = 21.0
+    longitude = pv_config.get('longitude', 21.0)
 
     # Get actual azimuth from config
     azimuth_value = pv_config.get('azimuth', 180)

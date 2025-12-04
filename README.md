@@ -41,7 +41,7 @@ Aplikacja zbudowana jest w architekturze micro-frontend z modularnym backendem:
 - Identyfikacja szczytow zuzycia
 
 ### Symulacja Produkcji PV
-- Integracja z PVGIS dla danych naslonienia
+- Integracja z PVGIS dla danych nasloniecznienia
 - Scenariusze produkcji P50/P75/P90
 - Zarzadzanie DC/AC Ratio
 - Obliczanie autokonsumpcji i samowystarczalnosci
@@ -232,7 +232,7 @@ Zmodyfikuj mapowania portow w `docker-compose.yml` jesli porty 8001-8011 lub 900
 
 ## 👥 Autorzy
 
-PV Optimizer Development Team
+PV Optimizer Development Team ;)
 
 ---
 

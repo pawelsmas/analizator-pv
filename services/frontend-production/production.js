@@ -11,6 +11,7 @@ let analysisResults = null;
 let currentVariant = 'A'; // Default variant
 let variants = {};
 let systemSettings = null;
+let analyticalYear = null; // { start_date, end_date, total_hours, total_days, is_complete }
 
 // ============================================
 // PRODUCTION SCENARIO P50/P75/P90
@@ -28,6 +29,31 @@ let productionFactors = {
 
 // Base production values (before scenario adjustment)
 let baseProductionKwh = 0;
+
+/**
+ * Get dynamic X-axis label for hourly profile chart
+ * Shows actual data hours and date range instead of hardcoded "8760"
+ */
+function getHourlyChartXAxisLabel() {
+  if (analyticalYear && analyticalYear.total_hours) {
+    const hours = analyticalYear.total_hours;
+    const startDate = analyticalYear.start_date || '';
+    const endDate = analyticalYear.end_date || '';
+    const isComplete = analyticalYear.is_complete;
+
+    if (startDate && endDate) {
+      const completeness = isComplete ? '' : ' ⚠️ niepełny rok';
+      return `Rok analityczny (${hours}h: ${startDate} → ${endDate})${completeness}`;
+    }
+    return `Profil godzinowy (${hours} godzin)`;
+  }
+  // Fallback: use actual data points if available
+  if (consumptionData && consumptionData.hourlyData && consumptionData.hourlyData.values) {
+    const hours = consumptionData.hourlyData.values.length;
+    return `Profil godzinowy (${hours} godzin)`;
+  }
+  return 'Rok (etykiety co 7 dni)';
+}
 
 /**
  * Format number in European style
@@ -254,6 +280,11 @@ window.addEventListener('message', (event) => {
             btn.classList.remove('active');
           });
           document.querySelector(`.variant-btn[data-variant="${currentVariant}"]`)?.classList.add('active');
+        }
+        // Load analytical year metadata if available
+        if (event.data.data.analyticalYear) {
+          analyticalYear = event.data.data.analyticalYear;
+          console.log('  - analyticalYear loaded:', analyticalYear);
         }
         console.log('🚀 Calling performAnalysis() from SHARED_DATA_RESPONSE');
         performAnalysis();
@@ -1357,7 +1388,10 @@ function generateHourlyProfile() {
           }
         },
         x: {
-          title: { display: true, text: 'Rok (8760 godzin - etykiety co 7 dni)' },
+          title: {
+            display: true,
+            text: getHourlyChartXAxisLabel()
+          },
           ticks: {
             maxTicksLimit: 52, // ~weekly ticks
             autoSkip: true
