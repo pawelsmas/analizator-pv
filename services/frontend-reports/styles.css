@@ -9,6 +9,12 @@ body {
     background-color: #f5f7fa;
     color: #333;
     line-height: 1.6;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+body::-webkit-scrollbar {
+    display: none;
 }
 
 .container {

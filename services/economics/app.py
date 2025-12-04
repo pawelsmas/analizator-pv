@@ -47,6 +47,7 @@ class EconomicAnalysisRequest(BaseModel):
 class CashFlow(BaseModel):
     year: int
     production: float
+    self_consumed: float  # kWh - actual self-consumed energy with degradation
     revenue: float
     opex: float
     net_cash_flow: float
@@ -567,9 +568,13 @@ async def analyze_economics(request: EconomicAnalysisRequest):
 
             cash_flows.append(net_cf)
 
+            # Self consumed with degradation (kWh)
+            self_consumed_year = variant.self_consumed * degrad_factor
+
             cash_flow_details.append(CashFlow(
                 year=year,
                 production=production,
+                self_consumed=self_consumed_year,
                 revenue=revenue,
                 opex=opex,
                 net_cash_flow=net_cf,

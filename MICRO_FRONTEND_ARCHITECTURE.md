@@ -2,13 +2,13 @@
 
 ## Architektura
 
-System zbudowany jest w architekturze **micro-frontend** z **12 niezaleznymi kontenerami frontend** + **8 kontenerami backend**:
+System zbudowany jest w architekturze **micro-frontend** z **13 niezaleznymi kontenerami frontend** + **9 kontenerami backend**:
 
 ### Frontend Modules (Micro-Frontends)
 
 | Module | Port | Responsibility | Container Name |
 |--------|------|----------------|----------------|
-| **Shell** | 9000 | Main application shell, routing, navigation, inter-module communication | `pv-frontend-shell` |
+| **Shell** | 80 | Main application shell, routing, navigation, inter-module communication | `pv-frontend-shell` |
 | **Admin** | 9001 | System administration, user management | `pv-frontend-admin` |
 | **Configuration** | 9002 | Data upload, PV configuration, PVGIS integration | `pv-frontend-config` |
 | **Consumption** | 9003 | Consumption analysis, charts, heatmaps | `pv-frontend-consumption` |
@@ -20,6 +20,7 @@ System zbudowany jest w architekturze **micro-frontend** z **12 niezaleznymi kon
 | **Energy Prices** | 9009 | Energy prices from TGE/ENTSO-E | `pv-frontend-energy-prices` |
 | **Reports** | 9010 | PDF report generation | `pv-frontend-reports` |
 | **Projects** | 9011 | Project management, save/load | `pv-frontend-projects` |
+| **Estimator** | 9012 | Quick PV estimation calculator | `pv-frontend-estimator` |
 
 ### Backend Services
 
@@ -32,8 +33,8 @@ System zbudowany jest w architekturze **micro-frontend** z **12 niezaleznymi kon
 | typical-days | 8005 | Typical day patterns, seasonal analysis |
 | energy-prices | 8010 | TGE/ENTSO-E price fetching |
 | reports | 8011 | PDF generation with ReportLab |
-| projects-db | 8012 | Project persistence (SQLite) |
-| pvgis-proxy | 8020 | PVGIS API proxy for P50/P75/P90 |
+| **geo-service** | 8021 | **Geolocation (Nominatim + Polish DB)** |
+| **projects-db** | 8022 | **Project persistence (SQLite)** |
 
 ## Communication Pattern
 
@@ -45,7 +46,7 @@ Other modules request data via `REQUEST_SHARED_DATA` when they load.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│              Frontend Shell (Port 9000)                          │
+│              Frontend Shell (Port 80)                            │
 │  - Navigation tabs                                               │
 │  - Module Routing via iframe                                     │
 │  - Inter-module Communication (postMessage API)                  │
@@ -56,20 +57,22 @@ Other modules request data via `REQUEST_SHARED_DATA` when they load.
          ├───► Admin Module (9001)
          ├───► Config Module (9002) ────┐
          ├───► Consumption Module (9003) │
-         ├───► Production Module (9004) ─┼──► Backend APIs (8001-8011)
+         ├───► Production Module (9004) ─┼──► Backend APIs (8001-8022)
          ├───► Comparison Module (9005)  │
          ├───► Economics Module (9006) ──┤
          ├───► Settings Module (9007)    │
          ├───► ESG Module (9008) ────────┤
          ├───► Energy Prices (9009) ─────┤
-         └───► Reports Module (9010) ────┘
+         ├───► Reports Module (9010) ────┤
+         ├───► Projects Module (9011) ───┤ ──► projects-db (8022)
+         └───► Estimator Module (9012) ──┘ ──► geo-service (8021)
 ```
 
 ## Inter-Module Communication
 
 Modules communicate via **postMessage API** through Shell:
 
-### Message Types (v1.8)
+### Message Types (v1.9)
 
 ```javascript
 // Data uploaded from Configuration
@@ -126,6 +129,25 @@ Modules communicate via **postMessage API** through Shell:
   }
 }
 
+// Project loaded (NEW in v1.9)
+{
+  type: 'PROJECT_LOADED',
+  data: {
+    projectId: 'abc123',
+    projectName: 'Farma Solarna Krakow',
+    location: {...}
+  }
+}
+
+// Project saved (NEW in v1.9)
+{
+  type: 'PROJECT_SAVED',
+  data: {
+    projectId: 'abc123',
+    savedAt: '2024-01-15T10:30:00Z'
+  }
+}
+
 // Navigate to another module
 {
   type: 'NAVIGATE',
@@ -160,7 +182,8 @@ let sharedData = {
   masterVariantKey: null,     // 'A', 'B', 'C', or 'D'
   economics: null,            // Economics calculation results
   settings: null,             // System settings
-  currentScenario: 'P50'      // Current P50/P75/P90 scenario
+  currentScenario: 'P50',     // Current P50/P75/P90 scenario
+  currentProject: null        // Current project (NEW in v1.9)
 };
 ```
 
@@ -181,14 +204,23 @@ services/
 ├── frontend-production/     # PV production module (P50/P75/P90)
 │   ├── index.html           # Floating scenario selector
 │   ├── production.js        # Scenario handling, statistics
-│   └── styles.css           # Scenario button styles
+│   └── styles.css
 │
 ├── frontend-comparison/     # Comparison module
 ├── frontend-economics/      # Economics module (EaaS/Ownership)
 ├── frontend-settings/       # Settings module
 ├── frontend-esg/            # ESG indicators module
 ├── frontend-energy-prices/  # Energy prices module
-└── frontend-reports/        # Reports module
+├── frontend-reports/        # Reports module
+├── frontend-projects/       # Project management (NEW)
+│   ├── index.html
+│   ├── projects.js
+│   └── styles.css
+│
+└── frontend-estimator/      # Quick estimator (NEW)
+    ├── index.html
+    ├── estimator.js         # Calculation logic
+    └── styles.css
 ```
 
 ## Production Scenarios (P50/P75/P90)
@@ -217,6 +249,25 @@ Production Module                 Shell                    Other Modules
       │                            │                    with new factor
 ```
 
+## Geolocation Flow (v1.9)
+
+```
+Projects Module                 geo-service (8021)           External APIs
+      │                              │                            │
+      │ GET /geo/location            │                            │
+      │ ?postal_code=30-001          │                            │
+      ├─────────────────────────────►│                            │
+      │                              │ Check Polish DB            │
+      │                              │ (offline, instant)         │
+      │                              │                            │
+      │                              │ If not found:              │
+      │                              │ Nominatim API ────────────►│
+      │                              │◄────────────────────────────│
+      │                              │                            │
+      │◄─────────────────────────────│                            │
+      │ { lat, lon, city, elev }     │                            │
+```
+
 ## Benefits of Micro-Frontend Architecture
 
 1. **Independent Development** - Each module can be developed/deployed separately
@@ -236,7 +287,7 @@ services:
     build: ./services/frontend-shell
     container_name: pv-frontend-shell
     ports:
-      - "9000:80"
+      - "80:80"  # Changed from 9000 in v1.9
     depends_on:
       - frontend-admin
       - frontend-config
@@ -246,6 +297,8 @@ services:
       - frontend-economics
       - frontend-settings
       - frontend-esg
+      - frontend-projects
+      - frontend-estimator
 
   # Production Module (P50/P75/P90)
   frontend-production:
@@ -261,6 +314,36 @@ services:
     ports:
       - "9008:80"
 
+  # Projects Module (NEW)
+  frontend-projects:
+    build: ./services/frontend-projects
+    container_name: pv-frontend-projects
+    ports:
+      - "9011:80"
+
+  # Estimator Module (NEW)
+  frontend-estimator:
+    build: ./services/frontend-estimator
+    container_name: pv-frontend-estimator
+    ports:
+      - "9012:80"
+
+  # Geo Service (NEW)
+  geo-service:
+    build: ./services/geo-service
+    container_name: pv-geo-service
+    ports:
+      - "8021:8021"
+
+  # Projects DB (NEW)
+  projects-db:
+    build: ./services/projects-db
+    container_name: pv-projects-db
+    ports:
+      - "8022:8022"
+    volumes:
+      - projects-data:/app/data
+
   # ... other modules ...
 ```
 
@@ -269,29 +352,29 @@ services:
 ### Work on Single Module
 
 ```bash
-# Develop only Production module
-cd services/frontend-production
+# Develop only Estimator module
+cd services/frontend-estimator
 
-# Make changes to production.js, index.html, etc.
+# Make changes to estimator.js, index.html, etc.
 
 # Rebuild only this module
-docker-compose build frontend-production
-docker-compose up -d frontend-production
+docker-compose build frontend-estimator
+docker-compose up -d frontend-estimator
 
-# Test at http://localhost:9004 (direct)
-# Or http://localhost:9000 → Production tab (via shell)
+# Test at http://localhost:9012 (direct)
+# Or http://localhost → Szybka Wycena tab (via shell)
 ```
 
 ### Cache Busting
 
 After changes, update timestamp in index.html:
 ```html
-<script src="production.js?t=1733222100"></script>
+<script src="estimator.js?t=1733222100"></script>
 ```
 
 Or rebuild with --no-cache:
 ```bash
-docker-compose build frontend-production --no-cache
+docker-compose build frontend-estimator --no-cache
 ```
 
 ## Shared State Management
@@ -301,6 +384,7 @@ Modules share data via:
 2. **LocalStorage** - For persistence across page reloads
 3. **postMessage** - For real-time communication
 4. **Backend APIs** - For server-side data
+5. **projects-db** - For project persistence (NEW)
 
 ```javascript
 // Module requests data from shell
@@ -325,16 +409,22 @@ window.parent.postMessage({
 
 ```bash
 # Test Shell
-curl http://localhost:9000
+curl http://localhost
 
 # Test Production Module (direct)
 curl http://localhost:9004
 
-# Test via shell
-# Open http://localhost:9000 → click Production tab
+# Test Estimator Module (direct)
+curl http://localhost:9012
 
-# Test scenario synchronization
-# Change scenario in Production → verify Economics updates
+# Test Geo Service
+curl "http://localhost:8021/geo/location?country=PL&postal_code=30-001"
+
+# Test Projects DB
+curl http://localhost:8022/projects
+
+# Test via shell
+# Open http://localhost → click tabs
 ```
 
 ## Troubleshooting
@@ -354,6 +444,11 @@ curl http://localhost:9004
 - Verify localStorage: `localStorage.getItem('pv_current_scenario')`
 - Check if module handles SCENARIO_CHANGED event
 
+### Geolocation not working
+- Check geo-service logs: `docker logs pv-geo-service`
+- Verify internet connection for Nominatim
+- Polish postal codes work offline
+
 ### Data not persisting
 - Check sharedData in shell console
 - Verify backend API calls succeed
@@ -361,4 +456,4 @@ curl http://localhost:9004
 
 ---
 
-**Version 1.8** - PV Optimizer Micro-Frontend Architecture
+**Version 1.9** - PV Optimizer Micro-Frontend Architecture

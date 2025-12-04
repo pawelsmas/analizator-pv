@@ -291,6 +291,7 @@ function updateTypeCardYields() {
 
   document.querySelectorAll('.type-card').forEach(card => {
     const type = card.dataset.type;
+    // Support both old structure (.type-yield direct) and new iOS structure (.type-info .type-yield)
     const yieldEl = card.querySelector('.type-yield');
     if (yieldEl && typeYields[type]) {
       yieldEl.textContent = `${typeYields[type]} kWh/kWp`;

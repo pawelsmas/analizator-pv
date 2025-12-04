@@ -1,6 +1,6 @@
 # PV Optimizer Pro - Microservices Edition
 
-**Wersja 1.8** - Zaawansowane narzedzie do optymalizacji systemow fotowoltaicznych z architektura mikroserwisow.
+**Wersja 1.9** - Zaawansowane narzedzie do optymalizacji systemow fotowoltaicznych z architektura mikroserwisow.
 
 ## 🏗️ Architektura
 
@@ -16,11 +16,13 @@ Aplikacja zbudowana jest w architekturze micro-frontend z modularnym backendem:
 | **typical-days** | 8005 | Analiza dni typowych |
 | **energy-prices** | 8010 | Pobieranie cen energii (TGE/ENTSO-E) |
 | **reports** | 8011 | Generowanie raportow PDF |
+| **geo-service** | 8021 | Geokodowanie lokalizacji (Nominatim) |
+| **projects-db** | 8022 | Baza danych projektow |
 
 ### Frontend Modules (HTML/JS/Nginx)
 | Modul | Port | Opis |
 |-------|------|------|
-| **Shell** | 9000 | Glowna powloka aplikacji, routing |
+| **Shell** | 80 (9000) | Glowna powloka aplikacji, routing |
 | **Admin** | 9001 | Panel administracyjny |
 | **Config** | 9002 | Konfiguracja instalacji PV |
 | **Consumption** | 9003 | Analiza danych zuzycia energii |
@@ -31,8 +33,23 @@ Aplikacja zbudowana jest w architekturze micro-frontend z modularnym backendem:
 | **ESG** | 9008 | Wskazniki srodowiskowe (CO2, drzewa) |
 | **Energy Prices** | 9009 | Ceny energii elektrycznej |
 | **Reports** | 9010 | Generowanie raportow PDF |
+| **Projects** | 9011 | Zarzadzanie projektami |
+| **Estimator** | 9012 | Szybka wycena PV |
 
 ## 🌟 Glowne Funkcjonalnosci
+
+### Szybka Wycena (Estimator) - NOWE!
+- Szybkie oszacowanie mocy i kosztow instalacji PV
+- Presety mocy: 50kWp, 100kWp, 200kWp, 500kWp, 1MWp
+- Wybor typu instalacji (grunt/dach/carport)
+- Scenariusze finansowe P50/P75/P90
+- Analiza oplacalnosci w czasie rzeczywistym
+
+### System Projektow - NOWE!
+- Tworzenie i zarzadzanie projektami PV
+- Geolokalizacja automatyczna (kod pocztowy/miasto)
+- Baza danych polskich lokalizacji (offline)
+- Import/eksport projektow
 
 ### Analiza Zuzycia
 - Import danych z plikow CSV/Excel
@@ -86,13 +103,15 @@ docker-compose up -d
 
 ### 2. Dostep do aplikacji
 
-- **Glowna aplikacja**: http://localhost:9000
+- **Glowna aplikacja**: http://localhost (lub http://localhost:80)
 - **API Documentation**:
   - Data Analysis: http://localhost:8001/docs
   - PV Calculation: http://localhost:8002/docs
   - Economics: http://localhost:8003/docs
   - Energy Prices: http://localhost:8010/docs
   - Reports: http://localhost:8011/docs
+  - Geo Service: http://localhost:8021/docs
+  - Projects DB: http://localhost:8022/docs
 
 ## 📁 Struktura Projektu
 
@@ -106,7 +125,9 @@ ANALIZATOR PV/
 │   ├── typical-days/           # Dni typowe
 │   ├── energy-prices/          # Ceny energii
 │   ├── reports/                # Generowanie PDF
-│   ├── frontend-shell/         # Glowna powloka
+│   ├── geo-service/            # Geokodowanie lokalizacji
+│   ├── projects-db/            # Baza projektow
+│   ├── frontend-shell/         # Glowna powloka (Classic UX)
 │   ├── frontend-admin/         # Panel admina
 │   ├── frontend-config/        # Konfiguracja PV
 │   ├── frontend-consumption/   # Zuzycie energii
@@ -116,7 +137,9 @@ ANALIZATOR PV/
 │   ├── frontend-settings/      # Ustawienia
 │   ├── frontend-esg/           # Wskazniki ESG
 │   ├── frontend-energy-prices/ # Ceny energii UI
-│   └── frontend-reports/       # Raporty UI
+│   ├── frontend-reports/       # Raporty UI
+│   ├── frontend-projects/      # Zarzadzanie projektami
+│   └── frontend-estimator/     # Szybka wycena
 ├── docker-compose.yml
 └── README.md
 ```
@@ -167,6 +190,8 @@ curl http://localhost:8002/health  # PV Calculation (+ pvlib version)
 curl http://localhost:8003/health  # Economics
 curl http://localhost:8010/health  # Energy Prices
 curl http://localhost:8011/health  # Reports
+curl http://localhost:8021/health  # Geo Service
+curl http://localhost:8022/health  # Projects DB
 ```
 
 ## 📊 Komunikacja Miedzymodulowa
@@ -181,6 +206,8 @@ Moduly frontendowe komunikuja sie przez Shell za pomoca postMessage API:
 | `SCENARIO_CHANGED` | Zmiana scenariusza P50/P75/P90 |
 | `SETTINGS_UPDATED` | Ustawienia zaktualizowane |
 | `ECONOMICS_CALCULATED` | Obliczenia ekonomiczne gotowe |
+| `PROJECT_LOADED` | Projekt zaladowany |
+| `PROJECT_SAVED` | Projekt zapisany |
 
 ## 🛠️ Rozwiazywanie Problemow
 
@@ -198,11 +225,22 @@ docker-compose up -d frontend-production
 ```
 
 ### Konflikty portow
-Zmodyfikuj mapowania portow w `docker-compose.yml` jesli porty 8001-8011 lub 9000-9010 sa zajete.
+Zmodyfikuj mapowania portow w `docker-compose.yml` jesli porty sa zajete.
+
+### Geolokalizacja nie dziala
+Serwis geo-service wymaga dostepu do internetu dla Nominatim API.
+Dla polskich lokalizacji dziala offline dzieki wbudowanej bazie kodow pocztowych.
 
 ## 📝 Historia Wersji
 
-### v1.8 (Aktualna)
+### v1.9 (Aktualna)
+- **System Projektow** - zarzadzanie projektami z geolokalizacja
+- **Szybka Wycena (Estimator)** - szybka kalkulacja PV
+- **Geo Service** - geokodowanie z baza polskich lokalizacji
+- Presety mocy w Estimatorze (50kWp - 1MWp)
+- Naprawy ESG i synchronizacji danych
+
+### v1.8
 - Selektor scenariuszy P50/P75/P90 w module Produkcja PV
 - Modul ESG ze wskaznikami srodowiskowymi
 - Dynamiczne obliczenia autokonsumpcji z danych godzinowych
@@ -236,4 +274,4 @@ PV Optimizer Development Team ;)
 
 ---
 
-**v1.8** - PV Optimizer Pro Microservices Edition
+**v1.9** - PV Optimizer Pro Microservices Edition

@@ -65,7 +65,7 @@ class SeriesCalcRequest(BaseModel):
     angle: Optional[float] = Field(default=None, description="Tilt angle (None=optimal)")
     aspect: float = Field(default=0, description="Azimuth: 0=south, -90=east, 90=west")
     startyear: int = Field(default=2005, description="Start year for timeseries")
-    endyear: int = Field(default=2020, description="End year for timeseries")
+    endyear: int = Field(default=2023, description="End year for timeseries (SARAH3 data available to 2023)")
 
 
 class PxxResponse(BaseModel):
@@ -383,12 +383,13 @@ async def list_databases():
     """List available PVGIS radiation databases"""
     return {
         "databases": [
-            {"id": "PVGIS-SARAH3", "name": "PVGIS-SARAH3", "region": "Europe, Africa, Asia", "years": "2005-2020"},
+            {"id": "PVGIS-SARAH3", "name": "PVGIS-SARAH3", "region": "Europe, Africa, Asia", "years": "2005-2023"},
             {"id": "PVGIS-SARAH2", "name": "PVGIS-SARAH2", "region": "Europe, Africa, Asia", "years": "2005-2020"},
-            {"id": "PVGIS-ERA5", "name": "PVGIS-ERA5", "region": "Global", "years": "2005-2020"},
+            {"id": "PVGIS-ERA5", "name": "PVGIS-ERA5", "region": "Global", "years": "2005-2023"},
             {"id": "PVGIS-NSRDB", "name": "PVGIS-NSRDB", "region": "Americas", "years": "1998-2020"}
         ],
-        "recommended_for_poland": "PVGIS-SARAH3"
+        "recommended_for_poland": "PVGIS-SARAH3",
+        "note": "PVGIS 5.3 updated SARAH3 and ERA5 data to include years up to 2023"
     }
 
 

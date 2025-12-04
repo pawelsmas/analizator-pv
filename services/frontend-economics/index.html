@@ -324,8 +324,10 @@
           <thead>
             <tr>
               <th>Rok</th>
-              <th>Autokonsumpcja<br/><span class="unit">MWh</span></th>
-              <th>Koszt Sieci<br/><span class="unit">tys. PLN</span></th>
+              <th>Energia z Sieci (OSD)<br/><span class="unit">MWh</span></th>
+              <th>Koszt Sieci (OSD)<br/><span class="unit">tys. PLN</span></th>
+              <th>Autokonsumpcja PV<br/><span class="unit">MWh</span></th>
+              <th>Równoważny Koszt OSD<br/><span class="unit">tys. PLN</span></th>
               <th>Koszt EaaS<br/><span class="unit">tys. PLN</span></th>
               <th>Oszczędności<br/><span class="unit">tys. PLN</span></th>
               <th>CF Zdyskontowany<br/><span class="unit">tys. PLN</span></th>
@@ -503,24 +505,25 @@
       </div>
     </div>
 
-    <!-- Tabela zwrotu inwestycji -->
+    <!-- Tabela zwrotu inwestycji CAPEX -->
     <div class="table-section full-width">
-      <h2>Analiza Zwrotu Inwestycji Rok po Roku</h2>
+      <h2>Analiza CAPEX Rok po Roku z NPV</h2>
       <div class="chart-info">
-        Szczegółowy przebieg cash flow z uwzględnieniem degradacji
+        Szczegółowy przebieg cash flow z uwzględnieniem degradacji i inflacji
       </div>
       <div class="table-wrapper">
         <table id="paybackTable" class="payback-table">
           <thead>
             <tr>
               <th>Rok</th>
-              <th>Produkcja<br/><span class="unit">MWh</span></th>
-              <th>Autokonsumpcja<br/><span class="unit">MWh</span></th>
-              <th>Degradacja<br/><span class="unit">%</span></th>
-              <th>Oszczędności<br/><span class="unit">tys. PLN</span></th>
+              <th>Energia z Sieci (OSD)<br/><span class="unit">MWh</span></th>
+              <th>Koszt Sieci (OSD)<br/><span class="unit">tys. PLN</span></th>
+              <th>Autokonsumpcja PV<br/><span class="unit">MWh</span></th>
+              <th>Równoważny Koszt OSD<br/><span class="unit">tys. PLN</span></th>
               <th>OPEX<br/><span class="unit">tys. PLN</span></th>
-              <th>Cash Flow<br/><span class="unit">tys. PLN</span></th>
-              <th>Skumulowany CF<br/><span class="unit">mln PLN</span></th>
+              <th>Oszczędności<br/><span class="unit">tys. PLN</span></th>
+              <th>CF Zdyskontowany<br/><span class="unit">tys. PLN</span></th>
+              <th>Skumulowany NPV<br/><span class="unit">mln PLN</span></th>
             </tr>
           </thead>
           <tbody id="paybackTableBody">
@@ -547,6 +550,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js"></script>
+<script src="economics.js?v=20241204-10"></script>
 </body>
 </html>

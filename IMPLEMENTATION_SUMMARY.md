@@ -1,10 +1,52 @@
-# PV Optimizer v1.8 - Implementation Summary
+# PV Optimizer v1.9 - Implementation Summary
 
 ## Overview
 
 Professional PV analysis system with micro-frontend architecture, advanced physics-based modeling, and comprehensive economic analysis.
 
-## Version 1.8 New Features
+## Version 1.9 New Features
+
+### 1. Project Management System
+
+**Modules**: `frontend-projects` (Port 9011), `projects-db` (Port 8022)
+
+**Features**:
+- Create, save, load, and delete PV projects
+- Automatic geolocation from postal code/city
+- Project metadata (name, description, location)
+- SQLite database for persistence
+
+### 2. Quick Estimator
+
+**Module**: `frontend-estimator` (Port 9012)
+
+**Features**:
+- Power presets: 50kWp, 100kWp, 200kWp, 500kWp, 1MWp
+- Installation type selection (ground/roof/carport)
+- P50/P75/P90 scenario selection
+- Real-time financial calculations
+
+### 3. Geo Service
+
+**Service**: `geo-service` (Port 8021)
+
+**Features**:
+- OpenStreetMap Nominatim integration
+- Offline Polish postal code database (100 regions)
+- City lookup for major Polish cities
+- Automatic elevation data
+- In-memory caching
+
+**Polish Postal Code Database**:
+```python
+POLISH_POSTAL_REGIONS = {
+    "00": {"lat": 52.23, "lon": 21.01, "city": "Warszawa", "elev": 100},
+    "30": {"lat": 50.06, "lon": 19.94, "city": "Krakow", "elev": 220},
+    # ... 100 regions covering all of Poland
+}
+```
+
+## Version 1.8 Features (Previous)
 
 ### 1. Production Scenario Selector (P50/P75/P90)
 
@@ -18,30 +60,6 @@ Professional PV analysis system with micro-frontend architecture, advanced physi
   - **P90** (94%) - Conservative estimate
 - Real-time recalculation of all statistics
 - Synchronization with Economics module via Shell
-
-**Key Code** (production.js):
-```javascript
-// Scenario factors
-const SCENARIO_FACTORS = {
-  'P50': 1.00,
-  'P75': 0.97,
-  'P90': 0.94
-};
-
-// Dynamic calculation from hourly data
-for (let i = 0; i < production.length; i++) {
-  const prod = production[i];
-  const cons = consumption[i];
-
-  if (prod >= cons) {
-    selfConsumedKwh += cons;
-    gridExportKwh += (prod - cons);
-  } else {
-    selfConsumedKwh += prod;
-    gridImportKwh += (cons - prod);
-  }
-}
-```
 
 ### 2. ESG Module
 
@@ -66,35 +84,27 @@ function formatNumberEU(value, decimals = 2) {
 // Result: "1 234,56" instead of "1,234.56"
 ```
 
-### 4. Inter-Module Scenario Synchronization
+## Architecture (v1.9)
 
-**Flow**:
-```
-Production → PRODUCTION_SCENARIO_CHANGED → Shell
-Shell → localStorage + sharedData update
-Shell → SCENARIO_CHANGED → All Modules
-Economics → Recalculate with new factor
-```
-
-## Architecture (v1.8)
-
-### Frontend Modules (11 containers)
+### Frontend Modules (13 containers)
 
 | Module | Port | Key Features |
 |--------|------|--------------|
-| Shell | 9000 | Routing, scenario sync, shared data |
+| Shell | 80 | Routing, scenario sync, shared data |
 | Admin | 9001 | User management |
 | Config | 9002 | Data upload, PVGIS integration |
 | Consumption | 9003 | Charts, heatmaps |
-| **Production** | 9004 | **P50/P75/P90 scenarios** |
+| Production | 9004 | P50/P75/P90 scenarios |
 | Comparison | 9005 | Variant analysis |
 | Economics | 9006 | EaaS/Ownership models |
 | Settings | 9007 | System parameters |
-| **ESG** | 9008 | **Environmental indicators** |
+| ESG | 9008 | Environmental indicators |
 | Energy Prices | 9009 | TGE/ENTSO-E data |
 | Reports | 9010 | PDF generation |
+| **Projects** | 9011 | **Project management** |
+| **Estimator** | 9012 | **Quick estimation** |
 
-### Backend Services (7 containers)
+### Backend Services (9 containers)
 
 | Service | Port | Technology |
 |---------|------|------------|
@@ -105,188 +115,127 @@ Economics → Recalculate with new factor
 | typical-days | 8005 | Python/FastAPI |
 | energy-prices | 8010 | Python/FastAPI |
 | reports | 8011 | Python/FastAPI, ReportLab |
+| **geo-service** | 8021 | **Python/FastAPI, Nominatim** |
+| **projects-db** | 8022 | **Python/FastAPI, SQLite** |
 
 ## Key Technical Improvements
 
-### 1. Accurate Statistics Calculation
+### 1. Geolocation System
 
-**Before** (static from variant):
-```javascript
-// Used fixed values from variant
-selfConsumption: variant.autoconsumption,
-gridImport: 0 // Always zero!
-```
-
-**After** (dynamic from hourly data):
-```javascript
-// Loop through 8760 hourly values
-for (let i = 0; i < production.length; i++) {
-  const prod = production[i];
-  const cons = consumption[i];
-
-  totalProductionFromHourly += prod;
-
-  if (prod >= cons) {
-    selfConsumedKwh += cons;
-    gridExportKwh += (prod - cons);
-  } else {
-    selfConsumedKwh += prod;
-    gridImportKwh += (cons - prod);
-  }
-  totalConsumptionKwh += cons;
-}
-
-// Accurate percentages
-const selfConsumptionPct = (selfConsumedKwh / actualProduction) * 100;
-const selfSufficiencyPct = (selfConsumedKwh / totalConsumptionKwh) * 100;
-```
-
-### 2. Scenario-Aware Hourly Production
-
-**Backend applies scenario factor**:
 ```python
-# In pv-calculation service
-hourly_production = base_hourly * scenario_factor
+@app.get("/geo/location")
+async def get_location(
+    country: str = "PL",
+    postal_code: str = None,
+    city: str = None
+):
+    # 1. Check cache
+    # 2. Try offline Polish database
+    # 3. Fallback to Nominatim API
+    return {
+        "latitude": 52.23,
+        "longitude": 21.01,
+        "elevation": 100,
+        "city": "Warszawa"
+    }
 ```
 
-**Frontend uses pre-adjusted values**:
+### 2. Quick Estimator Calculations
+
 ```javascript
-// production[] already has scenario factor applied
-const prod = production[i];
+// Real-time NPV calculation
+function calculateEstimate() {
+  const annualProduction = powerKwp * yieldKwh;
+  const annualSavings = annualProduction * energyPrice / 1000;
+  const investment = powerKwp * costPerKwp;
+
+  // Simple payback
+  const paybackYears = investment / annualSavings;
+
+  // NPV over 25 years
+  const npv = calculateNPV(annualSavings, investment, 25, discountRate);
+}
 ```
 
-### 3. Shell Shared Data Management
+### 3. Shell Port Change
 
-```javascript
-let sharedData = {
-  analysisResults: null,
-  pvConfig: null,
-  consumptionData: null,
-  hourlyData: null,
-  masterVariant: null,
-  masterVariantKey: null,
-  economics: null,
-  settings: null,
-  currentScenario: 'P50'  // NEW in v1.8
-};
-```
+**Before (v1.8)**: Port 9000
+**After (v1.9)**: Port 80 (standard HTTP)
 
-## PV Calculation Accuracy (from v2.1)
+## Files Added in v1.9
 
-### Solar Position
-- Equation of Time correction
-- Cooper's equation for declination
-- Local solar time with longitude correction
+### Estimator Module (NEW)
+- `services/frontend-estimator/index.html`
+- `services/frontend-estimator/estimator.js` - Calculation logic
+- `services/frontend-estimator/styles.css`
+- `services/frontend-estimator/Dockerfile`
+- `services/frontend-estimator/nginx.conf`
 
-### Irradiance Modeling
-- Kasten-Young air mass model (NREL standard)
-- Ineichen clear sky model (DNI, DHI, GHI)
-- Linke turbidity factor for Poland (3.5)
+### Projects Module (NEW)
+- `services/frontend-projects/index.html`
+- `services/frontend-projects/projects.js`
+- `services/frontend-projects/styles.css`
+- `services/frontend-projects/Dockerfile`
+- `services/frontend-projects/nginx.conf`
 
-### Loss Factors
-- Incidence Angle Modifier (IAM) - Fresnel equations
-- Temperature derating (-0.4%/C)
-- System losses: soiling (2%), mismatch (2%), wiring (2%)
-- Inverter efficiency: 98%
+### Geo Service (NEW)
+- `services/geo-service/main.py` - FastAPI app with Nominatim
+- `services/geo-service/requirements.txt`
+- `services/geo-service/Dockerfile`
 
-## Economic Analysis
-
-### EaaS Model (Energy as a Service)
-- 10-year service agreement
-- Monthly fee calculation
-- No upfront investment
-
-### Ownership Model
-- Full investment analysis
-- NPV, IRR, LCOE calculation
-- 25-year cash flow projection
-
-### Sensitivity Analysis
-- Multi-parameter analysis
-- Tornado chart data
-- Risk assessment
-
-## Files Modified in v1.8
-
-### Frontend Production
-- `services/frontend-production/production.js` (v16)
-  - `calculateStatistics()` - dynamic hourly calculation
-  - `generateMonthlyProduction()` - EU number formatting
-  - `setProductionScenario()` - scenario handling
-
-- `services/frontend-production/index.html`
-  - Floating scenario selector
-  - Cache busting timestamp
-
-- `services/frontend-production/styles.css`
-  - Scenario button styles (P50 green, P75 blue, P90 red)
-
-### Shell
-- `services/frontend-shell/shell.js`
-  - `PRODUCTION_SCENARIO_CHANGED` handler
-  - `REQUEST_SCENARIO` handler
-  - `loadScenarioFromShell()` function
-  - Scenario persistence in localStorage
-
-### ESG Module (NEW)
-- `services/frontend-esg/index.html`
-- `services/frontend-esg/esg.js`
-- `services/frontend-esg/styles.css`
-- `services/frontend-esg/Dockerfile`
-- `services/frontend-esg/nginx.conf`
-
-### Docker
-- `docker-compose.yml`
-  - Added frontend-esg service
-  - Updated shell dependencies
+### Projects DB (NEW)
+- `services/projects-db/main.py` - SQLite persistence
+- `services/projects-db/requirements.txt`
+- `services/projects-db/Dockerfile`
 
 ## API Documentation
 
 All services provide OpenAPI docs at `http://localhost:PORT/docs`
 
-### Key Endpoints
+### New Endpoints (v1.9)
 
-**PV Calculation**:
+**Geo Service**:
 ```bash
-POST /analyze
-POST /generate-profile
-GET /monthly-production
+GET /geo/location?country=PL&postal_code=00-001
+GET /geo/location?country=PL&city=Warszawa
+GET /geo/elevation?lat=52.23&lon=21.01
+GET /geo/polish-cities
+GET /health
 ```
 
-**Economics**:
+**Projects DB**:
 ```bash
-POST /analyze
-POST /comprehensive-sensitivity
-GET /default-parameters
-```
-
-**Energy Prices**:
-```bash
-GET /tge/current
-GET /tge/historical
-GET /entso-e/prices
+GET /projects
+POST /projects
+GET /projects/{id}
+PUT /projects/{id}
+DELETE /projects/{id}
+GET /health
 ```
 
 ## Deployment
 
 ### Docker Compose
 ```bash
-# Build and run
+# Build and run all
 docker-compose up -d --build
 
 # Rebuild single module
-docker-compose build frontend-production
-docker-compose up -d frontend-production
+docker-compose build frontend-estimator
+docker-compose up -d frontend-estimator
 ```
 
 ### Access Points
-- Application: http://localhost:9000
+- Application: http://localhost (port 80)
 - API Docs: http://localhost:800X/docs
+- Geo Service: http://localhost:8021/docs
+- Projects DB: http://localhost:8022/docs
 
 ## Version History
 
 | Version | Features |
 |---------|----------|
+| **v1.9** | **Projects, Estimator, Geo Service** |
 | v1.8 | P50/P75/P90 scenarios, ESG module, EU formatting |
 | v1.7 | DC/AC Ratio management, Economics fixes |
 | v1.6 | PVGIS integration for scenarios |
@@ -295,8 +244,11 @@ docker-compose up -d frontend-production
 
 ## Summary
 
-- 11 frontend micro-services
-- 7 backend micro-services
+- 13 frontend micro-services
+- 9 backend micro-services
+- Project management with geolocation
+- Quick Estimator
+- Offline Polish postal code database
 - P50/P75/P90 production scenarios
 - Dynamic hourly calculations
 - ESG environmental indicators
@@ -306,4 +258,4 @@ docker-compose up -d frontend-production
 
 ---
 
-**v1.8** - PV Optimizer Implementation Summary
+**v1.9** - PV Optimizer Implementation Summary

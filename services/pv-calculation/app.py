@@ -490,7 +490,7 @@ def fetch_pvgis_tmy_data(latitude: float, longitude: float):
     Free EU service providing solar radiation and PV performance data.
     """
     try:
-        url = "https://re.jrc.ec.europa.eu/api/v5_2/tmy"
+        url = "https://re.jrc.ec.europa.eu/api/v5_3/tmy"
         params = {
             'lat': latitude,
             'lon': longitude,

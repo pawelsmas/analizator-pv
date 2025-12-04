@@ -12,6 +12,12 @@ body {
     color: #e0e0e0;
     min-height: 100vh;
     padding: 20px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+body::-webkit-scrollbar {
+    display: none;
 }
 
 .container {

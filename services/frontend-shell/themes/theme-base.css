@@ -1,0 +1,218 @@
+/* ============================================
+   PV OPTIMIZER - THEME BASE
+   Shared variables and utilities for all themes
+   ============================================ */
+
+:root {
+  /* Theme Selection - controlled by JS */
+  --theme-active: 'classic'; /* 'classic' | 'ios' */
+}
+
+/* ============================================
+   CLASSIC THEME (Default - Dark Professional)
+   ============================================ */
+[data-theme="classic"] {
+  /* Colors */
+  --bg-primary: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  --bg-secondary: #0f0f1a;
+  --bg-card: rgba(255, 255, 255, 0.05);
+  --bg-card-hover: rgba(255, 255, 255, 0.08);
+  --bg-input: rgba(255, 255, 255, 0.1);
+
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --text-muted: rgba(255, 255, 255, 0.5);
+
+  --accent-primary: #00d4ff;
+  --accent-secondary: #7c3aed;
+  --accent-success: #00ff88;
+  --accent-warning: #ffaa00;
+  --accent-danger: #ff4444;
+
+  --border-color: rgba(255, 255, 255, 0.1);
+  --border-radius: 12px;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+  /* Header */
+  --header-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --header-text: #ffffff;
+
+  /* Navigation */
+  --nav-bg: rgba(0, 0, 0, 0.3);
+  --nav-item-bg: transparent;
+  --nav-item-active: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+  --nav-item-hover: rgba(255, 255, 255, 0.1);
+
+  /* Buttons */
+  --btn-primary-bg: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+  --btn-primary-text: #000000;
+  --btn-secondary-bg: rgba(255, 255, 255, 0.1);
+  --btn-secondary-text: #ffffff;
+
+  /* Cards */
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.1);
+
+  /* Tables */
+  --table-header-bg: rgba(0, 0, 0, 0.3);
+  --table-row-hover: rgba(255, 255, 255, 0.05);
+  --table-border: rgba(255, 255, 255, 0.1);
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 15px;
+  --font-size-lg: 18px;
+  --font-size-xl: 24px;
+  --font-size-2xl: 32px;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+}
+
+/* ============================================
+   iOS THEME (Light, Clean, Apple-inspired)
+   ============================================ */
+[data-theme="ios"] {
+  /* Colors */
+  --bg-primary: #f2f2f7;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8f8fa;
+  --bg-input: #f2f2f7;
+
+  --text-primary: #000000;
+  --text-secondary: #8e8e93;
+  --text-muted: #c7c7cc;
+
+  --accent-primary: #007aff;
+  --accent-secondary: #af52de;
+  --accent-success: #34c759;
+  --accent-warning: #ff9500;
+  --accent-danger: #ff3b30;
+
+  --border-color: rgba(60, 60, 67, 0.12);
+  --border-radius: 14px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+  /* Header */
+  --header-bg: rgba(242, 242, 247, 0.72);
+  --header-text: #000000;
+
+  /* Navigation */
+  --nav-bg: rgba(242, 242, 247, 0.72);
+  --nav-item-bg: transparent;
+  --nav-item-active: #007aff;
+  --nav-item-hover: rgba(0, 0, 0, 0.04);
+
+  /* Buttons */
+  --btn-primary-bg: #007aff;
+  --btn-primary-text: #ffffff;
+  --btn-secondary-bg: #f2f2f7;
+  --btn-secondary-text: #007aff;
+
+  /* Cards */
+  --card-bg: #ffffff;
+  --card-border: rgba(60, 60, 67, 0.12);
+
+  /* Tables */
+  --table-header-bg: #f2f2f7;
+  --table-row-hover: #f8f8fa;
+  --table-border: rgba(60, 60, 67, 0.12);
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 17px;
+  --font-size-lg: 20px;
+  --font-size-xl: 28px;
+  --font-size-2xl: 34px;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* iOS Specific */
+  --ios-blur: blur(20px);
+  --ios-separator: 0.5px solid rgba(60, 60, 67, 0.12);
+}
+
+/* ============================================
+   THEME UTILITIES
+   ============================================ */
+
+/* Smooth theme transitions */
+* {
+  transition: background-color 0.3s ease,
+              color 0.3s ease,
+              border-color 0.3s ease,
+              box-shadow 0.3s ease;
+}
+
+/* iOS blur effect - only on iOS theme */
+[data-theme="ios"] .blur-bg {
+  backdrop-filter: var(--ios-blur);
+  -webkit-backdrop-filter: var(--ios-blur);
+}
+
+/* iOS separator */
+[data-theme="ios"] .ios-separator {
+  border-bottom: var(--ios-separator);
+}
+
+/* Theme toggle button styles */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+[data-theme="classic"] .theme-toggle {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="classic"] .theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="ios"] .theme-toggle {
+  background: #ffffff;
+  color: #007aff;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="ios"] .theme-toggle:hover {
+  background: #f8f8fa;
+}
+
+/* Theme indicator icons */
+.theme-toggle .theme-icon-classic,
+.theme-toggle .theme-icon-ios {
+  display: none;
+}
+
+[data-theme="classic"] .theme-toggle .theme-icon-ios {
+  display: inline;
+}
+
+[data-theme="ios"] .theme-toggle .theme-icon-classic {
+  display: inline;
+}

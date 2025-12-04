@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>PV Optimizer Pro • Micro-Frontend Architecture</title>
+  <title>PV Optimizer Pro</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div class="container">
   <div class="header">
     <h1>PV <span>OPTIMIZER</span> PRO</h1>
-    <div style="font-size:14px;color:#666;margin-top:4px">
+    <div style="font-size:14px;color:inherit;opacity:0.7;margin-top:4px">
       Micro-Frontend Architecture • v3.0
     </div>
-    <div id="servicesStatus" style="font-size:11px;color:#888;margin-top:8px"></div>
+    <div id="servicesStatus" style="font-size:11px;opacity:0.5;margin-top:8px"></div>
   </div>
 
   <div class="main-tabs">
@@ -32,7 +32,7 @@
 
   <!-- Micro-frontend container -->
   <div id="micro-frontend-container">
-    <iframe id="module-frame" style="width:100%;height:calc(100vh - 200px);border:none;"></iframe>
+    <iframe id="module-frame"></iframe>
   </div>
 </div>
 

@@ -1,4 +1,4 @@
-# Testing Guide - PV Optimizer v1.8
+# Testing Guide - PV Optimizer v1.9
 
 ## Testing Strategy
 
@@ -29,16 +29,22 @@ curl http://localhost:8010/health
 
 # Reports
 curl http://localhost:8011/health
+
+# Geo Service (NEW in v1.9)
+curl http://localhost:8021/health
+
+# Projects DB (NEW in v1.9)
+curl http://localhost:8022/health
 ```
 
 ### Frontend Modules
 
 ```bash
-# Shell
-curl http://localhost:9000
+# Shell (changed to port 80 in v1.9)
+curl http://localhost
 
-# All modules (9001-9010)
-for port in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
+# All modules (9001-9012)
+for port in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9012; do
   echo "Testing port $port..."
   curl -s -o /dev/null -w "%{http_code}" http://localhost:$port
   echo ""
@@ -119,6 +125,62 @@ curl -X POST http://localhost:8003/analyze \
   }'
 ```
 
+### Geo Service (8021) - NEW in v1.9
+
+```bash
+# Test health
+curl http://localhost:8021/health
+
+# Test Polish postal code (uses offline database)
+curl "http://localhost:8021/geo/location?country=PL&postal_code=30-001"
+# Expected: Krakow coordinates
+
+# Test Polish city lookup
+curl "http://localhost:8021/geo/location?country=PL&city=Warszawa"
+# Expected: Warsaw coordinates
+
+# Test unknown postal code (falls back to Nominatim)
+curl "http://localhost:8021/geo/location?country=DE&postal_code=10115"
+# Expected: Berlin coordinates (from Nominatim API)
+
+# Get list of Polish cities
+curl http://localhost:8021/geo/polish-cities
+```
+
+### Projects DB Service (8022) - NEW in v1.9
+
+```bash
+# Test health
+curl http://localhost:8022/health
+
+# List all projects
+curl http://localhost:8022/projects
+
+# Create new project
+curl -X POST http://localhost:8022/projects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test Project",
+    "description": "Testing project creation",
+    "location": {
+      "latitude": 50.06,
+      "longitude": 19.94,
+      "city": "Krakow"
+    }
+  }'
+
+# Get project by ID
+curl http://localhost:8022/projects/{project_id}
+
+# Update project
+curl -X PUT http://localhost:8022/projects/{project_id} \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Updated Project Name"}'
+
+# Delete project
+curl -X DELETE http://localhost:8022/projects/{project_id}
+```
+
 ## Integration Testing
 
 ### Full Workflow Test
@@ -156,11 +218,57 @@ curl -X POST http://localhost:8003/analyze \
   -o economics_results.json
 ```
 
+### Geolocation Workflow Test (NEW in v1.9)
+
+```bash
+# 1. Test offline Polish lookup
+curl "http://localhost:8021/geo/location?country=PL&postal_code=00-001"
+# Should return Warsaw instantly (offline)
+
+# 2. Test city lookup
+curl "http://localhost:8021/geo/location?country=PL&city=Krakow"
+# Should return Krakow coordinates
+
+# 3. Test with cache
+curl "http://localhost:8021/geo/location?country=PL&postal_code=00-001"
+# Should return cached result faster
+
+# 4. Test non-Polish location
+curl "http://localhost:8021/geo/location?country=DE&city=Berlin"
+# Should use Nominatim API
+```
+
 ## Frontend Testing
+
+### Quick Estimator Testing - NEW in v1.9
+
+1. **Open Estimator Module**: http://localhost → Szybka Wycena tab
+
+2. **Test Power Presets**:
+   - Click 50kWp → verify slider updates
+   - Click 100kWp → verify slider updates
+   - Click 200kWp → verify slider updates
+   - Click 500kWp → verify slider updates
+   - Click 1MWp → verify slider updates
+
+3. **Test Installation Types**:
+   - Select "Grunt Poludnie" → verify yield shows 1050 kWh/kWp
+   - Select "Grunt E-W" → verify yield shows 950 kWh/kWp
+   - Select "Dach E-W" → verify yield shows 900 kWh/kWp
+   - Select "Carport" → verify yield shows 850 kWh/kWp
+
+4. **Test Scenario Pills**:
+   - Click P50 → verify calculations update
+   - Click P75 → verify calculations show 97%
+   - Click P90 → verify calculations show 94%
+
+5. **Test Financial Inputs**:
+   - Change energy price → verify results update
+   - Change cost per kWp → verify results update
 
 ### P50/P75/P90 Scenario Testing
 
-1. **Open Production Module**: http://localhost:9000 → Production tab
+1. **Open Production Module**: http://localhost → Produkcja PV tab
 
 2. **Test Scenario Selector**:
    - Click P50 button → verify green active state
@@ -180,6 +288,23 @@ curl -X POST http://localhost:8003/analyze \
 // 📊 Scenario changed to: P75
 // 📊 Final calculated values: {...}
 ```
+
+### Projects Module Testing - NEW in v1.9
+
+1. **Open Projects Module**: http://localhost → Projekty tab
+
+2. **Test Create Project**:
+   - Enter project name
+   - Enter postal code (e.g., "30-001")
+   - Click create → verify geolocation fills city
+
+3. **Test Load Project**:
+   - Click on existing project
+   - Verify data loads correctly
+
+4. **Test Delete Project**:
+   - Click delete button
+   - Confirm deletion
 
 ### Inter-Module Communication Testing
 
@@ -235,7 +360,7 @@ docker-compose ps
 docker stats --no-stream
 
 # Check specific container
-docker stats pv-frontend-production --no-stream
+docker stats pv-frontend-estimator --no-stream
 ```
 
 ### Network Tests
@@ -245,6 +370,7 @@ docker stats pv-frontend-production --no-stream
 docker exec pv-frontend-shell curl http://data-analysis:8001/health
 docker exec pv-frontend-shell curl http://pv-calculation:8002/health
 docker exec pv-frontend-shell curl http://economics:8003/health
+docker exec pv-frontend-shell curl http://geo-service:8021/health
 ```
 
 ## Performance Benchmarks
@@ -259,7 +385,11 @@ docker exec pv-frontend-shell curl http://economics:8003/health
 | /generate-profile | < 500ms | 2s |
 | /analyze (full) | < 10s | 30s |
 | /economics/analyze | < 200ms | 1s |
+| /geo/location (cached) | < 5ms | 20ms |
+| /geo/location (Polish DB) | < 10ms | 50ms |
+| /geo/location (Nominatim) | < 2s | 5s |
 | Scenario change (frontend) | < 100ms | 500ms |
+| Estimator calculation | < 50ms | 200ms |
 
 ### Memory Usage
 
@@ -271,6 +401,8 @@ docker exec pv-frontend-shell curl http://economics:8003/health
 | Economics | 100MB | 512MB |
 | Energy Prices | 100MB | 256MB |
 | Reports | 150MB | 512MB |
+| Geo Service | 50MB | 128MB |
+| Projects DB | 50MB | 128MB |
 
 ## Error Testing
 
@@ -291,6 +423,14 @@ curl -X POST http://localhost:8002/simulate \
 # Test non-existent endpoint
 curl http://localhost:8001/nonexistent
 # Expected: 404 Not Found
+
+# Test invalid postal code
+curl "http://localhost:8021/geo/location?country=XX&postal_code=00000"
+# Expected: 404 Not Found
+
+# Test invalid project ID
+curl http://localhost:8022/projects/invalid-id
+# Expected: 404 Not Found
 ```
 
 ### Frontend Error Scenarios
@@ -302,6 +442,10 @@ curl http://localhost:8001/nonexistent
 2. **Module Offline**:
    - Stop backend service
    - Verify error handling in console
+
+3. **Geolocation Offline**:
+   - Stop geo-service
+   - Verify Polish postal codes still work (offline DB)
 
 ## Test Data
 
@@ -377,13 +521,25 @@ netstat -an | findstr 8001
 docker network inspect pv-optimizer-network
 ```
 
+5. **Geolocation not working**:
+```bash
+# Check geo-service logs
+docker logs pv-geo-service
+
+# Test Polish DB directly
+curl "http://localhost:8021/geo/location?country=PL&postal_code=00-001"
+
+# Test Nominatim connectivity
+curl "http://localhost:8021/geo/location?country=DE&city=Berlin"
+```
+
 ## Test Reports
 
 ### Generate Test Report
 
 ```bash
 #!/bin/bash
-echo "PV Optimizer v1.8 Test Report"
+echo "PV Optimizer v1.9 Test Report"
 echo "============================="
 echo ""
 
@@ -391,6 +547,8 @@ echo "Service Health:"
 curl -s http://localhost:8001/health | jq .
 curl -s http://localhost:8002/health | jq .
 curl -s http://localhost:8003/health | jq .
+curl -s http://localhost:8021/health | jq .
+curl -s http://localhost:8022/health | jq .
 
 echo ""
 echo "Container Status:"
@@ -404,7 +562,29 @@ echo ""
 echo "Test Date: $(date)"
 ```
 
-## Checklist: v1.8 Features
+## Checklist: v1.9 Features
+
+### Quick Estimator
+- [ ] Power presets work (50kWp - 1MWp)
+- [ ] Installation type selection works
+- [ ] Scenario pills (P50/P75/P90) work
+- [ ] Real-time calculations update
+- [ ] Financial inputs responsive
+- [ ] EU number formatting correct
+
+### Project Management
+- [ ] Create project works
+- [ ] Load project works
+- [ ] Delete project works
+- [ ] Geolocation fills city from postal code
+- [ ] Projects persist after restart
+
+### Geo Service
+- [ ] Polish postal codes work (offline)
+- [ ] Polish cities lookup works
+- [ ] Nominatim fallback works
+- [ ] Caching works
+- [ ] Error handling for unknown locations
 
 ### P50/P75/P90 Scenarios
 - [ ] Floating selector visible in Production module
@@ -433,7 +613,9 @@ echo "Test Date: $(date)"
 - [ ] Shell broadcasts SCENARIO_CHANGED
 - [ ] Economics handles scenario updates
 - [ ] Settings sync works
+- [ ] PROJECT_LOADED event works
+- [ ] PROJECT_SAVED event works
 
 ---
 
-**v1.8** - PV Optimizer Testing Guide
+**v1.9** - PV Optimizer Testing Guide
