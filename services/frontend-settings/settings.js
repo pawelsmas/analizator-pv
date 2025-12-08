@@ -77,7 +77,8 @@ const DEFAULT_CONFIG = {
 
   // Financial Parameters
   discountRate: 7,
-  degradationRate: 0.5,
+  pvDegradationYear1: 2.0,        // First year PV degradation [%] (higher due to initial settling)
+  degradationRate: 0.5,           // Annual PV degradation for years 2+ [%/year]
   analysisPeriod: 25,
   inflationRate: 2.5,
 
@@ -561,6 +562,7 @@ function getCurrentSettings() {
 
     // Financial
     discountRate: parseFloat(document.getElementById('discountRate')?.value || DEFAULT_CONFIG.discountRate),
+    pvDegradationYear1: parseFloat(document.getElementById('pvDegradationYear1')?.value || DEFAULT_CONFIG.pvDegradationYear1),
     degradationRate: parseFloat(document.getElementById('degradationRate')?.value || DEFAULT_CONFIG.degradationRate),
     analysisPeriod: parseInt(document.getElementById('analysisPeriod')?.value || DEFAULT_CONFIG.analysisPeriod),
     inflationRate: parseFloat(document.getElementById('inflationRate')?.value || DEFAULT_CONFIG.inflationRate),

@@ -667,10 +667,12 @@ function recalculateEaaSWithScenario(scenario) {
   const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value) || 10;
 
   // Get subscription from calculateEaasSubscription (it uses currentScenarioFactor internally)
+  // Pass variant to include BESS CAPEX/OPEX in subscription calculation
   const subscriptionData = calculateEaasSubscription(
     variant.capacity,
     systemSettings || {},
-    params
+    params,
+    variant  // Include variant for BESS data
   );
 
   // Recalculate centralized metrics with scenario factor
@@ -1004,7 +1006,7 @@ async function fetchBackendIRR(variant, params) {
   };
 
   // Add BESS economic parameters from system settings
-  const settings = window.systemSettings;
+  const settings = systemSettings;
   if (settings?.bessEnabled) {
     parametersData.bess_capex_per_kwh = settings.bessCapexPerKwh || 1500;
     parametersData.bess_capex_per_kw = settings.bessCapexPerKw || 300;
@@ -1440,9 +1442,10 @@ function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicP
  * @param {number} capacityKw - Installation capacity in kW
  * @param {object} settings - System settings with EaaS parameters
  * @param {object} economicParams - Economic parameters (OPEX, degradation, etc.)
+ * @param {object} variant - Optional variant data with BESS info
  * @returns {object} - { annualSubscription, monthlySubscription, totalRevenue, irr, pricePerMWh }
  */
-function calculateEaasSubscription(capacityKw, settings, economicParams) {
+function calculateEaasSubscription(capacityKw, settings, economicParams, variant = null) {
   console.log(`\n📊 Calculating EaaS subscription for ${capacityKw} kW installation`);
 
   // ========== INPUTS ==========
@@ -1465,8 +1468,24 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   const FX_PLN_EUR = settings.fxPlnEur || 4.5;
 
   // ========== CAPEX (in PLN - base currency) ==========
+  // PV CAPEX
   const capexPerKwp = getCapexForCapacity(capacityKw);
-  const I0_PLN = capacityKw * capexPerKwp; // Total CAPEX in PLN
+  const capexPV_PLN = capacityKw * capexPerKwp;
+
+  // BESS CAPEX (if present in variant)
+  let capexBESS_PLN = 0;
+  let opexBESS_PLN = 0;
+  const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  if (hasBess) {
+    const bessCapexPerKwh = settings.bessCapexPerKwh || 1500;
+    const bessCapexPerKw = settings.bessCapexPerKw || 300;
+    const bessOpexPctPerYear = settings.bessOpexPctPerYear || 1.5;
+    capexBESS_PLN = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
+    opexBESS_PLN = capexBESS_PLN * (bessOpexPctPerYear / 100);
+  }
+
+  // Total CAPEX = PV + BESS
+  const I0_PLN = capexPV_PLN + capexBESS_PLN;
 
   // ========== OPEX (in PLN - base currency) ==========
   const opexPerKwp = economicParams.opex_per_kwp || settings.opexPerKwp || 15;
@@ -1474,9 +1493,9 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   const landLeasePerKwp = settings.landLeasePerKwp || 0; // Land lease cost per kWp [PLN/kWp/year]
 
   const annualOM_PLN = capacityKw * opexPerKwp; // O&M
-  const annualInsurance_PLN = I0_PLN * insuranceRate; // Insurance
+  const annualInsurance_PLN = I0_PLN * insuranceRate; // Insurance (on total CAPEX including BESS)
   const annualLandLease_PLN = capacityKw * landLeasePerKwp; // Land lease
-  const O_PLN = annualOM_PLN + annualInsurance_PLN + annualLandLease_PLN; // Total annual OPEX
+  const O_PLN = annualOM_PLN + annualInsurance_PLN + annualLandLease_PLN + opexBESS_PLN; // Total annual OPEX including BESS
 
   console.log(`  📋 INPUTS:`);
   console.log(`     Waluta: ${currency}`);
@@ -1487,11 +1506,18 @@ function calculateEaasSubscription(capacityKw, settings, economicParams) {
   console.log(`  `);
   console.log(`  💰 PARAMETRY (waluta bazowa PLN):`);
   console.log(`     CAPEX (I₀): ${(I0_PLN / 1000000).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
+  if (hasBess) {
+    console.log(`       - PV CAPEX: ${(capexPV_PLN / 1000000).toFixed(2)} mln PLN`);
+    console.log(`       - BESS CAPEX: ${(capexBESS_PLN / 1000000).toFixed(2)} mln PLN`);
+  }
   console.log(`     OPEX (O): ${O_PLN.toFixed(0)} PLN/rok`);
   console.log(`       - O&M: ${annualOM_PLN.toFixed(0)} PLN/rok`);
   console.log(`       - Ubezpieczenie: ${annualInsurance_PLN.toFixed(0)} PLN/rok`);
   if (annualLandLease_PLN > 0) {
     console.log(`       - Najem powierzchni: ${annualLandLease_PLN.toFixed(0)} PLN/rok`);
+  }
+  if (opexBESS_PLN > 0) {
+    console.log(`       - BESS OPEX: ${opexBESS_PLN.toFixed(0)} PLN/rok`);
   }
   console.log(`  `);
 
@@ -2120,15 +2146,54 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   // Common parameters - convert to MWh for consistent calculations with PLN/MWh prices
   const capacityKwp = variant.capacity;
   const productionMwh = (variant.production * scenarioFactor) / 1000; // kWh → MWh
-  const selfConsumedMwh = (variant.self_consumed * scenarioFactor) / 1000; // kWh → MWh
+  const selfConsumedMwh = (variant.self_consumed * scenarioFactor) / 1000; // kWh → MWh (total = PV direct + BESS)
+
+  // BESS autoconsumption breakdown (for table display)
+  const bessSelfConsumedMwh = ((variant.bess_self_consumed_from_bess_kwh || 0) * scenarioFactor) / 1000; // MWh from BESS
+  const pvDirectSelfConsumedMwh = selfConsumedMwh - bessSelfConsumedMwh; // MWh direct from PV
+
+  console.log(`  🔋 Autoconsumption breakdown: PV=${pvDirectSelfConsumedMwh.toFixed(1)} MWh + BESS=${bessSelfConsumedMwh.toFixed(1)} MWh = ${selfConsumedMwh.toFixed(1)} MWh total`);
+
+  // PV CAPEX
   const capexPerKwp = getCapexForCapacity(capacityKwp);
-  const capex = capacityKwp * capexPerKwp;
+  const capexPV = capacityKwp * capexPerKwp;
+
+  // BESS CAPEX (if present)
+  const hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  let capexBESS = 0;
+  let opexBESS = 0;
+  let bessDegradationYear1 = 0;
+  let bessDegradationPctPerYear = 0;
+  if (hasBess) {
+    const settings = systemSettings || {};
+    const bessCapexPerKwh = settings.bessCapexPerKwh || 1500;
+    const bessCapexPerKw = settings.bessCapexPerKw || 300;
+    const bessOpexPctPerYear = settings.bessOpexPctPerYear || 1.5;
+    // BESS degradation from settings (user configurable in Settings → Parametry techniczne BESS)
+    const rawDegYear1 = settings.bessDegradationYear1;
+    const rawDegPerYear = settings.bessDegradationPctPerYear;
+    bessDegradationYear1 = (rawDegYear1 !== undefined ? rawDegYear1 : 3.0) / 100;
+    bessDegradationPctPerYear = (rawDegPerYear !== undefined ? rawDegPerYear : 2.0) / 100;
+    capexBESS = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
+    opexBESS = capexBESS * (bessOpexPctPerYear / 100);
+    console.log(`  🔋 BESS CAPEX: ${(capexBESS/1000000).toFixed(2)} mln PLN`);
+    console.log(`  🔋 BESS OPEX: ${(opexBESS/1000).toFixed(0)} tys. PLN/rok`);
+    console.log(`  🔋 BESS Degradation from settings: Year1=${(bessDegradationYear1*100).toFixed(1)}% (raw: ${rawDegYear1}), Years2+=${(bessDegradationPctPerYear*100).toFixed(1)}%/yr (raw: ${rawDegPerYear})`);
+  }
+
+  // Total CAPEX = PV + BESS
+  const capex = capexPV + capexBESS;
 
   const discountRate = window.economicsSettings?.discountRate || 0.07;
   const inflationRate = window.economicsSettings?.inflationRate || 0.025;
   const eaasIndexation = window.economicsSettings?.eaasIndexation || 'fixed';
   const analysisPeriod = params.analysis_period;
-  const degradationRate = params.degradation_rate;
+  const degradationRate = params.degradation_rate; // PV degradation for years 2+ [fraction]
+
+  // PV degradation Year 1 from settings (user configurable)
+  const settings = systemSettings || {};
+  const rawPvDegYear1 = settings.pvDegradationYear1;
+  const pvDegradationYear1 = (rawPvDegYear1 !== undefined ? rawPvDegYear1 : 2.0) / 100; // default 2%
 
   // IRR calculation mode - determines if we apply inflation to cash flows
   const useInflation = window.economicsSettings?.useInflation || false;
@@ -2144,7 +2209,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log('  📅 Analysis period:', analysisPeriod, 'years');
   console.log('  📊 Discount rate:', (discountRate * 100).toFixed(1), '%');
   console.log('  📈 Inflation rate:', (inflationRate * 100).toFixed(1), '%');
-  console.log('  📉 Degradation:', (degradationRate * 100).toFixed(2), '%/year');
+  console.log(`  📉 PV Degradation from settings: Year1=${(pvDegradationYear1*100).toFixed(1)}% (raw: ${rawPvDegYear1}), Years2+=${(degradationRate*100).toFixed(2)}%/yr`);
   console.log('  💰 Initial CAPEX:', (-capex / 1000000).toFixed(2), 'mln PLN');
   console.log('  📊 IRR Mode:', irrMode, useInflation ? '(inflation-indexed cash flows)' : '(constant prices)');
 
@@ -2152,12 +2217,36 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   let capexCashFlows = [];
 
   for (let year = 1; year <= analysisPeriod; year++) {
-    const degradation = Math.pow(1 - degradationRate, year - 1);
+    // PV degradation: Year 1 = pvDegradationYear1, Years 2+ = degradationRate
+    // Year 1: (1 - pvDegradationYear1)
+    // Year 2: (1 - pvDegradationYear1) * (1 - degradationRate)
+    // Year N: (1 - pvDegradationYear1) * (1 - degradationRate)^(N-1)
+    const pvDegradation = (1 - pvDegradationYear1) * Math.pow(1 - degradationRate, Math.max(0, year - 1));
+
+    // BESS degradation: Year 1 = bessDegradationYear1, Years 2+ = bessDegradationPctPerYear
+    // Year 1: (1 - bessDegradationYear1)
+    // Year 2: (1 - bessDegradationYear1) * (1 - bessDegradationPctPerYear)
+    // Year N: (1 - bessDegradationYear1) * (1 - bessDegradationPctPerYear)^(N-1)
+    let bessDegradation = 1;
+    if (hasBess && year >= 1) {
+      bessDegradation = (1 - bessDegradationYear1) * Math.pow(1 - bessDegradationPctPerYear, Math.max(0, year - 1));
+    }
+
     // Apply inflation factor only if useInflation is true (nominal mode)
     const inflationFactor = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;
-    const yearSelfConsumedMwh = selfConsumedMwh * degradation;
+
+    // Breakdown: PV direct uses PV degradation, BESS uses BESS degradation
+    const yearPvDirectMwh = pvDirectSelfConsumedMwh * pvDegradation;
+    const yearBessMwh = bessSelfConsumedMwh * bessDegradation;
+    const yearSelfConsumedMwh = yearPvDirectMwh + yearBessMwh;
+
     const adjustedEnergyPrice = totalEnergyPrice * inflationFactor; // PLN/MWh
-    const adjustedOpex = capacityKwp * params.opex_per_kwp * inflationFactor;
+
+    // OPEX = PV OPEX + BESS OPEX (z inflacją jeśli włączona)
+    const adjustedOpexPV = capacityKwp * params.opex_per_kwp * inflationFactor;
+    const adjustedOpexBESS = opexBESS * inflationFactor;
+    const adjustedOpex = adjustedOpexPV + adjustedOpexBESS;
+
     const yearSavings = yearSelfConsumedMwh * adjustedEnergyPrice; // MWh * PLN/MWh = PLN
     const yearCashFlow = yearSavings - adjustedOpex;
     const discountedCF = yearCashFlow / Math.pow(1 + discountRate, year);
@@ -2168,8 +2257,13 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       savings: yearSavings,
       opex: adjustedOpex,
       net_cash_flow: yearCashFlow,
-      production: productionMwh * degradation * 1000, // MWh → kWh for display
-      selfConsumed: yearSelfConsumedMwh * 1000  // MWh → kWh for display
+      production: productionMwh * pvDegradation * 1000, // MWh → kWh for display (PV degradation)
+      selfConsumed: yearSelfConsumedMwh * 1000,  // MWh → kWh for display (total = PV + BESS)
+      selfConsumedPvDirect: yearPvDirectMwh * 1000,  // kWh - direct from PV (PV degradation)
+      selfConsumedBess: yearBessMwh * 1000,  // kWh - from BESS discharge (BESS degradation)
+      energyPrice: adjustedEnergyPrice,  // PLN/MWh for this year
+      pvDegradationPct: pvDegradation * 100,  // % - for table display
+      bessDegradationPct: bessDegradation * 100  // % - for table display
     });
 
     // Log sample years
@@ -2218,9 +2312,22 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     }
 
     for (let year = 1; year <= analysisPeriod; year++) {
-      const degradation = Math.pow(1 - degradationRate, year - 1);
+      // PV degradation: Year 1 = pvDegradationYear1, Years 2+ = degradationRate
+      const pvDegradation = (1 - pvDegradationYear1) * Math.pow(1 - degradationRate, Math.max(0, year - 1));
+
+      // BESS degradation: Year 1 = bessDegradationYear1, Years 2+ = bessDegradationPctPerYear
+      let bessDegradation = 1;
+      if (hasBess && year >= 1) {
+        bessDegradation = (1 - bessDegradationYear1) * Math.pow(1 - bessDegradationPctPerYear, Math.max(0, year - 1));
+      }
+
       const inflationFactor = Math.pow(1 + inflationRate, year - 1);
-      const yearSelfConsumedMwh = selfConsumedMwh * degradation;
+
+      // Breakdown: PV direct uses PV degradation, BESS uses BESS degradation
+      const yearPvDirectMwh = pvDirectSelfConsumedMwh * pvDegradation;
+      const yearBessMwh = bessSelfConsumedMwh * bessDegradation;
+      const yearSelfConsumedMwh = yearPvDirectMwh + yearBessMwh;
+
       const adjustedGridPrice = totalEnergyPrice * inflationFactor; // PLN/MWh
 
       // EaaS subscription: apply inflation only if indexation is 'cpi'
@@ -2231,6 +2338,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       const adjustedOmCost = baseOmCost * inflationFactor;
       const adjustedInsuranceCost = baseInsuranceCost * inflationFactor;
       const adjustedLandLeaseCost = baseLandLeaseCost * inflationFactor;
+      const adjustedBessOpex = opexBESS * inflationFactor; // BESS OPEX after EaaS contract
 
       const gridCost = yearSelfConsumedMwh * adjustedGridPrice; // MWh * PLN/MWh = PLN
 
@@ -2240,8 +2348,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
         // Do NOT add them again - that would be triple-counting!
         eaasCost = adjustedSubscriptionCost;
       } else {
-        // After EaaS contract ends, customer pays O&M + insurance + land lease (inflation-indexed)
-        eaasCost = adjustedOmCost + adjustedInsuranceCost + adjustedLandLeaseCost;
+        // After EaaS contract ends, customer pays O&M + insurance + land lease + BESS OPEX (inflation-indexed)
+        eaasCost = adjustedOmCost + adjustedInsuranceCost + adjustedLandLeaseCost + adjustedBessOpex;
       }
 
       const savings = gridCost - eaasCost;
@@ -2250,12 +2358,17 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
       eaasCashFlows.push({
         year: year,
-        selfConsumed: yearSelfConsumedMwh * 1000,  // MWh → kWh for display
-        gridCost: gridCost,
+        selfConsumed: yearSelfConsumedMwh * 1000,  // MWh → kWh for display (total)
+        selfConsumedPvDirect: yearPvDirectMwh * 1000,  // kWh - direct from PV
+        selfConsumedBess: yearBessMwh * 1000,  // kWh - from BESS discharge
+        gridCost: gridCost,  // equivalent OSD cost for autoconsumption
         eaasCost: eaasCost,
         savings: savings,
         discountedCF: discountedCF,
-        phase: year <= eaasDuration ? 'eaas' : 'ownership'
+        phase: year <= eaasDuration ? 'eaas' : 'ownership',
+        energyPrice: adjustedGridPrice,  // PLN/MWh for this year
+        pvDegradationPct: pvDegradation * 100,  // % - for table display
+        bessDegradationPct: bessDegradation * 100  // % - for table display
       });
 
       // Log sample years
@@ -2359,20 +2472,43 @@ async function performEconomicAnalysis() {
     // Podstawowe dane z wariantu
     const capacity_kwp = variant.capacity; // Already in kWp from backend
     const production_annual = variant.production / 1000; // kWh → MWh
-    const self_consumed_annual = variant.self_consumed / 1000; // kWh → MWh
+
+    // Autokonsumpcja: bezpośrednia PV + energia z BESS (jeśli jest)
+    // variant.self_consumed już zawiera całkowitą autokonsumpcję z BESS
+    // ale dla pewności sprawdzamy czy bess_self_consumed_from_bess_kwh jest dostępne
+    let self_consumed_annual = variant.self_consumed / 1000; // kWh → MWh
+
+    // BESS dodatkowa autokonsumpcja (energia rozładowana z baterii do zużycia)
+    const bess_self_consumed_from_bess = (variant.bess_self_consumed_from_bess_kwh || 0) / 1000; // kWh → MWh
 
     console.log('📊 Variant data:', {
       capacity_kwp,
       production_annual_MWh: production_annual,
-      self_consumed_annual_MWh: self_consumed_annual
+      self_consumed_annual_MWh: self_consumed_annual,
+      bess_self_consumed_from_bess_MWh: bess_self_consumed_from_bess
     });
 
     // === PROSTY MODEL CAPEX ===
 
-    // 1. Nakłady inwestycyjne (CAPEX) - using tiered pricing based on capacity
+    // 1. Nakłady inwestycyjne PV (CAPEX) - using tiered pricing based on capacity
     const capexPerKwp = getCapexForCapacity(capacity_kwp);
-    const capex = capacity_kwp * capexPerKwp; // PLN
-    console.log(`💰 CAPEX: ${capacity_kwp} kWp × ${capexPerKwp} PLN/kWp = ${(capex/1000000).toFixed(2)} mln PLN`);
+    const capexPV = capacity_kwp * capexPerKwp; // PLN
+    console.log(`💰 PV CAPEX: ${capacity_kwp} kWp × ${capexPerKwp} PLN/kWp = ${(capexPV/1000000).toFixed(2)} mln PLN`);
+
+    // 1b. Nakłady inwestycyjne BESS (jeśli włączony)
+    let capexBESS = 0;
+    const hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+    if (hasBess) {
+      const settings = systemSettings || {};
+      const bessCapexPerKwh = settings.bessCapexPerKwh || 1500;
+      const bessCapexPerKw = settings.bessCapexPerKw || 300;
+      capexBESS = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
+      console.log(`🔋 BESS CAPEX: ${variant.bess_energy_kwh} kWh × ${bessCapexPerKwh} + ${variant.bess_power_kw} kW × ${bessCapexPerKw} = ${(capexBESS/1000000).toFixed(2)} mln PLN`);
+    }
+
+    // 1c. Całkowity CAPEX = PV + BESS
+    const capex = capexPV + capexBESS;
+    console.log(`💰 TOTAL CAPEX: ${(capexPV/1000000).toFixed(2)} + ${(capexBESS/1000000).toFixed(2)} = ${(capex/1000000).toFixed(2)} mln PLN`);
 
     // Update investmentCost field to show the calculated tiered CAPEX
     const investmentCostField = document.getElementById('investmentCost');
@@ -2382,10 +2518,26 @@ async function performEconomicAnalysis() {
     }
 
     // 2. Roczne koszty operacyjne (OPEX)
-    const opex_annual = capacity_kwp * params.opex_per_kwp; // PLN/rok
+    // 2a. PV OPEX
+    const opex_pv_annual = capacity_kwp * params.opex_per_kwp; // PLN/rok
+
+    // 2b. BESS OPEX (jeśli jest BESS)
+    let opex_bess_annual = 0;
+    if (hasBess) {
+      const settings = systemSettings || {};
+      const bessOpexPctPerYear = settings.bessOpexPctPerYear || 1.5; // % CAPEX per year
+      opex_bess_annual = capexBESS * (bessOpexPctPerYear / 100);
+      console.log(`🔋 BESS OPEX: ${capexBESS.toFixed(0)} × ${bessOpexPctPerYear}% = ${opex_bess_annual.toFixed(0)} PLN/rok`);
+    }
+
+    // 2c. Całkowity OPEX = PV + BESS
+    const opex_annual = opex_pv_annual + opex_bess_annual;
+    console.log(`💰 TOTAL OPEX: ${opex_pv_annual.toFixed(0)} + ${opex_bess_annual.toFixed(0)} = ${opex_annual.toFixed(0)} PLN/rok`);
 
     // 3. Roczne oszczędności = autoconsumption * cena energii
+    // self_consumed_annual już zawiera energię z BESS (backend liczy to razem)
     const savings_year1 = self_consumed_annual * totalEnergyPriceWithCapacity; // PLN
+    console.log(`💰 Savings Year 1: ${self_consumed_annual.toFixed(1)} MWh × ${totalEnergyPriceWithCapacity.toFixed(0)} PLN/MWh = ${(savings_year1/1000).toFixed(0)} tys. PLN`);
 
     // 4. Prosty okres zwrotu (bez zdyskontowania, bez degradacji)
     const simple_payback = capex / (savings_year1 - opex_annual); // lata
@@ -2648,6 +2800,9 @@ function updateMetrics(data) {
   document.getElementById('paybackPeriod').textContent = formatNumberEU(data.simple_payback, 1);
   document.getElementById('npv').textContent = formatNumberEU(data.npv / 1000000, 2); // PLN → mln PLN
 
+  // Update CAPEX breakdown (PV + BESS)
+  updateCapexBreakdown(data);
+
   // IRR with mode indicator
   const irrValue = data.irr;
   const irrMode = data.irrMode || centralizedMetrics[currentVariant]?.capex?.irrMode || 'real';
@@ -2715,6 +2870,75 @@ function updateDataInfo() {
     : 'N/A';
   const info = `Wariant ${currentVariant}: ${capacity} MWp • Analiza ${params.analysis_period}-letnia • IRR: ${irrDisplay}`;
   document.getElementById('dataInfo').textContent = info;
+
+  // Update BESS info line if BESS is enabled
+  updateBessInfoLine(variant);
+}
+
+// Update BESS info line in header
+function updateBessInfoLine(variant) {
+  const bessInfoLine = document.getElementById('bessInfoLine');
+  const bessInfoText = document.getElementById('bessInfoText');
+
+  if (!bessInfoLine || !bessInfoText) return;
+
+  const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+
+  if (hasBess) {
+    const powerKw = variant.bess_power_kw;
+    const energyKwh = variant.bess_energy_kwh;
+    const duration = powerKw > 0 ? (energyKwh / powerKw).toFixed(1) : 0;
+
+    bessInfoText.textContent = `BESS: ${formatNumberEU(powerKw, 0)} kW / ${formatNumberEU(energyKwh, 0)} kWh (${duration}h)`;
+    bessInfoLine.style.display = 'block';
+  } else {
+    bessInfoLine.style.display = 'none';
+  }
+}
+
+// Update CAPEX breakdown showing PV and BESS costs separately
+function updateCapexBreakdown(data) {
+  const variant = variants[currentVariant];
+  const capexBreakdown = document.getElementById('capexBreakdown');
+  const capexPVEl = document.getElementById('capexPV');
+  const capexBESSEl = document.getElementById('capexBESS');
+
+  if (!capexBreakdown || !capexPVEl || !capexBESSEl) return;
+
+  const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+
+  if (hasBess) {
+    // Get BESS economic parameters from settings
+    const bessSettings = systemSettings || {};
+    const bessCapexPerKwh = bessSettings.bessCapexPerKwh || 1500;
+    const bessCapexPerKw = bessSettings.bessCapexPerKw || 300;
+
+    // Calculate BESS CAPEX
+    const bessCapexEnergy = variant.bess_energy_kwh * bessCapexPerKwh;
+    const bessCapexPower = variant.bess_power_kw * bessCapexPerKw;
+    const bessCapexTotal = bessCapexEnergy + bessCapexPower;
+
+    // Calculate PV CAPEX directly from capacity and tier price
+    const pvCapexPerKwp = getCapexForCapacity(variant.capacity);
+    const pvCapex = variant.capacity * pvCapexPerKwp;
+
+    // Total should match what's displayed
+    const totalCapex = pvCapex + bessCapexTotal;
+
+    console.log('💰 CAPEX Breakdown (updateCapexBreakdown):', {
+      pvCapex: pvCapex,
+      bessCapex: bessCapexTotal,
+      calculatedTotal: totalCapex,
+      displayedTotal: data.investment
+    });
+
+    // Update display
+    capexPVEl.textContent = formatNumberEU(pvCapex / 1000000, 2);
+    capexBESSEl.textContent = formatNumberEU(bessCapexTotal / 1000000, 2);
+    capexBreakdown.style.display = 'block';
+  } else {
+    capexBreakdown.style.display = 'none';
+  }
 }
 
 // Generate CAPEX structure chart
@@ -3491,12 +3715,15 @@ function generatePaybackTable(data, capacity_kwp, params) {
     annualConsumptionMwh: annualConsumptionMwh
   });
 
-  // Year 0 - Initial investment
+  // Year 0 - Initial investment (12 columns now with degradation)
   const row0 = document.createElement('tr');
   row0.className = 'year-0';
   row0.style.background = '#ffebee';
   row0.innerHTML = `
     <td>0</td>
+    <td>-</td>
+    <td>-</td>
+    <td>-</td>
     <td>-</td>
     <td>-</td>
     <td>-</td>
@@ -3527,8 +3754,10 @@ function generatePaybackTable(data, capacity_kwp, params) {
     // B. Koszt Sieci OSD = całe zużycie × cena z inflacją
     const yearGridCostFull = gridEnergyMwh * totalEnergyPrice * inflationFactor;
 
-    // C. Autokonsumpcja PV (z degradacją) - dane w kWh, konwersja do MWh
+    // C. Autokonsumpcja - breakdown PV/BESS (z degradacją) - dane w kWh, konwersja do MWh
     const selfConsumedMwh = (cf.selfConsumed || 0) / 1000;
+    const pvDirectMwh = (cf.selfConsumedPvDirect || 0) / 1000;
+    const bessMwh = (cf.selfConsumedBess || 0) / 1000;
 
     // D. Równoważny Koszt OSD = autokonsumpcja × cena sieci z inflacją
     const equivalentGridCost = cf.savings || 0; // savings = selfConsumed × price
@@ -3559,24 +3788,35 @@ function generatePaybackTable(data, capacity_kwp, params) {
     const savingsClass = savings >= 0 ? 'positive' : 'negative';
     const npvClass = cumulativeNPV >= 0 ? 'positive' : 'negative';
 
-    // Kolumny:
-    // A. Energia z Sieci OSD (MWh)
-    // B. Koszt Sieci OSD (tys. PLN)
-    // C. Autokonsumpcja PV (MWh)
-    // D. Równoważny Koszt OSD (tys. PLN)
-    // E. OPEX (tys. PLN)
-    // F. Oszczędności (tys. PLN) = D - E
-    // G. CF Zdyskontowany (tys. PLN)
-    // H. Skumulowany NPV (mln PLN)
+    // Degradation percentages (from cashFlows)
+    const pvDegPct = cf.pvDegradationPct || 100;
+    const bessDegPct = cf.bessDegradationPct || 100;
+
+    // Kolumny (12 total with degradation):
+    // 1. Rok
+    // 2. Deg PV %
+    // 3. Deg BESS %
+    // 4. Zużycie MWh
+    // 5. Koszt OSD tys. PLN
+    // 6. Auto PV MWh
+    // 7. Auto BESS MWh
+    // 8. Suma Auto MWh
+    // 9. Równow. OSD tys. PLN
+    // 10. OPEX tys. PLN
+    // 11. Oszczędn. tys. PLN
+    // 12. NPV mln PLN
     row.innerHTML = `
       <td>${year}</td>
+      <td>${formatNumberEU(pvDegPct, 1)}</td>
+      <td>${formatNumberEU(bessDegPct, 1)}</td>
       <td>${formatNumberEU(gridEnergyMwh, 1)}</td>
       <td>${formatNumberEU(yearGridCostFull / 1000, 0)}</td>
+      <td>${formatNumberEU(pvDirectMwh, 1)}</td>
+      <td>${formatNumberEU(bessMwh, 1)}</td>
       <td>${formatNumberEU(selfConsumedMwh, 1)}</td>
       <td>${formatNumberEU(equivalentGridCost / 1000, 0)}</td>
       <td>${formatNumberEU(opex / 1000, 0)}</td>
       <td class="${savingsClass}">${formatNumberEU(savings / 1000, 0)}</td>
-      <td class="${savingsClass}">${formatNumberEU(discountedCF / 1000, 0)}</td>
       <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
     `;
 
@@ -3592,9 +3832,8 @@ function generatePaybackTable(data, capacity_kwp, params) {
   const npvClass = cumulativeNPV >= 0 ? 'positive' : 'negative';
 
   summaryRow.innerHTML = `
-    <td colspan="6" style="text-align:right">💰 SUMA CAŁKOWITA (${cashFlows.length} lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
+    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (${cashFlows.length} lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
     <td class="positive">${formatNumberEU(totalSavings / 1000, 0)}</td>
-    <td></td>
     <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
   `;
   tableBody.appendChild(summaryRow);
@@ -4372,11 +4611,12 @@ function calculateOptimization() {
     if (!centralizedMetrics[key]) {
       console.log(`📊 Calculating centralized metrics for variant ${key}...`);
 
-      // Get EaaS subscription for this variant
+      // Get EaaS subscription for this variant (including BESS if present)
       const subscriptionData = calculateEaasSubscription(
         variant.capacity,
         systemSettings || {},
-        params
+        params,
+        variant  // Include variant for BESS data
       );
 
       // Calculate and store centralized metrics
@@ -4615,27 +4855,39 @@ function generateEaaSYearlyTable(params, result) {
     const phaseLabel = phase === 'eaas' ? '📋' : '🏠';
 
     // Kolumny:
-    // A. Energia z Sieci OSD (MWh) - całkowite zużycie zakładu (gdyby nie było PV)
-    // B. Koszt Sieci OSD (tys. PLN) - koszt całego zużycia z sieci (gdyby nie było PV)
-    // C. Autokonsumpcja PV (MWh) - ile energii z PV pokrywa zużycie
-    // D. Równoważny Koszt OSD (tys. PLN) - koszt energii z sieci za ilość równą autokonsumpcji
-    // E. Koszt EaaS (tys. PLN) - koszt abonamentu EaaS
-    // F. Oszczędności (tys. PLN) - Równoważny Koszt OSD minus Koszt EaaS
-    // G. CF Zdyskontowany (tys. PLN)
-    // H. Skumulowany NPV (mln PLN)
+    // A. Zużycie (MWh) - całkowite zużycie zakładu
+    // B. Koszt OSD (tys. PLN) - koszt całego zużycia z sieci (gdyby nie było PV)
+    // C. Auto PV (MWh) - bezpośrednia autokonsumpcja z PV
+    // D. Auto BESS (MWh) - autokonsumpcja z baterii
+    // E. Suma Auto (MWh) - całkowita autokonsumpcja
+    // F. Równow. OSD (tys. PLN) - koszt energii z sieci za ilość równą autokonsumpcji
+    // G. Koszt EaaS (tys. PLN) - koszt abonamentu EaaS
+    // H. Oszczędn. (tys. PLN) - Równoważny Koszt OSD minus Koszt EaaS
+    // I. NPV (mln PLN) - skumulowany NPV
 
-    // D. Równoważny koszt OSD = autokonsumpcja × cena sieci (to jest gridCost z cash flows)
+    // Breakdown autokonsumpcji
+    const pvDirectMwh = (yearData.selfConsumedPvDirect || 0) / 1000; // kWh → MWh
+    const bessMwh = (yearData.selfConsumedBess || 0) / 1000; // kWh → MWh
+
+    // Degradation percentages (from cashFlows)
+    const pvDegPct = yearData.pvDegradationPct || 100;
+    const bessDegPct = yearData.bessDegradationPct || 100;
+
+    // Równoważny koszt OSD = autokonsumpcja × cena sieci (to jest gridCost z cash flows)
     const equivalentGridCost = gridCost; // yearData.gridCost already = autoconsumption × price with inflation
 
     row.innerHTML = `
       <td>${phaseLabel} ${year}</td>
+      <td>${formatNumberEU(pvDegPct, 1)}</td>
+      <td>${formatNumberEU(bessDegPct, 1)}</td>
       <td>${formatNumberEU(gridEnergyMwh, 1)}</td>
       <td>${formatNumberEU(yearGridCostFull / 1000, 0)}</td>
+      <td>${formatNumberEU(pvDirectMwh, 1)}</td>
+      <td>${formatNumberEU(bessMwh, 1)}</td>
       <td>${formatNumberEU(autoconsumptionMwh, 1)}</td>
       <td>${formatNumberEU(equivalentGridCost / 1000, 0)}</td>
       <td>${formatNumberEU(eaasCost / 1000, 0)}</td>
       <td class="${savingsClass}">${formatNumberEU(savings / 1000, 0)}</td>
-      <td class="${savingsClass}">${formatNumberEU(discountedCF / 1000, 0)}</td>
       <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
     `;
 
@@ -4649,9 +4901,9 @@ function generateEaaSYearlyTable(params, result) {
   eaasSummaryRow.style.borderTop = '2px solid #f57c00';
 
   eaasSummaryRow.innerHTML = `
-    <td colspan="6" style="text-align:right;color:#f57c00">📋 Suma oszczędności w fazie EaaS (lata 1-${eaasDuration}):</td>
+    <td colspan="10" style="text-align:right;color:#f57c00">📋 Suma oszczędności w fazie EaaS (lata 1-${eaasDuration}):</td>
     <td class="positive" style="color:#f57c00">${formatNumberEU(eaasPhaseSavings / 1000, 0)}</td>
-    <td colspan="2" style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
+    <td style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
   `;
   tableBody.appendChild(eaasSummaryRow);
 
@@ -4661,9 +4913,9 @@ function generateEaaSYearlyTable(params, result) {
   ownershipSummaryRow.style.fontWeight = '600';
 
   ownershipSummaryRow.innerHTML = `
-    <td colspan="6" style="text-align:right;color:#4caf50">🏠 Suma oszczędności w fazie własności (lata ${eaasDuration + 1}-${analysisPeriod}):</td>
+    <td colspan="10" style="text-align:right;color:#4caf50">🏠 Suma oszczędności w fazie własności (lata ${eaasDuration + 1}-${analysisPeriod}):</td>
     <td class="positive" style="color:#4caf50">${formatNumberEU(ownershipPhaseSavings / 1000, 0)}</td>
-    <td colspan="2" style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
+    <td style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
   `;
   tableBody.appendChild(ownershipSummaryRow);
 
@@ -4677,9 +4929,8 @@ function generateEaaSYearlyTable(params, result) {
   const totalSavings = eaasPhaseSavings + ownershipPhaseSavings;
 
   totalSummaryRow.innerHTML = `
-    <td colspan="6" style="text-align:right">💰 SUMA CAŁKOWITA (25 lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
+    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (25 lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
     <td class="positive">${formatNumberEU(totalSavings / 1000, 0)}</td>
-    <td></td>
     <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
   `;
   tableBody.appendChild(totalSummaryRow);
@@ -5467,7 +5718,7 @@ function updateElectricityMapsUIInEconomics(data) {
  */
 function updateBessEconomicsSection() {
   const variant = variants[currentVariant];
-  const settings = window.systemSettings;
+  const settings = systemSettings;
 
   // Check if BESS is enabled
   const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;

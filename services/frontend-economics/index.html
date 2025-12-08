@@ -65,6 +65,9 @@
       <div class="header-info">
         <span id="dataInfo">Brak danych ekonomicznych</span>
       </div>
+      <div class="header-info" id="bessInfoLine" style="display:none;margin-top:6px;color:#00e676;font-size:14px;font-weight:600;">
+        <span>🔋 <span id="bessInfoText">-</span></span>
+      </div>
     </div>
 
     <!-- Global Production Scenario Selector - FLOATING/STICKY -->
@@ -100,6 +103,10 @@
             <div class="stat-label">Nakłady Inwestycyjne</div>
             <div class="stat-value" id="capex">-</div>
             <div class="stat-unit">mln PLN</div>
+            <div class="stat-breakdown" id="capexBreakdown" style="font-size:11px;color:#666;margin-top:4px;display:none;">
+              <div>☀️ PV: <span id="capexPV">-</span> mln</div>
+              <div>🔋 BESS: <span id="capexBESS">-</span> mln</div>
+            </div>
           </div>
         </div>
         <div class="stat-card">
@@ -327,14 +334,17 @@
           <thead>
             <tr>
               <th>Rok</th>
-              <th>Energia z Sieci (OSD)<br/><span class="unit">MWh</span></th>
-              <th>Koszt Sieci (OSD)<br/><span class="unit">tys. PLN</span></th>
-              <th>Autokonsumpcja PV<br/><span class="unit">MWh</span></th>
-              <th>Równoważny Koszt OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Deg PV<br/><span class="unit">%</span></th>
+              <th>Deg BESS<br/><span class="unit">%</span></th>
+              <th>Zużycie<br/><span class="unit">MWh</span></th>
+              <th>Koszt OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Auto PV<br/><span class="unit">MWh</span></th>
+              <th>Auto BESS<br/><span class="unit">MWh</span></th>
+              <th>Suma Auto<br/><span class="unit">MWh</span></th>
+              <th>Równow. OSD<br/><span class="unit">tys. PLN</span></th>
               <th>Koszt EaaS<br/><span class="unit">tys. PLN</span></th>
-              <th>Oszczędności<br/><span class="unit">tys. PLN</span></th>
-              <th>CF Zdyskontowany<br/><span class="unit">tys. PLN</span></th>
-              <th>Skumulowany NPV<br/><span class="unit">mln PLN</span></th>
+              <th>Oszczędn.<br/><span class="unit">tys. PLN</span></th>
+              <th>NPV<br/><span class="unit">mln PLN</span></th>
             </tr>
           </thead>
           <tbody id="eaasYearlyTableBody">
@@ -522,14 +532,17 @@
           <thead>
             <tr>
               <th>Rok</th>
-              <th>Energia z Sieci (OSD)<br/><span class="unit">MWh</span></th>
-              <th>Koszt Sieci (OSD)<br/><span class="unit">tys. PLN</span></th>
-              <th>Autokonsumpcja PV<br/><span class="unit">MWh</span></th>
-              <th>Równoważny Koszt OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Deg PV<br/><span class="unit">%</span></th>
+              <th>Deg BESS<br/><span class="unit">%</span></th>
+              <th>Zużycie<br/><span class="unit">MWh</span></th>
+              <th>Koszt OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Auto PV<br/><span class="unit">MWh</span></th>
+              <th>Auto BESS<br/><span class="unit">MWh</span></th>
+              <th>Suma Auto<br/><span class="unit">MWh</span></th>
+              <th>Równow. OSD<br/><span class="unit">tys. PLN</span></th>
               <th>OPEX<br/><span class="unit">tys. PLN</span></th>
-              <th>Oszczędności<br/><span class="unit">tys. PLN</span></th>
-              <th>CF Zdyskontowany<br/><span class="unit">tys. PLN</span></th>
-              <th>Skumulowany NPV<br/><span class="unit">mln PLN</span></th>
+              <th>Oszczędn.<br/><span class="unit">tys. PLN</span></th>
+              <th>NPV<br/><span class="unit">mln PLN</span></th>
             </tr>
           </thead>
           <tbody id="paybackTableBody">
@@ -556,6 +569,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20241204-FINAL"></script>
+<script src="economics.js?v=20241208-BESS-INFO"></script>
 </body>
 </html>

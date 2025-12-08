@@ -152,9 +152,14 @@
           <span class="setting-hint">Do obliczenia NPV</span>
         </div>
         <div class="setting-item">
-          <label>Degradacja PV [%/rok]</label>
+          <label>Degradacja PV rok 1 [%]</label>
+          <input type="number" id="pvDegradationYear1" value="2.0" step="0.1" min="0" max="5">
+          <span class="setting-hint">Pierwszy rok (wyższa)</span>
+        </div>
+        <div class="setting-item">
+          <label>Degradacja PV lata 2+ [%/rok]</label>
           <input type="number" id="degradationRate" value="0.5" step="0.1" min="0" max="2">
-          <span class="setting-hint">Spadek wydajności</span>
+          <span class="setting-hint">Pozostałe lata</span>
         </div>
         <div class="setting-item">
           <label>Okres analizy [lat]</label>
@@ -937,7 +942,7 @@
           <div class="setting-item">
             <label>CAPEX per kW</label>
             <input type="number" id="bessCapexPerKw" value="300" min="0" max="2000" step="50">
-            <span class="setting-hint">PLN/kW (PCS/inwerter)</span>
+            <span class="setting-hint">PLN/kW (PCS/inwerter+EMS)</span>
           </div>
           <div class="setting-item">
             <label>OPEX (% CAPEX/rok)</label>
