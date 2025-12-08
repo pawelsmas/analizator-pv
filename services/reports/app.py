@@ -1229,6 +1229,18 @@ def generate_executive_summary(data: ReportData) -> str:
                 <li>Pokrycie zużycia: <strong>{coverage:.0f}%</strong></li>
         """
 
+        # Add BESS information if present
+        bess_power = v.get('bess_power_kw')
+        bess_energy = v.get('bess_energy_kwh')
+        if bess_power is not None and bess_energy is not None:
+            bess_charged = v.get('bess_charged_kwh', 0) / 1000  # to MWh
+            bess_discharged = v.get('bess_discharged_kwh', 0) / 1000
+            bess_curtailed = v.get('bess_curtailed_kwh', 0) / 1000
+            html += f"""
+                <li>Magazyn energii BESS: <strong>{bess_power:.0f} kW / {bess_energy:.0f} kWh</strong></li>
+                <li>Energia z magazynu: <strong>{bess_discharged:.1f} MWh/rok</strong> (curtailment: {bess_curtailed:.1f} MWh)</li>
+            """
+
     if data.economics:
         npv = data.economics.get('npv', 0)
         irr = data.economics.get('irr', 0)

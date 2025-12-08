@@ -909,28 +909,55 @@ function calculateIRR() {
 
 async function fetchBackendIRR(variant, params) {
   // Build payload for economics service /analyze endpoint
+  const variantData = {
+    capacity: variant.capacity,
+    production: variant.production,
+    self_consumed: variant.self_consumed,
+    exported: variant.exported,
+    auto_consumption_pct: variant.auto_consumption_pct,
+    coverage_pct: variant.coverage_pct
+  };
+
+  // Add BESS fields if present
+  if (variant.bess_power_kw !== undefined && variant.bess_power_kw !== null) {
+    variantData.bess_power_kw = variant.bess_power_kw;
+    variantData.bess_energy_kwh = variant.bess_energy_kwh;
+    variantData.bess_charged_kwh = variant.bess_charged_kwh;
+    variantData.bess_discharged_kwh = variant.bess_discharged_kwh;
+    variantData.bess_curtailed_kwh = variant.bess_curtailed_kwh;
+    variantData.bess_grid_import_kwh = variant.bess_grid_import_kwh;
+    variantData.bess_self_consumed_direct_kwh = variant.bess_self_consumed_direct_kwh;
+    variantData.bess_self_consumed_from_bess_kwh = variant.bess_self_consumed_from_bess_kwh;
+    variantData.bess_cycles_equivalent = variant.bess_cycles_equivalent;
+  }
+
+  const parametersData = {
+    energy_price: params.energy_price,           // PLN/MWh
+    feed_in_tariff: params.feed_in_tariff || 0,  // PLN/MWh
+    investment_cost: params.investment_cost,     // PLN/kWp
+    export_mode: params.export_mode || 'zero',
+    discount_rate: params.discount_rate,
+    degradation_rate: params.degradation_rate,
+    opex_per_kwp: params.opex_per_kwp,
+    analysis_period: params.analysis_period,
+    use_inflation: params.use_inflation || false,
+    irr_mode: params.irr_mode || (params.use_inflation ? 'nominal' : 'real'),
+    inflation_rate: params.inflation_rate || 0
+  };
+
+  // Add BESS economic parameters from system settings
+  const settings = window.systemSettings;
+  if (settings?.bessEnabled) {
+    parametersData.bess_capex_per_kwh = settings.bessCapexPerKwh || 1500;
+    parametersData.bess_capex_per_kw = settings.bessCapexPerKw || 300;
+    parametersData.bess_opex_pct_per_year = settings.bessOpexPctPerYear || 1.5;
+    parametersData.bess_lifetime_years = settings.bessLifetimeYears || 15;
+    parametersData.bess_degradation_pct_per_year = settings.bessDegradationPctPerYear || 2.0;
+  }
+
   const payload = {
-    variant: {
-      capacity: variant.capacity,
-      production: variant.production,
-      self_consumed: variant.self_consumed,
-      exported: variant.exported,
-      auto_consumption_pct: variant.auto_consumption_pct,
-      coverage_pct: variant.coverage_pct
-    },
-    parameters: {
-      energy_price: params.energy_price,           // PLN/MWh
-      feed_in_tariff: params.feed_in_tariff || 0,  // PLN/MWh
-      investment_cost: params.investment_cost,     // PLN/kWp
-      export_mode: params.export_mode || 'zero',
-      discount_rate: params.discount_rate,
-      degradation_rate: params.degradation_rate,
-      opex_per_kwp: params.opex_per_kwp,
-      analysis_period: params.analysis_period,
-      use_inflation: params.use_inflation || false,
-      irr_mode: params.irr_mode || (params.use_inflation ? 'nominal' : 'real'),
-      inflation_rate: params.inflation_rate || 0
-    }
+    variant: variantData,
+    parameters: parametersData
   };
 
   const response = await fetch('http://localhost:8003/analyze', {

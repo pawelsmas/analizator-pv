@@ -240,6 +240,13 @@ canvas {
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
+.details-section.full-width {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .details-section h2 {
   font-size: 18px;
   margin-bottom: 16px;
@@ -526,7 +533,44 @@ canvas {
   color: #e74c3c;
 }
 
+/* BESS Section styles */
+#bessSection {
+  container-type: inline-size;
+}
+
+#bessSection > div {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.bess-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.bess-details-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(400px, 2fr);
+  gap: 16px;
+  max-width: 100%;
+}
+
 /* Responsywność */
+@media (max-width: 1200px) {
+  /* BESS details grid - stack vertically on narrower screens */
+  .bess-details-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 900px) {
+  /* BESS KPI cards - 2 columns */
+  .bess-kpi-grid {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+
 @media (max-width: 768px) {
   .content-grid {
     grid-template-columns: 1fr;
@@ -547,5 +591,10 @@ canvas {
   .scenario-info-panel {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  /* BESS KPI cards - 1 column on mobile */
+  .bess-kpi-grid {
+    grid-template-columns: 1fr !important;
   }
 }

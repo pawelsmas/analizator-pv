@@ -1170,6 +1170,12 @@ function showAnalysisResults(results) {
     ? 'Optymalna instalacja:'
     : 'Wybierz wariant główny do dalszych obliczeń:';
 
+  // Check if BESS is enabled (any variant has BESS data)
+  const hasBess = variantKeys.some(key => {
+    const v = results.key_variants[key];
+    return v.bess_power_kw != null && v.bess_energy_kwh != null;
+  });
+
   // Build comparison table rows
   const comparisonRows = variantKeys.map(key => {
     const v = results.key_variants[key];
@@ -1185,6 +1191,21 @@ function showAnalysisResults(results) {
     const selfConsumedGWh = (selfConsumed / 1000000).toFixed(2);
     const exportedGWh = ((production - selfConsumed) / 1000000).toFixed(2);
 
+    // BESS data
+    const bessPower = v.bess_power_kw != null ? parseFloat(v.bess_power_kw).toFixed(0) : '-';
+    const bessEnergy = v.bess_energy_kwh != null ? parseFloat(v.bess_energy_kwh).toFixed(0) : '-';
+    const bessFromBattery = v.bess_self_consumed_from_bess_kwh != null
+      ? (parseFloat(v.bess_self_consumed_from_bess_kwh) / 1000).toFixed(1)
+      : '-';
+    const bessCurtailed = v.bess_curtailed_kwh != null
+      ? (parseFloat(v.bess_curtailed_kwh) / 1000).toFixed(1)
+      : '-';
+
+    // Baseline comparison (without BESS)
+    const baseline = v.baseline_no_bess || {};
+    const baselineAuto = parseFloat(baseline.auto_consumption_pct) || 0;
+    const autoIncrease = autoConsumptionPct - baselineAuto;
+
     // NPV może być w v.npv_mln (mln PLN) lub v.npv (PLN) - konwertuj na liczbę
     let npvMln = null;
     if (v.npv_mln != null) {
@@ -1194,6 +1215,14 @@ function showAnalysisResults(results) {
     }
     const npvInfo = (npvMln != null && !isNaN(npvMln)) ? npvMln.toFixed(2) : '-';
 
+    // BESS columns (only if BESS enabled)
+    const bessColumns = hasBess ? `
+        <td style="color:#9c27b0;font-weight:500">${bessPower}/${bessEnergy}</td>
+        <td>${bessFromBattery}</td>
+        <td>${bessCurtailed}</td>
+        <td style="color:#27ae60;font-weight:600">+${autoIncrease.toFixed(1)}%</td>
+    ` : '';
+
     return `
       <tr>
         <td style="font-weight:600;color:#667eea">${key}</td>
@@ -1202,12 +1231,21 @@ function showAnalysisResults(results) {
         <td>${productionGWh}</td>
         <td>${selfConsumedGWh}</td>
         <td>${exportedGWh}</td>
+        ${bessColumns}
         <td>${autoConsumptionPct.toFixed(1)}%</td>
         <td>${coveragePct.toFixed(1)}%</td>
         <td>${npvInfo}</td>
       </tr>
     `;
   }).join('');
+
+  // BESS header columns
+  const bessHeaders = hasBess ? `
+    <th style="padding:12px 8px;background:#9c27b0">BESS [kW/kWh]</th>
+    <th style="padding:12px 8px;background:#9c27b0">Z baterii [MWh]</th>
+    <th style="padding:12px 8px;background:#9c27b0">Curtailment [MWh]</th>
+    <th style="padding:12px 8px;background:#27ae60">Wzrost Auto.</th>
+  ` : '';
 
   // Determine scenario count - use configurations_tested for seasonality optimization
   const scenarioCount = results.seasonality_optimization?.configurations_tested
@@ -1224,6 +1262,20 @@ function showAnalysisResults(results) {
       </div>
       <div style="margin-top:12px">${strategyLabel}</div>
 
+      ${hasBess ? `
+      <!-- BESS Summary Box -->
+      <div style="margin-top:20px;padding:16px 24px;background:linear-gradient(135deg,#9c27b0 0%,#673ab7 100%);border-radius:12px;color:white;max-width:600px;margin-left:auto;margin-right:auto;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          <span style="font-size:24px">🔋</span>
+          <span style="font-size:16px;font-weight:600;">Magazyn Energii BESS (0-Export Mode)</span>
+        </div>
+        <div style="font-size:13px;opacity:0.9;">
+          System auto-sizing dobiera pojemność i moc baterii dla każdego wariantu PV.
+          Nadwyżka produkcji PV jest magazynowana, brak eksportu do sieci (curtailment gdy bateria pełna).
+        </div>
+      </div>
+      ` : ''}
+
       <!-- Comparison Table -->
       <div style="margin-top:30px;padding:20px;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
         <h3 style="color:#2c3e50;margin-bottom:16px;font-size:16px;">Tabela Porównawcza Wariantów</h3>
@@ -1237,6 +1289,7 @@ function showAnalysisResults(results) {
                 <th style="padding:12px 8px">Produkcja [GWh/rok]</th>
                 <th style="padding:12px 8px">Autokonsum. [GWh]</th>
                 <th style="padding:12px 8px">Eksport [GWh]</th>
+                ${bessHeaders}
                 <th style="padding:12px 8px">Autokonsum. [%]</th>
                 <th style="padding:12px 8px">Pokrycie [%]</th>
                 <th style="padding:12px 8px;border-radius:0 8px 0 0">NPV [mln PLN]</th>

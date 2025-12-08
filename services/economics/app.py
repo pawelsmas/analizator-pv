@@ -31,6 +31,12 @@ class EconomicParameters(BaseModel):
     use_inflation: bool = False  # True = nominal IRR (cash flows indexed by inflation), False = real IRR
     inflation_rate: float = 0.025  # 2.5% annual inflation rate
     irr_mode: Literal["nominal", "real"] = "real"  # Alternative to use_inflation for clarity
+    # BESS economic parameters
+    bess_capex_per_kwh: float = 1500.0  # PLN/kWh for energy capacity
+    bess_capex_per_kw: float = 300.0    # PLN/kW for power capacity
+    bess_opex_pct_per_year: float = 1.5  # % of BESS CAPEX per year
+    bess_lifetime_years: int = 15        # Battery replacement year
+    bess_degradation_pct_per_year: float = 2.0  # Capacity degradation per year
 
 class VariantData(BaseModel):
     capacity: float  # kWp
@@ -39,6 +45,16 @@ class VariantData(BaseModel):
     exported: float  # kWh
     auto_consumption_pct: float
     coverage_pct: float
+    # BESS fields (optional, for PV+BESS systems)
+    bess_power_kw: Optional[float] = None
+    bess_energy_kwh: Optional[float] = None
+    bess_charged_kwh: Optional[float] = None
+    bess_discharged_kwh: Optional[float] = None
+    bess_curtailed_kwh: Optional[float] = None
+    bess_grid_import_kwh: Optional[float] = None
+    bess_self_consumed_direct_kwh: Optional[float] = None
+    bess_self_consumed_from_bess_kwh: Optional[float] = None
+    bess_cycles_equivalent: Optional[float] = None
 
 class EconomicAnalysisRequest(BaseModel):
     variant: VariantData
@@ -502,12 +518,27 @@ async def analyze_economics(request: EconomicAnalysisRequest):
         inflation_rate = params.inflation_rate
 
         # Calculate investment (always at year 0, no inflation)
-        investment = variant.capacity * params.investment_cost
+        pv_investment = variant.capacity * params.investment_cost
+
+        # Calculate BESS investment if present
+        bess_investment = 0.0
+        bess_capex = 0.0
+        has_bess = variant.bess_power_kw is not None and variant.bess_energy_kwh is not None
+        if has_bess:
+            bess_capex = (
+                variant.bess_energy_kwh * params.bess_capex_per_kwh +
+                variant.bess_power_kw * params.bess_capex_per_kw
+            )
+            bess_investment = bess_capex
+
+        investment = pv_investment + bess_investment
 
         # Base annual values (year 1, before inflation indexing)
         base_energy_price = params.energy_price
         base_feed_in_tariff = params.feed_in_tariff
-        base_opex = variant.capacity * params.opex_per_kwp
+        base_pv_opex = variant.capacity * params.opex_per_kwp
+        base_bess_opex = bess_capex * (params.bess_opex_pct_per_year / 100.0) if has_bess else 0.0
+        base_opex = base_pv_opex + base_bess_opex
 
         # Calculate first year revenues (for simple payback and display)
         annual_savings = (variant.self_consumed / 1000) * base_energy_price
@@ -530,8 +561,16 @@ async def analyze_economics(request: EconomicAnalysisRequest):
         cash_flow_details = []
 
         for year in range(1, params.analysis_period + 1):
-            # Apply degradation to production
+            # Apply degradation to production (PV panels)
             degrad_factor = (1 - params.degradation_rate) ** year
+
+            # BESS degradation (separate from PV)
+            bess_degrad_factor = 1.0
+            if has_bess:
+                bess_years_since_install = year % params.bess_lifetime_years
+                if bess_years_since_install == 0:
+                    bess_years_since_install = params.bess_lifetime_years
+                bess_degrad_factor = (1 - params.bess_degradation_pct_per_year / 100.0) ** bess_years_since_install
 
             # Apply inflation indexing if enabled (nominal mode)
             if use_inflation:
@@ -549,16 +588,33 @@ async def analyze_economics(request: EconomicAnalysisRequest):
             production = variant.production * degrad_factor
 
             # Revenue this year (with inflation-adjusted prices if enabled)
-            savings = (variant.self_consumed * degrad_factor / 1000) * energy_price
-            export_rev = 0.0
+            # For BESS: energy from battery is also degraded
+            if has_bess and variant.bess_self_consumed_from_bess_kwh:
+                # PV direct consumption + BESS contribution (both degraded)
+                direct_consumed = (variant.bess_self_consumed_direct_kwh or 0) * degrad_factor
+                bess_consumed = (variant.bess_self_consumed_from_bess_kwh or 0) * degrad_factor * bess_degrad_factor
+                total_self_consumed = direct_consumed + bess_consumed
+                savings = (total_self_consumed / 1000) * energy_price
+            else:
+                savings = (variant.self_consumed * degrad_factor / 1000) * energy_price
 
+            export_rev = 0.0
             if params.export_mode != "zero":
                 export_rev = (variant.exported * degrad_factor / 1000) * feed_in_tariff
 
             revenue = savings + export_rev
 
+            # BESS replacement cost (if needed in this year)
+            bess_replacement_cost = 0.0
+            if has_bess and year == params.bess_lifetime_years and year < params.analysis_period:
+                # Battery replacement at end of BESS lifetime (only if analysis continues)
+                # Assume 70% cost reduction due to falling battery prices
+                bess_replacement_cost = bess_capex * 0.7
+                if use_inflation:
+                    bess_replacement_cost *= (1 + inflation_rate) ** year
+
             # Net cash flow
-            net_cf = revenue - opex
+            net_cf = revenue - opex - bess_replacement_cost
             cumulative += net_cf
 
             # Discounted cash flow

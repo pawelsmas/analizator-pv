@@ -472,11 +472,18 @@ function applySettingsToUI(config) {
     bessEnabledEl.checked = config.bessEnabled || false;
   }
 
+  // Fields that are stored as decimals but displayed as percentages in UI
+  const percentageFields = ['bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax'];
+
   simpleFields.forEach(field => {
     const el = document.getElementById(field);
     if (el) {
       // Use config value if exists, otherwise use default
-      const value = config[field] !== undefined ? config[field] : DEFAULT_CONFIG[field];
+      let value = config[field] !== undefined ? config[field] : DEFAULT_CONFIG[field];
+      // Convert decimal to percentage for display (e.g., 0.90 -> 90)
+      if (percentageFields.includes(field) && value < 1) {
+        value = value * 100;
+      }
       el.value = value;
     }
   });

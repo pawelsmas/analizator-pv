@@ -181,6 +181,34 @@ class SimulationResult(BaseModel):
     exported: float
     auto_consumption_pct: float
     coverage_pct: float
+    # BESS results (only populated when BESS enabled)
+    bess_power_kw: Optional[float] = None
+    bess_energy_kwh: Optional[float] = None
+    bess_charged_kwh: Optional[float] = None
+    bess_discharged_kwh: Optional[float] = None
+    bess_curtailed_kwh: Optional[float] = None
+    bess_grid_import_kwh: Optional[float] = None
+    bess_self_consumed_direct_kwh: Optional[float] = None
+    bess_self_consumed_from_bess_kwh: Optional[float] = None
+    bess_cycles_equivalent: Optional[float] = None
+
+# ============== BESS Configuration Model (LIGHT/AUTO Mode) ==============
+class BESSConfigLite(BaseModel):
+    """BESS LIGHT/AUTO configuration - system auto-sizes power and energy"""
+    enabled: bool = False
+    mode: str = 'lite'  # 'lite' = auto-sizing mode
+    duration: str = 'auto'  # 'auto' | '1' | '2' | '4' hours (E/P ratio)
+    # Technical parameters
+    roundtrip_efficiency: float = 0.90  # 88-92% typical for Li-ion
+    soc_min: float = 0.10  # Minimum SOC (protect battery)
+    soc_max: float = 0.90  # Maximum SOC (protect battery)
+    soc_initial: float = 0.50  # Initial SOC
+    # Economic parameters (for NPV calculation in economics module)
+    capex_per_kwh: float = 1500.0  # PLN/kWh (battery + BMS)
+    capex_per_kw: float = 300.0  # PLN/kW (PCS/inverter)
+    opex_pct_per_year: float = 1.5  # OPEX as % of CAPEX
+    lifetime_years: int = 15
+    degradation_pct_per_year: float = 2.0
 
 class AnalysisRequest(BaseModel):
     pv_config: PVConfiguration
@@ -190,6 +218,15 @@ class AnalysisRequest(BaseModel):
     capacity_max: float = 50000.0
     capacity_step: float = 500.0
     thresholds: Dict[str, float] = {"A": 95, "B": 90, "C": 85, "D": 80}
+    bess_config: Optional[BESSConfigLite] = None  # BESS LIGHT/AUTO configuration
+
+class BaselineMetrics(BaseModel):
+    """Baseline metrics without BESS for comparison"""
+    production: float
+    self_consumed: float
+    exported: float
+    auto_consumption_pct: float
+    coverage_pct: float
 
 class VariantResult(BaseModel):
     variant: str
@@ -202,6 +239,33 @@ class VariantResult(BaseModel):
     auto_consumption_pct: float
     coverage_pct: float
     meets_threshold: bool
+    # BESS results (only populated when BESS enabled)
+    bess_power_kw: Optional[float] = None
+    bess_energy_kwh: Optional[float] = None
+    bess_charged_kwh: Optional[float] = None
+    bess_discharged_kwh: Optional[float] = None
+    bess_curtailed_kwh: Optional[float] = None
+    bess_grid_import_kwh: Optional[float] = None
+    bess_self_consumed_direct_kwh: Optional[float] = None
+    bess_self_consumed_from_bess_kwh: Optional[float] = None
+    bess_cycles_equivalent: Optional[float] = None
+    # Baseline comparison (without BESS) - for impact analysis
+    baseline_no_bess: Optional[BaselineMetrics] = None
+
+class BESSSummary(BaseModel):
+    """Summary of BESS sizing and performance"""
+    enabled: bool = False
+    mode: str = 'lite'
+    duration_selected: str = 'auto'
+    power_kw: float = 0.0
+    energy_kwh: float = 0.0
+    annual_charged_kwh: float = 0.0
+    annual_discharged_kwh: float = 0.0
+    annual_curtailed_kwh: float = 0.0
+    annual_grid_import_kwh: float = 0.0
+    cycles_equivalent: float = 0.0
+    capex_total: float = 0.0
+    opex_annual: float = 0.0
 
 class AnalysisResult(BaseModel):
     scenarios: List[SimulationResult]
@@ -213,6 +277,8 @@ class AnalysisResult(BaseModel):
     date_range_end: Optional[str] = None
     estimation_method: Optional[str] = None  # "none", "seasonal_scaling_Xm", etc.
     data_hours: Optional[int] = None
+    # BESS summary (only when BESS enabled)
+    bess_summary: Optional[BESSSummary] = None
 
 # ============== Seasonality Band Optimization Models ==============
 class BandConfig(BaseModel):
@@ -1573,6 +1639,227 @@ def simulate_pv_system(
         coverage_pct=coverage_pct
     )
 
+
+def simulate_pv_system_with_bess(
+    capacity: float,
+    pv_profile: np.ndarray,
+    consumption: np.ndarray,
+    bess_power_kw: float,
+    bess_energy_kwh: float,
+    dc_ac_ratio: float = 1.2,
+    roundtrip_efficiency: float = 0.90,
+    soc_min: float = 0.10,
+    soc_max: float = 0.90,
+    soc_initial: float = 0.50
+) -> SimulationResult:
+    """
+    Simulate PV system with BESS in 0-export mode (greedy dispatch).
+
+    In 0-export mode:
+    - PV surplus charges the battery (no grid export)
+    - Battery discharges to cover load deficit
+    - Excess PV when battery is full = curtailment
+    - Remaining deficit after battery = grid import
+
+    Args:
+        capacity: PV system capacity in kWp
+        pv_profile: Hourly generation per kWp (8760 values)
+        consumption: Hourly consumption in kW (8760 values)
+        bess_power_kw: Battery max charge/discharge power in kW
+        bess_energy_kwh: Battery total capacity in kWh
+        dc_ac_ratio: DC to AC capacity ratio
+        roundtrip_efficiency: Round-trip efficiency (0.88-0.92 typical)
+        soc_min: Minimum SOC (0.10 = 10%)
+        soc_max: Maximum SOC (0.90 = 90%)
+        soc_initial: Initial SOC (0.50 = 50%)
+
+    Returns:
+        SimulationResult with BESS metrics
+    """
+    # Scale profile by capacity with inverter clipping
+    ac_capacity = capacity / dc_ac_ratio
+    production = np.minimum(pv_profile * capacity, ac_capacity)
+
+    n_hours = len(production)
+
+    # Usable energy capacity (considering SOC limits)
+    usable_energy = bess_energy_kwh * (soc_max - soc_min)
+
+    # One-way efficiency (sqrt of roundtrip)
+    one_way_eff = np.sqrt(roundtrip_efficiency)
+
+    # Initialize tracking arrays
+    soc = soc_initial * bess_energy_kwh  # Current energy in battery (kWh)
+    soc_min_kwh = soc_min * bess_energy_kwh
+    soc_max_kwh = soc_max * bess_energy_kwh
+
+    # Accumulators
+    total_direct_consumed = 0.0      # PV directly consumed by load
+    total_charged = 0.0              # Energy into battery (before losses)
+    total_discharged = 0.0           # Energy from battery (after losses)
+    total_curtailed = 0.0            # Excess PV curtailed (0-export)
+    total_grid_import = 0.0          # Energy imported from grid
+    total_self_from_bess = 0.0       # Load covered by battery
+
+    for h in range(n_hours):
+        pv = production[h]
+        load = consumption[h]
+
+        # Step 1: Direct self-consumption
+        direct = min(pv, load)
+        total_direct_consumed += direct
+
+        surplus = pv - direct      # PV surplus after direct consumption
+        deficit = load - direct    # Remaining load after direct consumption
+
+        # Step 2: Handle surplus (charge battery or curtail)
+        if surplus > 0:
+            # Limit by battery power and available space
+            charge_power = min(surplus, bess_power_kw)
+            available_space = soc_max_kwh - soc
+            # Energy stored = charge_power * efficiency
+            charge_energy = min(charge_power * one_way_eff, available_space)
+
+            if charge_energy > 0:
+                soc += charge_energy
+                total_charged += charge_energy / one_way_eff  # Track gross input
+
+            # Remaining surplus is curtailed (0-export mode)
+            actually_charged_power = charge_energy / one_way_eff if charge_energy > 0 else 0
+            curtailed = surplus - actually_charged_power
+            total_curtailed += curtailed
+
+        # Step 3: Handle deficit (discharge battery or import from grid)
+        if deficit > 0:
+            # Limit by battery power and available energy
+            discharge_power = min(deficit, bess_power_kw)
+            available_energy = soc - soc_min_kwh
+            # Energy delivered = discharge * efficiency
+            discharge_from_soc = min(discharge_power / one_way_eff, available_energy)
+            discharge_delivered = discharge_from_soc * one_way_eff
+
+            if discharge_delivered > 0:
+                soc -= discharge_from_soc
+                total_discharged += discharge_delivered
+                total_self_from_bess += discharge_delivered
+
+            # Remaining deficit = grid import
+            grid_import = deficit - discharge_delivered
+            total_grid_import += grid_import
+
+    # Calculate totals
+    total_production = production.sum()
+    total_consumption = consumption.sum()
+    total_self_consumed = total_direct_consumed + total_self_from_bess
+
+    # In 0-export mode, exported is always 0
+    total_exported = 0.0
+
+    # Calculate percentages
+    # Auto-consumption = what % of PV production was used (not curtailed/exported)
+    pv_utilized = total_direct_consumed + (total_charged * one_way_eff)  # Direct + what went to battery
+    auto_consumption_pct = (pv_utilized / total_production * 100) if total_production > 0 else 0
+
+    # Coverage = what % of load was covered by PV+BESS
+    coverage_pct = (total_self_consumed / total_consumption * 100) if total_consumption > 0 else 0
+
+    # Equivalent cycles = total energy throughput / usable capacity
+    cycles_equivalent = (total_charged + total_discharged) / (2 * usable_energy) if usable_energy > 0 else 0
+
+    return SimulationResult(
+        capacity=capacity,
+        dcac_ratio=dc_ac_ratio,
+        production=total_production,
+        self_consumed=total_self_consumed,
+        exported=total_exported,
+        auto_consumption_pct=auto_consumption_pct,
+        coverage_pct=coverage_pct,
+        # BESS specific fields
+        bess_power_kw=bess_power_kw,
+        bess_energy_kwh=bess_energy_kwh,
+        bess_charged_kwh=total_charged,
+        bess_discharged_kwh=total_discharged,
+        bess_curtailed_kwh=total_curtailed,
+        bess_grid_import_kwh=total_grid_import,
+        bess_self_consumed_direct_kwh=total_direct_consumed,
+        bess_self_consumed_from_bess_kwh=total_self_from_bess,
+        bess_cycles_equivalent=cycles_equivalent
+    )
+
+
+def auto_size_bess_lite(
+    pv_profile: np.ndarray,
+    consumption: np.ndarray,
+    capacity: float,
+    dc_ac_ratio: float = 1.2,
+    duration: str = 'auto'
+) -> tuple:
+    """
+    Auto-size BESS power (kW) and energy (kWh) based on PV surplus profile.
+
+    Heuristics:
+    - P_auto = 95th percentile of hourly surplus
+    - E_auto depends on duration mode:
+      - 'auto': E = P * estimated_usable_window (typically 3-4h)
+      - '1h', '2h', '4h': E = P * duration
+
+    Args:
+        pv_profile: Hourly generation per kWp
+        consumption: Hourly consumption in kW
+        capacity: PV system capacity in kWp
+        dc_ac_ratio: DC to AC ratio
+        duration: 'auto' | '1' | '2' | '4' hours
+
+    Returns:
+        Tuple of (bess_power_kw, bess_energy_kwh)
+    """
+    # Calculate PV production
+    ac_capacity = capacity / dc_ac_ratio
+    production = np.minimum(pv_profile * capacity, ac_capacity)
+
+    # Calculate hourly surplus
+    direct_consumed = np.minimum(production, consumption)
+    surplus = production - direct_consumed
+
+    # Filter only hours with surplus
+    surplus_positive = surplus[surplus > 0]
+
+    if len(surplus_positive) == 0:
+        # No surplus at all - minimal battery
+        return (10.0, 20.0)
+
+    # P_auto = 95th percentile of surplus (avoid extreme peaks)
+    p_auto = np.percentile(surplus_positive, 95)
+
+    # Ensure minimum reasonable power
+    p_auto = max(p_auto, 10.0)  # At least 10 kW
+
+    # Duration handling
+    if duration == 'auto':
+        # Estimate usable window: count average consecutive surplus hours
+        # Simple heuristic: total surplus hours / 365 days gives avg daily surplus hours
+        surplus_hours_per_year = len(surplus_positive)
+        avg_daily_surplus_hours = surplus_hours_per_year / 365
+
+        # Clamp to reasonable range (2-6 hours)
+        usable_window = max(2.0, min(6.0, avg_daily_surplus_hours))
+        e_auto = p_auto * usable_window
+    else:
+        # Fixed duration
+        try:
+            hours = float(duration)
+            e_auto = p_auto * hours
+        except (ValueError, TypeError):
+            # Fallback to 2 hours
+            e_auto = p_auto * 2.0
+
+    # Round to reasonable values
+    p_auto = round(p_auto, 1)
+    e_auto = round(e_auto, 1)
+
+    return (p_auto, e_auto)
+
+
 def find_variant(scenarios: List[SimulationResult], threshold: float) -> Optional[SimulationResult]:
     """Find the largest installation that meets the autoconsumption threshold"""
     valid = [s for s in scenarios if s.auto_consumption_pct >= threshold]
@@ -1905,6 +2192,15 @@ async def analyze(request: AnalysisRequest):
             # Manual mode: use tier table
             print(f"\n📋 Tryb ręczny: DC/AC ratio wg tabeli przedziałów")
 
+        # Check if BESS is enabled
+        bess_enabled = request.bess_config and request.bess_config.enabled
+        bess_config = request.bess_config
+
+        if bess_enabled:
+            print(f"\n🔋 BESS LIGHT mode enabled")
+            print(f"   Duration: {bess_config.duration}")
+            print(f"   Round-trip efficiency: {bess_config.roundtrip_efficiency:.0%}")
+
         # Run simulations for each capacity
         scenarios = []
         capacity = request.capacity_min
@@ -1925,12 +2221,38 @@ async def analyze(request: AnalysisRequest):
                     config.dc_ac_ratio
                 )
 
-            result = simulate_pv_system(
-                capacity=capacity,
-                pv_profile=pv_profile,
-                consumption=consumption,
-                dc_ac_ratio=dcac_ratio
-            )
+            if bess_enabled:
+                # Auto-size BESS for this PV capacity
+                bess_power_kw, bess_energy_kwh = auto_size_bess_lite(
+                    pv_profile=pv_profile,
+                    consumption=consumption,
+                    capacity=capacity,
+                    dc_ac_ratio=dcac_ratio,
+                    duration=str(bess_config.duration)
+                )
+
+                # Simulate PV+BESS in 0-export mode
+                result = simulate_pv_system_with_bess(
+                    capacity=capacity,
+                    pv_profile=pv_profile,
+                    consumption=consumption,
+                    bess_power_kw=bess_power_kw,
+                    bess_energy_kwh=bess_energy_kwh,
+                    dc_ac_ratio=dcac_ratio,
+                    roundtrip_efficiency=bess_config.roundtrip_efficiency,
+                    soc_min=bess_config.soc_min,
+                    soc_max=bess_config.soc_max,
+                    soc_initial=bess_config.soc_initial
+                )
+            else:
+                # Standard PV simulation (no BESS)
+                result = simulate_pv_system(
+                    capacity=capacity,
+                    pv_profile=pv_profile,
+                    consumption=consumption,
+                    dc_ac_ratio=dcac_ratio
+                )
+
             scenarios.append(result)
             capacity += request.capacity_step
 
@@ -1941,7 +2263,7 @@ async def analyze(request: AnalysisRequest):
             variant_scenario = find_variant(scenarios, threshold)
 
             if variant_scenario:
-                key_variants[variant_name] = VariantResult(
+                variant_result = VariantResult(
                     variant=variant_name,
                     threshold=threshold,
                     capacity=variant_scenario.capacity,
@@ -1953,7 +2275,44 @@ async def analyze(request: AnalysisRequest):
                     coverage_pct=variant_scenario.coverage_pct,
                     meets_threshold=True
                 )
-                print(f"   Variant {variant_name} ({threshold}%): {variant_scenario.capacity:.0f} kWp, auto={variant_scenario.auto_consumption_pct:.1f}%")
+
+                # Add BESS fields if available
+                if bess_enabled and variant_scenario.bess_power_kw is not None:
+                    variant_result.bess_power_kw = variant_scenario.bess_power_kw
+                    variant_result.bess_energy_kwh = variant_scenario.bess_energy_kwh
+                    variant_result.bess_charged_kwh = variant_scenario.bess_charged_kwh
+                    variant_result.bess_discharged_kwh = variant_scenario.bess_discharged_kwh
+                    variant_result.bess_curtailed_kwh = variant_scenario.bess_curtailed_kwh
+                    variant_result.bess_grid_import_kwh = variant_scenario.bess_grid_import_kwh
+                    variant_result.bess_self_consumed_direct_kwh = variant_scenario.bess_self_consumed_direct_kwh
+                    variant_result.bess_self_consumed_from_bess_kwh = variant_scenario.bess_self_consumed_from_bess_kwh
+                    variant_result.bess_cycles_equivalent = variant_scenario.bess_cycles_equivalent
+
+                    # Compute baseline (no BESS) for comparison
+                    baseline_result = simulate_pv_system(
+                        capacity=variant_scenario.capacity,
+                        pv_profile=pv_profile,
+                        consumption=consumption,
+                        dc_ac_ratio=variant_scenario.dcac_ratio
+                    )
+                    variant_result.baseline_no_bess = BaselineMetrics(
+                        production=baseline_result.production,
+                        self_consumed=baseline_result.self_consumed,
+                        exported=baseline_result.exported,
+                        auto_consumption_pct=baseline_result.auto_consumption_pct,
+                        coverage_pct=baseline_result.coverage_pct
+                    )
+
+                key_variants[variant_name] = variant_result
+
+                # Print variant info
+                if bess_enabled and variant_scenario.bess_power_kw:
+                    baseline_auto = variant_result.baseline_no_bess.auto_consumption_pct if variant_result.baseline_no_bess else 0
+                    auto_increase = variant_scenario.auto_consumption_pct - baseline_auto
+                    print(f"   Variant {variant_name} ({threshold}%): {variant_scenario.capacity:.0f} kWp + {variant_scenario.bess_power_kw:.0f}kW/{variant_scenario.bess_energy_kwh:.0f}kWh BESS")
+                    print(f"      Auto-consumption: {baseline_auto:.1f}% -> {variant_scenario.auto_consumption_pct:.1f}% (+{auto_increase:.1f}%)")
+                else:
+                    print(f"   Variant {variant_name} ({threshold}%): {variant_scenario.capacity:.0f} kWp, auto={variant_scenario.auto_consumption_pct:.1f}%")
 
         # Extract date range for response
         parsed_timestamps = pd.to_datetime(timestamps)
@@ -1963,7 +2322,48 @@ async def analyze(request: AnalysisRequest):
         print(f"\n✅ Analysis complete: {len(scenarios)} scenarios, {len(key_variants)} variants")
         print(f"   Date range: {date_start} to {date_end}")
         print(f"   Estimation method: {estimation_method}")
+        if bess_enabled:
+            print(f"   BESS mode: LIGHT/AUTO")
         print(f"{'='*60}\n")
+
+        # Build BESS summary if enabled
+        bess_summary = None
+        if bess_enabled and scenarios:
+            # Find best scenario (highest autoconsumption that meets threshold)
+            # Use the 70% variant if available, otherwise the best scenario
+            best_scenario = None
+            if 'variant_70' in key_variants:
+                # Find matching scenario
+                target_cap = key_variants['variant_70'].capacity
+                for s in scenarios:
+                    if s.capacity == target_cap:
+                        best_scenario = s
+                        break
+            if not best_scenario:
+                # Use scenario with highest autoconsumption
+                best_scenario = max(scenarios, key=lambda s: s.auto_consumption_pct)
+
+            if best_scenario and best_scenario.bess_power_kw is not None:
+                total_consumption = consumption.sum()
+                bess_summary = BESSSummary(
+                    enabled=True,
+                    mode='lite',
+                    duration=str(bess_config.duration),
+                    bess_power_kw=best_scenario.bess_power_kw,
+                    bess_energy_kwh=best_scenario.bess_energy_kwh,
+                    total_charged_kwh=best_scenario.bess_charged_kwh,
+                    total_discharged_kwh=best_scenario.bess_discharged_kwh,
+                    total_curtailed_kwh=best_scenario.bess_curtailed_kwh,
+                    total_grid_import_kwh=best_scenario.bess_grid_import_kwh,
+                    self_consumed_direct_kwh=best_scenario.bess_self_consumed_direct_kwh,
+                    self_consumed_from_bess_kwh=best_scenario.bess_self_consumed_from_bess_kwh,
+                    cycles_equivalent=best_scenario.bess_cycles_equivalent,
+                    auto_consumption_pct=best_scenario.auto_consumption_pct,
+                    coverage_pct=best_scenario.coverage_pct
+                )
+                print(f"   BESS Summary: {best_scenario.bess_power_kw:.0f} kW / {best_scenario.bess_energy_kwh:.0f} kWh")
+                print(f"   Charged: {best_scenario.bess_charged_kwh:.0f} kWh, Discharged: {best_scenario.bess_discharged_kwh:.0f} kWh")
+                print(f"   Curtailed: {best_scenario.bess_curtailed_kwh:.0f} kWh, Grid Import: {best_scenario.bess_grid_import_kwh:.0f} kWh")
 
         return AnalysisResult(
             scenarios=scenarios,
@@ -1973,7 +2373,8 @@ async def analyze(request: AnalysisRequest):
             date_range_start=date_start,
             date_range_end=date_end,
             estimation_method=estimation_method,
-            data_hours=len(timestamps)
+            data_hours=len(timestamps),
+            bess_summary=bess_summary
         )
 
     except Exception as e:

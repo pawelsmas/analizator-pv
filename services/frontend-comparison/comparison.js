@@ -135,7 +135,13 @@ async function loadVariants() {
             meetsThreshold: data.meets_threshold,
             specificYield: data.production / data.capacity, // kWh/kWp
             investmentCost: investmentCost, // PLN (calculated from CAPEX tiers)
-            unitCost: unitCost // PLN/kWp (from CAPEX tiers)
+            unitCost: unitCost, // PLN/kWp (from CAPEX tiers)
+            // BESS data
+            bessPowerKw: data.bess_power_kw || 0,
+            bessEnergyKwh: data.bess_energy_kwh || 0,
+            bessFromBattery: (data.bess_discharged_kwh || data.bess_self_consumed_from_bess_kwh || 0) / 1000, // kWh -> MWh
+            bessCurtailed: (data.bess_curtailed_kwh || 0) / 1000, // kWh -> MWh
+            bessCycles: data.bess_cycles_equivalent || 0
           };
         });
 
@@ -226,7 +232,13 @@ async function loadVariants() {
           meetsThreshold: data.meets_threshold,
           specificYield: data.production / data.capacity, // kWh/kWp
           investmentCost: investmentCost, // PLN (calculated from CAPEX tiers)
-          unitCost: unitCost // PLN/kWp (from CAPEX tiers)
+          unitCost: unitCost, // PLN/kWp (from CAPEX tiers)
+          // BESS data
+          bessPowerKw: data.bess_power_kw || 0,
+          bessEnergyKwh: data.bess_energy_kwh || 0,
+          bessFromBattery: (data.bess_discharged_kwh || data.bess_self_consumed_from_bess_kwh || 0) / 1000, // kWh -> MWh
+          bessCurtailed: (data.bess_curtailed_kwh || 0) / 1000, // kWh -> MWh
+          bessCycles: data.bess_cycles_equivalent || 0
         };
       });
     }
@@ -317,6 +329,12 @@ function updateComparisonTable() {
     return;
   }
 
+  // Check if any variant has BESS
+  const hasBess = ['A', 'B', 'C'].some(key => {
+    const v = selectedVariants[key];
+    return v && v.bessPowerKw > 0;
+  });
+
   // Build comparison rows
   const parameters = [
     { label: 'Moc instalacji [MWp]', key: 'installedCapacity', format: (v) => v.toFixed(2) },
@@ -331,6 +349,17 @@ function updateComparisonTable() {
     { label: 'Koszt inwestycji [mln PLN]', key: 'investmentCost', format: (v) => (v / 1000000).toFixed(2) },
     { label: 'Koszt jednostkowy [PLN/kWp]', key: 'unitCost', format: (v) => v.toFixed(0) }
   ];
+
+  // Add BESS parameters if any variant has BESS
+  if (hasBess) {
+    parameters.push(
+      { label: '🔋 BESS Moc [kW]', key: 'bessPowerKw', format: (v) => v > 0 ? v.toFixed(0) : '-' },
+      { label: '🔋 BESS Pojemność [kWh]', key: 'bessEnergyKwh', format: (v) => v > 0 ? v.toFixed(0) : '-' },
+      { label: '🔋 Z baterii [MWh]', key: 'bessFromBattery', format: (v) => v > 0 ? v.toFixed(1) : '-' },
+      { label: '🔋 Curtailment [MWh]', key: 'bessCurtailed', format: (v) => v > 0 ? v.toFixed(1) : '-' },
+      { label: '🔋 Cykle/rok', key: 'bessCycles', format: (v) => v > 0 ? v.toFixed(0) : '-' }
+    );
+  }
 
   let html = '';
   parameters.forEach(param => {

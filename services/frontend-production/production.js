@@ -665,6 +665,7 @@ function performAnalysis() {
 
   // Update UI
   updateStatistics(stats);
+  updateBessSection();
   updateDataInfo();
 
   // Generate charts
@@ -869,6 +870,170 @@ function updateStatistics(stats) {
   document.getElementById('gridImport').textContent = stats.gridImport;
   document.getElementById('peakPower').textContent = stats.peakPower;
   document.getElementById('fullLoadHours').textContent = stats.fullLoadHours;
+}
+
+// Update BESS section display
+function updateBessSection() {
+  const bessSection = document.getElementById('bessSection');
+  if (!bessSection) return;
+
+  // Check if current variant has BESS data
+  if (!variants || !variants[currentVariant]) {
+    console.log('🔋 BESS check: No variants or currentVariant');
+    bessSection.style.display = 'none';
+    return;
+  }
+
+  const variant = variants[currentVariant];
+  console.log('🔋 BESS check for variant:', currentVariant, {
+    bess_power_kw: variant.bess_power_kw,
+    bess_energy_kwh: variant.bess_energy_kwh,
+    baseline_no_bess: variant.baseline_no_bess
+  });
+
+  const hasBess = variant.bess_power_kw != null && variant.bess_energy_kwh != null && variant.bess_power_kw > 0;
+
+  if (!hasBess) {
+    console.log('🔋 BESS not enabled for this variant (bess_power_kw is null or 0)');
+    bessSection.style.display = 'none';
+    return;
+  }
+
+  // Show BESS section
+  bessSection.style.display = 'block';
+
+  // BESS parameters
+  const bessPowerKw = variant.bess_power_kw || 0;
+  const bessEnergyKwh = variant.bess_energy_kwh || 0;
+  const bessFromBattery = variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0;
+  const bessToBattery = variant.bess_charged_kwh || 0;
+  const bessCurtailed = variant.bess_curtailed_kwh || 0;
+  const bessCycles = variant.bess_cycles_equivalent || 0;
+  const duration = bessPowerKw > 0 ? (bessEnergyKwh / bessPowerKw).toFixed(1) : 0;
+
+  // Current values with BESS
+  const bessAutoConsumption = variant.auto_consumption_pct || 0;
+  const bessSelfConsumed = variant.self_consumed || 0;
+  const bessExported = variant.exported || 0;
+  const bessCoveragePct = variant.coverage_pct || 0;
+  const bessProduction = variant.production || 0;
+
+  // Baseline values (without BESS) from backend
+  const baseline = variant.baseline_no_bess || {};
+  console.log('🔋 Baseline data from backend:', baseline);
+  console.log('🔋 Full variant data:', variant);
+
+  // If baseline is empty but we have BESS, we need to estimate baseline values
+  // Baseline = current values minus BESS contribution
+  let baselineAutoConsumption = baseline.auto_consumption_pct || 0;
+  let baselineSelfConsumed = baseline.self_consumed || 0;
+  let baselineExported = baseline.exported || 0;
+  let baselineCoveragePct = baseline.coverage_pct || 0;
+
+  // If baseline is missing, estimate it from BESS data
+  if (!baseline.auto_consumption_pct && bessFromBattery > 0) {
+    // Without BESS: self_consumed would be less by the amount from battery
+    // and exported would be more (energy that went to battery would be exported)
+    baselineSelfConsumed = bessSelfConsumed - bessFromBattery;
+    baselineExported = bessToBattery; // Energy that was stored would have been exported
+    baselineAutoConsumption = bessProduction > 0 ? (baselineSelfConsumed / bessProduction * 100) : 0;
+    // Coverage remains similar (based on consumption not production)
+    const totalConsumption = consumptionData?.hourlyData?.values?.reduce((a,b) => a+b, 0) || 0;
+    baselineCoveragePct = totalConsumption > 0 ? (baselineSelfConsumed / totalConsumption * 100) : 0;
+    console.log('🔋 Estimated baseline (no backend data):', { baselineAutoConsumption, baselineSelfConsumed, baselineExported, baselineCoveragePct });
+  }
+
+  // Calculate differences
+  const diffAuto = bessAutoConsumption - baselineAutoConsumption;
+  const diffSelfConsumed = bessSelfConsumed - baselineSelfConsumed;
+  const diffExported = bessExported - baselineExported;
+  const diffCoverage = bessCoveragePct - baselineCoveragePct;
+  const curtailmentPct = bessProduction > 0 ? (bessCurtailed / bessProduction * 100) : 0;
+
+  // Format and display - BESS Parameters
+  document.getElementById('bessPowerKw').textContent = `${bessPowerKw.toFixed(0)} kW`;
+  document.getElementById('bessEnergyKwh').textContent = `${bessEnergyKwh.toFixed(0)} kWh`;
+  const bessDurationEl = document.getElementById('bessDuration');
+  if (bessDurationEl) bessDurationEl.textContent = `${duration}h`;
+
+  // Energy flow
+  document.getElementById('bessFromBattery').textContent = `${(bessFromBattery / 1000).toFixed(1)} MWh`;
+  document.getElementById('bessToBattery').textContent = `${(bessToBattery / 1000).toFixed(1)} MWh`;
+  document.getElementById('bessCycles').textContent = `${bessCycles.toFixed(0)} cykli/rok`;
+
+  // BESS Sizing Card (new)
+  const bessSizingCardEl = document.getElementById('bessSizingCard');
+  if (bessSizingCardEl) {
+    bessSizingCardEl.textContent = `${bessPowerKw.toFixed(0)} kW / ${bessEnergyKwh.toFixed(0)} kWh`;
+  }
+  const bessDurationCardEl = document.getElementById('bessDurationCard');
+  if (bessDurationCardEl) {
+    bessDurationCardEl.textContent = `Duration: ${duration}h`;
+  }
+
+  // Impact summary cards
+  const bessAutoIncreaseEl = document.getElementById('bessAutoIncrease');
+  if (bessAutoIncreaseEl) {
+    bessAutoIncreaseEl.textContent = `+${diffAuto.toFixed(1)}%`;
+  }
+  const bessAutoCompareEl = document.getElementById('bessAutoCompare');
+  if (bessAutoCompareEl) {
+    bessAutoCompareEl.textContent = `${baselineAutoConsumption.toFixed(1)}% → ${bessAutoConsumption.toFixed(1)}%`;
+  }
+
+  const bessEnergyFromBatteryEl = document.getElementById('bessEnergyFromBattery');
+  if (bessEnergyFromBatteryEl) {
+    bessEnergyFromBatteryEl.textContent = `${(bessFromBattery / 1000).toFixed(1)}`;
+  }
+  const bessCyclesInfoEl = document.getElementById('bessCyclesInfo');
+  if (bessCyclesInfoEl) {
+    bessCyclesInfoEl.textContent = `${bessCycles.toFixed(0)} cykli ekw./rok`;
+  }
+
+  const bessCurtailmentTotalEl = document.getElementById('bessCurtailmentTotal');
+  if (bessCurtailmentTotalEl) {
+    bessCurtailmentTotalEl.textContent = `${(bessCurtailed / 1000).toFixed(1)}`;
+  }
+  const bessCurtailmentPctEl = document.getElementById('bessCurtailmentPct');
+  if (bessCurtailmentPctEl) {
+    bessCurtailmentPctEl.textContent = `${curtailmentPct.toFixed(1)}% produkcji PV`;
+  }
+
+  // Comparison table
+  const setEl = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+
+  // Baseline (without BESS)
+  setEl('baselineAuto', `${baselineAutoConsumption.toFixed(1)}%`);
+  setEl('baselineSelfConsumed', `${(baselineSelfConsumed / 1000).toFixed(1)}`);
+  setEl('baselineExported', `${(baselineExported / 1000).toFixed(1)}`);
+  setEl('baselineCoverage', `${baselineCoveragePct.toFixed(1)}%`);
+
+  // With BESS
+  setEl('bessAuto', `${bessAutoConsumption.toFixed(1)}%`);
+  setEl('bessSelfConsumed', `${(bessSelfConsumed / 1000).toFixed(1)}`);
+  setEl('bessExported', `${(bessExported / 1000).toFixed(1)}`);
+  setEl('bessCoverage', `${bessCoveragePct.toFixed(1)}%`);
+
+  // Differences
+  setEl('diffAuto', `+${diffAuto.toFixed(1)}%`);
+  setEl('diffSelfConsumed', `+${(diffSelfConsumed / 1000).toFixed(1)}`);
+  setEl('diffExported', `${(diffExported / 1000).toFixed(1)}`);
+  setEl('diffCoverage', `+${diffCoverage.toFixed(1)}%`);
+
+  console.log('🔋 BESS section updated:', {
+    power: bessPowerKw,
+    energy: bessEnergyKwh,
+    duration: duration,
+    discharged: bessFromBattery,
+    charged: bessToBattery,
+    curtailed: bessCurtailed,
+    cycles: bessCycles,
+    baseline: baseline,
+    autoIncrease: diffAuto
+  });
 }
 
 // Update data info
@@ -1174,9 +1339,11 @@ function generateHourlyProfile() {
     load: document.getElementById('toggleLoad')?.checked ?? true,
     pv: document.getElementById('togglePV')?.checked ?? true,
     selfcons: document.getElementById('toggleSelfCons')?.checked ?? true,
+    selfconsbess: document.getElementById('toggleSelfConsBess')?.checked ?? true,
     trendload: document.getElementById('toggleTrendLoad')?.checked ?? false,
     trendpv: document.getElementById('toggleTrendPV')?.checked ?? false,
-    trendselfcons: document.getElementById('toggleTrendSelfCons')?.checked ?? false
+    trendselfcons: document.getElementById('toggleTrendSelfCons')?.checked ?? false,
+    trendselfconsbess: document.getElementById('toggleTrendSelfConsBess')?.checked ?? false
   };
   console.log('📊 Saved checkbox states:', checkboxStates);
 
@@ -1210,6 +1377,40 @@ function generateHourlyProfile() {
   const prodData = [];
   const consData = [];
   const selfConsData = [];
+  const selfConsBessData = []; // Self-consumption WITH BESS
+
+  // Check if BESS is enabled for current variant
+  let hasBess = false;
+  let bessDischargedTotal = 0;
+  if (variants && variants[currentVariant]) {
+    const variant = variants[currentVariant];
+    hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+    bessDischargedTotal = variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0;
+  }
+
+  // If BESS enabled, show checkbox controls
+  const bessLabelEl = document.getElementById('toggleSelfConsBessLabel');
+  const bessTrendLabelEl = document.getElementById('toggleTrendSelfConsBessLabel');
+  if (bessLabelEl) bessLabelEl.style.display = hasBess ? 'flex' : 'none';
+  if (bessTrendLabelEl) bessTrendLabelEl.style.display = hasBess ? 'flex' : 'none';
+
+  // Calculate per-hour BESS contribution (simplified: distribute evenly based on surplus hours)
+  // In reality this would come from hourly simulation, but we approximate
+  let bessPerHourContribution = 0;
+  if (hasBess && hoursToShow > 0) {
+    // Count hours where PV > consumption (surplus hours when battery charges)
+    // and hours where PV < consumption (deficit hours when battery discharges)
+    let deficitHours = 0;
+    for (let idx = 0; idx < hoursToShow; idx++) {
+      const prodRaw = production[idx] || 0;
+      const prodAC = Math.min(prodRaw, acCapacityLimit);
+      const cons = consumption[idx] || 0;
+      if (cons > prodAC && prodAC > 0) deficitHours++; // Hours where we can use stored energy
+    }
+    // Distribute BESS discharge over deficit hours
+    bessPerHourContribution = deficitHours > 0 ? bessDischargedTotal / deficitHours : 0;
+    console.log('🔋 BESS hourly contribution:', bessPerHourContribution.toFixed(2), 'kW over', deficitHours, 'deficit hours');
+  }
 
   for (let idx = 0; idx < hoursToShow; idx++) {
     // Apply DC/AC ratio clipping to production
@@ -1218,6 +1419,15 @@ function generateHourlyProfile() {
 
     const cons = consumption[idx] || 0;
     const selfCons = Math.min(prodAC, cons); // Self-consumption with AC production
+
+    // Self-consumption with BESS: add battery discharge during deficit hours
+    let selfConsBess = selfCons;
+    if (hasBess && cons > prodAC && prodAC > 0) {
+      // Deficit hour - battery can discharge
+      const deficit = cons - prodAC;
+      const bessContrib = Math.min(bessPerHourContribution, deficit);
+      selfConsBess = selfCons + bessContrib;
+    }
 
     // Label: show date for every 168th hour (weekly) to avoid clutter
     let label = '';
@@ -1232,6 +1442,7 @@ function generateHourlyProfile() {
     prodData.push(prodAC / 1000); // kW -> MW (as number, not string)
     consData.push(cons / 1000);
     selfConsData.push(selfCons / 1000);
+    selfConsBessData.push(selfConsBess / 1000);
   }
 
   console.log('  - Hours displayed:', hoursToShow);
@@ -1239,12 +1450,16 @@ function generateHourlyProfile() {
   console.log('  - Total production:', prodData.reduce((sum, v) => sum + v, 0).toFixed(2), 'MWh');
   console.log('  - Total consumption:', consData.reduce((sum, v) => sum + v, 0).toFixed(2), 'MWh');
   console.log('  - Total self-consumption:', selfConsData.reduce((sum, v) => sum + v, 0).toFixed(2), 'MWh');
+  if (hasBess) {
+    console.log('  - Total self-consumption + BESS:', selfConsBessData.reduce((sum, v) => sum + v, 0).toFixed(2), 'MWh');
+  }
 
   // Calculate 7-day moving average (168 hours) for trend lines
   const window = 168; // 7 days
   const prodTrend = calculateMovingAverage(prodData, window);
   const consTrend = calculateMovingAverage(consData, window);
   const selfConsTrend = calculateMovingAverage(selfConsData, window);
+  const selfConsBessTrend = hasBess ? calculateMovingAverage(selfConsBessData, window) : [];
 
   console.log('  - Calculated trend lines with', window, 'hour window');
 
@@ -1341,6 +1556,32 @@ function generateHourlyProfile() {
           order: 1,
           tension: 0.4,
           hidden: !checkboxStates.trendload // Use saved state
+        },
+        // BESS datasets (only shown when BESS is enabled)
+        {
+          label: 'Autokonsumpcja + BESS [MW]',
+          data: hasBess ? selfConsBessData : [],
+          borderColor: '#9c27b0',
+          backgroundColor: 'rgba(156, 39, 176, 0.3)',
+          borderWidth: 2,
+          fill: true,
+          pointRadius: 0,
+          order: 7, // Below regular self-consumption
+          tension: 0.2,
+          hidden: !hasBess || !checkboxStates.selfconsbess
+        },
+        {
+          label: 'Trend Auto+BESS (7d MA)',
+          data: hasBess ? selfConsBessTrend : [],
+          borderColor: '#9c27b0',
+          backgroundColor: 'transparent',
+          borderWidth: 3,
+          borderDash: [5, 5],
+          fill: false,
+          pointRadius: 0,
+          order: 0,
+          tension: 0.4,
+          hidden: !hasBess || !checkboxStates.trendselfconsbess
         }
       ]
     },
@@ -1412,13 +1653,16 @@ function toggleHourlyProfileLayer(layer) {
     'selfcons': 0,          // Self-consumption data
     'trendload': 5,         // Trend Load (7d MA)
     'trendpv': 4,           // Trend PV (7d MA)
-    'trendselfcons': 3      // Trend Self-consumption (7d MA)
+    'trendselfcons': 3,     // Trend Self-consumption (7d MA)
+    'selfconsbess': 6,      // Self-consumption + BESS
+    'trendselfconsbess': 7  // Trend Self-consumption + BESS (7d MA)
   };
 
   const datasetIndex = datasetMap[layer];
   if (datasetIndex === undefined) return;
 
   const dataset = hourlyProfileChart.data.datasets[datasetIndex];
+  if (!dataset) return; // BESS datasets might not exist
 
   // Get checkbox ID
   let checkboxId;
@@ -1428,6 +1672,8 @@ function toggleHourlyProfileLayer(layer) {
   else if (layer === 'trendload') checkboxId = 'toggleTrendLoad';
   else if (layer === 'trendpv') checkboxId = 'toggleTrendPV';
   else if (layer === 'trendselfcons') checkboxId = 'toggleTrendSelfCons';
+  else if (layer === 'selfconsbess') checkboxId = 'toggleSelfConsBess';
+  else if (layer === 'trendselfconsbess') checkboxId = 'toggleTrendSelfConsBess';
 
   const checkbox = document.getElementById(checkboxId);
 
@@ -1456,9 +1702,11 @@ function generateDaylightProfile() {
     load: document.getElementById('toggleLoadDaylight')?.checked ?? true,
     pv: document.getElementById('togglePVDaylight')?.checked ?? true,
     selfcons: document.getElementById('toggleSelfConsDaylight')?.checked ?? true,
+    selfconsbess: document.getElementById('toggleSelfConsBessDaylight')?.checked ?? true,
     trendload: document.getElementById('toggleTrendLoadDaylight')?.checked ?? false,
     trendpv: document.getElementById('toggleTrendPVDaylight')?.checked ?? false,
-    trendselfcons: document.getElementById('toggleTrendSelfConsDaylight')?.checked ?? false
+    trendselfcons: document.getElementById('toggleTrendSelfConsDaylight')?.checked ?? false,
+    trendselfconsbess: document.getElementById('toggleTrendSelfConsBessDaylight')?.checked ?? false
   };
   console.log('📊 Daylight saved checkbox states:', checkboxStates);
 
@@ -1476,6 +1724,49 @@ function generateDaylightProfile() {
   const daylightProd = [];
   const daylightCons = [];
   const daylightSelfCons = [];
+  const daylightSelfConsBess = []; // Self-consumption WITH BESS
+
+  // Check if BESS is enabled for current variant
+  let hasBess = false;
+  let bessDischargedTotal = 0;
+  if (variants && variants[currentVariant]) {
+    const variant = variants[currentVariant];
+    hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+    bessDischargedTotal = variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0;
+  }
+
+  // If BESS enabled, show checkbox controls
+  const bessLabelEl = document.getElementById('toggleSelfConsBessDaylightLabel');
+  const bessTrendLabelEl = document.getElementById('toggleTrendSelfConsBessDaylightLabel');
+  if (bessLabelEl) bessLabelEl.style.display = hasBess ? 'flex' : 'none';
+  if (bessTrendLabelEl) bessTrendLabelEl.style.display = hasBess ? 'flex' : 'none';
+
+  // Get capacity for DC/AC clipping
+  const capacity = pvConfig?.capacity || 10000;
+  const inverterLimit = capacity / 1.2;
+
+  // First pass: count deficit daylight hours for BESS distribution
+  let deficitDaylightHours = 0;
+  if (hasBess) {
+    for (let idx = 0; idx < Math.min(production.length, consumption.length, timestamps.length); idx++) {
+      const date = new Date(timestamps[idx]);
+      const month = date.getMonth();
+      const hour = date.getHours();
+      const dayLength = dayLengthHours[month];
+      const sunrise = Math.floor(12 - dayLength / 2);
+      const sunset = Math.floor(12 + dayLength / 2);
+
+      if (hour >= sunrise && hour < sunset) {
+        const pvAC = Math.min(production[idx], inverterLimit);
+        const load = consumption[idx];
+        if (load > pvAC && pvAC > 0) deficitDaylightHours++;
+      }
+    }
+  }
+  const bessPerHourContribution = deficitDaylightHours > 0 ? bessDischargedTotal / deficitDaylightHours : 0;
+  if (hasBess) {
+    console.log('🔋 BESS daylight contribution:', bessPerHourContribution.toFixed(2), 'kW over', deficitDaylightHours, 'deficit daylight hours');
+  }
 
   for (let idx = 0; idx < Math.min(production.length, consumption.length, timestamps.length); idx++) {
     const date = new Date(timestamps[idx]);
@@ -1492,16 +1783,23 @@ function generateDaylightProfile() {
       daylightLabels.push(idx);
 
       // Apply DC/AC clipping (inverter capacity limit)
-      const capacity = pvConfig?.capacity || 10000;
-      const inverterLimit = capacity / 1.2;
       const pvAC = Math.min(production[idx], inverterLimit);
 
       const load = consumption[idx];
       const selfCons = Math.min(load, pvAC);
 
+      // Self-consumption with BESS: add battery discharge during deficit hours
+      let selfConsBess = selfCons;
+      if (hasBess && load > pvAC && pvAC > 0) {
+        const deficit = load - pvAC;
+        const bessContrib = Math.min(bessPerHourContribution, deficit);
+        selfConsBess = selfCons + bessContrib;
+      }
+
       daylightProd.push(pvAC / 1000); // kW → MW (as number, not string)
       daylightCons.push(load / 1000);
       daylightSelfCons.push(selfCons / 1000);
+      daylightSelfConsBess.push(selfConsBess / 1000);
     }
   }
 
@@ -1510,6 +1808,9 @@ function generateDaylightProfile() {
   console.log('Sample data - first 5 Load values:', daylightCons.slice(0, 5));
   console.log('Max PV:', Math.max(...daylightProd).toFixed(3), 'MW');
   console.log('Max Load:', Math.max(...daylightCons).toFixed(3), 'MW');
+  if (hasBess) {
+    console.log('Total daylight self-consumption + BESS:', daylightSelfConsBess.reduce((sum, v) => sum + v, 0).toFixed(2), 'MWh');
+  }
 
   if (daylightLabels.length === 0) {
     console.error('❌ NO DAYLIGHT DATA - check sunrise/sunset logic');
@@ -1521,6 +1822,7 @@ function generateDaylightProfile() {
   const prodTrend = calculateMovingAverage(daylightProd, window);
   const consTrend = calculateMovingAverage(daylightCons, window);
   const selfConsTrend = calculateMovingAverage(daylightSelfCons, window);
+  const selfConsBessTrend = hasBess ? calculateMovingAverage(daylightSelfConsBess, window) : [];
 
   console.log('Trend lines calculated - lengths:', prodTrend.length, consTrend.length, selfConsTrend.length);
 
@@ -1613,6 +1915,34 @@ function generateDaylightProfile() {
           tension: 0.4,
           hidden: !checkboxStates.trendload, // Use saved state
           order: 1
+        },
+        // BESS datasets (only shown when BESS is enabled)
+        // Dataset 6: Self-consumption + BESS (purple)
+        {
+          label: 'Autokonsumpcja + BESS [MW]',
+          data: hasBess ? daylightSelfConsBess : [],
+          borderColor: '#9c27b0',
+          backgroundColor: 'rgba(156, 39, 176, 0.3)',
+          borderWidth: 2,
+          fill: true,
+          pointRadius: 0,
+          tension: 0,
+          order: 7, // Below regular self-consumption
+          hidden: !hasBess || !checkboxStates.selfconsbess
+        },
+        // Dataset 7: Trend Self-consumption + BESS (7d MA, dashed purple)
+        {
+          label: 'Trend Auto+BESS (7d MA)',
+          data: hasBess ? selfConsBessTrend : [],
+          backgroundColor: 'transparent',
+          borderColor: '#9c27b0',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          fill: false,
+          pointRadius: 0,
+          tension: 0.4,
+          hidden: !hasBess || !checkboxStates.trendselfconsbess,
+          order: 0
         }
       ]
     },
@@ -1694,7 +2024,9 @@ function toggleDaylightLayer(layer) {
     'selfcons': 0,          // Self-consumption data
     'trendload': 5,         // Trend Load (7d MA)
     'trendpv': 4,           // Trend PV (7d MA)
-    'trendselfcons': 3      // Trend Self-consumption (7d MA)
+    'trendselfcons': 3,     // Trend Self-consumption (7d MA)
+    'selfconsbess': 6,      // Self-consumption + BESS
+    'trendselfconsbess': 7  // Trend Self-consumption + BESS (7d MA)
   };
 
   const checkboxMap = {
@@ -1703,7 +2035,9 @@ function toggleDaylightLayer(layer) {
     'selfcons': 'toggleSelfConsDaylight',
     'trendload': 'toggleTrendLoadDaylight',
     'trendpv': 'toggleTrendPVDaylight',
-    'trendselfcons': 'toggleTrendSelfConsDaylight'
+    'trendselfcons': 'toggleTrendSelfConsDaylight',
+    'selfconsbess': 'toggleSelfConsBessDaylight',
+    'trendselfconsbess': 'toggleTrendSelfConsBessDaylight'
   };
 
   const datasetIndex = datasetMap[layer];
@@ -1713,6 +2047,8 @@ function toggleDaylightLayer(layer) {
   }
 
   const dataset = daylightProfileChart.data.datasets[datasetIndex];
+  if (!dataset) return; // BESS datasets might not exist
+
   const checkboxId = checkboxMap[layer];
   const checkbox = document.getElementById(checkboxId);
 
