@@ -156,8 +156,6 @@ Dłuższy opis jeśli potrzebny:
 - Dlaczego to zrobiono
 - Jakie są efekty
 
-🤖 Generated with Claude Code
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 ### Częste commitowanie
