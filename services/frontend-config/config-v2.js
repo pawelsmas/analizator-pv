@@ -773,6 +773,29 @@ async function runAnalysis() {
       }
     };
 
+    // Add BESS configuration if enabled (LIGHT/AUTO mode)
+    if (systemSettings?.bessEnabled) {
+      analysisRequest.bess_config = {
+        enabled: true,
+        mode: 'lite',  // LIGHT/AUTO mode - system auto-sizes power and energy
+        duration: systemSettings.bessDuration || 'auto',  // 'auto' | 1 | 2 | 4 hours
+        // Technical parameters
+        roundtrip_efficiency: systemSettings.bessRoundtripEfficiency || 0.90,
+        soc_min: systemSettings.bessSocMin || 0.10,
+        soc_max: systemSettings.bessSocMax || 0.90,
+        soc_initial: systemSettings.bessSocInitial || 0.50,
+        // Economic parameters (for NPV calculation)
+        capex_per_kwh: systemSettings.bessCapexPerKwh || 1500,
+        capex_per_kw: systemSettings.bessCapexPerKw || 300,
+        opex_pct_per_year: systemSettings.bessOpexPctPerYear || 1.5,
+        lifetime_years: systemSettings.bessLifetimeYears || 15,
+        degradation_pct_per_year: systemSettings.bessDegradationPctPerYear || 2.0
+      };
+      console.log('🔋 BESS LIGHT/AUTO mode enabled:', analysisRequest.bess_config);
+    } else {
+      console.log('🔋 BESS disabled - running PV-only analysis');
+    }
+
     console.log(`📅 Using ${hourlyData.timestamps?.length || 0} timestamps from consumption data`);
 
     // Store analysis logs for export
