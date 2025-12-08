@@ -856,6 +856,136 @@
       </div>
     </div>
 
+    <!-- BESS - Battery Energy Storage System (LIGHT/AUTO Mode) -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🔋</span>
+        <h2>Magazyn Energii (BESS)</h2>
+        <span class="section-info">Tryb AUTO - system dobiera moc i pojemność automatycznie</span>
+      </div>
+
+      <!-- Info Box -->
+      <div style="margin-bottom:20px;padding:14px;background:linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);border-radius:10px;border-left:4px solid #1976d2">
+        <div style="font-size:12px;color:#1565c0;line-height:1.6">
+          <strong>🔋 BESS LIGHT/AUTO</strong> – uproszczony tryb dla handlowców.<br>
+          • Po włączeniu system <strong>automatycznie</strong> dobiera optymalną moc (kW) i pojemność (kWh)<br>
+          • Tryb <strong>0-Export</strong> – magazyn ładuje się tylko z nadwyżek PV, brak eksportu do sieci<br>
+          • Nadwyżki powyżej pojemności magazynu → <strong>curtailment</strong> (ucięcie produkcji)
+        </div>
+      </div>
+
+      <!-- BESS Toggle -->
+      <div style="margin-bottom:24px;padding:20px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div>
+            <div style="font-weight:600;color:#1976d2;font-size:15px">Magazyn energii BESS</div>
+            <div style="font-size:12px;color:#666;margin-top:4px">Włącz aby dodać magazyn do analizy PV</div>
+          </div>
+          <label class="toggle-switch" style="margin:0">
+            <input type="checkbox" id="bessEnabled" onchange="toggleBessSection()">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div style="display:flex;gap:12px">
+          <div id="bessStatusOff" style="flex:1;padding:12px;background:#ffebee;border-radius:6px;text-align:center;border:2px solid #ef5350">
+            <div style="font-size:20px">❌</div>
+            <div style="font-weight:600;color:#c62828">OFF</div>
+            <div style="font-size:11px;color:#666">Bez magazynu</div>
+          </div>
+          <div id="bessStatusOn" style="flex:1;padding:12px;background:#e8f5e9;border-radius:6px;text-align:center;border:2px solid transparent;opacity:0.5">
+            <div style="font-size:20px">✅</div>
+            <div style="font-weight:600;color:#2e7d32">ON (AUTO)</div>
+            <div style="font-size:11px;color:#666">Auto-sizing</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BESS Duration Selector (shown only when BESS enabled) -->
+      <div id="bessDurationSection" style="display:none;margin-bottom:24px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1976d2;margin-bottom:12px;font-size:14px">
+          ⏱️ Czas magazynowania (Duration)
+        </div>
+        <div style="font-size:12px;color:#666;margin-bottom:12px">
+          Stosunek pojemności do mocy (E/P). AUTO testuje wszystkie opcje i wybiera najlepszą wg NPV.
+        </div>
+
+        <div class="setting-item">
+          <label>Duration</label>
+          <select id="bessDuration" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px">
+            <option value="auto">🤖 AUTO (optymalizacja NPV)</option>
+            <option value="1">1h (wysoka moc, mała pojemność)</option>
+            <option value="2">2h (zbalansowany)</option>
+            <option value="4">4h (duża pojemność, umiarkowana moc)</option>
+          </select>
+          <span class="setting-hint">AUTO = system przetestuje 1h/2h/4h i wybierze najkorzystniejszy</span>
+        </div>
+      </div>
+
+      <!-- BESS Economic Parameters (shown only when BESS enabled) -->
+      <div id="bessEconomicsSection" style="display:none;margin-bottom:24px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1976d2;margin-bottom:12px;font-size:14px">
+          💰 Parametry ekonomiczne BESS
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>CAPEX per kWh</label>
+            <input type="number" id="bessCapexPerKwh" value="1500" min="500" max="5000" step="50">
+            <span class="setting-hint">PLN/kWh (bateria + BMS)</span>
+          </div>
+          <div class="setting-item">
+            <label>CAPEX per kW</label>
+            <input type="number" id="bessCapexPerKw" value="300" min="0" max="2000" step="50">
+            <span class="setting-hint">PLN/kW (PCS/inwerter)</span>
+          </div>
+          <div class="setting-item">
+            <label>OPEX (% CAPEX/rok)</label>
+            <input type="number" id="bessOpexPctPerYear" value="1.5" min="0" max="5" step="0.1">
+            <span class="setting-hint">Roczny koszt serwisu</span>
+          </div>
+          <div class="setting-item">
+            <label>Żywotność [lat]</label>
+            <input type="number" id="bessLifetimeYears" value="15" min="5" max="25" step="1">
+            <span class="setting-hint">Oczekiwana żywotność</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- BESS Technical Parameters (Advanced, collapsed by default) -->
+      <div id="bessTechnicalSection" style="display:none">
+        <details style="margin-bottom:16px">
+          <summary style="cursor:pointer;padding:12px;background:#f5f5f5;border-radius:6px;font-weight:600;color:#555">
+            ⚙️ Parametry techniczne (zaawansowane)
+          </summary>
+          <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
+            <div class="settings-grid">
+              <div class="setting-item">
+                <label>Sprawność roundtrip</label>
+                <input type="number" id="bessRoundtripEfficiency" value="90" min="80" max="98" step="1">
+                <span class="setting-hint">% (typowo 88-92% dla Li-ion)</span>
+              </div>
+              <div class="setting-item">
+                <label>SOC min</label>
+                <input type="number" id="bessSocMin" value="10" min="0" max="30" step="5">
+                <span class="setting-hint">% (ochrona baterii)</span>
+              </div>
+              <div class="setting-item">
+                <label>SOC max</label>
+                <input type="number" id="bessSocMax" value="90" min="70" max="100" step="5">
+                <span class="setting-hint">% (ochrona baterii)</span>
+              </div>
+              <div class="setting-item">
+                <label>Degradacja [%/rok]</label>
+                <input type="number" id="bessDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1">
+                <span class="setting-hint">Roczna utrata pojemności</span>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
     <!-- ESG - Environmental, Social, Governance -->
     <div class="settings-section">
       <div class="section-header">

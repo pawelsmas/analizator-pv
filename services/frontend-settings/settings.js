@@ -237,7 +237,30 @@ const DEFAULT_CONFIG = {
 
   // ESG - Electricity Maps API
   electricitymapsApiKey: '',          // Electricity Maps API key
-  electricitymapsZone: 'PL'           // Default zone for Poland
+  electricitymapsZone: 'PL',          // Default zone for Poland
+
+  // ============================================================================
+  // BESS - Battery Energy Storage System (LIGHT/AUTO Mode)
+  // ============================================================================
+  // Tryb uproszczony dla handlowców - system automatycznie dobiera moc i pojemność
+
+  bessEnabled: false,                  // Master switch: false = OFF (no battery), true = ON (AUTO)
+  bessDuration: 'auto',                // Duration mode: 'auto' | 1 | 2 | 4 (hours)
+                                       // 'auto' = system tests 1h/2h/4h and picks best NPV
+
+  // BESS Technical Defaults (used by AUTO sizing algorithm)
+  bessRoundtripEfficiency: 0.90,       // Round-trip efficiency (88-92% typical for Li-ion)
+  bessSocMin: 0.10,                    // Minimum SOC (10% = protect battery health)
+  bessSocMax: 0.90,                    // Maximum SOC (90% = protect battery health)
+  bessSocInitial: 0.50,                // Initial SOC at start of simulation
+
+  // BESS Economic Defaults
+  bessCapexPerKwh: 1500,               // CAPEX per kWh capacity [PLN/kWh] (battery cells + BMS)
+  bessCapexPerKw: 300,                 // CAPEX per kW power [PLN/kW] (inverter/PCS)
+  bessOpexPctPerYear: 1.5,             // Annual OPEX as % of CAPEX
+  bessLifetimeYears: 15,               // Expected battery lifetime [years]
+  bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
+  bessDegradationPctPerYear: 2.0       // Annual capacity degradation [%/year]
 };
 
 // Initialize on load
@@ -250,7 +273,65 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize and render dynamic CAPEX tables
   initCapexData();
   renderAllCapexTables();
+  // Initialize BESS section visibility
+  toggleBessSection();
 });
+
+// ============================================================================
+// BESS Section Toggle Functions
+// ============================================================================
+
+/**
+ * Toggle BESS configuration sections based on bessEnabled checkbox
+ * Shows/hides duration, economics, and technical parameters
+ */
+function toggleBessSection() {
+  const bessEnabled = document.getElementById('bessEnabled')?.checked || false;
+  const durationSection = document.getElementById('bessDurationSection');
+  const economicsSection = document.getElementById('bessEconomicsSection');
+  const technicalSection = document.getElementById('bessTechnicalSection');
+  const statusOff = document.getElementById('bessStatusOff');
+  const statusOn = document.getElementById('bessStatusOn');
+
+  if (bessEnabled) {
+    // Show BESS configuration sections
+    if (durationSection) durationSection.style.display = 'block';
+    if (economicsSection) economicsSection.style.display = 'block';
+    if (technicalSection) technicalSection.style.display = 'block';
+
+    // Update status indicators
+    if (statusOff) {
+      statusOff.style.border = '2px solid transparent';
+      statusOff.style.opacity = '0.5';
+    }
+    if (statusOn) {
+      statusOn.style.border = '2px solid #4caf50';
+      statusOn.style.opacity = '1';
+    }
+
+    console.log('🔋 BESS enabled - showing configuration sections');
+  } else {
+    // Hide BESS configuration sections
+    if (durationSection) durationSection.style.display = 'none';
+    if (economicsSection) economicsSection.style.display = 'none';
+    if (technicalSection) technicalSection.style.display = 'none';
+
+    // Update status indicators
+    if (statusOff) {
+      statusOff.style.border = '2px solid #ef5350';
+      statusOff.style.opacity = '1';
+    }
+    if (statusOn) {
+      statusOn.style.border = '2px solid transparent';
+      statusOn.style.opacity = '0.5';
+    }
+
+    console.log('🔋 BESS disabled - hiding configuration sections');
+  }
+
+  // Mark as unsaved
+  markUnsaved();
+}
 
 // Setup event listeners for auto-save and calculations
 function setupEventListeners() {
@@ -361,7 +442,11 @@ function applySettingsToUI(config) {
     'pvYield_ground_s', 'latitude_ground_s', 'longitude_ground_s', 'tilt_ground_s', 'azimuth_ground_s',
     'pvYield_roof_ew', 'latitude_roof_ew', 'longitude_roof_ew', 'tilt_roof_ew', 'azimuth_roof_ew',
     'pvYield_ground_ew', 'latitude_ground_ew', 'longitude_ground_ew', 'tilt_ground_ew', 'azimuth_ground_ew',
-    'capMin', 'capMax', 'capStep', 'thrA', 'thrB', 'thrC', 'thrD'
+    'capMin', 'capMax', 'capStep', 'thrA', 'thrB', 'thrC', 'thrD',
+    // BESS economic parameters
+    'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
+    // BESS technical parameters
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationPctPerYear'
   ];
 
   // Select fields
@@ -370,13 +455,21 @@ function applySettingsToUI(config) {
     'depreciationMethod', 'debtAmortization', 'indexationFrequency',
     'weatherDataSource',
     // Pxx select fields
-    'pxxSource', 'pvgisRadDatabase', 'pvgisPvTechChoice', 'pvgisMountingPlace'
+    'pxxSource', 'pvgisRadDatabase', 'pvgisPvTechChoice', 'pvgisMountingPlace',
+    // BESS
+    'bessDuration'
   ];
 
   // IRR mode checkbox
   const useInflationEl = document.getElementById('useInflation');
   if (useInflationEl) {
     useInflationEl.checked = config.useInflation || config.irrMode === 'nominal' || false;
+  }
+
+  // BESS enabled checkbox
+  const bessEnabledEl = document.getElementById('bessEnabled');
+  if (bessEnabledEl) {
+    bessEnabledEl.checked = config.bessEnabled || false;
   }
 
   simpleFields.forEach(field => {
@@ -418,6 +511,9 @@ function applySettingsToUI(config) {
   }
 
   updateTotalEnergyPrice();
+
+  // Update BESS section visibility after loading settings
+  toggleBessSection();
 }
 
 // Get current settings from UI
@@ -565,6 +661,22 @@ function getCurrentSettings() {
     thrB: parseFloat(document.getElementById('thrB')?.value || DEFAULT_CONFIG.thrB),
     thrC: parseFloat(document.getElementById('thrC')?.value || DEFAULT_CONFIG.thrC),
     thrD: parseFloat(document.getElementById('thrD')?.value || DEFAULT_CONFIG.thrD),
+
+    // BESS - Battery Energy Storage System (LIGHT/AUTO Mode)
+    bessEnabled: document.getElementById('bessEnabled')?.checked || false,
+    bessDuration: document.getElementById('bessDuration')?.value || DEFAULT_CONFIG.bessDuration,
+    // BESS Technical
+    bessRoundtripEfficiency: parseFloat(document.getElementById('bessRoundtripEfficiency')?.value || DEFAULT_CONFIG.bessRoundtripEfficiency * 100) / 100,
+    bessSocMin: parseFloat(document.getElementById('bessSocMin')?.value || DEFAULT_CONFIG.bessSocMin * 100) / 100,
+    bessSocMax: parseFloat(document.getElementById('bessSocMax')?.value || DEFAULT_CONFIG.bessSocMax * 100) / 100,
+    bessSocInitial: DEFAULT_CONFIG.bessSocInitial,
+    // BESS Economic
+    bessCapexPerKwh: parseFloat(document.getElementById('bessCapexPerKwh')?.value || DEFAULT_CONFIG.bessCapexPerKwh),
+    bessCapexPerKw: parseFloat(document.getElementById('bessCapexPerKw')?.value || DEFAULT_CONFIG.bessCapexPerKw),
+    bessOpexPctPerYear: parseFloat(document.getElementById('bessOpexPctPerYear')?.value || DEFAULT_CONFIG.bessOpexPctPerYear),
+    bessLifetimeYears: parseInt(document.getElementById('bessLifetimeYears')?.value || DEFAULT_CONFIG.bessLifetimeYears),
+    bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
+    bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
