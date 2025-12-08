@@ -91,6 +91,64 @@ window.productionFactors = {
 };
 
 /**
+ * Helper function to get annual consumption in kWh
+ * Uses multiple sources with fallbacks
+ */
+function getAnnualConsumptionKwh() {
+  // Priority 1: consumptionData.annual_consumption_kwh (sent from config module)
+  if (consumptionData?.annual_consumption_kwh) {
+    console.log('📊 Using annual_consumption_kwh from consumptionData:', consumptionData.annual_consumption_kwh);
+    return consumptionData.annual_consumption_kwh;
+  }
+
+  // Priority 2: consumptionData.total_consumption_gwh (convert GWh to kWh)
+  if (consumptionData?.total_consumption_gwh) {
+    const kwh = consumptionData.total_consumption_gwh * 1000000;
+    console.log('📊 Using total_consumption_gwh from consumptionData:', consumptionData.total_consumption_gwh, 'GWh =', kwh, 'kWh');
+    return kwh;
+  }
+
+  // Priority 3: Calculate from hourlyData array (sum of all values)
+  if (hourlyData && Array.isArray(hourlyData) && hourlyData.length > 0) {
+    // Each element might be {consumption: xxx} or just a number
+    let sum = 0;
+    for (const h of hourlyData) {
+      if (typeof h === 'number') {
+        sum += h;
+      } else if (h && typeof h.consumption === 'number') {
+        sum += h.consumption;
+      } else if (h && typeof h.consumption_kwh === 'number') {
+        sum += h.consumption_kwh;
+      }
+    }
+    if (sum > 0) {
+      console.log('📊 Calculated annual consumption from hourlyData:', sum, 'kWh');
+      return sum;
+    }
+  }
+
+  // Priority 4: Get from current variant (grid_import = what we need from grid)
+  const variant = variants[currentVariant];
+  if (variant) {
+    // Total consumption = self_consumed + grid_import (what's left after PV)
+    // But we want the ORIGINAL consumption before PV
+    // If we have baseline data, use it
+    if (variant.baseline_no_bess?.self_consumed && variant.exported !== undefined) {
+      // baseline_no_bess.self_consumed is in kWh
+      const totalConsumption = (variant.self_consumed || 0) + (variant.bess_grid_import_kwh || 0);
+      if (totalConsumption > 0) {
+        console.log('📊 Estimated annual consumption from variant:', totalConsumption, 'kWh');
+        return totalConsumption;
+      }
+    }
+  }
+
+  // Priority 5: Fallback - but use a more reasonable default (5 GWh = typical medium industry)
+  console.warn('⚠️ No consumption data found, using fallback: 5 GWh (5,000 MWh)');
+  return 5000000; // 5 GWh = 5,000 MWh - more reasonable default
+}
+
+/**
  * Global scenario setter - updates ALL economic calculations
  * Called from the global scenario selector in the header
  * @param {string} scenario - P50, P75, or P90
@@ -624,7 +682,7 @@ function recalculateEaaSWithScenario(scenario) {
 
   // Regenerate EaaS yearly table
   const eaasParams = {
-    annualConsumptionKWh: consumptionData?.annual_consumption_kwh || 10000000,
+    annualConsumptionKWh: getAnnualConsumptionKwh(),
     annualPVProductionKWh: variant.production * factor,
     selfConsumptionRatio: variant.self_consumed / variant.production,
     pvPowerKWp: variant.capacity,
@@ -952,6 +1010,7 @@ async function fetchBackendIRR(variant, params) {
     parametersData.bess_capex_per_kw = settings.bessCapexPerKw || 300;
     parametersData.bess_opex_pct_per_year = settings.bessOpexPctPerYear || 1.5;
     parametersData.bess_lifetime_years = settings.bessLifetimeYears || 15;
+    parametersData.bess_degradation_year1 = settings.bessDegradationYear1 || 3.0;
     parametersData.bess_degradation_pct_per_year = settings.bessDegradationPctPerYear || 2.0;
   }
 
@@ -2486,6 +2545,11 @@ async function performEconomicAnalysis() {
     updateESGDashboard();
     console.log('🌱 updateESGDashboard() completed');
 
+    // Update BESS Economics Section
+    console.log('🔋 About to call updateBessEconomicsSection()...');
+    updateBessEconomicsSection();
+    console.log('🔋 updateBessEconomicsSection() completed');
+
   } catch (error) {
     console.error('❌ Error performing economic analysis:', error);
     showNoData();
@@ -3415,8 +3479,8 @@ function generatePaybackTable(data, capacity_kwp, params) {
   const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice || 800;
   const inflationRate = centralizedCalc.common.inflationRate || 0.025;
 
-  // Get annual consumption from consumptionData
-  const annualConsumptionKwh = consumptionData?.annual_consumption_kwh || 41820000;
+  // Get annual consumption using helper function
+  const annualConsumptionKwh = getAnnualConsumptionKwh();
   const annualConsumptionMwh = annualConsumptionKwh / 1000;
 
   console.log('📊 CAPEX TABLE - Using centralizedMetrics:', {
@@ -4238,7 +4302,7 @@ async function calculateEaaS() {
   console.log('  - CAPEX NPV:', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
   console.log('  - EaaS NPV:', ((centralizedCalc.eaas?.npv || 0) / 1000000).toFixed(2), 'mln PLN');
 
-  const annualConsumption = consumptionData?.annual_consumption_kwh || 10000000;
+  const annualConsumption = getAnnualConsumptionKwh();
   const eaasParams = {
     annualConsumptionKWh: annualConsumption,
     annualPVProductionKWh: variant.production,
@@ -4497,7 +4561,7 @@ function generateEaaSYearlyTable(params, result) {
   const inflationRate = centralizedCalc.common.inflationRate || 0.025;
 
   // A. Energia z sieci = całkowite zużycie zakładu (bez PV musiałby pobrać całość z sieci)
-  const annualConsumptionKwh = consumptionData?.annual_consumption_kwh || 41820000; // Default ~41.8 GWh
+  const annualConsumptionKwh = getAnnualConsumptionKwh();
   const annualConsumptionMwh = annualConsumptionKwh / 1000;
 
   for (const yearData of eaasCashFlows) {
@@ -4690,7 +4754,7 @@ function exportEaaSToExcel() {
   const capacityKwp = variant.capacity;
   const autoconsumptionMwh = variant.self_consumed / 1000; // kWh to MWh
   const capex = capacityKwp * getCapexForCapacity(capacityKwp);
-  const annualConsumption = consumptionData?.annual_consumption_kwh || 10000000;
+  const annualConsumption = getAnnualConsumptionKwh();
 
   // Calculate EaaS metrics (same params as calculateEaaS)
   const eaasParams = {
@@ -5055,8 +5119,8 @@ function updateESGDashboard() {
     return;
   }
 
-  // Get consumption data
-  const annualConsumptionKwh = consumptionData?.annual_consumption_kwh || 10000000; // Default 10 GWh
+  // Get consumption data using helper function
+  const annualConsumptionKwh = getAnnualConsumptionKwh();
   const annualConsumptionMwh = annualConsumptionKwh / 1000;
 
   // Get production data (apply scenario factor)
@@ -5392,5 +5456,190 @@ function updateElectricityMapsUIInEconomics(data) {
 
 // Note: Main initialization is at line ~1443 (DOMContentLoaded)
 // This file uses single unified event handling defined earlier
+
+// ============================================
+// BESS ECONOMICS SECTION
+// ============================================
+
+/**
+ * Update BESS Economics section with degradation table
+ * Shows BESS CAPEX, OPEX, replacement schedule, and energy over time
+ */
+function updateBessEconomicsSection() {
+  const variant = variants[currentVariant];
+  const settings = window.systemSettings;
+
+  // Check if BESS is enabled
+  const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  const bessSection = document.getElementById('bessEconomicsSection');
+
+  if (!bessSection) {
+    console.log('🔋 BESS Economics section not found in DOM');
+    return;
+  }
+
+  if (!hasBess) {
+    bessSection.style.display = 'none';
+    console.log('🔋 BESS disabled - hiding economics section');
+    return;
+  }
+
+  bessSection.style.display = 'block';
+  console.log('🔋 Updating BESS Economics section...');
+
+  // Get BESS parameters
+  const bessPowerKw = variant.bess_power_kw;
+  const bessEnergyKwh = variant.bess_energy_kwh;
+  const bessDischargedKwh = variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0;
+
+  // Get economic parameters from settings
+  const bessCapexPerKwh = settings?.bessCapexPerKwh || 1500;
+  const bessCapexPerKw = settings?.bessCapexPerKw || 300;
+  const bessOpexPct = settings?.bessOpexPctPerYear || 1.5;
+  const bessLifetime = settings?.bessLifetimeYears || 15;
+  const bessDegradationYear1 = settings?.bessDegradationYear1 || 3.0;
+  const bessDegradationPerYear = settings?.bessDegradationPctPerYear || 2.0;
+  const analysisPeriod = parseInt(document.getElementById('analysisPeriod')?.value) || 25;
+
+  // Calculate BESS CAPEX
+  const bessCapexEnergy = bessEnergyKwh * bessCapexPerKwh;
+  const bessCapexPower = bessPowerKw * bessCapexPerKw;
+  const bessCapexTotal = bessCapexEnergy + bessCapexPower;
+
+  // Calculate BESS OPEX
+  const bessOpexAnnual = bessCapexTotal * (bessOpexPct / 100);
+
+  // Calculate duration
+  const duration = bessPowerKw > 0 ? bessEnergyKwh / bessPowerKw : 0;
+
+  // Update header cards
+  document.getElementById('bessEconSizingCard').textContent = `${bessPowerKw.toFixed(0)} kW / ${bessEnergyKwh.toFixed(0)} kWh`;
+  document.getElementById('bessEconDurationCard').textContent = `Duration: ${duration.toFixed(1)}h`;
+
+  // Update KPI cards
+  document.getElementById('bessEconCapex').textContent = formatNumberEU(bessCapexTotal / 1000, 0);
+  document.getElementById('bessEconCapexDetail').textContent = `${formatNumberEU(bessCapexPerKwh, 0)} PLN/kWh + ${formatNumberEU(bessCapexPerKw, 0)} PLN/kW`;
+
+  document.getElementById('bessEconOpex').textContent = formatNumberEU(bessOpexAnnual / 1000, 1);
+  document.getElementById('bessEconOpexPct').textContent = `${formatNumberEU(bessOpexPct, 1)}% CAPEX/rok`;
+
+  // Battery replacement
+  const replacementYear = Math.min(bessLifetime, analysisPeriod);
+  const needsReplacement = analysisPeriod > bessLifetime;
+  document.getElementById('bessEconReplacement').textContent = needsReplacement ? replacementYear.toString() : 'N/A';
+  document.getElementById('bessEconReplacementCost').textContent = needsReplacement
+    ? `Koszt: ${formatNumberEU(bessCapexTotal * 0.7 / 1000, 0)} tys. PLN`
+    : 'Brak wymiany w okresie';
+
+  // Update degradation parameters info
+  document.getElementById('bessEconDegradationParams').textContent =
+    `Rok 1: ${formatNumberEU(bessDegradationYear1, 1)}% | Lata 2+: ${formatNumberEU(bessDegradationPerYear, 1)}%/rok | Żywotność: ${bessLifetime} lat`;
+
+  // Generate degradation table
+  generateBessDegradationTable(
+    bessEnergyKwh,
+    bessDischargedKwh,
+    bessDegradationYear1,
+    bessDegradationPerYear,
+    bessLifetime,
+    analysisPeriod
+  );
+
+  console.log('🔋 BESS Economics section updated successfully');
+}
+
+/**
+ * Generate BESS degradation table showing energy over years
+ */
+function generateBessDegradationTable(
+  nominalCapacityKwh,
+  year1DischargeKwh,
+  degradationYear1Pct,
+  degradationPerYearPct,
+  lifetimeYears,
+  analysisPeriod
+) {
+  const tbody = document.getElementById('bessDegradationTableBody');
+  if (!tbody) return;
+
+  let html = '';
+  let cumulativeEnergyMWh = 0;
+  let currentCapacity = nominalCapacityKwh;
+  let batteryNumber = 1;
+
+  // Initial energy factor (based on first year discharge)
+  // year1DischargeKwh is the energy delivered in year 1 at 100% capacity
+  const baseEnergyFactor = year1DischargeKwh / nominalCapacityKwh; // energy per kWh of capacity
+
+  for (let year = 1; year <= analysisPeriod; year++) {
+    // Calculate degradation
+    let degradationPct;
+    let yearInBatteryLife = ((year - 1) % lifetimeYears) + 1;
+
+    if (yearInBatteryLife === 1) {
+      // First year of battery life - higher degradation
+      degradationPct = degradationYear1Pct;
+      if (year > 1) {
+        // Battery replacement happened
+        batteryNumber++;
+        currentCapacity = nominalCapacityKwh; // Reset to nominal capacity
+      }
+    } else {
+      // Subsequent years - lower degradation
+      degradationPct = degradationPerYearPct;
+    }
+
+    // Apply degradation to get effective capacity
+    const capacityBeforeDegradation = currentCapacity;
+    currentCapacity = currentCapacity * (1 - degradationPct / 100);
+    const effectiveCapacity = currentCapacity;
+
+    // Calculate energy delivered this year (proportional to effective capacity)
+    const energyMWh = (effectiveCapacity * baseEnergyFactor) / 1000;
+    cumulativeEnergyMWh += energyMWh;
+
+    // EOL check (80% of nominal)
+    const eolPct = (effectiveCapacity / nominalCapacityKwh) * 100;
+    const isNearEOL = eolPct < 85;
+    const isEOL = eolPct < 80;
+
+    // Status
+    let status, statusColor;
+    if (yearInBatteryLife === lifetimeYears || isEOL) {
+      status = `🔄 Wymiana (Bat. ${batteryNumber})`;
+      statusColor = '#e74c3c';
+    } else if (isNearEOL) {
+      status = `⚠️ Blisko EOL (${eolPct.toFixed(0)}%)`;
+      statusColor = '#ff9800';
+    } else if (yearInBatteryLife === 1 && year > 1) {
+      status = `🆕 Nowa bateria (#${batteryNumber})`;
+      statusColor = '#27ae60';
+    } else {
+      status = `✅ OK (${eolPct.toFixed(0)}%)`;
+      statusColor = '#27ae60';
+    }
+
+    html += `
+      <tr style="${yearInBatteryLife === lifetimeYears ? 'background:#fff3e0;' : ''}">
+        <td style="font-weight:600;">${year}</td>
+        <td>${formatNumberEU(nominalCapacityKwh, 0)}</td>
+        <td style="color:${degradationPct > 2.5 ? '#e74c3c' : '#888'}">
+          -${formatNumberEU(degradationPct, 1)}%
+          ${yearInBatteryLife === 1 ? '<span style="font-size:10px;color:#9c27b0">(rok 1)</span>' : ''}
+        </td>
+        <td style="font-weight:500;">${formatNumberEU(effectiveCapacity, 0)}</td>
+        <td>${formatNumberEU(energyMWh, 2)}</td>
+        <td style="font-weight:600;">${formatNumberEU(cumulativeEnergyMWh, 1)}</td>
+        <td style="color:${statusColor};font-size:12px;">${status}</td>
+      </tr>
+    `;
+  }
+
+  tbody.innerHTML = html;
+
+  // Update total energy display
+  document.getElementById('bessEconTotalEnergy').textContent = formatNumberEU(cumulativeEnergyMWh, 0);
+  document.getElementById('bessEconTotalEnergyPeriod').textContent = `przez ${analysisPeriod} lat`;
+}
 
 console.log('📦 economics.js fully loaded');

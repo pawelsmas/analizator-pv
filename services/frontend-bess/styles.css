@@ -1,0 +1,596 @@
+/* BESS Module Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: #f5f6fa;
+  color: #2c3e50;
+  line-height: 1.6;
+}
+
+.bess-container {
+  padding: 20px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* Page Header */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
+  border-radius: 12px;
+  color: white;
+  box-shadow: 0 4px 20px rgba(156, 39, 176, 0.3);
+}
+
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.page-header h1::before {
+  content: '🔋';
+  font-size: 28px;
+}
+
+.header-info {
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+/* Variant Selector */
+.variant-selector {
+  background: white;
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.selector-label {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.variant-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.variant-btn {
+  padding: 12px 24px;
+  border: 2px solid #e0e0e0;
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.variant-btn:hover {
+  border-color: #9c27b0;
+  background: #faf5fc;
+}
+
+.variant-btn.active {
+  border-color: #9c27b0;
+  background: linear-gradient(135deg, #9c27b0, #7b1fa2);
+  color: white;
+}
+
+.variant-btn.active .variant-desc {
+  color: rgba(255,255,255,0.8);
+}
+
+.variant-name {
+  display: block;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.variant-desc {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* BESS Disabled Banner */
+.bess-disabled-banner {
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+  border: 2px solid #ff9800;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.bess-disabled-banner .banner-icon {
+  font-size: 48px;
+}
+
+.bess-disabled-banner .banner-content h3 {
+  color: #e65100;
+  margin-bottom: 8px;
+}
+
+.bess-disabled-banner .banner-content p {
+  color: #bf360c;
+}
+
+/* Content Grid */
+.content-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+/* Main BESS Card */
+.bess-main-card {
+  background: linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%);
+  border: 2px solid #9c27b0;
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.bess-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bess-icon-box {
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, #9c27b0, #7b1fa2);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
+}
+
+.bess-title {
+  flex: 1;
+  margin-left: 20px;
+}
+
+.bess-title h2 {
+  color: #7b1fa2;
+  font-size: 22px;
+  margin: 0;
+}
+
+.bess-subtitle {
+  color: #666;
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.bess-config-badge {
+  background: linear-gradient(135deg, #7b1fa2, #9c27b0);
+  padding: 16px 24px;
+  border-radius: 12px;
+  color: white;
+  text-align: right;
+}
+
+.config-label {
+  font-size: 11px;
+  opacity: 0.9;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.config-value {
+  font-size: 24px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.config-duration {
+  font-size: 13px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+
+/* Stats Section */
+.stats-section {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.stats-section h2 {
+  font-size: 18px;
+  margin-bottom: 16px;
+  color: #2c3e50;
+}
+
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.stat-card {
+  background: white;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  border-left: 4px solid #9c27b0;
+}
+
+.stat-card.bess-green { border-left-color: #27ae60; }
+.stat-card.bess-purple { border-left-color: #9c27b0; }
+.stat-card.bess-red { border-left-color: #e74c3c; }
+.stat-card.bess-blue { border-left-color: #1976d2; }
+.stat-card.bess-orange { border-left-color: #ff9800; }
+
+.stat-icon {
+  font-size: 24px;
+  margin-bottom: 12px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+  color: #2c3e50;
+}
+
+.stat-card.bess-green .stat-value { color: #27ae60; }
+.stat-card.bess-purple .stat-value { color: #9c27b0; }
+.stat-card.bess-red .stat-value { color: #e74c3c; }
+.stat-card.bess-blue .stat-value { color: #1976d2; }
+.stat-card.bess-orange .stat-value { color: #ff9800; }
+
+.stat-unit {
+  font-size: 14px;
+  color: inherit;
+  font-weight: 500;
+}
+
+.stat-detail {
+  font-size: 12px;
+  color: #888;
+  margin-top: 8px;
+}
+
+/* Chart Section */
+.chart-section {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.chart-section h2 {
+  font-size: 18px;
+  margin-bottom: 16px;
+  color: #2c3e50;
+}
+
+.chart-info {
+  font-size: 13px;
+  color: #7f8c8d;
+  margin-bottom: 16px;
+}
+
+/* Energy Flow Box */
+.energy-flow-box {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.flow-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.flow-charging { background: rgba(39, 174, 96, 0.1); }
+.flow-discharging { background: rgba(33, 150, 243, 0.1); }
+.flow-curtailed { background: rgba(231, 76, 60, 0.1); }
+.flow-efficiency { background: rgba(156, 39, 176, 0.1); }
+
+.flow-icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.flow-charging .flow-icon { color: #27ae60; }
+.flow-discharging .flow-icon { color: #2196f3; }
+.flow-curtailed .flow-icon { color: #e74c3c; }
+.flow-efficiency .flow-icon { color: #9c27b0; }
+
+.flow-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.flow-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.flow-charging .flow-value { color: #27ae60; }
+.flow-discharging .flow-value { color: #2196f3; }
+.flow-curtailed .flow-value { color: #e74c3c; }
+.flow-efficiency .flow-value { color: #9c27b0; }
+
+/* Tables */
+.table-section {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.table-section h2 {
+  font-size: 18px;
+  margin-bottom: 8px;
+  color: #2c3e50;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.comparison-table,
+.degradation-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+
+.comparison-table th,
+.comparison-table td,
+.degradation-table th,
+.degradation-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.comparison-table th,
+.degradation-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #555;
+}
+
+.comparison-table th:first-child { border-radius: 8px 0 0 0; }
+.comparison-table th:last-child { border-radius: 0 8px 0 0; }
+
+.comparison-table td:nth-child(2) { color: #888; }
+.comparison-table td:nth-child(3) { font-weight: 600; color: #9c27b0; }
+
+.diff-positive { color: #27ae60 !important; font-weight: 700; }
+.diff-negative { color: #e74c3c !important; font-weight: 700; }
+
+.highlight-row { background: #fafafa; }
+.highlight-row td { font-weight: 600; }
+
+.degradation-table .unit {
+  font-size: 11px;
+  font-weight: 400;
+  color: #888;
+}
+
+/* Info Banner */
+.info-banner {
+  background: linear-gradient(135deg, rgba(156,39,176,0.08), rgba(123,31,162,0.05));
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.info-banner .banner-icon {
+  font-size: 24px;
+}
+
+.info-banner .banner-text {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.info-banner .banner-text strong {
+  color: #7b1fa2;
+}
+
+.bess-eol-info {
+  background: linear-gradient(135deg, rgba(33,150,243,0.08), rgba(25,118,210,0.05));
+}
+
+.bess-eol-info .banner-text strong {
+  color: #1976d2;
+}
+
+/* Details Section */
+.details-section {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.details-section h2 {
+  font-size: 18px;
+  margin-bottom: 16px;
+  color: #2c3e50;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.detail-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 3px solid #9c27b0;
+}
+
+.detail-label {
+  font-size: 13px;
+  color: #666;
+}
+
+.detail-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+/* Actions */
+.actions-section {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  padding: 20px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
+  color: white;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(156, 39, 176, 0.4);
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+  box-shadow: 0 4px 12px rgba(149, 165, 166, 0.3);
+}
+
+.btn-secondary:hover {
+  box-shadow: 0 6px 16px rgba(149, 165, 166, 0.4);
+}
+
+/* No Data */
+.no-data {
+  text-align: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.no-data-icon {
+  font-size: 64px;
+  margin-bottom: 20px;
+}
+
+.no-data h3 {
+  font-size: 20px;
+  color: #2c3e50;
+  margin-bottom: 12px;
+}
+
+.no-data p {
+  color: #7f8c8d;
+  font-size: 14px;
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .stats-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .details-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .energy-flow-box {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .energy-flow-box {
+    grid-template-columns: 1fr;
+  }
+
+  .bess-header {
+    flex-direction: column;
+    gap: 16px;
+    text-align: center;
+  }
+
+  .bess-title {
+    margin-left: 0;
+  }
+
+  .bess-config-badge {
+    text-align: center;
+  }
+}

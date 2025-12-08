@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Magazyn Energii BESS</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="bess-container">
+  <div class="page-header">
+    <h1>MAGAZYN ENERGII BESS</h1>
+    <div class="header-info">
+      <span id="dataInfo">Brak danych BESS</span>
+    </div>
+  </div>
+
+  <!-- Variant Selector -->
+  <div class="variant-selector">
+    <div class="selector-label">Wybierz wariant instalacji:</div>
+    <div class="variant-buttons">
+      <button class="variant-btn active" data-variant="A" onclick="selectVariant('A')">
+        <span class="variant-name">Wariant A</span>
+        <span class="variant-desc" id="descA">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="B" onclick="selectVariant('B')">
+        <span class="variant-name">Wariant B</span>
+        <span class="variant-desc" id="descB">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="C" onclick="selectVariant('C')">
+        <span class="variant-name">Wariant C</span>
+        <span class="variant-desc" id="descC">Ładowanie...</span>
+      </button>
+      <button class="variant-btn" data-variant="D" onclick="selectVariant('D')">
+        <span class="variant-name">Wariant D</span>
+        <span class="variant-desc" id="descD">Ładowanie...</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- BESS Status Banner -->
+  <div id="bessDisabledBanner" class="bess-disabled-banner" style="display:none;">
+    <div class="banner-icon">⚠️</div>
+    <div class="banner-content">
+      <h3>BESS wyłączony</h3>
+      <p>Magazyn energii nie jest włączony dla tego wariantu. Przejdź do <strong>USTAWIENIA</strong> aby włączyć BESS.</p>
+    </div>
+  </div>
+
+  <div id="bessContent" class="content-grid" style="display:none;">
+
+    <!-- Main BESS Configuration Card -->
+    <div class="bess-main-card full-width">
+      <div class="bess-header">
+        <div class="bess-icon-box">🔋</div>
+        <div class="bess-title">
+          <h2>Magazyn Energii BESS</h2>
+          <div class="bess-subtitle">Tryb 0-Export • Automatyczny dobór</div>
+        </div>
+        <div class="bess-config-badge">
+          <div class="config-label">KONFIGURACJA</div>
+          <div class="config-value" id="bessConfigMain">- kW / - kWh</div>
+          <div class="config-duration" id="bessDurationMain">Duration: -h</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- KPI Cards Row 1: Energy Metrics -->
+    <div class="stats-section full-width">
+      <h2>Metryki Energetyczne BESS</h2>
+      <div class="stats-cards">
+        <div class="stat-card bess-green">
+          <div class="stat-icon">📈</div>
+          <div class="stat-content">
+            <div class="stat-label">Wzrost Autokonsumpcji</div>
+            <div class="stat-value" id="bessAutoIncrease">+0%</div>
+            <div class="stat-detail" id="bessAutoCompare">- % → - %</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Energia z Baterii</div>
+            <div class="stat-value" id="bessEnergyFromBattery">0</div>
+            <div class="stat-unit">MWh/rok</div>
+            <div class="stat-detail" id="bessCyclesInfo">0 cykli ekw./rok</div>
+          </div>
+        </div>
+        <div class="stat-card bess-red">
+          <div class="stat-icon">🚫</div>
+          <div class="stat-content">
+            <div class="stat-label">Curtailment (strata)</div>
+            <div class="stat-value" id="bessCurtailmentTotal">0</div>
+            <div class="stat-unit">MWh/rok</div>
+            <div class="stat-detail" id="bessCurtailmentPct">0% produkcji PV</div>
+          </div>
+        </div>
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">🔄</div>
+          <div class="stat-content">
+            <div class="stat-label">Cykle Ekwiwalentne</div>
+            <div class="stat-value" id="bessCyclesYear">0</div>
+            <div class="stat-unit">cykli/rok</div>
+            <div class="stat-detail" id="bessCyclesLifetime">Lifetime: - cykli</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Energy Flow Section -->
+    <div class="chart-section">
+      <h2>Przepływ Energii BESS</h2>
+      <div class="energy-flow-box">
+        <div class="flow-item flow-charging">
+          <span class="flow-icon">▼</span>
+          <span class="flow-label">Ładowanie</span>
+          <span class="flow-value" id="bessToBattery">- MWh</span>
+        </div>
+        <div class="flow-item flow-discharging">
+          <span class="flow-icon">▲</span>
+          <span class="flow-label">Rozładowanie</span>
+          <span class="flow-value" id="bessFromBattery">- MWh</span>
+        </div>
+        <div class="flow-item flow-curtailed">
+          <span class="flow-icon">✕</span>
+          <span class="flow-label">Curtailment</span>
+          <span class="flow-value" id="bessCurtailed">- MWh</span>
+        </div>
+        <div class="flow-item flow-efficiency">
+          <span class="flow-icon">↻</span>
+          <span class="flow-label">Sprawność RT</span>
+          <span class="flow-value" id="bessEfficiency">- %</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison Table: PV+BESS vs Only PV -->
+    <div class="chart-section">
+      <h2>Porównanie: PV+BESS vs Tylko PV</h2>
+      <div class="table-wrapper">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Parametr</th>
+              <th>Tylko PV</th>
+              <th>PV + BESS</th>
+              <th>Różnica</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Autokonsumpcja</td>
+              <td id="baselineAuto">-</td>
+              <td id="bessAuto">-</td>
+              <td id="diffAuto" class="diff-positive">-</td>
+            </tr>
+            <tr>
+              <td>Zużycie własne [MWh]</td>
+              <td id="baselineSelfConsumed">-</td>
+              <td id="bessSelfConsumed">-</td>
+              <td id="diffSelfConsumed" class="diff-positive">-</td>
+            </tr>
+            <tr>
+              <td>Eksport do sieci [MWh]</td>
+              <td id="baselineExported">-</td>
+              <td id="bessExported">-</td>
+              <td id="diffExported" class="diff-negative">-</td>
+            </tr>
+            <tr class="highlight-row">
+              <td>Pokrycie potrzeb</td>
+              <td id="baselineCoverage">-</td>
+              <td id="bessCoverage">-</td>
+              <td id="diffCoverage" class="diff-positive">-</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Economic KPIs -->
+    <div class="stats-section full-width">
+      <h2>Ekonomia BESS</h2>
+      <div class="stats-cards">
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">💰</div>
+          <div class="stat-content">
+            <div class="stat-label">BESS CAPEX</div>
+            <div class="stat-value" id="bessEconCapex">0</div>
+            <div class="stat-unit">tys. PLN</div>
+            <div class="stat-detail" id="bessEconCapexDetail">- PLN/kWh + - PLN/kW</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">🔧</div>
+          <div class="stat-content">
+            <div class="stat-label">BESS OPEX/rok</div>
+            <div class="stat-value" id="bessEconOpex">0</div>
+            <div class="stat-unit">tys. PLN</div>
+            <div class="stat-detail" id="bessEconOpexPct">0% CAPEX/rok</div>
+          </div>
+        </div>
+        <div class="stat-card bess-red">
+          <div class="stat-icon">🔄</div>
+          <div class="stat-content">
+            <div class="stat-label">Wymiana baterii</div>
+            <div class="stat-value" id="bessEconReplacement">-</div>
+            <div class="stat-unit">rok</div>
+            <div class="stat-detail" id="bessEconReplacementCost">Koszt: - tys. PLN</div>
+          </div>
+        </div>
+        <div class="stat-card bess-green">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Energia z BESS (łącznie)</div>
+            <div class="stat-value" id="bessEconTotalEnergy">0</div>
+            <div class="stat-unit">MWh</div>
+            <div class="stat-detail" id="bessEconTotalEnergyPeriod">przez - lat</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Degradation Parameters Info -->
+    <div class="info-banner full-width">
+      <div class="banner-icon">📉</div>
+      <div class="banner-text">
+        <strong>Parametry degradacji:</strong>
+        <span id="bessEconDegradationParams">Rok 1: -% | Lata 2+: -%/rok | Żywotność: - lat</span>
+      </div>
+    </div>
+
+    <!-- BESS Degradation Table -->
+    <div class="table-section full-width">
+      <h2>Energia z BESS w kolejnych latach (z uwzględnieniem degradacji)</h2>
+      <div class="chart-info">
+        Tabela pokazuje jak degradacja baterii wpływa na ilość energii dostarczanej przez BESS
+      </div>
+      <div class="table-wrapper">
+        <table id="bessDegradationTable" class="degradation-table">
+          <thead>
+            <tr>
+              <th>Rok</th>
+              <th>Pojemność nominalna<br/><span class="unit">kWh</span></th>
+              <th>Degradacja<br/><span class="unit">%</span></th>
+              <th>Pojemność efektywna<br/><span class="unit">kWh</span></th>
+              <th>Energia z BESS<br/><span class="unit">MWh/rok</span></th>
+              <th>Energia skumulowana<br/><span class="unit">MWh</span></th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="bessDegradationTableBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- EOL Thresholds Info -->
+    <div class="info-banner full-width bess-eol-info">
+      <div class="banner-icon">ℹ️</div>
+      <div class="banner-text">
+        <strong>Progi EOL:</strong>
+        ✅ OK: ≥85% pojemności nominalnej |
+        ⚠️ Blisko EOL: 80-85% |
+        🔄 Wymiana: &lt;80% lub koniec żywotności
+      </div>
+    </div>
+
+    <!-- Technical Parameters -->
+    <div class="details-section full-width">
+      <h2>Parametry Techniczne BESS</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">Moc [kW]:</span>
+          <span class="detail-value" id="bessPowerKw">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Pojemność [kWh]:</span>
+          <span class="detail-value" id="bessEnergyKwh">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Duration [h]:</span>
+          <span class="detail-value" id="bessDuration">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Sprawność roundtrip:</span>
+          <span class="detail-value" id="bessRoundtrip">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">SOC min:</span>
+          <span class="detail-value" id="bessSocMin">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">SOC max:</span>
+          <span class="detail-value" id="bessSocMax">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Degradacja rok 1:</span>
+          <span class="detail-value" id="bessDegYear1">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Degradacja lata 2+:</span>
+          <span class="detail-value" id="bessDegYearN">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Żywotność baterii:</span>
+          <span class="detail-value" id="bessLifetime">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Tryb pracy:</span>
+          <span class="detail-value" id="bessMode">0-Export</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">CAPEX per kWh:</span>
+          <span class="detail-value" id="bessCapexKwh">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">CAPEX per kW:</span>
+          <span class="detail-value" id="bessCapexKw">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer Info -->
+    <div class="info-banner full-width">
+      <div class="banner-icon">ℹ️</div>
+      <div class="banner-text">
+        <strong>Tryb 0-Export:</strong> Energia PV nie jest eksportowana do sieci. Nadwyżka najpierw ładuje baterię,
+        a gdy jest pełna - energia jest curtailowana (stracona). Bateria rozładowuje się gdy produkcja PV nie pokrywa zapotrzebowania.
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions-section full-width">
+      <button class="btn" onclick="exportBessData()">📥 Eksportuj dane BESS</button>
+      <button class="btn btn-secondary" onclick="refreshData()">🔄 Odśwież dane</button>
+    </div>
+  </div>
+
+  <!-- No Data Message -->
+  <div id="noDataMessage" class="no-data" style="display:none;">
+    <div class="no-data-icon">🔋</div>
+    <h3>Brak danych BESS</h3>
+    <p>Włącz BESS w module USTAWIENIA i wykonaj analizę w module KONFIGURACJA.</p>
+  </div>
+</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<script src="bess.js?v=1.0"></script>
+</body>
+</html>

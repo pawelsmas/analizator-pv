@@ -466,6 +466,24 @@ services:
       retries: 3
       start_period: 10s
 
+  # BESS (Battery Energy Storage System) Module
+  frontend-bess:
+    build:
+      context: ./services/frontend-bess
+      dockerfile: Dockerfile
+    container_name: pv-frontend-bess
+    ports:
+      - "9013:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 networks:
   pv-network:
     driver: bridge

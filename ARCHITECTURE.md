@@ -411,4 +411,4 @@ Update timestamp in index.html after changes:
 
 ---
 
-**v1.8** - PV Optimizer Architecture Documentation
+**v1.8** - PV Optimizer by Kamil & Paweł 

@@ -260,7 +260,8 @@ const DEFAULT_CONFIG = {
   bessOpexPctPerYear: 1.5,             // Annual OPEX as % of CAPEX
   bessLifetimeYears: 15,               // Expected battery lifetime [years]
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
-  bessDegradationPctPerYear: 2.0       // Annual capacity degradation [%/year]
+  bessDegradationYear1: 3.0,           // First year degradation [%] (higher due to initial settling)
+  bessDegradationPctPerYear: 2.0       // Annual capacity degradation for years 2+ [%/year]
 };
 
 // Initialize on load
@@ -446,7 +447,7 @@ function applySettingsToUI(config) {
     // BESS economic parameters
     'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
     // BESS technical parameters
-    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationPctPerYear'
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear'
   ];
 
   // Select fields
@@ -683,6 +684,7 @@ function getCurrentSettings() {
     bessOpexPctPerYear: parseFloat(document.getElementById('bessOpexPctPerYear')?.value || DEFAULT_CONFIG.bessOpexPctPerYear),
     bessLifetimeYears: parseInt(document.getElementById('bessLifetimeYears')?.value || DEFAULT_CONFIG.bessLifetimeYears),
     bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
+    bessDegradationYear1: parseFloat(document.getElementById('bessDegradationYear1')?.value || DEFAULT_CONFIG.bessDegradationYear1),
     bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
 
     // ESG Parameters
