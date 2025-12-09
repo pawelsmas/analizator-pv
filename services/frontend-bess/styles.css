@@ -548,6 +548,77 @@ body {
   font-size: 14px;
 }
 
+/* Monthly Table (NEW in v3.2) */
+.monthly-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+
+.monthly-table th,
+.monthly-table td {
+  padding: 12px 16px;
+  text-align: right;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.monthly-table th:first-child,
+.monthly-table td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+.monthly-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #555;
+}
+
+.monthly-table th:first-child { border-radius: 8px 0 0 0; }
+.monthly-table th:last-child { border-radius: 0 8px 0 0; }
+
+.monthly-table th .unit {
+  font-size: 11px;
+  font-weight: 400;
+  color: #888;
+}
+
+.monthly-table tbody tr:hover {
+  background: rgba(156, 39, 176, 0.04);
+}
+
+.monthly-table tfoot td {
+  background: linear-gradient(135deg, rgba(156,39,176,0.08), rgba(123,31,162,0.05));
+  font-weight: 700;
+  border-top: 2px solid #9c27b0;
+}
+
+.monthly-table tfoot td:first-child {
+  color: #7b1fa2;
+}
+
+/* Month highlighting by season */
+.monthly-table tr.winter-month td:first-child { border-left: 3px solid #2196f3; }
+.monthly-table tr.spring-month td:first-child { border-left: 3px solid #4caf50; }
+.monthly-table tr.summer-month td:first-child { border-left: 3px solid #ff9800; }
+.monthly-table tr.autumn-month td:first-child { border-left: 3px solid #795548; }
+
+/* Quarterly Cards (NEW in v3.2) */
+.quarterly-cards {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.stat-card.bess-q1 { border-left-color: #2196f3; }  /* Winter blue */
+.stat-card.bess-q2 { border-left-color: #4caf50; }  /* Spring green */
+.stat-card.bess-q3 { border-left-color: #ff9800; }  /* Summer orange */
+.stat-card.bess-q4 { border-left-color: #795548; }  /* Autumn brown */
+
+.stat-card.bess-q1 .stat-value { color: #2196f3; }
+.stat-card.bess-q2 .stat-value { color: #4caf50; }
+.stat-card.bess-q3 .stat-value { color: #ff9800; }
+.stat-card.bess-q4 .stat-value { color: #795548; }
+
 /* Responsive */
 @media (max-width: 1200px) {
   .stats-cards {

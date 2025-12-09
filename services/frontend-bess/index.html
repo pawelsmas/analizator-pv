@@ -137,6 +137,78 @@
       </div>
     </div>
 
+    <!-- NEW in v3.2: Monthly BESS Balance -->
+    <div class="table-section full-width">
+      <h2>Bilans Miesięczny BESS</h2>
+      <div class="chart-info">
+        Szczegółowy rozkład energii i cykli baterii w poszczególnych miesiącach roku
+      </div>
+      <div class="table-wrapper">
+        <table id="bessMonthlyTable" class="monthly-table">
+          <thead>
+            <tr>
+              <th>Miesiąc</th>
+              <th>Ładowanie<br/><span class="unit">MWh</span></th>
+              <th>Rozładowanie<br/><span class="unit">MWh</span></th>
+              <th>Curtailment<br/><span class="unit">MWh</span></th>
+              <th>Import z sieci<br/><span class="unit">MWh</span></th>
+              <th>Cykle ekw.<br/><span class="unit">szt.</span></th>
+              <th>Throughput<br/><span class="unit">MWh</span></th>
+            </tr>
+          </thead>
+          <tbody id="bessMonthlyTableBody">
+            <!-- Dynamically filled by JavaScript -->
+          </tbody>
+          <tfoot id="bessMonthlyTableFoot">
+            <!-- Summary row -->
+          </tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- NEW in v3.2: Quarterly Cycles Summary -->
+    <div class="stats-section full-width">
+      <h2>Rozkład Cykli w Kwartałach</h2>
+      <div class="stats-cards quarterly-cards">
+        <div class="stat-card bess-q1">
+          <div class="stat-icon">❄️</div>
+          <div class="stat-content">
+            <div class="stat-label">Q1 (Sty-Mar)</div>
+            <div class="stat-value" id="bessQ1Cycles">0</div>
+            <div class="stat-unit">cykli</div>
+            <div class="stat-detail" id="bessQ1Throughput">0 MWh</div>
+          </div>
+        </div>
+        <div class="stat-card bess-q2">
+          <div class="stat-icon">🌸</div>
+          <div class="stat-content">
+            <div class="stat-label">Q2 (Kwi-Cze)</div>
+            <div class="stat-value" id="bessQ2Cycles">0</div>
+            <div class="stat-unit">cykli</div>
+            <div class="stat-detail" id="bessQ2Throughput">0 MWh</div>
+          </div>
+        </div>
+        <div class="stat-card bess-q3">
+          <div class="stat-icon">☀️</div>
+          <div class="stat-content">
+            <div class="stat-label">Q3 (Lip-Wrz)</div>
+            <div class="stat-value" id="bessQ3Cycles">0</div>
+            <div class="stat-unit">cykli</div>
+            <div class="stat-detail" id="bessQ3Throughput">0 MWh</div>
+          </div>
+        </div>
+        <div class="stat-card bess-q4">
+          <div class="stat-icon">🍂</div>
+          <div class="stat-content">
+            <div class="stat-label">Q4 (Paź-Gru)</div>
+            <div class="stat-value" id="bessQ4Cycles">0</div>
+            <div class="stat-unit">cykli</div>
+            <div class="stat-detail" id="bessQ4Throughput">0 MWh</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Comparison Table: PV+BESS vs Only PV -->
     <div class="chart-section">
       <h2>Porównanie: PV+BESS vs Tylko PV</h2>
@@ -349,6 +421,6 @@
 </div>
 
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="bess.js?v=1.0"></script>
+<script src="bess.js?v=3.2"></script>
 </body>
 </html>

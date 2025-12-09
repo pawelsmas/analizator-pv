@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=1.0 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.2 - timestamp:', new Date().toISOString());
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -153,6 +153,8 @@ function parseKeyVariants(keyVariants) {
       bess_self_consumed_direct_kwh: s.bess_self_consumed_direct_kwh || 0,
       bess_self_consumed_from_bess_kwh: s.bess_self_consumed_from_bess_kwh || 0,
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
+      // Monthly breakdown (NEW in v3.2)
+      bess_monthly_data: s.bess_monthly_data || [],
       // Baseline for comparison
       baseline_no_bess: s.baseline_no_bess || {}
     };
@@ -233,6 +235,8 @@ function parseVariants(scenarios) {
       bess_self_consumed_direct_kwh: s.bess_self_consumed_direct_kwh || 0,
       bess_self_consumed_from_bess_kwh: s.bess_self_consumed_from_bess_kwh || 0,
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
+      // Monthly breakdown (NEW in v3.2)
+      bess_monthly_data: s.bess_monthly_data || [],
       // Baseline for comparison
       baseline_no_bess: s.baseline_no_bess || {}
     };
@@ -303,6 +307,8 @@ function updateDisplay() {
   updateMainCard(variant);
   updateEnergyMetrics(variant);
   updateEnergyFlow(variant);
+  generateMonthlyTable(variant);  // NEW in v3.2
+  updateQuarterlyCycles(variant); // NEW in v3.2
   updateComparison(variant);
   updateEconomics(variant);
   updateTechnicalParams(variant);
@@ -385,6 +391,126 @@ function updateEnergyFlow(variant) {
   document.getElementById('bessFromBattery').textContent = `${formatNumberEU(dischargedMWh, 1)} MWh`;
   document.getElementById('bessCurtailed').textContent = `${formatNumberEU(curtailedMWh, 1)} MWh`;
   document.getElementById('bessEfficiency').textContent = `${formatNumberEU(efficiency, 1)} %`;
+}
+
+// ============================================
+// MONTHLY TABLE (NEW in v3.2)
+// ============================================
+
+function generateMonthlyTable(variant) {
+  const tbody = document.getElementById('bessMonthlyTableBody');
+  const tfoot = document.getElementById('bessMonthlyTableFoot');
+  if (!tbody || !tfoot) return;
+
+  const monthlyData = variant.bess_monthly_data || [];
+
+  // If no monthly data, show empty message
+  if (monthlyData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888;padding:20px;">Brak danych miesięcznych - wymagana ponowna analiza</td></tr>';
+    tfoot.innerHTML = '';
+    return;
+  }
+
+  // Season mapping for styling
+  const seasonClass = {
+    1: 'winter-month', 2: 'winter-month', 3: 'spring-month',
+    4: 'spring-month', 5: 'spring-month', 6: 'summer-month',
+    7: 'summer-month', 8: 'summer-month', 9: 'autumn-month',
+    10: 'autumn-month', 11: 'autumn-month', 12: 'winter-month'
+  };
+
+  // Totals
+  let totalCharged = 0;
+  let totalDischarged = 0;
+  let totalCurtailed = 0;
+  let totalGridImport = 0;
+  let totalCycles = 0;
+  let totalThroughput = 0;
+
+  let html = '';
+  monthlyData.forEach(m => {
+    const chargedMWh = m.charged_kwh / 1000;
+    const dischargedMWh = m.discharged_kwh / 1000;
+    const curtailedMWh = m.curtailed_kwh / 1000;
+    const gridImportMWh = m.grid_import_kwh / 1000;
+    const throughputMWh = m.throughput_kwh / 1000;
+
+    totalCharged += chargedMWh;
+    totalDischarged += dischargedMWh;
+    totalCurtailed += curtailedMWh;
+    totalGridImport += gridImportMWh;
+    totalCycles += m.cycles_equivalent;
+    totalThroughput += throughputMWh;
+
+    html += `
+      <tr class="${seasonClass[m.month]}">
+        <td>${m.month_name}</td>
+        <td>${formatNumberEU(chargedMWh, 2)}</td>
+        <td>${formatNumberEU(dischargedMWh, 2)}</td>
+        <td style="color:${curtailedMWh > 0 ? '#e74c3c' : 'inherit'}">${formatNumberEU(curtailedMWh, 2)}</td>
+        <td>${formatNumberEU(gridImportMWh, 2)}</td>
+        <td>${formatNumberEU(m.cycles_equivalent, 1)}</td>
+        <td>${formatNumberEU(throughputMWh, 2)}</td>
+      </tr>
+    `;
+  });
+
+  tbody.innerHTML = html;
+
+  // Footer with totals
+  tfoot.innerHTML = `
+    <tr>
+      <td>SUMA ROK</td>
+      <td>${formatNumberEU(totalCharged, 1)}</td>
+      <td>${formatNumberEU(totalDischarged, 1)}</td>
+      <td>${formatNumberEU(totalCurtailed, 1)}</td>
+      <td>${formatNumberEU(totalGridImport, 1)}</td>
+      <td>${formatNumberEU(totalCycles, 0)}</td>
+      <td>${formatNumberEU(totalThroughput, 1)}</td>
+    </tr>
+  `;
+}
+
+function updateQuarterlyCycles(variant) {
+  const monthlyData = variant.bess_monthly_data || [];
+
+  // Initialize quarterly accumulators
+  const quarters = {
+    Q1: { cycles: 0, throughput: 0 },  // Jan-Mar (months 1-3)
+    Q2: { cycles: 0, throughput: 0 },  // Apr-Jun (months 4-6)
+    Q3: { cycles: 0, throughput: 0 },  // Jul-Sep (months 7-9)
+    Q4: { cycles: 0, throughput: 0 }   // Oct-Dec (months 10-12)
+  };
+
+  monthlyData.forEach(m => {
+    const throughputMWh = m.throughput_kwh / 1000;
+    if (m.month <= 3) {
+      quarters.Q1.cycles += m.cycles_equivalent;
+      quarters.Q1.throughput += throughputMWh;
+    } else if (m.month <= 6) {
+      quarters.Q2.cycles += m.cycles_equivalent;
+      quarters.Q2.throughput += throughputMWh;
+    } else if (m.month <= 9) {
+      quarters.Q3.cycles += m.cycles_equivalent;
+      quarters.Q3.throughput += throughputMWh;
+    } else {
+      quarters.Q4.cycles += m.cycles_equivalent;
+      quarters.Q4.throughput += throughputMWh;
+    }
+  });
+
+  // Update UI
+  document.getElementById('bessQ1Cycles').textContent = formatNumberEU(quarters.Q1.cycles, 0);
+  document.getElementById('bessQ1Throughput').textContent = `${formatNumberEU(quarters.Q1.throughput, 1)} MWh`;
+
+  document.getElementById('bessQ2Cycles').textContent = formatNumberEU(quarters.Q2.cycles, 0);
+  document.getElementById('bessQ2Throughput').textContent = `${formatNumberEU(quarters.Q2.throughput, 1)} MWh`;
+
+  document.getElementById('bessQ3Cycles').textContent = formatNumberEU(quarters.Q3.cycles, 0);
+  document.getElementById('bessQ3Throughput').textContent = `${formatNumberEU(quarters.Q3.throughput, 1)} MWh`;
+
+  document.getElementById('bessQ4Cycles').textContent = formatNumberEU(quarters.Q4.cycles, 0);
+  document.getElementById('bessQ4Throughput').textContent = `${formatNumberEU(quarters.Q4.throughput, 1)} MWh`;
 }
 
 function updateComparison(variant) {

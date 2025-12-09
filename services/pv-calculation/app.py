@@ -191,6 +191,8 @@ class SimulationResult(BaseModel):
     bess_self_consumed_direct_kwh: Optional[float] = None
     bess_self_consumed_from_bess_kwh: Optional[float] = None
     bess_cycles_equivalent: Optional[float] = None
+    # Monthly BESS breakdown (NEW in v3.2)
+    bess_monthly_data: Optional[List["BESSMonthlyData"]] = None
 
 # ============== BESS Configuration Model (LIGHT/AUTO Mode) ==============
 class BESSConfigLite(BaseModel):
@@ -249,8 +251,24 @@ class VariantResult(BaseModel):
     bess_self_consumed_direct_kwh: Optional[float] = None
     bess_self_consumed_from_bess_kwh: Optional[float] = None
     bess_cycles_equivalent: Optional[float] = None
+    # Monthly BESS breakdown (NEW in v3.2)
+    bess_monthly_data: Optional[List["BESSMonthlyData"]] = None
     # Baseline comparison (without BESS) - for impact analysis
     baseline_no_bess: Optional[BaselineMetrics] = None
+
+class BESSMonthlyData(BaseModel):
+    """Monthly BESS performance data"""
+    month: int  # 1-12
+    month_name: str  # "Styczeń", "Luty", etc.
+    charged_kwh: float
+    discharged_kwh: float
+    curtailed_kwh: float
+    grid_import_kwh: float
+    self_consumed_direct_kwh: float
+    self_consumed_from_bess_kwh: float
+    cycles_equivalent: float
+    # Throughput for cycle tracking
+    throughput_kwh: float  # charged + discharged
 
 class BESSSummary(BaseModel):
     """Summary of BESS sizing and performance"""
@@ -266,6 +284,8 @@ class BESSSummary(BaseModel):
     cycles_equivalent: float = 0.0
     capex_total: float = 0.0
     opex_annual: float = 0.0
+    # Monthly breakdown (NEW in v3.2)
+    monthly_data: Optional[List[BESSMonthlyData]] = None
 
 class AnalysisResult(BaseModel):
     scenarios: List[SimulationResult]
@@ -1674,8 +1694,14 @@ def simulate_pv_system_with_bess(
         soc_initial: Initial SOC (0.50 = 50%)
 
     Returns:
-        SimulationResult with BESS metrics
+        SimulationResult with BESS metrics including monthly breakdown
     """
+    # Polish month names
+    MONTH_NAMES_PL = [
+        "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",
+        "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
+    ]
+
     # Scale profile by capacity with inverter clipping
     ac_capacity = capacity / dc_ac_ratio
     production = np.minimum(pv_profile * capacity, ac_capacity)
@@ -1693,7 +1719,7 @@ def simulate_pv_system_with_bess(
     soc_min_kwh = soc_min * bess_energy_kwh
     soc_max_kwh = soc_max * bess_energy_kwh
 
-    # Accumulators
+    # Annual accumulators
     total_direct_consumed = 0.0      # PV directly consumed by load
     total_charged = 0.0              # Energy into battery (before losses)
     total_discharged = 0.0           # Energy from battery (after losses)
@@ -1701,13 +1727,38 @@ def simulate_pv_system_with_bess(
     total_grid_import = 0.0          # Energy imported from grid
     total_self_from_bess = 0.0       # Load covered by battery
 
+    # Monthly accumulators (NEW in v3.2)
+    monthly_charged = [0.0] * 12
+    monthly_discharged = [0.0] * 12
+    monthly_curtailed = [0.0] * 12
+    monthly_grid_import = [0.0] * 12
+    monthly_direct_consumed = [0.0] * 12
+    monthly_self_from_bess = [0.0] * 12
+
+    # Hours per month (for standard 8760-hour year)
+    # Jan(744), Feb(672), Mar(744), Apr(720), May(744), Jun(720),
+    # Jul(744), Aug(744), Sep(720), Oct(744), Nov(720), Dec(744)
+    hours_per_month = [744, 672, 744, 720, 744, 720, 744, 744, 720, 744, 720, 744]
+    month_start_hours = [0]
+    for hours in hours_per_month[:-1]:
+        month_start_hours.append(month_start_hours[-1] + hours)
+
+    def get_month_index(hour: int) -> int:
+        """Get month index (0-11) for given hour (0-8759)"""
+        for m in range(11, -1, -1):
+            if hour >= month_start_hours[m]:
+                return m
+        return 0
+
     for h in range(n_hours):
         pv = production[h]
         load = consumption[h]
+        month_idx = get_month_index(h)
 
         # Step 1: Direct self-consumption
         direct = min(pv, load)
         total_direct_consumed += direct
+        monthly_direct_consumed[month_idx] += direct
 
         surplus = pv - direct      # PV surplus after direct consumption
         deficit = load - direct    # Remaining load after direct consumption
@@ -1722,12 +1773,15 @@ def simulate_pv_system_with_bess(
 
             if charge_energy > 0:
                 soc += charge_energy
-                total_charged += charge_energy / one_way_eff  # Track gross input
+                charged_power = charge_energy / one_way_eff  # Track gross input
+                total_charged += charged_power
+                monthly_charged[month_idx] += charged_power
 
             # Remaining surplus is curtailed (0-export mode)
             actually_charged_power = charge_energy / one_way_eff if charge_energy > 0 else 0
             curtailed = surplus - actually_charged_power
             total_curtailed += curtailed
+            monthly_curtailed[month_idx] += curtailed
 
         # Step 3: Handle deficit (discharge battery or import from grid)
         if deficit > 0:
@@ -1742,10 +1796,13 @@ def simulate_pv_system_with_bess(
                 soc -= discharge_from_soc
                 total_discharged += discharge_delivered
                 total_self_from_bess += discharge_delivered
+                monthly_discharged[month_idx] += discharge_delivered
+                monthly_self_from_bess[month_idx] += discharge_delivered
 
             # Remaining deficit = grid import
             grid_import = deficit - discharge_delivered
             total_grid_import += grid_import
+            monthly_grid_import[month_idx] += grid_import
 
     # Calculate totals
     total_production = production.sum()
@@ -1766,6 +1823,24 @@ def simulate_pv_system_with_bess(
     # Equivalent cycles = total energy throughput / usable capacity
     cycles_equivalent = (total_charged + total_discharged) / (2 * usable_energy) if usable_energy > 0 else 0
 
+    # Build monthly data (NEW in v3.2)
+    monthly_data = []
+    for m in range(12):
+        throughput = monthly_charged[m] + monthly_discharged[m]
+        monthly_cycles = throughput / (2 * usable_energy) if usable_energy > 0 else 0
+        monthly_data.append(BESSMonthlyData(
+            month=m + 1,
+            month_name=MONTH_NAMES_PL[m],
+            charged_kwh=round(monthly_charged[m], 2),
+            discharged_kwh=round(monthly_discharged[m], 2),
+            curtailed_kwh=round(monthly_curtailed[m], 2),
+            grid_import_kwh=round(monthly_grid_import[m], 2),
+            self_consumed_direct_kwh=round(monthly_direct_consumed[m], 2),
+            self_consumed_from_bess_kwh=round(monthly_self_from_bess[m], 2),
+            cycles_equivalent=round(monthly_cycles, 2),
+            throughput_kwh=round(throughput, 2)
+        ))
+
     return SimulationResult(
         capacity=capacity,
         dcac_ratio=dc_ac_ratio,
@@ -1783,7 +1858,9 @@ def simulate_pv_system_with_bess(
         bess_grid_import_kwh=total_grid_import,
         bess_self_consumed_direct_kwh=total_direct_consumed,
         bess_self_consumed_from_bess_kwh=total_self_from_bess,
-        bess_cycles_equivalent=cycles_equivalent
+        bess_cycles_equivalent=cycles_equivalent,
+        # Monthly breakdown (NEW in v3.2)
+        bess_monthly_data=monthly_data
     )
 
 
@@ -2287,6 +2364,8 @@ async def analyze(request: AnalysisRequest):
                     variant_result.bess_self_consumed_direct_kwh = variant_scenario.bess_self_consumed_direct_kwh
                     variant_result.bess_self_consumed_from_bess_kwh = variant_scenario.bess_self_consumed_from_bess_kwh
                     variant_result.bess_cycles_equivalent = variant_scenario.bess_cycles_equivalent
+                    # Monthly breakdown (NEW in v3.2)
+                    variant_result.bess_monthly_data = variant_scenario.bess_monthly_data
 
                     # Compute baseline (no BESS) for comparison
                     baseline_result = simulate_pv_system(
