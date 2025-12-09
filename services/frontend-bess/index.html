@@ -209,6 +209,28 @@
       </div>
     </div>
 
+    <!-- NEW in v3.2: SOC Histogram Chart -->
+    <div class="chart-section">
+      <h2>Histogram SOC (Stan Naładowania)</h2>
+      <div class="chart-info">
+        Rozkład czasu w poszczególnych przedziałach SOC w ciągu roku (8760 godzin)
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="socHistogramChart"></canvas>
+      </div>
+    </div>
+
+    <!-- NEW in v3.2: Monthly Curtailment Chart -->
+    <div class="chart-section">
+      <h2>Curtailment Miesięcznie</h2>
+      <div class="chart-info">
+        Energia curtailowana (stracona) z powodu pełnej baterii w poszczególnych miesiącach
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="curtailmentChart"></canvas>
+      </div>
+    </div>
+
     <!-- Comparison Table: PV+BESS vs Only PV -->
     <div class="chart-section">
       <h2>Porównanie: PV+BESS vs Tylko PV</h2>
@@ -420,7 +442,8 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="bess.js?v=3.2"></script>
+<script src="bess.js?v=3.2.1"></script>
 </body>
 </html>

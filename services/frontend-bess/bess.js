@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.2 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.2.1 - timestamp:', new Date().toISOString());
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -155,6 +155,8 @@ function parseKeyVariants(keyVariants) {
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
       // Monthly breakdown (NEW in v3.2)
       bess_monthly_data: s.bess_monthly_data || [],
+      // SOC histogram (NEW in v3.2)
+      bess_soc_histogram: s.bess_soc_histogram || null,
       // Baseline for comparison
       baseline_no_bess: s.baseline_no_bess || {}
     };
@@ -237,6 +239,8 @@ function parseVariants(scenarios) {
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
       // Monthly breakdown (NEW in v3.2)
       bess_monthly_data: s.bess_monthly_data || [],
+      // SOC histogram (NEW in v3.2)
+      bess_soc_histogram: s.bess_soc_histogram || null,
       // Baseline for comparison
       baseline_no_bess: s.baseline_no_bess || {}
     };
@@ -309,6 +313,8 @@ function updateDisplay() {
   updateEnergyFlow(variant);
   generateMonthlyTable(variant);  // NEW in v3.2
   updateQuarterlyCycles(variant); // NEW in v3.2
+  renderSOCHistogramChart(variant); // NEW in v3.2
+  renderCurtailmentChart(variant);  // NEW in v3.2
   updateComparison(variant);
   updateEconomics(variant);
   updateTechnicalParams(variant);
@@ -511,6 +517,171 @@ function updateQuarterlyCycles(variant) {
 
   document.getElementById('bessQ4Cycles').textContent = formatNumberEU(quarters.Q4.cycles, 0);
   document.getElementById('bessQ4Throughput').textContent = `${formatNumberEU(quarters.Q4.throughput, 1)} MWh`;
+}
+
+// ============================================
+// CHARTS (NEW in v3.2)
+// ============================================
+
+let socHistogramChart = null;
+let curtailmentChart = null;
+
+function renderSOCHistogramChart(variant) {
+  const ctx = document.getElementById('socHistogramChart');
+  if (!ctx) return;
+
+  // Destroy existing chart
+  if (socHistogramChart) {
+    socHistogramChart.destroy();
+    socHistogramChart = null;
+  }
+
+  const histogram = variant.bess_soc_histogram;
+  if (!histogram || !histogram.bins || histogram.bins.length === 0) {
+    // No data - show message on canvas
+    const context = ctx.getContext('2d');
+    context.clearRect(0, 0, ctx.width, ctx.height);
+    context.font = '14px Segoe UI';
+    context.fillStyle = '#888';
+    context.textAlign = 'center';
+    context.fillText('Brak danych histogramu SOC - wymagana ponowna analiza', ctx.width / 2, ctx.height / 2);
+    return;
+  }
+
+  // Create gradient colors for SOC levels (red at low, green at high)
+  const colors = histogram.bins.map((_, i) => {
+    const ratio = i / 9; // 0 to 1
+    const r = Math.round(220 - ratio * 180);
+    const g = Math.round(60 + ratio * 140);
+    const b = 60;
+    return `rgba(${r}, ${g}, ${b}, 0.7)`;
+  });
+
+  socHistogramChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: histogram.bins,
+      datasets: [{
+        label: 'Godziny w roku',
+        data: histogram.hours,
+        backgroundColor: colors,
+        borderColor: colors.map(c => c.replace('0.7', '1')),
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const hours = context.raw;
+              const pct = histogram.percentages[context.dataIndex];
+              return `${formatNumberEU(hours, 0)} godz. (${formatNumberEU(pct, 1)}%)`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: 'Przedział SOC',
+            color: '#666'
+          },
+          grid: { display: false }
+        },
+        y: {
+          title: {
+            display: true,
+            text: 'Liczba godzin',
+            color: '#666'
+          },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+function renderCurtailmentChart(variant) {
+  const ctx = document.getElementById('curtailmentChart');
+  if (!ctx) return;
+
+  // Destroy existing chart
+  if (curtailmentChart) {
+    curtailmentChart.destroy();
+    curtailmentChart = null;
+  }
+
+  const monthlyData = variant.bess_monthly_data || [];
+  if (monthlyData.length === 0) {
+    const context = ctx.getContext('2d');
+    context.clearRect(0, 0, ctx.width, ctx.height);
+    context.font = '14px Segoe UI';
+    context.fillStyle = '#888';
+    context.textAlign = 'center';
+    context.fillText('Brak danych miesięcznych - wymagana ponowna analiza', ctx.width / 2, ctx.height / 2);
+    return;
+  }
+
+  const labels = monthlyData.map(m => m.month_name.substring(0, 3)); // Sty, Lut, etc.
+  const curtailmentMWh = monthlyData.map(m => m.curtailed_kwh / 1000);
+  const chargedMWh = monthlyData.map(m => m.charged_kwh / 1000);
+
+  curtailmentChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Ładowanie BESS [MWh]',
+          data: chargedMWh,
+          backgroundColor: 'rgba(39, 174, 96, 0.6)',
+          borderColor: 'rgba(39, 174, 96, 1)',
+          borderWidth: 1
+        },
+        {
+          label: 'Curtailment [MWh]',
+          data: curtailmentMWh,
+          backgroundColor: 'rgba(231, 76, 60, 0.7)',
+          borderColor: 'rgba(231, 76, 60, 1)',
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { usePointStyle: true }
+        },
+        tooltip: {
+          callbacks: {
+            label: (context) => `${context.dataset.label}: ${formatNumberEU(context.raw, 2)} MWh`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false }
+        },
+        y: {
+          title: {
+            display: true,
+            text: 'Energia [MWh]',
+            color: '#666'
+          },
+          beginAtZero: true,
+          stacked: false
+        }
+      }
+    }
+  });
 }
 
 function updateComparison(variant) {

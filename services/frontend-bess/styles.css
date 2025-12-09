@@ -619,6 +619,17 @@ body {
 .stat-card.bess-q3 .stat-value { color: #ff9800; }
 .stat-card.bess-q4 .stat-value { color: #795548; }
 
+/* Chart Wrapper (NEW in v3.2) */
+.chart-wrapper {
+  position: relative;
+  height: 300px;
+  max-height: 350px;
+}
+
+.chart-wrapper canvas {
+  max-height: 100%;
+}
+
 /* Responsive */
 @media (max-width: 1200px) {
   .stats-cards {

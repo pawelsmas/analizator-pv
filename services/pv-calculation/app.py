@@ -193,6 +193,8 @@ class SimulationResult(BaseModel):
     bess_cycles_equivalent: Optional[float] = None
     # Monthly BESS breakdown (NEW in v3.2)
     bess_monthly_data: Optional[List["BESSMonthlyData"]] = None
+    # SOC histogram (NEW in v3.2)
+    bess_soc_histogram: Optional["BESSSOCHistogram"] = None
 
 # ============== BESS Configuration Model (LIGHT/AUTO Mode) ==============
 class BESSConfigLite(BaseModel):
@@ -253,6 +255,8 @@ class VariantResult(BaseModel):
     bess_cycles_equivalent: Optional[float] = None
     # Monthly BESS breakdown (NEW in v3.2)
     bess_monthly_data: Optional[List["BESSMonthlyData"]] = None
+    # SOC histogram (NEW in v3.2)
+    bess_soc_histogram: Optional["BESSSOCHistogram"] = None
     # Baseline comparison (without BESS) - for impact analysis
     baseline_no_bess: Optional[BaselineMetrics] = None
 
@@ -269,6 +273,12 @@ class BESSMonthlyData(BaseModel):
     cycles_equivalent: float
     # Throughput for cycle tracking
     throughput_kwh: float  # charged + discharged
+
+class BESSSOCHistogram(BaseModel):
+    """SOC histogram data (10 bins from 0-100%)"""
+    bins: List[str]  # ["0-10%", "10-20%", ..., "90-100%"]
+    hours: List[int]  # Number of hours in each bin
+    percentages: List[float]  # Percentage of total hours in each bin
 
 class BESSSummary(BaseModel):
     """Summary of BESS sizing and performance"""
@@ -1735,6 +1745,9 @@ def simulate_pv_system_with_bess(
     monthly_direct_consumed = [0.0] * 12
     monthly_self_from_bess = [0.0] * 12
 
+    # SOC histogram (10 bins: 0-10%, 10-20%, ..., 90-100%)
+    soc_histogram_bins = [0] * 10  # Hours count in each bin
+
     # Hours per month (for standard 8760-hour year)
     # Jan(744), Feb(672), Mar(744), Apr(720), May(744), Jun(720),
     # Jul(744), Aug(744), Sep(720), Oct(744), Nov(720), Dec(744)
@@ -1804,6 +1817,11 @@ def simulate_pv_system_with_bess(
             total_grid_import += grid_import
             monthly_grid_import[month_idx] += grid_import
 
+        # Track SOC in histogram (at end of hour)
+        soc_pct = (soc / bess_energy_kwh) * 100 if bess_energy_kwh > 0 else 0
+        bin_idx = min(int(soc_pct / 10), 9)  # 0-9 bins
+        soc_histogram_bins[bin_idx] += 1
+
     # Calculate totals
     total_production = production.sum()
     total_consumption = consumption.sum()
@@ -1841,6 +1859,19 @@ def simulate_pv_system_with_bess(
             throughput_kwh=round(throughput, 2)
         ))
 
+    # Build SOC histogram (NEW in v3.2)
+    soc_histogram_labels = [f"{i*10}-{(i+1)*10}%" for i in range(10)]
+    total_hours = sum(soc_histogram_bins)
+    soc_histogram_pcts = [
+        round(h / total_hours * 100, 1) if total_hours > 0 else 0
+        for h in soc_histogram_bins
+    ]
+    soc_histogram = BESSSOCHistogram(
+        bins=soc_histogram_labels,
+        hours=soc_histogram_bins,
+        percentages=soc_histogram_pcts
+    )
+
     return SimulationResult(
         capacity=capacity,
         dcac_ratio=dc_ac_ratio,
@@ -1860,7 +1891,9 @@ def simulate_pv_system_with_bess(
         bess_self_consumed_from_bess_kwh=total_self_from_bess,
         bess_cycles_equivalent=cycles_equivalent,
         # Monthly breakdown (NEW in v3.2)
-        bess_monthly_data=monthly_data
+        bess_monthly_data=monthly_data,
+        # SOC histogram (NEW in v3.2)
+        bess_soc_histogram=soc_histogram
     )
 
 
@@ -2366,6 +2399,8 @@ async def analyze(request: AnalysisRequest):
                     variant_result.bess_cycles_equivalent = variant_scenario.bess_cycles_equivalent
                     # Monthly breakdown (NEW in v3.2)
                     variant_result.bess_monthly_data = variant_scenario.bess_monthly_data
+                    # SOC histogram (NEW in v3.2)
+                    variant_result.bess_soc_histogram = variant_scenario.bess_soc_histogram
 
                     # Compute baseline (no BESS) for comparison
                     baseline_result = simulate_pv_system(
