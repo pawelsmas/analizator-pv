@@ -3322,10 +3322,10 @@ function generateSensitivityAnalysisCharts() {
   const capacityFee = calculateCapacityFeeForConsumption(consumptionData, params);
   const totalPriceWithCapacity = totalEnergyPrice + capacityFee;
 
-  // Get EaaS parameters
-  const eaasSubscription = parseFloat(document.getElementById('eaasSubscription')?.value || 800000);
-  const eaasOM = parseFloat(document.getElementById('eaasOM')?.value || 24);
-  const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value || 10);
+  // Get EaaS parameters from fullModelResult (stored globally)
+  const eaasSubscription = window.eaasSubscription || 800000;
+  const eaasOM = params.opex_per_kwp || (systemSettings?.opexPerKwp || 15);
+  const eaasDuration = systemSettings?.eaasDuration || 10;
   const insuranceRate = systemSettings?.insuranceRate || 0.005;
 
   // Base parameters
@@ -4502,21 +4502,29 @@ async function calculateEaaS() {
     }
   }
 
-  // ========== LEGACY CALCULATIONS FOR COMPARISON TABLE ==========
-  // Also run the simpler model for NPV comparison from customer perspective
-  let subscriptionData = null;
+  // ========== USE FULL MODEL RESULTS FOR CONSISTENCY ==========
+  // Always use fullModelResult for subscription to ensure consistency between
+  // displayed "Roczny abonament" and table "Koszt EaaS"
+  // Backend solver uses different methodology (simplified, no energy revenue),
+  // which caused discrepancies (e.g., 490k vs 687k)
+  const subscriptionData = {
+    annualSubscription: fullModelResult.annualSubscriptionPLN,
+    annualSubscriptionPLN: fullModelResult.annualSubscriptionPLN,
+    monthlySubscription: fullModelResult.annualSubscriptionPLN / 12,
+    irr: fullModelResult.projectIrr,
+    duration: fullModelResult.contractDuration,
+    currency: fullModelResult.currency,
+  };
+
+  console.log('📊 Using fullModelResult for subscriptionData:', {
+    annualSubscriptionPLN: subscriptionData.annualSubscriptionPLN,
+    duration: subscriptionData.duration,
+    irr: subscriptionData.irr
+  });
+
+  // Optionally fetch backend log for detailed CSV export (but don't use its subscription value)
   try {
     const backendEaas = await fetchEaasMonthlyLog(variant, systemSettings || {}, params);
-    console.log('Backend EaaS monthly result received:', backendEaas);
-    subscriptionData = {
-      annualSubscription: backendEaas.subscription_annual_year1,
-      annualSubscriptionPLN: backendEaas.subscription_annual_year1,
-      monthlySubscription: backendEaas.subscription_monthly,
-      irr: backendEaas.achieved_irr_annual ?? 0,
-      duration: systemSettings?.eaasDuration || 10,
-      currency: systemSettings?.eaasCurrency || 'PLN',
-    };
-
     const dl = document.getElementById('eaasLogDownload');
     if (dl && backendEaas.log_csv) {
       const blob = new Blob([backendEaas.log_csv], { type: 'text/csv' });
@@ -4525,16 +4533,16 @@ async function calculateEaaS() {
       dl.download = `eaas_log_${currentVariant}.csv`;
       dl.style.display = 'inline-block';
     }
+    // Log discrepancy if any (for debugging)
+    if (Math.abs(backendEaas.subscription_annual_year1 - fullModelResult.annualSubscriptionPLN) > 1000) {
+      console.warn('⚠️ Backend subscription differs from fullModel:', {
+        backend: backendEaas.subscription_annual_year1,
+        fullModel: fullModelResult.annualSubscriptionPLN,
+        diff: backendEaas.subscription_annual_year1 - fullModelResult.annualSubscriptionPLN
+      });
+    }
   } catch (err) {
-    console.log('Backend EaaS not available, using full model results');
-    subscriptionData = {
-      annualSubscription: fullModelResult.annualSubscriptionPLN,
-      annualSubscriptionPLN: fullModelResult.annualSubscriptionPLN,
-      monthlySubscription: fullModelResult.annualSubscriptionPLN / 12,
-      irr: fullModelResult.projectIrr,
-      duration: fullModelResult.contractDuration,
-      currency: fullModelResult.currency,
-    };
+    console.log('Backend EaaS log not available (optional):', err.message);
   }
 
   const eaasSubscriptionPLN = subscriptionData.annualSubscriptionPLN;
@@ -5009,8 +5017,9 @@ function exportEaaSToExcel() {
     excise: params.excise_tax
   };
 
-  const eaasSubscription = parseFloat(document.getElementById('eaasSubscription')?.value) || 800000;
-  const eaasOM = parseFloat(document.getElementById('eaasOM')?.value) || 24;
+  // Use stored subscription from fullModelResult (set in window.eaasSubscription)
+  const eaasSubscription = window.eaasSubscription || 800000;
+  const eaasOM = params.opex_per_kwp || (systemSettings?.opexPerKwp || 15);
   const degradationRate = params.degradation_rate; // Already as fraction (e.g., 0.005 for 0.5%)
   const analysisPeriod = params.analysis_period;
 

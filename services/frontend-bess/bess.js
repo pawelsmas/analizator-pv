@@ -703,8 +703,9 @@ function updateDeltaEconomics(variant) {
   const bessDischargedMWh = (variant.bess_discharged_kwh || 0) / 1000;
   const deltaSelfConsumedMWh = bessDischargedMWh; // This is energy delivered by BESS
 
-  // Energy price (from settings or default)
-  const energyPrice = settings.energyPrice || settings.purchasePrice || 550; // PLN/MWh
+  // Energy price (from settings or default) - try multiple field names
+  // Settings module uses: totalEnergyPrice or npvEnergyPrice (in PLN/MWh)
+  const energyPrice = settings.totalEnergyPrice || settings.npvEnergyPrice || settings.energyPrice || settings.purchasePrice || 800; // PLN/MWh
 
   // Annual savings from BESS = energy from battery * energy price
   // This represents money saved by not buying from grid
