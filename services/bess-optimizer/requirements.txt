@@ -1,0 +1,9 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+numpy==1.26.3
+pandas==2.1.4
+xarray==2024.1.0
+pypsa==0.27.1
+highspy==1.7.1
+linopy==0.3.8

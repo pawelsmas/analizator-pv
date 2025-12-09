@@ -32,6 +32,9 @@ optimization_progress = {
     "tested_configs": 0
 }
 
+# BESS Optimizer Service URL (for PRO mode)
+BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name
+
 # Import pvlib
 try:
     import pvlib
@@ -196,12 +199,28 @@ class SimulationResult(BaseModel):
     # SOC histogram (NEW in v3.2)
     bess_soc_histogram: Optional["BESSSOCHistogram"] = None
 
-# ============== BESS Configuration Model (LIGHT/AUTO Mode) ==============
+# ============== BESS PRO Configuration (LP/MIP Optimization) ==============
+class BESSProConfig(BaseModel):
+    """BESS PRO configuration for LP/MIP optimization"""
+    min_power_kw: float = 50.0
+    max_power_kw: float = 10000.0
+    min_energy_kwh: float = 100.0
+    max_energy_kwh: float = 50000.0
+    duration_min: float = 1.0
+    duration_max: float = 4.0
+    solver: str = 'highs'  # 'highs' | 'glpk' | 'cbc'
+    objective: str = 'npv'  # 'npv' | 'payback' | 'autoconsumption'
+    time_resolution: str = 'hourly'  # 'hourly' | '15min'
+    typical_days: int = 0  # 0 = full year
+    zero_export: bool = True
+    export_penalty: float = 1000.0  # PLN/MWh
+
+# ============== BESS Configuration Model (LIGHT/AUTO or PRO Mode) ==============
 class BESSConfigLite(BaseModel):
-    """BESS LIGHT/AUTO configuration - system auto-sizes power and energy"""
+    """BESS configuration - supports both LIGHT and PRO modes"""
     enabled: bool = False
-    mode: str = 'lite'  # 'lite' = auto-sizing mode
-    duration: str = 'auto'  # 'auto' | '1' | '2' | '4' hours (E/P ratio)
+    mode: str = 'light'  # 'light' = auto-sizing, 'pro' = LP/MIP optimization
+    duration: str = 'auto'  # 'auto' | '1' | '2' | '4' hours (E/P ratio) - for LIGHT mode
     # Technical parameters
     roundtrip_efficiency: float = 0.90  # 88-92% typical for Li-ion
     soc_min: float = 0.10  # Minimum SOC (protect battery)
@@ -213,6 +232,8 @@ class BESSConfigLite(BaseModel):
     opex_pct_per_year: float = 1.5  # OPEX as % of CAPEX
     lifetime_years: int = 15
     degradation_pct_per_year: float = 2.0
+    # PRO mode configuration (optional, only when mode='pro')
+    pro_config: Optional[BESSProConfig] = None
 
 class AnalysisRequest(BaseModel):
     pv_config: PVConfiguration
@@ -1902,16 +1923,19 @@ def auto_size_bess_lite(
     consumption: np.ndarray,
     capacity: float,
     dc_ac_ratio: float = 1.2,
-    duration: str = 'auto'
+    duration: str = 'auto',
+    capex_per_kwh: float = 1500.0,
+    capex_per_kw: float = 300.0,
+    energy_price_plnmwh: float = 800.0,
+    discount_rate: float = 0.07,
+    lifetime_years: int = 15,
+    roundtrip_efficiency: float = 0.90
 ) -> tuple:
     """
-    Auto-size BESS power (kW) and energy (kWh) based on PV surplus profile.
+    Auto-size BESS power (kW) and energy (kWh) using iterative NPV optimization.
 
-    Heuristics:
-    - P_auto = 95th percentile of hourly surplus
-    - E_auto depends on duration mode:
-      - 'auto': E = P * estimated_usable_window (typically 3-4h)
-      - '1h', '2h', '4h': E = P * duration
+    Tests multiple BESS sizes and selects the one with best NPV.
+    This ensures the selected size is economically optimal, not just technically feasible.
 
     Args:
         pv_profile: Hourly generation per kWp
@@ -1919,6 +1943,12 @@ def auto_size_bess_lite(
         capacity: PV system capacity in kWp
         dc_ac_ratio: DC to AC ratio
         duration: 'auto' | '1' | '2' | '4' hours
+        capex_per_kwh: CAPEX per kWh of storage [PLN/kWh]
+        capex_per_kw: CAPEX per kW of power [PLN/kW]
+        energy_price_plnmwh: Energy price [PLN/MWh]
+        discount_rate: Discount rate for NPV calculation
+        lifetime_years: BESS lifetime [years]
+        roundtrip_efficiency: Round-trip efficiency
 
     Returns:
         Tuple of (bess_power_kw, bess_energy_kwh)
@@ -1927,47 +1957,230 @@ def auto_size_bess_lite(
     ac_capacity = capacity / dc_ac_ratio
     production = np.minimum(pv_profile * capacity, ac_capacity)
 
-    # Calculate hourly surplus
+    # Calculate hourly surplus and deficit
     direct_consumed = np.minimum(production, consumption)
     surplus = production - direct_consumed
+    deficit = consumption - direct_consumed
 
     # Filter only hours with surplus
     surplus_positive = surplus[surplus > 0]
 
     if len(surplus_positive) == 0:
-        # No surplus at all - minimal battery
-        return (10.0, 20.0)
+        # No surplus at all - no battery needed
+        return (0.0, 0.0)
 
-    # P_auto = 95th percentile of surplus (avoid extreme peaks)
-    p_auto = np.percentile(surplus_positive, 95)
-
-    # Ensure minimum reasonable power
-    p_auto = max(p_auto, 10.0)  # At least 10 kW
-
-    # Duration handling
-    if duration == 'auto':
-        # Estimate usable window: count average consecutive surplus hours
-        # Simple heuristic: total surplus hours / 365 days gives avg daily surplus hours
-        surplus_hours_per_year = len(surplus_positive)
-        avg_daily_surplus_hours = surplus_hours_per_year / 365
-
-        # Clamp to reasonable range (2-6 hours)
-        usable_window = max(2.0, min(6.0, avg_daily_surplus_hours))
-        e_auto = p_auto * usable_window
+    # Calculate annuity factor for NPV
+    if discount_rate > 0:
+        annuity_factor = (discount_rate * (1 + discount_rate) ** lifetime_years) / \
+                         ((1 + discount_rate) ** lifetime_years - 1)
     else:
-        # Fixed duration
+        annuity_factor = 1.0 / lifetime_years
+
+    # Determine duration multiplier
+    if duration == 'auto':
+        duration_h = 2.0  # Default 2h for iteration
+    else:
         try:
-            hours = float(duration)
-            e_auto = p_auto * hours
+            duration_h = float(duration)
         except (ValueError, TypeError):
-            # Fallback to 2 hours
-            e_auto = p_auto * 2.0
+            duration_h = 2.0
+
+    # Define power range to test (10 steps from small to large)
+    # Max power based on 75th percentile of surplus (not 95th - that's too aggressive)
+    p_max_candidate = np.percentile(surplus_positive, 75)
+    p_max_candidate = max(p_max_candidate, 50.0)  # At least 50 kW
+
+    # Test range from 10% to 100% of max candidate
+    power_steps = np.linspace(p_max_candidate * 0.1, p_max_candidate, 10)
+
+    best_npv = float('-inf')
+    best_power = 0.0
+    best_energy = 0.0
+
+    energy_price_plnkwh = energy_price_plnmwh / 1000.0
+    eta = np.sqrt(roundtrip_efficiency)  # One-way efficiency
+
+    for p_test in power_steps:
+        e_test = p_test * duration_h
+
+        # Quick dispatch simulation
+        annual_discharge = _simulate_quick_dispatch(
+            surplus=surplus,
+            deficit=deficit,
+            power_kw=p_test,
+            energy_kwh=e_test,
+            eta=eta
+        )
+
+        # Calculate annual savings
+        annual_savings = annual_discharge * energy_price_plnkwh
+
+        # Calculate CAPEX
+        capex = p_test * capex_per_kw + e_test * capex_per_kwh
+
+        # Calculate annualized cost
+        annual_cost = capex * annuity_factor
+
+        # Net annual benefit
+        net_annual = annual_savings - annual_cost
+
+        # Simple NPV approximation (using annuity)
+        npv = net_annual / annuity_factor if annuity_factor > 0 else net_annual * lifetime_years
+
+        if npv > best_npv:
+            best_npv = npv
+            best_power = p_test
+            best_energy = e_test
+
+    # If no positive NPV found, return minimal or zero
+    if best_npv <= 0:
+        # Check if even minimal battery is worth it
+        min_power = 50.0
+        min_energy = min_power * duration_h
+        min_discharge = _simulate_quick_dispatch(surplus, deficit, min_power, min_energy, eta)
+        min_savings = min_discharge * energy_price_plnkwh
+        min_capex = min_power * capex_per_kw + min_energy * capex_per_kwh
+        min_annual_cost = min_capex * annuity_factor
+
+        if min_savings > min_annual_cost:
+            return (round(min_power, 1), round(min_energy, 1))
+        else:
+            # Battery doesn't pay for itself - return zero
+            return (0.0, 0.0)
 
     # Round to reasonable values
-    p_auto = round(p_auto, 1)
-    e_auto = round(e_auto, 1)
+    best_power = round(best_power, 1)
+    best_energy = round(best_energy, 1)
 
-    return (p_auto, e_auto)
+    return (best_power, best_energy)
+
+
+def _simulate_quick_dispatch(
+    surplus: np.ndarray,
+    deficit: np.ndarray,
+    power_kw: float,
+    energy_kwh: float,
+    eta: float,
+    soc_min: float = 0.1,
+    soc_max: float = 0.9
+) -> float:
+    """
+    Quick greedy dispatch simulation to estimate annual discharge.
+
+    Returns:
+        Annual discharge in kWh
+    """
+    usable_capacity = energy_kwh * (soc_max - soc_min)
+    soc = usable_capacity * 0.5  # Start at 50%
+    total_discharge = 0.0
+
+    for i in range(len(surplus)):
+        s = surplus[i]
+        d = deficit[i]
+
+        # Charge from surplus
+        if s > 0 and soc < usable_capacity:
+            charge = min(s, power_kw, (usable_capacity - soc) / eta)
+            soc += charge * eta
+
+        # Discharge to cover deficit
+        if d > 0 and soc > 0:
+            discharge = min(d, power_kw, soc * eta)
+            soc -= discharge / eta
+            total_discharge += discharge
+
+    return total_discharge
+
+
+def call_bess_pro_optimizer(
+    pv_generation: np.ndarray,
+    consumption: np.ndarray,
+    pv_capacity_kwp: float,
+    bess_config: "BESSConfigLite",
+    energy_price_plnmwh: float = 800.0,
+    discount_rate: float = 0.07,
+    analysis_period_years: int = 25
+) -> Optional[dict]:
+    """
+    Call the BESS PRO optimizer service for LP/MIP optimization.
+
+    Args:
+        pv_generation: Hourly PV generation [kWh]
+        consumption: Hourly load [kWh]
+        pv_capacity_kwp: PV capacity [kWp]
+        bess_config: BESS configuration with pro_config
+        energy_price_plnmwh: Energy price [PLN/MWh]
+        discount_rate: Discount rate (e.g., 0.07 = 7%)
+        analysis_period_years: Analysis period [years]
+
+    Returns:
+        Optimization result dict or None if failed
+    """
+    if not bess_config.pro_config:
+        print("⚠️ BESS PRO config missing, falling back to LIGHT mode")
+        return None
+
+    pro = bess_config.pro_config
+
+    # Build request payload
+    payload = {
+        "pv_generation_kwh": pv_generation.tolist(),
+        "load_kwh": consumption.tolist(),
+        "pv_capacity_kwp": pv_capacity_kwp,
+        "min_power_kw": pro.min_power_kw,
+        "max_power_kw": pro.max_power_kw,
+        "min_energy_kwh": pro.min_energy_kwh,
+        "max_energy_kwh": pro.max_energy_kwh,
+        "duration_min_h": pro.duration_min,
+        "duration_max_h": pro.duration_max,
+        "roundtrip_efficiency": bess_config.roundtrip_efficiency,
+        "soc_min": bess_config.soc_min,
+        "soc_max": bess_config.soc_max,
+        "capex_per_kwh": bess_config.capex_per_kwh,
+        "capex_per_kw": bess_config.capex_per_kw,
+        "opex_pct_per_year": bess_config.opex_pct_per_year,
+        "lifetime_years": bess_config.lifetime_years,
+        "energy_price_plnmwh": energy_price_plnmwh,
+        "discount_rate": discount_rate,
+        "analysis_period_years": analysis_period_years,
+        "solver": pro.solver,
+        "objective": pro.objective,
+        "time_resolution": pro.time_resolution,
+        "typical_days": pro.typical_days,
+        "zero_export": pro.zero_export,
+        "export_penalty_plnmwh": pro.export_penalty
+    }
+
+    try:
+        print(f"🚀 Calling BESS PRO optimizer at {BESS_OPTIMIZER_URL}/optimize")
+        response = requests.post(
+            f"{BESS_OPTIMIZER_URL}/optimize",
+            json=payload,
+            timeout=300  # 5 minutes timeout for optimization
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ BESS PRO optimization successful:")
+            print(f"   Optimal: {result['optimal_power_kw']:.0f} kW / {result['optimal_energy_kwh']:.0f} kWh")
+            print(f"   NPV: {result['npv_bess_pln']:.0f} PLN")
+            print(f"   Solve time: {result['solve_time_s']:.1f}s")
+            return result
+        else:
+            print(f"❌ BESS PRO optimizer error: {response.status_code}")
+            print(f"   Response: {response.text[:500]}")
+            return None
+
+    except requests.exceptions.Timeout:
+        print("❌ BESS PRO optimizer timeout (>5min)")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ BESS PRO optimizer connection error: {e}")
+        print("   Is bess-optimizer service running?")
+        return None
+    except Exception as e:
+        print(f"❌ BESS PRO optimizer error: {e}")
+        return None
 
 
 def find_variant(scenarios: List[SimulationResult], threshold: float) -> Optional[SimulationResult]:
@@ -2302,13 +2515,20 @@ async def analyze(request: AnalysisRequest):
             # Manual mode: use tier table
             print(f"\n📋 Tryb ręczny: DC/AC ratio wg tabeli przedziałów")
 
-        # Check if BESS is enabled
+        # Check if BESS is enabled and determine mode
         bess_enabled = request.bess_config and request.bess_config.enabled
         bess_config = request.bess_config
+        bess_mode = bess_config.mode if bess_config else 'off'
+        bess_pro_result = None  # Will store PRO optimization result if applicable
 
         if bess_enabled:
-            print(f"\n🔋 BESS LIGHT mode enabled")
-            print(f"   Duration: {bess_config.duration}")
+            if bess_mode == 'pro':
+                print(f"\n🚀 BESS PRO mode enabled (LP/MIP optimization)")
+                print(f"   Solver: {bess_config.pro_config.solver if bess_config.pro_config else 'highs'}")
+                print(f"   Objective: {bess_config.pro_config.objective if bess_config.pro_config else 'npv'}")
+            else:
+                print(f"\n🔋 BESS LIGHT mode enabled")
+                print(f"   Duration: {bess_config.duration}")
             print(f"   Round-trip efficiency: {bess_config.roundtrip_efficiency:.0%}")
 
         # Run simulations for each capacity
@@ -2332,13 +2552,20 @@ async def analyze(request: AnalysisRequest):
                 )
 
             if bess_enabled:
-                # Auto-size BESS for this PV capacity
+                # Main loop always uses LIGHT mode for speed
+                # PRO optimization is applied only to key variants (A/B/C/D) after selection
                 bess_power_kw, bess_energy_kwh = auto_size_bess_lite(
                     pv_profile=pv_profile,
                     consumption=consumption,
                     capacity=capacity,
                     dc_ac_ratio=dcac_ratio,
-                    duration=str(bess_config.duration)
+                    duration=str(bess_config.duration),
+                    capex_per_kwh=bess_config.capex_per_kwh,
+                    capex_per_kw=bess_config.capex_per_kw,
+                    energy_price_plnmwh=request.pv_config.energy_price if hasattr(request.pv_config, 'energy_price') else 800.0,
+                    discount_rate=request.pv_config.discount_rate if hasattr(request.pv_config, 'discount_rate') else 0.07,
+                    lifetime_years=bess_config.lifetime_years,
+                    roundtrip_efficiency=bess_config.roundtrip_efficiency
                 )
 
                 # Simulate PV+BESS in 0-export mode
@@ -2373,6 +2600,34 @@ async def analyze(request: AnalysisRequest):
             variant_scenario = find_variant(scenarios, threshold)
 
             if variant_scenario:
+                # For BESS PRO mode: re-optimize BESS only for key variants
+                if bess_enabled and bess_mode == 'pro' and bess_config.pro_config:
+                    print(f"   🚀 PRO optimization for variant {variant_name} ({variant_scenario.capacity:.0f} kWp)...")
+                    pv_generation = pv_profile * variant_scenario.capacity * variant_scenario.dcac_ratio
+                    pro_result = call_bess_pro_optimizer(
+                        pv_generation=pv_generation,
+                        consumption=consumption,
+                        pv_capacity_kwp=variant_scenario.capacity,
+                        bess_config=bess_config,
+                        energy_price_plnmwh=800.0,
+                        discount_rate=0.07,
+                        analysis_period_years=25
+                    )
+                    if pro_result:
+                        # Re-simulate with PRO-optimized BESS sizing
+                        variant_scenario = simulate_pv_system_with_bess(
+                            capacity=variant_scenario.capacity,
+                            pv_profile=pv_profile,
+                            consumption=consumption,
+                            bess_power_kw=pro_result['optimal_power_kw'],
+                            bess_energy_kwh=pro_result['optimal_energy_kwh'],
+                            dc_ac_ratio=variant_scenario.dcac_ratio,
+                            roundtrip_efficiency=bess_config.roundtrip_efficiency,
+                            soc_min=bess_config.soc_min,
+                            soc_max=bess_config.soc_max,
+                            soc_initial=bess_config.soc_initial
+                        )
+
                 variant_result = VariantResult(
                     variant=variant_name,
                     threshold=threshold,
@@ -2442,7 +2697,7 @@ async def analyze(request: AnalysisRequest):
         print(f"   Date range: {date_start} to {date_end}")
         print(f"   Estimation method: {estimation_method}")
         if bess_enabled:
-            print(f"   BESS mode: LIGHT/AUTO")
+            print(f"   BESS mode: {bess_mode.upper()}")
         print(f"{'='*60}\n")
 
         # Build BESS summary if enabled
@@ -2466,8 +2721,8 @@ async def analyze(request: AnalysisRequest):
                 total_consumption = consumption.sum()
                 bess_summary = BESSSummary(
                     enabled=True,
-                    mode='lite',
-                    duration=str(bess_config.duration),
+                    mode=bess_mode,  # 'light' or 'pro'
+                    duration=str(bess_config.duration) if bess_mode == 'light' else 'optimized',
                     bess_power_kw=best_scenario.bess_power_kw,
                     bess_energy_kwh=best_scenario.bess_energy_kwh,
                     total_charged_kwh=best_scenario.bess_charged_kwh,

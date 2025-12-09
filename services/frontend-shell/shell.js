@@ -360,9 +360,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Inter-module communication via postMessage
 window.addEventListener('message', (event) => {
-  // Validate origin
-  const validOrigins = Object.values(MODULES);
-  if (!validOrigins.includes(event.origin)) {
+  // Validate origin - in proxy mode, all modules share the same origin as shell
+  // In direct mode, modules have different ports/origins
+  const shellOrigin = window.location.origin;
+  const isValidOrigin = USE_PROXY
+    ? event.origin === shellOrigin  // Proxy mode: all modules same origin
+    : Object.values(MODULES).some(url => event.origin === new URL(url).origin);
+
+  if (!isValidOrigin) {
+    console.log('Ignoring message from invalid origin:', event.origin);
     return;
   }
 

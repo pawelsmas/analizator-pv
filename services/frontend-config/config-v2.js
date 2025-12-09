@@ -780,12 +780,15 @@ async function runAnalysis() {
       }
     };
 
-    // Add BESS configuration if enabled (LIGHT/AUTO mode)
-    if (systemSettings?.bessEnabled) {
+    // Add BESS configuration if enabled (LIGHT or PRO mode)
+    const bessMode = systemSettings?.bessMode || 'off';
+    const bessEnabled = bessMode !== 'off' || systemSettings?.bessEnabled;  // Support legacy bessEnabled
+
+    if (bessEnabled) {
       analysisRequest.bess_config = {
         enabled: true,
-        mode: 'lite',  // LIGHT/AUTO mode - system auto-sizes power and energy
-        duration: systemSettings.bessDuration || 'auto',  // 'auto' | 1 | 2 | 4 hours
+        mode: bessMode === 'off' ? 'light' : bessMode,  // 'light' or 'pro'
+        duration: systemSettings.bessDuration || 'auto',  // 'auto' | 1 | 2 | 4 hours (for LIGHT mode)
         // Technical parameters
         roundtrip_efficiency: systemSettings.bessRoundtripEfficiency || 0.90,
         soc_min: systemSettings.bessSocMin || 0.10,
@@ -796,9 +799,24 @@ async function runAnalysis() {
         capex_per_kw: systemSettings.bessCapexPerKw || 300,
         opex_pct_per_year: systemSettings.bessOpexPctPerYear || 1.5,
         lifetime_years: systemSettings.bessLifetimeYears || 15,
-        degradation_pct_per_year: systemSettings.bessDegradationPctPerYear || 2.0
+        degradation_pct_per_year: systemSettings.bessDegradationPctPerYear || 2.0,
+        // PRO mode specific params (only when mode='pro')
+        pro_config: bessMode === 'pro' ? {
+          min_power_kw: systemSettings.bessProMinPowerKw || 50,
+          max_power_kw: systemSettings.bessProMaxPowerKw || 10000,
+          min_energy_kwh: systemSettings.bessProMinEnergyKwh || 100,
+          max_energy_kwh: systemSettings.bessProMaxEnergyKwh || 50000,
+          duration_min: systemSettings.bessProDurationMin || 1,
+          duration_max: systemSettings.bessProDurationMax || 4,
+          solver: systemSettings.bessProSolver || 'highs',
+          objective: systemSettings.bessProObjective || 'npv',
+          time_resolution: systemSettings.bessProTimeResolution || 'hourly',
+          typical_days: systemSettings.bessProTypicalDays || 0,
+          zero_export: systemSettings.bessProZeroExport !== false,
+          export_penalty: systemSettings.bessProExportPenalty || 1000
+        } : null
       };
-      console.log('🔋 BESS LIGHT/AUTO mode enabled:', analysisRequest.bess_config);
+      console.log(`🔋 BESS ${bessMode.toUpperCase()} mode enabled:`, analysisRequest.bess_config);
     } else {
       console.log('🔋 BESS disabled - running PV-only analysis');
     }
@@ -1582,6 +1600,23 @@ window.addEventListener('message', (event) => {
       // Apply settings received from shell
       applySettingsFromShell(event.data.data);
       console.log('System settings received from shell');
+      break;
+    case 'SHARED_DATA_RESPONSE':
+      // Shell sent all shared data (including settings)
+      if (event.data.data?.settings) {
+        applySettingsFromShell(event.data.data.settings);
+        console.log('📥 Applying settings from SHARED_DATA_RESPONSE');
+      }
+      // Also restore uploaded data state if available
+      if (event.data.data?.analysisResults || event.data.data?.hourlyData) {
+        uploadedData = true;
+        sessionStorage.setItem('file_uploaded', 'true');
+        console.log('📥 Data restored from SHARED_DATA_RESPONSE');
+      }
+      break;
+    case 'SCENARIO_CHANGED':
+      // Scenario changed (P50/P75/P90) - update if needed
+      console.log('📥 Scenario changed:', event.data.data);
       break;
   }
 });

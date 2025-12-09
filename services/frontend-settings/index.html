@@ -861,49 +861,47 @@
       </div>
     </div>
 
-    <!-- BESS - Battery Energy Storage System (LIGHT/AUTO Mode) -->
+    <!-- BESS - Battery Energy Storage System -->
     <div class="settings-section">
       <div class="section-header">
         <span class="section-icon">🔋</span>
         <h2>Magazyn Energii (BESS)</h2>
-        <span class="section-info">Tryb AUTO - system dobiera moc i pojemność automatycznie</span>
+        <span class="section-info">Wybierz tryb: OFF / LIGHT / PRO</span>
       </div>
 
       <!-- Info Box -->
       <div style="margin-bottom:20px;padding:14px;background:linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);border-radius:10px;border-left:4px solid #1976d2">
         <div style="font-size:12px;color:#1565c0;line-height:1.6">
-          <strong>🔋 BESS LIGHT/AUTO</strong> – uproszczony tryb dla handlowców.<br>
-          • Po włączeniu system <strong>automatycznie</strong> dobiera optymalną moc (kW) i pojemność (kWh)<br>
-          • Tryb <strong>0-Export</strong> – magazyn ładuje się tylko z nadwyżek PV, brak eksportu do sieci<br>
-          • Nadwyżki powyżej pojemności magazynu → <strong>curtailment</strong> (ucięcie produkcji)
+          <strong>🔋 Tryby BESS:</strong><br>
+          • <strong>OFF</strong> – brak magazynu energii<br>
+          • <strong>LIGHT</strong> – prosty auto-sizing (algorytm zachłanny, szybkie obliczenia)<br>
+          • <strong>PRO</strong> – optymalizacja LP/MIP przez PyPSA+HiGHS (dokładniejsze, wolniejsze)
         </div>
       </div>
 
-      <!-- BESS Toggle -->
+      <!-- BESS Mode Selector (3-way) -->
       <div style="margin-bottom:24px;padding:20px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-          <div>
-            <div style="font-weight:600;color:#1976d2;font-size:15px">Magazyn energii BESS</div>
-            <div style="font-size:12px;color:#666;margin-top:4px">Włącz aby dodać magazyn do analizy PV</div>
-          </div>
-          <label class="toggle-switch" style="margin:0">
-            <input type="checkbox" id="bessEnabled" onchange="toggleBessSection()">
-            <span class="slider"></span>
-          </label>
-        </div>
+        <div style="font-weight:600;color:#1976d2;font-size:15px;margin-bottom:12px">Tryb magazynu energii</div>
+        <input type="hidden" id="bessEnabled"><!-- Legacy field for backwards compat -->
 
         <div style="display:flex;gap:12px">
-          <div id="bessStatusOff" style="flex:1;padding:12px;background:#ffebee;border-radius:6px;text-align:center;border:2px solid #ef5350">
-            <div style="font-size:20px">❌</div>
-            <div style="font-weight:600;color:#c62828">OFF</div>
-            <div style="font-size:11px;color:#666">Bez magazynu</div>
+          <div id="bessStatusOff" onclick="setBessMode('off')" style="flex:1;padding:16px 12px;background:#ffebee;border-radius:8px;text-align:center;border:2px solid #ef5350;cursor:pointer;transition:all 0.2s">
+            <div style="font-size:24px">❌</div>
+            <div style="font-weight:700;color:#c62828;font-size:14px;margin-top:4px">OFF</div>
+            <div style="font-size:10px;color:#666;margin-top:2px">Bez magazynu</div>
           </div>
-          <div id="bessStatusOn" style="flex:1;padding:12px;background:#e8f5e9;border-radius:6px;text-align:center;border:2px solid transparent;opacity:0.5">
-            <div style="font-size:20px">✅</div>
-            <div style="font-weight:600;color:#2e7d32">ON (AUTO)</div>
-            <div style="font-size:11px;color:#666">Auto-sizing</div>
+          <div id="bessStatusLight" onclick="setBessMode('light')" style="flex:1;padding:16px 12px;background:#e8f5e9;border-radius:8px;text-align:center;border:2px solid transparent;cursor:pointer;opacity:0.5;transition:all 0.2s">
+            <div style="font-size:24px">⚡</div>
+            <div style="font-weight:700;color:#2e7d32;font-size:14px;margin-top:4px">LIGHT</div>
+            <div style="font-size:10px;color:#666;margin-top:2px">Auto-sizing</div>
+          </div>
+          <div id="bessStatusPro" onclick="setBessMode('pro')" style="flex:1;padding:16px 12px;background:#fff3e0;border-radius:8px;text-align:center;border:2px solid transparent;cursor:pointer;opacity:0.5;transition:all 0.2s">
+            <div style="font-size:24px">🚀</div>
+            <div style="font-weight:700;color:#e65100;font-size:14px;margin-top:4px">PRO</div>
+            <div style="font-size:10px;color:#666;margin-top:2px">LP/MIP Optimizer</div>
           </div>
         </div>
+        <input type="hidden" id="bessMode" value="off">
       </div>
 
       <!-- BESS Duration Selector (shown only when BESS enabled) -->
@@ -993,6 +991,111 @@
             </div>
           </div>
         </details>
+      </div>
+
+      <!-- BESS PRO Parameters (shown only when PRO mode selected) -->
+      <div id="bessProSection" style="display:none;margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);border-radius:8px;border:1px solid #ffb74d">
+        <div style="font-weight:600;color:#e65100;margin-bottom:12px;font-size:14px">
+          🚀 BESS PRO – Optymalizacja LP/MIP (PyPSA + HiGHS)
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:16px">
+          Zaawansowana optymalizacja doboru mocy i pojemności magazynu przez programowanie liniowe.
+          Uwzględnia pełny profil godzinowy (8760h) i ograniczenie 0-Export.
+        </div>
+
+        <!-- PRO Sizing Constraints -->
+        <div style="margin-bottom:16px">
+          <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">📐 Ograniczenia wymiarowania</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Min moc [kW]</label>
+              <input type="number" id="bessProMinPowerKw" value="50" min="0" max="10000" step="10">
+              <span class="setting-hint">Minimalna moc BESS</span>
+            </div>
+            <div class="setting-item">
+              <label>Max moc [kW]</label>
+              <input type="number" id="bessProMaxPowerKw" value="10000" min="100" max="100000" step="100">
+              <span class="setting-hint">Maksymalna moc BESS</span>
+            </div>
+            <div class="setting-item">
+              <label>Min pojemność [kWh]</label>
+              <input type="number" id="bessProMinEnergyKwh" value="100" min="0" max="50000" step="100">
+              <span class="setting-hint">Minimalna pojemność</span>
+            </div>
+            <div class="setting-item">
+              <label>Max pojemność [kWh]</label>
+              <input type="number" id="bessProMaxEnergyKwh" value="50000" min="100" max="500000" step="500">
+              <span class="setting-hint">Maksymalna pojemność</span>
+            </div>
+            <div class="setting-item">
+              <label>Duration min [h]</label>
+              <input type="number" id="bessProDurationMin" value="1" min="0.5" max="4" step="0.5">
+              <span class="setting-hint">Min stosunek E/P</span>
+            </div>
+            <div class="setting-item">
+              <label>Duration max [h]</label>
+              <input type="number" id="bessProDurationMax" value="4" min="1" max="8" step="0.5">
+              <span class="setting-hint">Max stosunek E/P</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PRO Optimization Settings -->
+        <div style="margin-bottom:16px">
+          <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">⚙️ Ustawienia optymalizacji</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Solver</label>
+              <select id="bessProSolver" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="highs">HiGHS (zalecany)</option>
+                <option value="glpk">GLPK</option>
+                <option value="cbc">CBC</option>
+              </select>
+              <span class="setting-hint">Open-source LP/MIP solver</span>
+            </div>
+            <div class="setting-item">
+              <label>Cel optymalizacji</label>
+              <select id="bessProObjective" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="npv">Maksymalizacja NPV</option>
+                <option value="payback">Minimalizacja payback</option>
+                <option value="autoconsumption">Max autokonsumpcja</option>
+              </select>
+              <span class="setting-hint">Funkcja celu</span>
+            </div>
+            <div class="setting-item">
+              <label>Rozdzielczość czasowa</label>
+              <select id="bessProTimeResolution" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="hourly">Godzinowa (8760 kroków)</option>
+                <option value="15min">15-minutowa (35040 kroków)</option>
+              </select>
+              <span class="setting-hint">Im wyższa, tym wolniej</span>
+            </div>
+            <div class="setting-item">
+              <label>Typowe dni (kompresja)</label>
+              <input type="number" id="bessProTypicalDays" value="0" min="0" max="365" step="1">
+              <span class="setting-hint">0 = pełny rok, >0 = kompresja</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PRO Zero-Export Settings -->
+        <div>
+          <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">🚫 Ograniczenie 0-Export</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="bessProZeroExport" checked style="width:18px;height:18px">
+                Wymuszenie 0-Export
+              </label>
+              <span class="setting-hint">Brak eksportu do sieci</span>
+            </div>
+            <div class="setting-item">
+              <label>Kara za eksport [PLN/MWh]</label>
+              <input type="number" id="bessProExportPenalty" value="1000" min="0" max="10000" step="100">
+              <span class="setting-hint">Soft constraint (gdy 0-Export off)</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

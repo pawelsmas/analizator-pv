@@ -4,7 +4,8 @@
 const API = {
   dataAnalysis: 'http://localhost:8001',
   pvCalculation: 'http://localhost:8002',
-  economics: 'http://localhost:8003'
+  economics: 'http://localhost:8003',
+  bessOptimizer: 'http://localhost:8030'
 };
 
 // Global state
@@ -706,6 +707,45 @@ async function runAnalysis() {
       capacityRange: `${systemSettings?.capMin || 1000} - ${systemSettings?.capMax || 50000} kWp`
     });
 
+    // Build BESS config if enabled
+    const bessMode = systemSettings?.bessMode || 'off';
+    const bessEnabled = bessMode !== 'off';
+    let bessConfig = null;
+
+    if (bessEnabled) {
+      bessConfig = {
+        enabled: true,
+        mode: bessMode,  // 'light' or 'pro'
+        duration: systemSettings?.bessDuration || 'auto',
+        roundtrip_efficiency: systemSettings?.bessRoundtripEfficiency || 0.90,
+        soc_min: systemSettings?.bessSocMin || 0.10,
+        soc_max: systemSettings?.bessSocMax || 0.90,
+        soc_initial: systemSettings?.bessSocInitial || 0.50,
+        // Economic params
+        capex_per_kwh: systemSettings?.bessCapexPerKwh || 1500,
+        capex_per_kw: systemSettings?.bessCapexPerKw || 300,
+        opex_pct_per_year: systemSettings?.bessOpexPctPerYear || 1.5,
+        lifetime_years: systemSettings?.bessLifetimeYears || 15,
+        // PRO mode specific params
+        pro_config: bessMode === 'pro' ? {
+          min_power_kw: systemSettings?.bessProMinPowerKw || 50,
+          max_power_kw: systemSettings?.bessProMaxPowerKw || 10000,
+          min_energy_kwh: systemSettings?.bessProMinEnergyKwh || 100,
+          max_energy_kwh: systemSettings?.bessProMaxEnergyKwh || 50000,
+          duration_min: systemSettings?.bessProDurationMin || 1,
+          duration_max: systemSettings?.bessProDurationMax || 4,
+          solver: systemSettings?.bessProSolver || 'highs',
+          objective: systemSettings?.bessProObjective || 'npv',
+          time_resolution: systemSettings?.bessProTimeResolution || 'hourly',
+          typical_days: systemSettings?.bessProTypicalDays || 0,
+          zero_export: systemSettings?.bessProZeroExport !== false,
+          export_penalty: systemSettings?.bessProExportPenalty || 1000
+        } : null
+      };
+
+      console.log(`🔋 BESS ${bessMode.toUpperCase()} mode enabled:`, bessConfig);
+    }
+
     const analysisRequest = {
       pv_config: pvConfig,
       consumption: hourlyData.values,
@@ -718,7 +758,8 @@ async function runAnalysis() {
         B: systemSettings?.thrB || 90,
         C: systemSettings?.thrC || 85,
         D: systemSettings?.thrD || 80
-      }
+      },
+      bess_config: bessConfig
     };
 
     console.log(`📅 Using ${hourlyData.timestamps?.length || 0} timestamps from consumption data`);

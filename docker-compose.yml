@@ -266,6 +266,26 @@ services:
       retries: 3
       start_period: 10s
 
+  # BESS Optimizer Service (PyPSA + HiGHS)
+  bess-optimizer:
+    build:
+      context: ./services/bess-optimizer
+      dockerfile: Dockerfile
+    container_name: pv-bess-optimizer
+    ports:
+      - "8030:8030"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   # Settings Module
   frontend-settings:
     build:

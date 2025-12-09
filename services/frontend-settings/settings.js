@@ -2,6 +2,18 @@
 
 console.log('⚙️ Settings module loaded');
 
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
+// Backend API URLs
+const API_URLS = USE_PROXY ? {
+  pvgisProxy: '/api/pvgis',
+  geo: '/api/geo'
+} : {
+  pvgisProxy: 'http://localhost:8020',
+  geo: 'http://localhost:8021'
+};
+
 // Default configuration values
 const DEFAULT_CONFIG = {
   // Energy Tariff Components (PLN/MWh)
@@ -241,15 +253,19 @@ const DEFAULT_CONFIG = {
   electricitymapsZone: 'PL',          // Default zone for Poland
 
   // ============================================================================
-  // BESS - Battery Energy Storage System (LIGHT/AUTO Mode)
+  // BESS - Battery Energy Storage System
   // ============================================================================
-  // Tryb uproszczony dla handlowców - system automatycznie dobiera moc i pojemność
+  // Tryby:
+  //   - 'off'   = brak magazynu
+  //   - 'light' = auto-sizing (prosty algorytm zachłanny)
+  //   - 'pro'   = optymalizacja LP/MIP przez PyPSA + HiGHS
 
-  bessEnabled: false,                  // Master switch: false = OFF (no battery), true = ON (AUTO)
+  bessMode: 'off',                     // Master mode: 'off' | 'light' | 'pro'
+  bessEnabled: false,                  // Legacy: for backwards compatibility (true = 'light')
   bessDuration: 'auto',                // Duration mode: 'auto' | 1 | 2 | 4 (hours)
                                        // 'auto' = system tests 1h/2h/4h and picks best NPV
 
-  // BESS Technical Defaults (used by AUTO sizing algorithm)
+  // BESS Technical Defaults (used by LIGHT and PRO modes)
   bessRoundtripEfficiency: 0.90,       // Round-trip efficiency (88-92% typical for Li-ion)
   bessSocMin: 0.10,                    // Minimum SOC (10% = protect battery health)
   bessSocMax: 0.90,                    // Maximum SOC (90% = protect battery health)
@@ -262,7 +278,29 @@ const DEFAULT_CONFIG = {
   bessLifetimeYears: 15,               // Expected battery lifetime [years]
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
   bessDegradationYear1: 3.0,           // First year degradation [%] (higher due to initial settling)
-  bessDegradationPctPerYear: 2.0       // Annual capacity degradation for years 2+ [%/year]
+  bessDegradationPctPerYear: 2.0,      // Annual capacity degradation for years 2+ [%/year]
+
+  // ============================================================================
+  // BESS PRO - Advanced LP/MIP Optimization (PyPSA + HiGHS)
+  // ============================================================================
+
+  // PRO Mode Sizing Constraints
+  bessProMinPowerKw: 50,               // Minimum BESS power [kW]
+  bessProMaxPowerKw: 10000,            // Maximum BESS power [kW]
+  bessProMinEnergyKwh: 100,            // Minimum BESS energy [kWh]
+  bessProMaxEnergyKwh: 50000,          // Maximum BESS energy [kWh]
+  bessProDurationMin: 1,               // Minimum duration E/P [hours]
+  bessProDurationMax: 4,               // Maximum duration E/P [hours]
+
+  // PRO Mode Optimization Settings
+  bessProSolver: 'highs',              // Solver: 'highs' (default, open-source) | 'glpk' | 'cbc'
+  bessProObjective: 'npv',             // Objective: 'npv' | 'payback' | 'autoconsumption'
+  bessProTimeResolution: 'hourly',     // Time resolution: 'hourly' | '15min'
+  bessProTypicalDays: 0,               // 0 = use all 8760 hours, >0 = compress to N typical days
+
+  // PRO Mode Zero-Export Constraint
+  bessProZeroExport: true,             // Enforce zero grid export constraint
+  bessProExportPenalty: 1000           // Penalty for grid export [PLN/MWh] (soft constraint)
 };
 
 // Initialize on load
@@ -284,55 +322,64 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================================
 
 /**
- * Toggle BESS configuration sections based on bessEnabled checkbox
- * Shows/hides duration, economics, and technical parameters
+ * Set BESS mode (off/light/pro) and update UI accordingly
+ * @param {string} mode - 'off' | 'light' | 'pro'
+ */
+function setBessMode(mode) {
+  // Update hidden input
+  const bessModeInput = document.getElementById('bessMode');
+  if (bessModeInput) bessModeInput.value = mode;
+
+  // Update legacy bessEnabled for backwards compatibility
+  const bessEnabledInput = document.getElementById('bessEnabled');
+  if (bessEnabledInput) bessEnabledInput.value = (mode !== 'off') ? 'true' : 'false';
+
+  // Update UI and show/hide sections
+  toggleBessSection();
+
+  console.log(`🔋 BESS mode set to: ${mode}`);
+  markUnsaved();
+}
+
+/**
+ * Toggle BESS configuration sections based on bessMode
+ * Shows/hides duration, economics, technical, and PRO parameters
  */
 function toggleBessSection() {
-  const bessEnabled = document.getElementById('bessEnabled')?.checked || false;
+  const bessMode = document.getElementById('bessMode')?.value || 'off';
   const durationSection = document.getElementById('bessDurationSection');
   const economicsSection = document.getElementById('bessEconomicsSection');
   const technicalSection = document.getElementById('bessTechnicalSection');
+  const proSection = document.getElementById('bessProSection');
   const statusOff = document.getElementById('bessStatusOff');
-  const statusOn = document.getElementById('bessStatusOn');
+  const statusLight = document.getElementById('bessStatusLight');
+  const statusPro = document.getElementById('bessStatusPro');
 
-  if (bessEnabled) {
-    // Show BESS configuration sections
-    if (durationSection) durationSection.style.display = 'block';
-    if (economicsSection) economicsSection.style.display = 'block';
-    if (technicalSection) technicalSection.style.display = 'block';
-
-    // Update status indicators
-    if (statusOff) {
-      statusOff.style.border = '2px solid transparent';
-      statusOff.style.opacity = '0.5';
+  // Reset all status indicators
+  const resetStatus = (el, active, borderColor) => {
+    if (el) {
+      el.style.border = active ? `2px solid ${borderColor}` : '2px solid transparent';
+      el.style.opacity = active ? '1' : '0.5';
     }
-    if (statusOn) {
-      statusOn.style.border = '2px solid #4caf50';
-      statusOn.style.opacity = '1';
-    }
+  };
 
-    console.log('🔋 BESS enabled - showing configuration sections');
-  } else {
-    // Hide BESS configuration sections
-    if (durationSection) durationSection.style.display = 'none';
-    if (economicsSection) economicsSection.style.display = 'none';
-    if (technicalSection) technicalSection.style.display = 'none';
+  resetStatus(statusOff, bessMode === 'off', '#ef5350');
+  resetStatus(statusLight, bessMode === 'light', '#4caf50');
+  resetStatus(statusPro, bessMode === 'pro', '#ff9800');
 
-    // Update status indicators
-    if (statusOff) {
-      statusOff.style.border = '2px solid #ef5350';
-      statusOff.style.opacity = '1';
-    }
-    if (statusOn) {
-      statusOn.style.border = '2px solid transparent';
-      statusOn.style.opacity = '0.5';
-    }
+  // Show/hide sections based on mode
+  const isEnabled = bessMode !== 'off';
+  const isPro = bessMode === 'pro';
 
-    console.log('🔋 BESS disabled - hiding configuration sections');
-  }
+  // Common BESS sections (shown for both LIGHT and PRO)
+  if (durationSection) durationSection.style.display = isEnabled && !isPro ? 'block' : 'none';  // Duration only for LIGHT
+  if (economicsSection) economicsSection.style.display = isEnabled ? 'block' : 'none';
+  if (technicalSection) technicalSection.style.display = isEnabled ? 'block' : 'none';
 
-  // Mark as unsaved
-  markUnsaved();
+  // PRO-specific section
+  if (proSection) proSection.style.display = isPro ? 'block' : 'none';
+
+  console.log(`🔋 BESS mode: ${bessMode} (enabled: ${isEnabled}, pro: ${isPro})`);
 }
 
 // Setup event listeners for auto-save and calculations
@@ -448,7 +495,10 @@ function applySettingsToUI(config) {
     // BESS economic parameters
     'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
     // BESS technical parameters
-    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear'
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear',
+    // BESS PRO parameters
+    'bessProMinPowerKw', 'bessProMaxPowerKw', 'bessProMinEnergyKwh', 'bessProMaxEnergyKwh',
+    'bessProDurationMin', 'bessProDurationMax', 'bessProTypicalDays', 'bessProExportPenalty'
   ];
 
   // Select fields
@@ -459,7 +509,9 @@ function applySettingsToUI(config) {
     // Pxx select fields
     'pxxSource', 'pvgisRadDatabase', 'pvgisPvTechChoice', 'pvgisMountingPlace',
     // BESS
-    'bessDuration'
+    'bessDuration',
+    // BESS PRO
+    'bessProSolver', 'bessProObjective', 'bessProTimeResolution'
   ];
 
   // IRR mode checkbox
@@ -468,10 +520,27 @@ function applySettingsToUI(config) {
     useInflationEl.checked = config.useInflation || config.irrMode === 'nominal' || false;
   }
 
-  // BESS enabled checkbox
+  // BESS mode (3-way: off/light/pro)
+  const bessModeEl = document.getElementById('bessMode');
+  if (bessModeEl) {
+    // Support legacy bessEnabled field for backwards compatibility
+    let mode = config.bessMode || 'off';
+    if (!config.bessMode && config.bessEnabled) {
+      mode = 'light';  // Legacy: bessEnabled=true means LIGHT mode
+    }
+    bessModeEl.value = mode;
+  }
+
+  // BESS PRO zero-export checkbox
+  const bessProZeroExportEl = document.getElementById('bessProZeroExport');
+  if (bessProZeroExportEl) {
+    bessProZeroExportEl.checked = config.bessProZeroExport !== false;  // Default true
+  }
+
+  // Legacy BESS enabled field (for backwards compat)
   const bessEnabledEl = document.getElementById('bessEnabled');
   if (bessEnabledEl) {
-    bessEnabledEl.checked = config.bessEnabled || false;
+    bessEnabledEl.value = config.bessMode !== 'off' ? 'true' : 'false';
   }
 
   // Fields that are stored as decimals but displayed as percentages in UI
@@ -672,8 +741,9 @@ function getCurrentSettings() {
     thrC: parseFloat(document.getElementById('thrC')?.value || DEFAULT_CONFIG.thrC),
     thrD: parseFloat(document.getElementById('thrD')?.value || DEFAULT_CONFIG.thrD),
 
-    // BESS - Battery Energy Storage System (LIGHT/AUTO Mode)
-    bessEnabled: document.getElementById('bessEnabled')?.checked || false,
+    // BESS - Battery Energy Storage System
+    bessMode: document.getElementById('bessMode')?.value || DEFAULT_CONFIG.bessMode,
+    bessEnabled: document.getElementById('bessMode')?.value !== 'off',  // Legacy compatibility
     bessDuration: document.getElementById('bessDuration')?.value || DEFAULT_CONFIG.bessDuration,
     // BESS Technical
     bessRoundtripEfficiency: parseFloat(document.getElementById('bessRoundtripEfficiency')?.value || DEFAULT_CONFIG.bessRoundtripEfficiency * 100) / 100,
@@ -688,6 +758,20 @@ function getCurrentSettings() {
     bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
     bessDegradationYear1: parseFloat(document.getElementById('bessDegradationYear1')?.value || DEFAULT_CONFIG.bessDegradationYear1),
     bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
+
+    // BESS PRO - Advanced LP/MIP Optimization
+    bessProMinPowerKw: parseFloat(document.getElementById('bessProMinPowerKw')?.value || DEFAULT_CONFIG.bessProMinPowerKw),
+    bessProMaxPowerKw: parseFloat(document.getElementById('bessProMaxPowerKw')?.value || DEFAULT_CONFIG.bessProMaxPowerKw),
+    bessProMinEnergyKwh: parseFloat(document.getElementById('bessProMinEnergyKwh')?.value || DEFAULT_CONFIG.bessProMinEnergyKwh),
+    bessProMaxEnergyKwh: parseFloat(document.getElementById('bessProMaxEnergyKwh')?.value || DEFAULT_CONFIG.bessProMaxEnergyKwh),
+    bessProDurationMin: parseFloat(document.getElementById('bessProDurationMin')?.value || DEFAULT_CONFIG.bessProDurationMin),
+    bessProDurationMax: parseFloat(document.getElementById('bessProDurationMax')?.value || DEFAULT_CONFIG.bessProDurationMax),
+    bessProSolver: document.getElementById('bessProSolver')?.value || DEFAULT_CONFIG.bessProSolver,
+    bessProObjective: document.getElementById('bessProObjective')?.value || DEFAULT_CONFIG.bessProObjective,
+    bessProTimeResolution: document.getElementById('bessProTimeResolution')?.value || DEFAULT_CONFIG.bessProTimeResolution,
+    bessProTypicalDays: parseInt(document.getElementById('bessProTypicalDays')?.value || DEFAULT_CONFIG.bessProTypicalDays),
+    bessProZeroExport: document.getElementById('bessProZeroExport')?.checked ?? DEFAULT_CONFIG.bessProZeroExport,
+    bessProExportPenalty: parseFloat(document.getElementById('bessProExportPenalty')?.value || DEFAULT_CONFIG.bessProExportPenalty),
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
@@ -1776,7 +1860,7 @@ function togglePxxSourceFields() {
 }
 
 // PVGIS Proxy API base URL (backend service)
-const PVGIS_PROXY_BASE = 'http://localhost:8020';
+const PVGIS_PROXY_BASE = API_URLS.pvgisProxy;
 
 // Fetch Pxx factors from PVGIS via backend proxy
 async function fetchPxxFromPVGIS() {
@@ -2305,7 +2389,7 @@ window.applyElectricityMapsToManual = applyElectricityMapsToManual;
 let resolvedGeoLocation = null;
 
 // Geo-service endpoint (direct or via nginx proxy)
-const GEO_SERVICE_URL = 'http://localhost:8021';
+const GEO_SERVICE_URL = API_URLS.geo;
 
 /**
  * Load Polish cities list for autocomplete
