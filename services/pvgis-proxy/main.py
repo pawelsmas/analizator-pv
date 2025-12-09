@@ -12,6 +12,11 @@ import httpx
 import math
 import statistics
 from datetime import datetime
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PVGIS Proxy Service",
@@ -281,14 +286,22 @@ async def pvgis_seriescalc(request: SeriesCalcRequest):
         params["aspect"] = request.aspect
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        logger.info(f"🌐 PVGIS seriescalc request: lat={request.lat}, lon={request.lon}, years={request.startyear}-{request.endyear}")
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.get(f"{PVGIS_BASE_URL}/seriescalc", params=params)
+            logger.info(f"📡 PVGIS response status: {response.status_code}")
             response.raise_for_status()
             data = response.json()
+            logger.info(f"✅ PVGIS seriescalc success for lat={request.lat}, lon={request.lon}")
+    except httpx.TimeoutException as e:
+        logger.error(f"⏱️ PVGIS timeout: {str(e)}")
+        raise HTTPException(status_code=504, detail=f"PVGIS API timeout (90s exceeded): {str(e)}")
     except httpx.HTTPStatusError as e:
+        logger.error(f"❌ PVGIS HTTP error: {e.response.status_code} - {str(e)}")
         raise HTTPException(status_code=e.response.status_code, detail=f"PVGIS API error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch from PVGIS: {str(e)}")
+        logger.error(f"❌ PVGIS fetch failed: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch from PVGIS: {type(e).__name__}: {str(e)}")
 
     # Process timeseries data
     try:
