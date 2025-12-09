@@ -1,5 +1,17 @@
 console.log('🚀 economics.js LOADED - timestamp:', new Date().toISOString());
 
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
+// Backend API URLs
+const API_URLS = USE_PROXY ? {
+  dataAnalysis: '/api/data',
+  economics: '/api/economics'
+} : {
+  dataAnalysis: 'http://localhost:8001',
+  economics: 'http://localhost:8003'
+};
+
 // Chart.js instances
 let capexChart, opexChart, cashFlowChart, revenueChart, sensitivityChart;
 let sensitivityEnergyChart, sensitivityDiscountChart;
@@ -28,25 +40,39 @@ window.economicsSettings = {
 
 // Get CAPEX per kWp based on capacity using tiered pricing
 function getCapexForCapacity(capacityKwp) {
-  // Try to get CAPEX tiers from systemSettings first, then analysisResults
-  const capexTiers = systemSettings?.capexTiers || analysisResults?.economicParams?.capexTiers;
+  // Default tiers - same as comparison.js for consistency
+  const defaultTiers = [
+    { min: 150, max: 500, capex: 4200 },
+    { min: 501, max: 1000, capex: 3800 },
+    { min: 1001, max: 2500, capex: 3500 },
+    { min: 2501, max: 5000, capex: 3200 },
+    { min: 5001, max: 10000, capex: 3000 },
+    { min: 10001, max: 15000, capex: 2850 },
+    { min: 15001, max: 50000, capex: 2700 }
+  ];
 
-  if (capexTiers && capexTiers.length > 0) {
-    for (const tier of capexTiers) {
-      if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
-        return tier.capex;
-      }
+  // Try to get CAPEX tiers from systemSettings first, then analysisResults, then defaults
+  const capexTiers = systemSettings?.capexTiers || analysisResults?.economicParams?.capexTiers || defaultTiers;
+
+  // Find matching tier
+  for (const tier of capexTiers) {
+    if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
+      return tier.capex;
     }
-    // Fallback: use last tier for very large installations
-    if (capacityKwp > 50000) {
-      return capexTiers[capexTiers.length - 1].capex;
-    }
-    // Fallback: use first tier for very small installations
+  }
+
+  // Fallback: if above max, use last tier
+  if (capacityKwp > 50000) {
+    return capexTiers[capexTiers.length - 1].capex;
+  }
+
+  // Fallback: if below min, use first tier
+  if (capacityKwp < 150) {
     return capexTiers[0].capex;
   }
 
-  // Fallback to default investment cost from input
-  return parseFloat(document.getElementById('investmentCost')?.value || 3500);
+  // Default fallback
+  return 3500;
 }
 
 // Get economic parameters from inputs or systemSettings
@@ -137,7 +163,7 @@ async function fetchBackendIRR(variant, params) {
     }
   };
 
-  const response = await fetch('http://localhost:8003/analyze', {
+  const response = await fetch(`${API_URLS.economics}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -551,7 +577,7 @@ async function loadAllData() {
     // Try to fetch from economics service first
     let economicsDataFetched = false;
     try {
-      const economicsResponse = await fetch('http://localhost:8003/');
+      const economicsResponse = await fetch(`${API_URLS.economics}/`);
       if (economicsResponse.ok) {
         const economicsInfo = await economicsResponse.json();
         // Economics service is running, could fetch data here if available
@@ -562,7 +588,7 @@ async function loadAllData() {
     }
 
     // Check if data service has data
-    const healthResponse = await fetch('http://localhost:8001/health');
+    const healthResponse = await fetch(`${API_URLS.dataAnalysis}/health`);
     if (!healthResponse.ok) {
       showNoData();
       return;
@@ -2935,10 +2961,12 @@ function exportEaaSToExcel() {
     let phase;
 
     if (year <= eaasDuration) {
-      eaasCost = adjustedSubscriptionCost + adjustedOmCost + adjustedInsuranceCost;
+      // subscriptionCost already includes O&M and insurance (calculated in calculateEaasSubscription)
+      eaasCost = adjustedSubscriptionCost;
       phase = 'EaaS';
       eaasPhaseSavings += gridCost - eaasCost;
     } else {
+      // After EaaS period - only O&M and insurance (no subscription)
       eaasCost = adjustedOmCost + adjustedInsuranceCost;
       phase = 'Własność';
       ownershipPhaseSavings += gridCost - eaasCost;

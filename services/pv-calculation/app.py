@@ -2402,6 +2402,11 @@ async def analyze(request: AnalysisRequest):
                     # SOC histogram (NEW in v3.2)
                     variant_result.bess_soc_histogram = variant_scenario.bess_soc_histogram
 
+                    # DEBUG: Check if monthly data exists
+                    monthly_count = len(variant_scenario.bess_monthly_data) if variant_scenario.bess_monthly_data else 0
+                    soc_exists = "YES" if variant_scenario.bess_soc_histogram else "NO"
+                    print(f"      📊 Monthly data: {monthly_count} months, SOC histogram: {soc_exists}")
+
                     # Compute baseline (no BESS) for comparison
                     baseline_result = simulate_pv_system(
                         capacity=variant_scenario.capacity,

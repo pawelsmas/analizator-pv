@@ -133,6 +133,14 @@ function parseKeyVariants(keyVariants) {
   if (!keyVariants || typeof keyVariants !== 'object') return;
 
   Object.entries(keyVariants).forEach(([key, s]) => {
+    // Debug: log raw BESS data from backend
+    console.log(`🔍 Variant ${key} raw BESS data:`, {
+      bess_power_kw: s.bess_power_kw,
+      bess_energy_kwh: s.bess_energy_kwh,
+      bess_monthly_data: s.bess_monthly_data?.length || 'NONE',
+      bess_soc_histogram: s.bess_soc_histogram ? 'EXISTS' : 'NONE'
+    });
+
     variants[key] = {
       key: key,
       name: `Wariant ${key}`,
@@ -290,14 +298,22 @@ function updateDisplay() {
   const variant = variants[currentVariant];
 
   if (!variant) {
+    console.log('❌ No variant found for:', currentVariant);
     showNoData();
     return;
   }
 
   // Check if BESS is enabled
   const hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  console.log('🔋 BESS check:', {
+    power: variant.bess_power_kw,
+    energy: variant.bess_energy_kwh,
+    hasBess: hasBess,
+    monthly_data_length: variant.bess_monthly_data?.length || 0
+  });
 
   if (!hasBess) {
+    console.log('⚠️ BESS disabled - showing banner');
     showBessDisabled();
     return;
   }
@@ -311,6 +327,11 @@ function updateDisplay() {
   updateMainCard(variant);
   updateEnergyMetrics(variant);
   updateEnergyFlow(variant);
+
+  // Debug: Check if monthly data exists
+  console.log('📊 BESS Monthly Data:', variant.bess_monthly_data?.length || 0, 'months');
+  console.log('📊 BESS SOC Histogram:', variant.bess_soc_histogram ? 'available' : 'NOT AVAILABLE');
+
   generateMonthlyTable(variant);  // NEW in v3.2
   updateQuarterlyCycles(variant); // NEW in v3.2
   renderSOCHistogramChart(variant); // NEW in v3.2
