@@ -404,3 +404,60 @@ body::-webkit-scrollbar {
     width: 100%;
   }
 }
+
+/* ===== METHODOLOGY NOTE ===== */
+.methodology-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  border: 1px solid #81c784;
+  border-left: 4px solid #4caf50;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  grid-column: 1 / -1;
+}
+
+.methodology-note .note-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.methodology-note .note-content {
+  font-size: 14px;
+  color: #2e7d32;
+  line-height: 1.6;
+}
+
+.methodology-note .note-content strong {
+  color: #1b5e20;
+}
+
+.methodology-note .note-content em {
+  font-style: italic;
+  color: #388e3c;
+}
+
+/* ===== CO2 BREAKDOWN SECTION ===== */
+.breakdown-section {
+  border-left: 4px solid #1976d2;
+}
+
+.breakdown-section .details-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.breakdown-section .detail-item:nth-child(odd) {
+  background: #e3f2fd;
+}
+
+.breakdown-section .detail-item:nth-child(even) {
+  background: #fff;
+}
+
+.breakdown-section .detail-item:last-child,
+.breakdown-section .detail-item:nth-last-child(2) {
+  border-top: 2px solid #1976d2;
+  font-weight: 600;
+}

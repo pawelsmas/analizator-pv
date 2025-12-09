@@ -65,12 +65,22 @@
       </div>
     </div>
 
+    <!-- Methodology Note -->
+    <div class="methodology-note">
+      <div class="note-icon">📋</div>
+      <div class="note-content">
+        <strong>Metodyka:</strong> Redukcja CO2 liczona na podstawie <em>zmniejszenia importu z sieci</em> (autokonsumpcja).
+        Tylko energia zuzyta na miejscu zastepuje import z sieci i redukuje emisje Scope 2.
+        Eksport do sieci moze unikac emisji w systemie energetycznym, ale nie jest wliczany do Scope 2 zakladu.
+      </div>
+    </div>
+
     <!-- Scope 2 Emissions Section -->
     <div class="details-section">
       <h2>📊 Emisje Scope 2 (Location-Based)</h2>
       <div class="details-grid">
         <div class="detail-item">
-          <span class="detail-label">CO2 przed instalacj PV</span>
+          <span class="detail-label">CO2 przed instalacja PV</span>
           <span class="detail-value" id="esgCo2Before">-</span>
         </div>
         <div class="detail-item">
@@ -80,6 +90,37 @@
         <div class="detail-item highlight">
           <span class="detail-label">Redukcja emisji</span>
           <span class="detail-value positive" id="esgCo2ReductionPct">-</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CO2 Breakdown Section -->
+    <div class="details-section breakdown-section">
+      <h2>🔍 Rozbicie Uniknietych Emisji</h2>
+      <div class="details-grid">
+        <div class="detail-item">
+          <span class="detail-label">Autokonsumpcja (redukcja importu)</span>
+          <span class="detail-value" id="esgSelfConsumptionKwh">-</span>
+        </div>
+        <div class="detail-item highlight">
+          <span class="detail-label">CO2 unikniete (Scope 2)</span>
+          <span class="detail-value positive" id="esgCo2SelfConsumption">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Eksport do sieci</span>
+          <span class="detail-value" id="esgGridExportKwh">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">CO2 unikniete (poza Scope 2)</span>
+          <span class="detail-value" id="esgCo2Export">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Suma - cala produkcja PV</span>
+          <span class="detail-value" id="esgTotalProductionKwh">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">CO2 unikniete (razem)</span>
+          <span class="detail-value" id="esgCo2ProductionBased">-</span>
         </div>
       </div>
     </div>

@@ -317,12 +317,19 @@ function calculateESGMetrics(params) {
     pvTechnology
   } = params;
 
-  // CO2 avoided per year (from PV production replacing grid)
-  const co2AvoidedYearKg = annualProductionKwh * efGrid;
+  // CO2 avoided per year - based on REDUCED GRID IMPORT (self-consumption)
+  // This is the correct methodology: only energy that displaces grid import counts
+  // Export to grid may avoid emissions elsewhere but doesn't reduce facility's Scope 2
+  const co2AvoidedYearKg = selfConsumptionKwh * efGrid;
   const co2AvoidedYearTon = co2AvoidedYearKg / 1000;
+
+  // Alternative calculation: total production (for reference/transparency)
+  const co2AvoidedProductionBasedKg = annualProductionKwh * efGrid;
+  const co2AvoidedProductionBasedTon = co2AvoidedProductionBasedKg / 1000;
 
   // CO2 avoided lifetime
   const co2AvoidedLifetimeTon = co2AvoidedYearTon * pvLifetime;
+  const co2AvoidedLifetimeProductionBasedTon = co2AvoidedProductionBasedTon * pvLifetime;
 
   // Embodied carbon
   const embodiedCarbonTotalKg = pvCapacityKwp * embodiedCarbonPerKwp;
@@ -346,7 +353,13 @@ function calculateESGMetrics(params) {
   const co2ReductionPct = co2BeforeTon > 0 ?
     ((co2BeforeTon - co2AfterTon) / co2BeforeTon) * 100 : 0;
 
+  // Grid export and related avoided emissions (for transparency - not counted in Scope 2)
+  const gridExportKwh = annualProductionKwh - selfConsumptionKwh;
+  const co2AvoidedExportKg = gridExportKwh * efGrid;
+  const co2AvoidedExportTon = co2AvoidedExportKg / 1000;
+
   return {
+    // Primary metrics (import-based methodology - correct for Scope 2)
     co2ReductionYear: co2AvoidedYearTon,
     co2ReductionLifetime: co2AvoidedLifetimeTon,
     shareRES: shareRES,
@@ -361,7 +374,16 @@ function calculateESGMetrics(params) {
     efGrid: efGrid,
     efSource: efSource,
     pvCapacityKwp: pvCapacityKwp,
-    pvLifetime: pvLifetime
+    pvLifetime: pvLifetime,
+    // Transparency metrics (production-based for reference)
+    co2ReductionYearProductionBased: co2AvoidedProductionBasedTon,
+    co2ReductionLifetimeProductionBased: co2AvoidedLifetimeProductionBasedTon,
+    // Grid export contribution (avoided emissions outside facility)
+    gridExportKwh: gridExportKwh,
+    co2AvoidedExport: co2AvoidedExportTon,
+    // Self-consumption details
+    selfConsumptionKwh: selfConsumptionKwh,
+    annualProductionKwh: annualProductionKwh
   };
 }
 
@@ -382,6 +404,14 @@ function updateESGUI(metrics) {
   setElementValue('esgCo2Before', formatWithUnit(metrics.co2Before, 'tCO2e/rok', 2));
   setElementValue('esgCo2After', formatWithUnit(metrics.co2After, 'tCO2e/rok', 2));
   setElementValue('esgCo2ReductionPct', `-${formatNumber(metrics.co2ReductionPct, 1)}%`);
+
+  // CO2 Breakdown (transparency section)
+  setElementValue('esgSelfConsumptionKwh', formatWithUnit((metrics.selfConsumptionKwh || 0) / 1000, 'MWh/rok', 1));
+  setElementValue('esgCo2SelfConsumption', formatWithUnit(metrics.co2ReductionYear, 'tCO2e/rok', 2));
+  setElementValue('esgGridExportKwh', formatWithUnit((metrics.gridExportKwh || 0) / 1000, 'MWh/rok', 1));
+  setElementValue('esgCo2Export', formatWithUnit(metrics.co2AvoidedExport || 0, 'tCO2e/rok', 2));
+  setElementValue('esgTotalProductionKwh', formatWithUnit((metrics.annualProductionKwh || 0) / 1000, 'MWh/rok', 1));
+  setElementValue('esgCo2ProductionBased', formatWithUnit(metrics.co2ReductionYearProductionBased || 0, 'tCO2e/rok', 2));
 
   // Embodied carbon
   setElementValue('esgPvTechnology', getTechnologyLabel(metrics.pvTechnology));
