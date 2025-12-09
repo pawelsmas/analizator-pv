@@ -1,16 +1,18 @@
-# PV Optimizer v1.9 - Architecture Documentation
+# Pagra ENERGY Studio v3.1 - Architecture Documentation
+
+**PRODUCE. STORE. PERFORM.**
 
 ## Overview
 
-PV Optimizer is a micro-frontend application for photovoltaic system analysis and optimization. The system consists of 12 frontend modules and 8 backend services running in Docker containers.
+Pagra ENERGY Studio is a micro-frontend application for photovoltaic and battery storage (BESS) analysis and optimization. The system consists of 14 frontend modules and 10 backend services running in Docker containers.
 
 ## System Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                        Frontend Shell (Port 9000)                           │
-│                    Nginx + HTML/JS + postMessage Hub                        │
-│                    Scenario Sync | Shared Data | Routing                    │
+│                        Frontend Shell (Port 80)                             │
+│              Nginx Reverse Proxy + HTML/JS + postMessage Hub                │
+│              Scenario Sync | Shared Data | Routing | USE_PROXY=true         │
 └─────────────────────────────────┬──────────────────────────────────────────┘
                                   │
      ┌────────────────────────────┼────────────────────────────┐
@@ -40,18 +42,23 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 
 ### Frontend Modules
 
-#### 1. Shell (Port 9000)
-**Technology**: Nginx + HTML/CSS/JavaScript
+#### 1. Shell (Port 80)
+**Technology**: Nginx (Reverse Proxy) + HTML/CSS/JavaScript
 **Responsibilities**:
 - Main application container with navigation tabs
-- Module routing via iframe
+- Nginx reverse proxy for all modules and APIs
+- Module routing via iframe (`/modules/{name}/`)
+- API routing (`/api/{service}/`)
 - Inter-module communication hub (postMessage API)
 - Shared data storage (sharedData object)
 - Scenario synchronization (P50/P75/P90)
 - Settings persistence (localStorage)
+- Production mode: `USE_PROXY = true`
 
 **Key Files**:
-- `shell.js` - Communication hub, message handlers
+- `shell.js` - Communication hub, message handlers, USE_PROXY flag
+- `api.js` - API wrapper functions
+- `nginx.conf` - Reverse proxy configuration
 - `index.html` - Navigation tabs, iframe container
 
 #### 2. Configuration Module (Port 9002)
@@ -103,12 +110,21 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 - Project data overview
 - Auto-save status display
 
-#### 8. Other Modules
+#### 8. BESS Module (Port 9013)
+**Responsibilities**:
+- Battery Energy Storage System analysis
+- Variant selector (A/B/C/D)
+- Degradation table (year-by-year)
+- BESS economics (CAPEX/OPEX)
+- Comparison PV vs PV+BESS
+
+#### 9. Other Modules
 - **Admin** (9001) - User management
 - **Comparison** (9005) - Variant analysis
-- **Settings** (9007) - System parameters
+- **Settings** (9007) - System parameters, BESS configuration
 - **Energy Prices** (9009) - TGE/ENTSO-E data
 - **Reports** (9010) - PDF generation
+- **Estimator** (9012) - Quick PV estimation
 
 ### Backend Services
 
@@ -136,6 +152,7 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 - PVGIS data integration
 - Multi-variant analysis
 - Scenario factor application (P50/P75/P90)
+- BESS simulation (8760h, 0-export mode)
 
 **Key Features**:
 - Kasten-Young air mass model
@@ -203,10 +220,23 @@ PV Optimizer is a micro-frontend application for photovoltaic system analysis an
 - `economics` - Economic calculations
 - `masterVariant` - Selected variant
 
-#### 7. Supporting Services
+#### 7. PVGIS Proxy Service (Port 8020)
+**Technology**: Python 3.11 + FastAPI + httpx
+**Responsibilities**:
+- Proxy to PVGIS API
+- P50/P75/P90 factor retrieval
+- Request logging and timeout handling
+
+#### 8. Geo Service (Port 8021)
+**Technology**: Python 3.11 + FastAPI
+**Responsibilities**:
+- Nominatim geocoding
+- Polish postal code database (offline)
+- Elevation data
+
+#### 9. Supporting Services
 - **Advanced Analytics** (8004) - Load duration curves, KPIs
 - **Typical Days** (8005) - Daily pattern analysis
-- **PVGIS Proxy** (8020) - PVGIS API proxy for P50/P75/P90 factors
 
 ## Data Flow
 
@@ -240,7 +270,7 @@ Production Module
       │ PRODUCTION_SCENARIO_CHANGED
       │ { scenario: 'P75', source: 'production' }
       ▼
-Shell (port 9000)
+Shell (port 80)
       │
       │ sharedData.currentScenario = 'P75'
       │ localStorage.setItem('pv_current_scenario', 'P75')
@@ -252,6 +282,7 @@ All Modules (via iframe postMessage)
       │
       │ Economics: recalculate with 0.97 factor
       │ ESG: recalculate CO2 savings
+      │ BESS: recalculate with new production
       │ Production: update statistics
       ▼
 ```
@@ -267,16 +298,19 @@ All Modules (via iframe postMessage)
 │  │                                                        │ │
 │  │  Frontend Containers        Backend Containers         │ │
 │  │  ┌──────────────────┐      ┌──────────────────┐       │ │
-│  │  │ shell      :9000 │      │ data-analysis:8001│       │ │
+│  │  │ shell      :80   │      │ data-analysis:8001│       │ │
 │  │  │ config     :9002 │      │ pv-calc      :8002│       │ │
 │  │  │ consumption:9003 │      │ economics    :8003│       │ │
 │  │  │ production :9004 │      │ adv-analytics:8004│       │ │
 │  │  │ comparison :9005 │      │ typical-days :8005│       │ │
 │  │  │ economics  :9006 │      │ energy-prices:8010│       │ │
 │  │  │ settings   :9007 │      │ reports      :8011│       │ │
-│  │  │ esg        :9008 │      └──────────────────┘       │ │
-│  │  │ prices     :9009 │                                  │ │
-│  │  │ reports    :9010 │                                  │ │
+│  │  │ esg        :9008 │      │ projects-db  :8012│       │ │
+│  │  │ prices     :9009 │      │ pvgis-proxy  :8020│       │ │
+│  │  │ reports    :9010 │      │ geo-service  :8021│       │ │
+│  │  │ projects   :9011 │      └──────────────────┘       │ │
+│  │  │ estimator  :9012 │                                  │ │
+│  │  │ bess       :9013 │                                  │ │
 │  │  └──────────────────┘                                  │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
@@ -411,4 +445,4 @@ Update timestamp in index.html after changes:
 
 ---
 
-**v1.8** - PV Optimizer by Kamil & Paweł 
+**v3.1** - Pagra ENERGY Studio

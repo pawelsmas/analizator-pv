@@ -1,4 +1,6 @@
-# PV Optimizer Pro v3.0 - Server & Deployment Documentation
+# Pagra ENERGY Studio - Server & Deployment Documentation
+
+**PRODUCE. STORE. PERFORM.**
 
 ## Informacje o Serwerze Produkcyjnym
 
@@ -79,7 +81,7 @@ fail2ban-client status sshd
 
 ```bash
 # Przejdź do katalogu projektu
-cd /opt/analizator-pv
+cd ~/analizator-pv
 
 # Status wszystkich kontenerów
 docker-compose ps
@@ -140,12 +142,14 @@ docker system prune -a --volumes
 ## Struktura projektu
 
 ```
-/opt/analizator-pv/
+~/analizator-pv/
 ├── docker-compose.yml          # Orchestracja kontenerów
 ├── services/
-│   ├── frontend-shell/         # Port 9000 - główna aplikacja
+│   ├── frontend-shell/         # Port 80 - główna aplikacja (nginx reverse proxy)
 │   │   ├── index.html
-│   │   ├── shell.js            # Hub komunikacji między modułami
+│   │   ├── shell.js            # Hub komunikacji między modułami (USE_PROXY=true)
+│   │   ├── api.js              # API wrapper
+│   │   ├── nginx.conf          # Reverse proxy configuration
 │   │   └── Dockerfile
 │   ├── frontend-config/        # Port 9002 - konfiguracja PV
 │   ├── frontend-consumption/   # Port 9003 - analiza zużycia
@@ -167,7 +171,8 @@ docker system prune -a --volumes
 │   ├── energy-prices/          # Port 8010 - pobieranie cen
 │   ├── reports-service/        # Port 8011 - generowanie raportów
 │   ├── projects-db/            # Port 8012 - baza projektów (SQLite)
-│   └── pvgis-proxy/            # Port 8020 - proxy PVGIS
+│   ├── pvgis-proxy/            # Port 8020 - proxy PVGIS
+│   └── geo-service/            # Port 8021 - geokodowanie lokalizacji
 ```
 
 ---
@@ -177,7 +182,7 @@ docker system prune -a --volumes
 ### Frontend (Nginx)
 | Serwis | Port | Opis |
 |--------|------|------|
-| Shell | 9000 | Główna aplikacja, hub komunikacji |
+| Shell | 80 | Główna aplikacja, nginx reverse proxy, hub komunikacji |
 | Admin | 9001 | Panel administracyjny |
 | Config | 9002 | Konfiguracja systemu PV |
 | Consumption | 9003 | Wizualizacja zużycia |
@@ -189,7 +194,8 @@ docker system prune -a --volumes
 | Energy Prices | 9009 | Ceny energii |
 | Reports | 9010 | Generowanie raportów |
 | Projects | 9011 | Zarządzanie projektami |
-| BESS | 9012 | Magazyny energii |
+| Estimator | 9012 | Szybka wycena |
+| BESS | 9013 | Magazyny energii |
 
 ### Backend (Python/FastAPI)
 | Serwis | Port | Technologia |
@@ -202,8 +208,8 @@ docker system prune -a --volumes
 | Energy Prices | 8010 | FastAPI |
 | Reports | 8011 | FastAPI + ReportLab |
 | Projects DB | 8012 | FastAPI + SQLite |
-| PVGIS Proxy | 8020 | FastAPI |
-| API Gateway | 80 | Nginx (reverse proxy) |
+| PVGIS Proxy | 8020 | FastAPI + httpx |
+| Geo Service | 8021 | FastAPI + Nominatim |
 
 ---
 
@@ -335,8 +341,8 @@ chore:    Inne (konfiguracja, etc.)
 
 ```bash
 # Na serwerze (przez SSH)
-cd /opt/analizator-pv
-git pull origin master
+cd ~/analizator-pv
+git pull origin main
 docker-compose up -d --build
 ```
 
@@ -346,16 +352,26 @@ docker-compose up -d --build
 
 ### Szybka aktualizacja (bez przebudowy)
 ```bash
-cd /opt/analizator-pv
-git pull origin master
+cd ~/analizator-pv
+git pull origin main
 docker-compose restart
 ```
 
 ### Pełna aktualizacja (z przebudową)
 ```bash
-cd /opt/analizator-pv
-git pull origin master
+cd ~/analizator-pv
+git pull origin main
 docker-compose down
+docker-compose up -d --build
+```
+
+### Problemy z docker-compose na Hetzner (ContainerConfig)
+Jeśli występują błędy 'ContainerConfig', wykonaj pełne czyszczenie:
+```bash
+cd ~/analizator-pv
+docker-compose down --remove-orphans
+docker rm -f $(docker ps -aq)
+docker system prune -af
 docker-compose up -d --build
 ```
 
@@ -482,7 +498,9 @@ done
 
 | Plik | Ścieżka | Opis |
 |------|---------|------|
-| Docker Compose | `/opt/analizator-pv/docker-compose.yml` | Definicja wszystkich kontenerów |
+| Docker Compose | `~/analizator-pv/docker-compose.yml` | Definicja wszystkich kontenerów |
+| Nginx Config | `~/analizator-pv/services/frontend-shell/nginx.conf` | Reverse proxy, routing modułów i API |
+| Shell JS | `~/analizator-pv/services/frontend-shell/shell.js` | USE_PROXY=true dla produkcji |
 | SSH Config | `/etc/ssh/sshd_config` | Konfiguracja SSH (port 2222) |
 | UFW Rules | `/etc/ufw/` | Reguły firewall |
 | Docker Daemon | `/etc/docker/daemon.json` | Konfiguracja Dockera |
@@ -498,10 +516,40 @@ done
 
 ---
 
+## Nginx Reverse Proxy - Routing
+
+Shell nginx obsługuje routing wszystkich modułów i API:
+
+### Frontend Modules
+```nginx
+location /modules/config/     → http://pv-frontend-config/
+location /modules/consumption/ → http://pv-frontend-consumption/
+location /modules/production/  → http://pv-frontend-production/
+location /modules/bess/        → http://pv-frontend-bess/
+location /modules/economics/   → http://pv-frontend-economics/
+# ... itd.
+```
+
+### Backend API
+```nginx
+location /api/data/           → http://pv-data-analysis:8001/
+location /api/pv/             → http://pv-calculation:8002/
+location /api/economics/      → http://pv-economics:8003/
+location /api/energy-prices/  → http://pv-energy-prices:8010/
+location /api/reports/        → http://pv-reports:8011/
+location /api/projects/       → http://pv-projects-db:8012/projects/
+location = /api/projects/health → http://pv-projects-db:8012/health
+location /api/pvgis/          → http://pv-pvgis-proxy:8020/pvgis/
+location /api/geo/            → http://pv-geo-service:8021/geo/
+```
+
+---
+
 ## Historia wersji
 
 | Wersja | Data | Zmiany |
 |--------|------|--------|
+| v3.1 | 2024-12 | Pagra ENERGY Studio branding, nginx routing fixes |
 | v3.0 | 2024-12 | Deploy na Hetzner, Tailscale VPN |
 | v2.4 | 2024-12 | Moduł BESS (magazyny energii) |
 | v2.3 | 2024-12 | BESS Light/Auto Mode |
@@ -511,3 +559,4 @@ done
 ---
 
 **Dokumentacja utworzona**: 2024-12-08
+**Ostatnia aktualizacja**: 2024-12-09

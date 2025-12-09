@@ -1,4 +1,6 @@
-# Quick Start Guide - PV Optimizer
+# Quick Start Guide - Pagra ENERGY Studio
+
+**PRODUCE. STORE. PERFORM.**
 
 ## 🚀 5-Minute Setup
 
@@ -79,11 +81,14 @@ Click **"RUN ANALYSIS"** button
 
 ### 6. View Results
 Navigate through tabs:
+- 📁 **Projects**: Save/load projects
 - ⚙️ **Configuration**: Main results and variant table
 - 📊 **Consumption Analysis**: Load patterns and statistics
-- ☀️ **PV Production**: Generation profiles
+- ☀️ **PV Production**: Generation profiles (P50/P75/P90)
+- 🔋 **BESS**: Battery storage analysis
 - ⚡ **Comparison**: Variant comparison
-- 💰 **Economics**: Financial analysis
+- 💰 **Economics**: Financial analysis (PV + BESS)
+- 🌱 **ESG**: Environmental indicators
 
 ### 7. Export Results
 Click **"EXPORT TO EXCEL"** to download results
@@ -139,6 +144,12 @@ curl http://localhost:8002/health
 
 # Economics Service
 curl http://localhost:8003/health
+
+# Projects DB
+curl http://localhost:8012/health
+
+# PVGIS Proxy
+curl http://localhost:8020/health
 ```
 
 Expected response:
@@ -267,3 +278,7 @@ docker-compose config > docker-compose.backup.yml
 ---
 
 **Ready to optimize!** 🎉
+
+---
+
+**Pagra ENERGY Studio** - PRODUCE. STORE. PERFORM.

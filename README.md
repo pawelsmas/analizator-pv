@@ -1,6 +1,8 @@
-# PV Optimizer Pro - Microservices Edition
+# Pagra ENERGY Studio
 
-**Wersja 1.9** - Zaawansowane narzedzie do optymalizacji systemow fotowoltaicznych z architektura mikroserwisow.
+**PRODUCE. STORE. PERFORM.**
+
+**Wersja 3.1** - Zaawansowane narzedzie do optymalizacji systemow fotowoltaicznych i magazynow energii (BESS) z architektura mikroserwisow.
 
 ## 🏗️ Architektura
 
@@ -10,35 +12,45 @@ Aplikacja zbudowana jest w architekturze micro-frontend z modularnym backendem:
 | Serwis | Port | Opis |
 |--------|------|------|
 | **data-analysis** | 8001 | Przetwarzanie i analiza danych zuzycia |
-| **pv-calculation** | 8002 | Symulacje produkcji PV (pvlib) |
-| **economics** | 8003 | Analizy ekonomiczne i modelowanie finansowe |
+| **pv-calculation** | 8002 | Symulacje produkcji PV (pvlib), symulacja BESS |
+| **economics** | 8003 | Analizy ekonomiczne i modelowanie finansowe (PV + BESS) |
 | **advanced-analytics** | 8004 | Zaawansowana analityka |
 | **typical-days** | 8005 | Analiza dni typowych |
 | **energy-prices** | 8010 | Pobieranie cen energii (TGE/ENTSO-E) |
 | **reports** | 8011 | Generowanie raportow PDF |
+| **projects-db** | 8012 | Baza danych projektow (SQLite) |
+| **pvgis-proxy** | 8020 | Proxy do PVGIS API |
 | **geo-service** | 8021 | Geokodowanie lokalizacji (Nominatim) |
-| **projects-db** | 8022 | Baza danych projektow |
 
 ### Frontend Modules (HTML/JS/Nginx)
 | Modul | Port | Opis |
 |-------|------|------|
-| **Shell** | 80 (9000) | Glowna powloka aplikacji, routing |
+| **Shell** | 80 | Glowna powloka, nginx reverse proxy, routing |
 | **Admin** | 9001 | Panel administracyjny |
 | **Config** | 9002 | Konfiguracja instalacji PV |
 | **Consumption** | 9003 | Analiza danych zuzycia energii |
 | **Production** | 9004 | Produkcja PV z scenariuszami P50/P75/P90 |
 | **Comparison** | 9005 | Porownanie wariantow |
 | **Economics** | 9006 | Analiza ekonomiczna EaaS/Wlasnosc |
-| **Settings** | 9007 | Ustawienia systemowe |
+| **Settings** | 9007 | Ustawienia systemowe (+ konfiguracja BESS) |
 | **ESG** | 9008 | Wskazniki srodowiskowe (CO2, drzewa) |
 | **Energy Prices** | 9009 | Ceny energii elektrycznej |
 | **Reports** | 9010 | Generowanie raportow PDF |
 | **Projects** | 9011 | Zarzadzanie projektami |
 | **Estimator** | 9012 | Szybka wycena PV |
+| **BESS** | 9013 | Magazyny energii (Battery Energy Storage) |
 
 ## 🌟 Glowne Funkcjonalnosci
 
-### Szybka Wycena (Estimator) - NOWE!
+### Magazyny Energii (BESS) - NOWE w v2.4+
+- Tryby: OFF / LIGHT (0-export)
+- Automatyczne dobor mocy i pojemnosci
+- Symulacja 8760 godzin rocznie
+- Analiza degradacji baterii (rok 1: 3%, lata 2+: 2%/rok)
+- Ekonomika BESS (CAPEX, OPEX, wymiana po 15 latach)
+- Porownanie scenariuszy PV vs PV+BESS
+
+### Szybka Wycena (Estimator)
 - Szybkie oszacowanie mocy i kosztow instalacji PV
 - Presety mocy: 50kWp, 100kWp, 200kWp, 500kWp, 1MWp
 - Wybor typu instalacji (grunt/dach/carport)
@@ -103,15 +115,17 @@ docker-compose up -d
 
 ### 2. Dostep do aplikacji
 
-- **Glowna aplikacja**: http://localhost (lub http://localhost:80)
+- **Glowna aplikacja**: http://localhost
+- **Produkcja (Hetzner via VPN)**: http://100.79.226.117
 - **API Documentation**:
   - Data Analysis: http://localhost:8001/docs
   - PV Calculation: http://localhost:8002/docs
   - Economics: http://localhost:8003/docs
   - Energy Prices: http://localhost:8010/docs
   - Reports: http://localhost:8011/docs
+  - Projects DB: http://localhost:8012/docs
+  - PVGIS Proxy: http://localhost:8020/docs
   - Geo Service: http://localhost:8021/docs
-  - Projects DB: http://localhost:8022/docs
 
 ## 📁 Struktura Projektu
 
@@ -139,7 +153,10 @@ ANALIZATOR PV/
 │   ├── frontend-energy-prices/ # Ceny energii UI
 │   ├── frontend-reports/       # Raporty UI
 │   ├── frontend-projects/      # Zarzadzanie projektami
-│   └── frontend-estimator/     # Szybka wycena
+│   ├── frontend-estimator/     # Szybka wycena
+│   ├── frontend-bess/          # Magazyny energii (BESS)
+│   ├── pvgis-proxy/            # Proxy PVGIS API
+│   └── projects-db/            # Baza projektow SQLite
 ├── docker-compose.yml
 └── README.md
 ```
@@ -190,8 +207,9 @@ curl http://localhost:8002/health  # PV Calculation (+ pvlib version)
 curl http://localhost:8003/health  # Economics
 curl http://localhost:8010/health  # Energy Prices
 curl http://localhost:8011/health  # Reports
+curl http://localhost:8012/health  # Projects DB
+curl http://localhost:8020/health  # PVGIS Proxy
 curl http://localhost:8021/health  # Geo Service
-curl http://localhost:8022/health  # Projects DB
 ```
 
 ## 📊 Komunikacja Miedzymodulowa
@@ -208,6 +226,8 @@ Moduly frontendowe komunikuja sie przez Shell za pomoca postMessage API:
 | `ECONOMICS_CALCULATED` | Obliczenia ekonomiczne gotowe |
 | `PROJECT_LOADED` | Projekt zaladowany |
 | `PROJECT_SAVED` | Projekt zapisany |
+| `VARIANT_CHANGED` | Zmiana wariantu (A/B/C/D) |
+| `BESS_DATA_UPDATED` | Dane BESS zaktualizowane |
 
 ## 🛠️ Rozwiazywanie Problemow
 
@@ -233,33 +253,32 @@ Dla polskich lokalizacji dziala offline dzieki wbudowanej bazie kodow pocztowych
 
 ## 📝 Historia Wersji
 
-### v1.9 (Aktualna)
+### v3.1 (Aktualna)
+- **Pagra ENERGY Studio** - nowy branding i logo
+- **Nginx Reverse Proxy** - ujednolicony routing modulow i API
+- **USE_PROXY mode** - produkcja przez nginx proxy
+- Naprawy routingu (BESS, Projects health, X-Frame-Options)
+- Deploy na Hetzner z Tailscale VPN
+
+### v2.4
+- **Modul BESS** - magazyny energii (Battery Energy Storage)
+- Symulacja 8760h z logika 0-export
+- Degradacja baterii (3% rok 1, 2%/rok potem)
+- Ekonomika BESS (CAPEX/OPEX/wymiana)
+
+### v2.3
+- BESS Light/Auto Mode
+- Automatyczny dobor pojemnosci BESS
+
+### v1.9
 - **System Projektow** - zarzadzanie projektami z geolokalizacja
 - **Szybka Wycena (Estimator)** - szybka kalkulacja PV
 - **Geo Service** - geokodowanie z baza polskich lokalizacji
-- Presety mocy w Estimatorze (50kWp - 1MWp)
-- Naprawy ESG i synchronizacji danych
 
 ### v1.8
 - Selektor scenariuszy P50/P75/P90 w module Produkcja PV
 - Modul ESG ze wskaznikami srodowiskowymi
-- Dynamiczne obliczenia autokonsumpcji z danych godzinowych
 - Synchronizacja scenariuszy miedzy modulami
-- Naprawy formatowania liczb (format europejski)
-
-### v1.7
-- Zarzadzanie DC/AC Ratio
-- Naprawy modulu Ekonomia
-
-### v1.6
-- Integracja PVGIS dla scenariuszy P50/P75/P90
-
-### v1.5
-- Globalny selektor scenariuszy
-
-### v1.4
-- Modul Raportow PDF
-- Integracja Economics z Reports
 
 ## 🔐 Bezpieczenstwo
 
@@ -270,8 +289,8 @@ Dla polskich lokalizacji dziala offline dzieki wbudowanej bazie kodow pocztowych
 
 ## 👥 Autorzy
 
-PV Optimizer Development Team ;)
+Pagra ENERGY Development Team
 
 ---
 
-**v1.9** - PV Optimizer Pro Microservices Edition
+**v3.1** - Pagra ENERGY Studio

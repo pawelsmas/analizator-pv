@@ -1,14 +1,39 @@
-# PV Optimizer v1.9 - Implementation Summary
+# Pagra ENERGY Studio v3.1 - Implementation Summary
+
+**PRODUCE. STORE. PERFORM.**
 
 ## Overview
 
-Professional PV analysis system with micro-frontend architecture, advanced physics-based modeling, and comprehensive economic analysis.
+Professional PV and BESS analysis system with micro-frontend architecture, advanced physics-based modeling, and comprehensive economic analysis.
 
-## Version 1.9 New Features
+## Version 3.1 New Features
+
+### 1. Pagra ENERGY Studio Branding
+- New logo and tagline "PRODUCE. STORE. PERFORM."
+- Updated UI with Pagra branding
+
+### 2. Nginx Reverse Proxy
+- All modules accessible via `/modules/{name}/`
+- All APIs accessible via `/api/{service}/`
+- `USE_PROXY = true` in shell.js for production
+- Hetzner deployment with Tailscale VPN
+
+### 3. BESS Module (v2.4)
+**Module**: `frontend-bess` (Port 9013)
+**Features**:
+- Battery Energy Storage System analysis
+- 0-export mode simulation
+- Degradation tracking (3% year 1, 2%/year after)
+- CAPEX/OPEX economics
+- Comparison PV vs PV+BESS
+
+---
+
+## Version 1.9 Features
 
 ### 1. Project Management System
 
-**Modules**: `frontend-projects` (Port 9011), `projects-db` (Port 8022)
+**Modules**: `frontend-projects` (Port 9011), `projects-db` (Port 8012)
 
 **Features**:
 - Create, save, load, and delete PV projects
@@ -84,39 +109,41 @@ function formatNumberEU(value, decimals = 2) {
 // Result: "1 234,56" instead of "1,234.56"
 ```
 
-## Architecture (v1.9)
+## Architecture (v3.1)
 
-### Frontend Modules (13 containers)
+### Frontend Modules (14 containers)
 
 | Module | Port | Key Features |
 |--------|------|--------------|
-| Shell | 80 | Routing, scenario sync, shared data |
+| Shell | 80 | Nginx proxy, routing, scenario sync, shared data |
 | Admin | 9001 | User management |
 | Config | 9002 | Data upload, PVGIS integration |
 | Consumption | 9003 | Charts, heatmaps |
 | Production | 9004 | P50/P75/P90 scenarios |
 | Comparison | 9005 | Variant analysis |
-| Economics | 9006 | EaaS/Ownership models |
-| Settings | 9007 | System parameters |
+| Economics | 9006 | EaaS/Ownership models, BESS economics |
+| Settings | 9007 | System parameters, BESS config |
 | ESG | 9008 | Environmental indicators |
 | Energy Prices | 9009 | TGE/ENTSO-E data |
 | Reports | 9010 | PDF generation |
-| **Projects** | 9011 | **Project management** |
-| **Estimator** | 9012 | **Quick estimation** |
+| Projects | 9011 | Project management |
+| Estimator | 9012 | Quick estimation |
+| **BESS** | 9013 | **Battery storage analysis** |
 
-### Backend Services (9 containers)
+### Backend Services (10 containers)
 
 | Service | Port | Technology |
 |---------|------|------------|
 | data-analysis | 8001 | Python/FastAPI, Pandas |
-| pv-calculation | 8002 | Python/FastAPI, pvlib |
+| pv-calculation | 8002 | Python/FastAPI, pvlib, BESS simulation |
 | economics | 8003 | Python/FastAPI, NumPy |
 | advanced-analytics | 8004 | Python/FastAPI |
 | typical-days | 8005 | Python/FastAPI |
 | energy-prices | 8010 | Python/FastAPI |
 | reports | 8011 | Python/FastAPI, ReportLab |
-| **geo-service** | 8021 | **Python/FastAPI, Nominatim** |
-| **projects-db** | 8022 | **Python/FastAPI, SQLite** |
+| projects-db | 8012 | Python/FastAPI, SQLite |
+| pvgis-proxy | 8020 | Python/FastAPI, httpx |
+| geo-service | 8021 | Python/FastAPI, Nominatim |
 
 ## Key Technical Improvements
 
@@ -235,17 +262,18 @@ docker-compose up -d frontend-estimator
 
 | Version | Features |
 |---------|----------|
-| **v1.9** | **Projects, Estimator, Geo Service** |
+| **v3.1** | **Pagra ENERGY Studio, nginx proxy, Hetzner deploy** |
+| v2.4 | BESS module, battery storage analysis |
+| v1.9 | Projects, Estimator, Geo Service |
 | v1.8 | P50/P75/P90 scenarios, ESG module, EU formatting |
 | v1.7 | DC/AC Ratio management, Economics fixes |
-| v1.6 | PVGIS integration for scenarios |
-| v1.5 | Global scenario selector |
-| v1.4 | PDF Reports, Energy Prices |
 
 ## Summary
 
-- 13 frontend micro-services
-- 9 backend micro-services
+- 14 frontend micro-services
+- 10 backend micro-services
+- BESS (Battery Energy Storage) module
+- Nginx reverse proxy for production
 - Project management with geolocation
 - Quick Estimator
 - Offline Polish postal code database
@@ -254,8 +282,8 @@ docker-compose up -d frontend-estimator
 - ESG environmental indicators
 - European number formatting
 - Inter-module synchronization
-- Professional-grade PV analysis
+- Professional-grade PV + BESS analysis
 
 ---
 
-**v1.9** - PV Optimizer Implementation Summary
+**v3.1** - Pagra ENERGY Studio Implementation Summary

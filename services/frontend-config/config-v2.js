@@ -1,7 +1,14 @@
 // Configuration Module - Data Upload & Analysis Setup
 
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
 // Backend API URLs
-const API = {
+const API = USE_PROXY ? {
+  dataAnalysis: '/api/data',
+  pvCalculation: '/api/pv',
+  economics: '/api/economics'
+} : {
   dataAnalysis: 'http://localhost:8001',
   pvCalculation: 'http://localhost:8002',
   economics: 'http://localhost:8003'

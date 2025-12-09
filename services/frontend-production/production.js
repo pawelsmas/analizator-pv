@@ -1,5 +1,17 @@
 console.log('🚀 production.js v16 LOADED - Fixed: use actualProduction from hourly data - timestamp:', new Date().toISOString());
 
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
+// Backend API URLs
+const API_URLS = USE_PROXY ? {
+  dataAnalysis: '/api/data',
+  pvCalculation: '/api/pv'
+} : {
+  dataAnalysis: 'http://localhost:8001',
+  pvCalculation: 'http://localhost:8002'
+};
+
 // Chart.js instances
 let dailyProductionChart, monthlyProductionChart, energyBalanceChart, hourlyProfileChart, daylightProfileChart;
 
@@ -386,7 +398,7 @@ async function loadAllData() {
 
   // Fallback: try to load from backend
   try {
-    const healthResponse = await fetch('http://localhost:8001/health');
+    const healthResponse = await fetch(`${API_URLS.dataAnalysis}/health`);
     if (!healthResponse.ok) {
       showNoData();
       return;
@@ -399,7 +411,7 @@ async function loadAllData() {
     }
 
     // Backend has data, fetch hourly data
-    const dataResponse = await fetch('http://localhost:8001/hourly-data');
+    const dataResponse = await fetch(`${API_URLS.dataAnalysis}/hourly-data`);
     if (!dataResponse.ok) {
       showNoData();
       return;
@@ -424,7 +436,7 @@ async function loadAllData() {
     // If no analysis results, try to get from analyzer
     if (!analysisResults) {
       try {
-        const analyzeResponse = await fetch('http://localhost:8002/analyze', {
+        const analyzeResponse = await fetch(`${API_URLS.pvCalculation}/analyze`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})

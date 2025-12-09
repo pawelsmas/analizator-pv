@@ -1,3 +1,13 @@
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
+// Backend API URLs
+const API_URLS = USE_PROXY ? {
+  dataAnalysis: '/api/data'
+} : {
+  dataAnalysis: 'http://localhost:8001'
+};
+
 // Chart.js instances
 let dailyChart, weeklyChart, monthlyChart, loadDurationChart, seasonalityChart;
 
@@ -44,7 +54,7 @@ async function loadConsumptionData() {
 
   // Fallback: try to load from backend
   try {
-    const healthResponse = await fetch('http://localhost:8001/health');
+    const healthResponse = await fetch(`${API_URLS.dataAnalysis}/health`);
     if (!healthResponse.ok) {
       showNoData();
       return;
@@ -57,7 +67,7 @@ async function loadConsumptionData() {
     }
 
     // Backend has data, fetch it
-    const dataResponse = await fetch('http://localhost:8001/hourly-data');
+    const dataResponse = await fetch(`${API_URLS.dataAnalysis}/hourly-data`);
     if (!dataResponse.ok) {
       showNoData();
       return;
@@ -66,7 +76,7 @@ async function loadConsumptionData() {
     const hourlyData = await dataResponse.json();
 
     // Get statistics for metadata
-    const statsResponse = await fetch('http://localhost:8001/statistics');
+    const statsResponse = await fetch(`${API_URLS.dataAnalysis}/statistics`);
     const stats = statsResponse.ok ? await statsResponse.json() : {};
 
     consumptionData = {
@@ -110,7 +120,7 @@ async function performAnalysis() {
 
   try {
     // Fetch statistics from backend (all calculations done server-side)
-    const statsResponse = await fetch('http://localhost:8001/statistics');
+    const statsResponse = await fetch(`${API_URLS.dataAnalysis}/statistics`);
     if (!statsResponse.ok) {
       throw new Error('Failed to fetch statistics');
     }
@@ -583,7 +593,7 @@ function clearAnalysis() {
 // Load seasonality analysis from backend
 async function loadSeasonalityAnalysis() {
   try {
-    const response = await fetch('http://localhost:8001/seasonality');
+    const response = await fetch(`${API_URLS.dataAnalysis}/seasonality`);
     if (!response.ok) {
       document.getElementById('seasonalitySection').style.display = 'none';
       return;

@@ -1,14 +1,16 @@
-# PV Optimizer v2.4 - Micro-Frontend Architecture
+# Pagra ENERGY Studio v3.1 - Micro-Frontend Architecture
+
+**PRODUCE. STORE. PERFORM.**
 
 ## Architektura
 
-System zbudowany jest w architekturze **micro-frontend** z **14 niezaleznymi kontenerami frontend** + **9 kontenerami backend**:
+System zbudowany jest w architekturze **micro-frontend** z **14 niezaleznymi kontenerami frontend** + **10 kontenerami backend**:
 
 ### Frontend Modules (Micro-Frontends)
 
 | Module | Port | Responsibility | Container Name |
 |--------|------|----------------|----------------|
-| **Shell** | 80 | Main application shell, routing, navigation, inter-module communication | `pv-frontend-shell` |
+| **Shell** | 80 | Main application shell, nginx reverse proxy, routing, inter-module communication | `pv-frontend-shell` |
 | **Admin** | 9001 | System administration, user management | `pv-frontend-admin` |
 | **Configuration** | 9002 | Data upload, PV configuration, PVGIS integration | `pv-frontend-config` |
 | **Consumption** | 9003 | Consumption analysis, charts, heatmaps | `pv-frontend-consumption` |
@@ -21,7 +23,7 @@ System zbudowany jest w architekturze **micro-frontend** z **14 niezaleznymi kon
 | **Reports** | 9010 | PDF report generation | `pv-frontend-reports` |
 | **Projects** | 9011 | Project management, save/load | `pv-frontend-projects` |
 | **Estimator** | 9012 | Quick PV estimation calculator | `pv-frontend-estimator` |
-| **BESS** | 9013 | Battery Energy Storage System module (NEW v2.4) | `pv-frontend-bess` |
+| **BESS** | 9013 | Battery Energy Storage System module | `pv-frontend-bess` |
 
 ### Backend Services
 
@@ -34,8 +36,9 @@ System zbudowany jest w architekturze **micro-frontend** z **14 niezaleznymi kon
 | typical-days | 8005 | Typical day patterns, seasonal analysis |
 | energy-prices | 8010 | TGE/ENTSO-E price fetching |
 | reports | 8011 | PDF generation with ReportLab |
-| **geo-service** | 8021 | **Geolocation (Nominatim + Polish DB)** |
-| **projects-db** | 8022 | **Project persistence (SQLite)** |
+| projects-db | 8012 | Project persistence (SQLite) |
+| pvgis-proxy | 8020 | PVGIS API proxy with logging |
+| geo-service | 8021 | Geolocation (Nominatim + Polish DB) |
 
 ## Communication Pattern
 
@@ -65,12 +68,21 @@ Other modules request data via `REQUEST_SHARED_DATA` when they load.
          ├───► ESG Module (9008) ────────┤
          ├───► Energy Prices (9009) ─────┤
          ├───► Reports Module (9010) ────┤
-         ├───► Projects Module (9011) ───┤ ──► projects-db (8022)
+         ├───► Projects Module (9011) ───┤ ──► projects-db (8012)
          ├───► Estimator Module (9012) ──┤ ──► geo-service (8021)
-         └───► BESS Module (9013) ───────┘ ◄── NEW in v2.4
+         └───► BESS Module (9013) ───────┘ ──► pv-calculation (8002)
 ```
 
-## BESS (Battery Energy Storage System) - NEW in v2.4
+## Nginx Reverse Proxy (Production Mode)
+
+W trybie produkcyjnym (`USE_PROXY = true` w shell.js), wszystkie requesty idą przez nginx:
+
+```
+Frontend Modules:  /modules/{name}/  → http://pv-frontend-{name}/
+Backend APIs:      /api/{service}/   → http://pv-{service}:{port}/
+```
+
+## BESS (Battery Energy Storage System)
 
 ### BESS Modes
 
@@ -648,4 +660,4 @@ curl http://localhost:8022/projects
 
 ---
 
-**Version 2.4** - PV Optimizer Micro-Frontend Architecture with BESS Module
+**Version 3.1** - Pagra ENERGY Studio Micro-Frontend Architecture

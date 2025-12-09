@@ -1,6 +1,18 @@
 console.log('🚀 economics.js LOADED v=FINAL - timestamp:', new Date().toISOString());
 console.log('💡💡💡 NOWA WERSJA: v=20241204-FINAL - Obsługa CAPEX per typ instalacji 💡💡💡');
 
+// Production mode - use nginx reverse proxy routes
+const USE_PROXY = true;
+
+// Backend API URLs
+const API_URLS = USE_PROXY ? {
+  dataAnalysis: '/api/data',
+  economics: '/api/economics'
+} : {
+  dataAnalysis: 'http://localhost:8001',
+  economics: 'http://localhost:8003'
+};
+
 // ============================================
 // NUMBER FORMATTING - European format (global)
 // ============================================
@@ -1021,7 +1033,7 @@ async function fetchBackendIRR(variant, params) {
     parameters: parametersData
   };
 
-  const response = await fetch('http://localhost:8003/analyze', {
+  const response = await fetch(`${API_URLS.economics}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -1050,7 +1062,7 @@ async function fetchEaasMonthlyLog(variant, settings, params) {
     currency: settings?.eaasCurrency ?? 'PLN'
   };
 
-  const response = await fetch('http://localhost:8003/eaas-monthly', {
+  const response = await fetch(`${API_URLS.economics}/eaas-monthly`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -2017,7 +2029,7 @@ async function loadAllData() {
     // Try to fetch from economics service first
     let economicsDataFetched = false;
     try {
-      const economicsResponse = await fetch('http://localhost:8003/');
+      const economicsResponse = await fetch(`${API_URLS.economics}/`);
       if (economicsResponse.ok) {
         const economicsInfo = await economicsResponse.json();
         // Economics service is running, could fetch data here if available
@@ -2028,7 +2040,7 @@ async function loadAllData() {
     }
 
     // Check if data service has data
-    const healthResponse = await fetch('http://localhost:8001/health');
+    const healthResponse = await fetch(`${API_URLS.dataAnalysis}/health`);
     if (!healthResponse.ok) {
       showNoData();
       return;
