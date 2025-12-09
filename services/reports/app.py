@@ -829,7 +829,7 @@ def generate_report_html(data: ReportData) -> str:
     # Footer
     html += f"""
         <div class="footer">
-            <p>Raport wygenerowany: {report_date} | PV Optimizer Pro</p>
+            <p>Raport wygenerowany: {report_date} | Pagra ENERGY Studio</p>
         </div>
     </div>
 </body>

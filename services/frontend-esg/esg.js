@@ -593,7 +593,7 @@ function exportESGReport() {
 
   // Create CSV content
   const csvContent = [
-    'Raport ESG - PV Optimizer Pro',
+    'Raport ESG - Pagra ENERGY Studio',
     `Data: ${new Date().toLocaleDateString('pl-PL')}`,
     '',
     'KLUCZOWE WSKAZNIKI ESG',
