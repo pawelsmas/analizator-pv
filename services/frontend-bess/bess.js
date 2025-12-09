@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.2.1 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.2.2 - timestamp:', new Date().toISOString());
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -315,6 +315,7 @@ function updateDisplay() {
   updateQuarterlyCycles(variant); // NEW in v3.2
   renderSOCHistogramChart(variant); // NEW in v3.2
   renderCurtailmentChart(variant);  // NEW in v3.2
+  updateDeltaEconomics(variant);    // NEW in v3.2
   updateComparison(variant);
   updateEconomics(variant);
   updateTechnicalParams(variant);
@@ -682,6 +683,57 @@ function renderCurtailmentChart(variant) {
       }
     }
   });
+}
+
+// ============================================
+// DELTA ECONOMICS (NEW in v3.2)
+// ============================================
+
+function updateDeltaEconomics(variant) {
+  const settings = systemSettings || {};
+  const powerKw = variant.bess_power_kw || 0;
+  const energyKwh = variant.bess_energy_kwh || 0;
+
+  // BESS CAPEX
+  const capexPerKwh = settings.bessCapexPerKwh || 1500;
+  const capexPerKw = settings.bessCapexPerKw || 300;
+  const bessCapex = energyKwh * capexPerKwh + powerKw * capexPerKw;
+
+  // Additional self-consumption from BESS (energy from battery)
+  const bessDischargedMWh = (variant.bess_discharged_kwh || 0) / 1000;
+  const deltaSelfConsumedMWh = bessDischargedMWh; // This is energy delivered by BESS
+
+  // Energy price (from settings or default)
+  const energyPrice = settings.energyPrice || settings.purchasePrice || 550; // PLN/MWh
+
+  // Annual savings from BESS = energy from battery * energy price
+  // This represents money saved by not buying from grid
+  const deltaSavingsAnnual = deltaSelfConsumedMWh * energyPrice; // PLN/year
+  const deltaSavingsAnnualK = deltaSavingsAnnual / 1000; // tys. PLN/year
+
+  // Simple payback = CAPEX / annual savings
+  const simplePayback = deltaSavingsAnnual > 0 ? bessCapex / deltaSavingsAnnual : Infinity;
+
+  // ROI = (annual savings / CAPEX) * 100%
+  const roi = bessCapex > 0 ? (deltaSavingsAnnual / bessCapex) * 100 : 0;
+
+  // Update UI
+  document.getElementById('deltaSelfConsumed').textContent = formatNumberEU(deltaSelfConsumedMWh, 1);
+  document.getElementById('deltaSelfConsumedInfo').textContent = `${formatNumberEU(variant.bess_discharged_kwh || 0, 0)} kWh/rok`;
+
+  document.getElementById('deltaSavings').textContent = formatNumberEU(deltaSavingsAnnualK, 1);
+  document.getElementById('deltaSavingsInfo').textContent = `przy ${formatNumberEU(energyPrice, 0)} PLN/MWh`;
+
+  if (simplePayback === Infinity || simplePayback > 50) {
+    document.getElementById('deltaPayback').textContent = '>50';
+    document.getElementById('deltaPaybackInfo').textContent = 'nieopłacalny';
+  } else {
+    document.getElementById('deltaPayback').textContent = formatNumberEU(simplePayback, 1);
+    document.getElementById('deltaPaybackInfo').textContent = `CAPEX ${formatNumberEU(bessCapex / 1000, 0)} tys. PLN`;
+  }
+
+  document.getElementById('deltaROI').textContent = formatNumberEU(roi, 1);
+  document.getElementById('deltaROIInfo').textContent = roi > 0 ? `${formatNumberEU(100 / roi, 1)} lat zwrotu` : '-';
 }
 
 function updateComparison(variant) {

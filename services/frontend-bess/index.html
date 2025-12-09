@@ -274,6 +274,52 @@
       </div>
     </div>
 
+    <!-- NEW in v3.2: Delta PV vs PV+BESS Economics -->
+    <div class="stats-section full-width delta-section">
+      <h2>Δ Delta: PV+BESS vs Tylko PV</h2>
+      <div class="chart-info">
+        Analiza dodatkowej opłacalności BESS w porównaniu do instalacji tylko PV
+      </div>
+      <div class="stats-cards">
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">📈</div>
+          <div class="stat-content">
+            <div class="stat-label">Dodatkowe zużycie własne</div>
+            <div class="stat-value" id="deltaSelfConsumed">0</div>
+            <div class="stat-unit">MWh/rok</div>
+            <div class="stat-detail" id="deltaSelfConsumedInfo">z baterii (nie z sieci)</div>
+          </div>
+        </div>
+        <div class="stat-card bess-green">
+          <div class="stat-icon">💵</div>
+          <div class="stat-content">
+            <div class="stat-label">Δ Oszczędności rocznie</div>
+            <div class="stat-value" id="deltaSavings">0</div>
+            <div class="stat-unit">tys. PLN/rok</div>
+            <div class="stat-detail" id="deltaSavingsInfo">mniej zakupionej energii</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">⏱️</div>
+          <div class="stat-content">
+            <div class="stat-label">Prosty Payback BESS</div>
+            <div class="stat-value" id="deltaPayback">-</div>
+            <div class="stat-unit">lat</div>
+            <div class="stat-detail" id="deltaPaybackInfo">CAPEX / Δ oszczędności</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">📊</div>
+          <div class="stat-content">
+            <div class="stat-label">ROI BESS</div>
+            <div class="stat-value" id="deltaROI">-</div>
+            <div class="stat-unit">%</div>
+            <div class="stat-detail" id="deltaROIInfo">zwrot z inwestycji BESS</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Economic KPIs -->
     <div class="stats-section full-width">
       <h2>Ekonomia BESS</h2>
@@ -444,6 +490,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="bess.js?v=3.2.1"></script>
+<script src="bess.js?v=3.2.2"></script>
 </body>
 </html>
