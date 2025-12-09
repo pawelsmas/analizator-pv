@@ -3,7 +3,7 @@
 // Proxy mode: use path-based routing via nginx reverse proxy
 // When USE_PROXY=true, all URLs use /modules/* and /api/* paths
 // When USE_PROXY=false, direct port access for development
-const USE_PROXY = false; // TODO: Set to true for production with nginx reverse proxy
+const USE_PROXY = true; // Production mode: use nginx reverse proxy
 
 // Module URLs
 const MODULES = USE_PROXY ? {
