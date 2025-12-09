@@ -882,6 +882,30 @@ function updateStatistics(stats) {
   document.getElementById('gridImport').textContent = stats.gridImport;
   document.getElementById('peakPower').textContent = stats.peakPower;
   document.getElementById('fullLoadHours').textContent = stats.fullLoadHours;
+
+  // Sanity-check: Show warning if specific yield exceeds realistic range for Poland
+  checkYieldSanity(stats.specificYield);
+}
+
+// Check if specific yield is within realistic range for Poland (900-1100 kWh/kWp typical, max ~1120)
+function checkYieldSanity(specificYieldStr) {
+  const warningEl = document.getElementById('yieldWarning');
+  const warningValueEl = document.getElementById('yieldWarningValue');
+
+  if (!warningEl || !warningValueEl) return;
+
+  // Parse the yield value (remove formatting)
+  const yieldValue = parseFloat(String(specificYieldStr).replace(/\s/g, '').replace(',', '.'));
+
+  const YIELD_THRESHOLD = 1120; // kWh/kWp - max realistic for Poland
+
+  if (!isNaN(yieldValue) && yieldValue > YIELD_THRESHOLD) {
+    warningValueEl.textContent = specificYieldStr;
+    warningEl.style.display = 'flex';
+    console.warn(`⚠️ Yield sanity check FAILED: ${yieldValue} kWh/kWp exceeds ${YIELD_THRESHOLD} kWh/kWp threshold for Poland`);
+  } else {
+    warningEl.style.display = 'none';
+  }
 }
 
 // Update BESS section display

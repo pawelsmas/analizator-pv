@@ -96,6 +96,15 @@
           </div>
         </div>
       </div>
+
+      <!-- Sanity-check alert for specific yield -->
+      <div id="yieldWarning" class="yield-warning" style="display: none;">
+        <span class="warning-icon">⚠️</span>
+        <span class="warning-text">
+          <strong>Uwaga:</strong> Uzysk specyficzny <span id="yieldWarningValue">-</span> kWh/kWp przekracza typowy zakres dla Polski (900-1100 kWh/kWp).
+          Wartości powyżej 1120 kWh/kWp są nierealistyczne dla lokalizacji w Polsce. Sprawdź parametry PVGIS lub konfigurację systemu.
+        </span>
+      </div>
     </div>
 
     <!-- SEKCJA 1: Profil godzinowy - Load + PV + Self-Consumption (FULL YEAR) -->

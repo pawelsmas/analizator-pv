@@ -598,3 +598,44 @@ canvas {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ===== YIELD WARNING STYLES ===== */
+.yield-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe5e5 100%);
+  border: 2px solid #e53e3e;
+  border-left: 5px solid #e53e3e;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-top: 16px;
+  box-shadow: 0 2px 8px rgba(229, 62, 62, 0.15);
+  animation: warningPulse 2s ease-in-out infinite;
+}
+
+@keyframes warningPulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(229, 62, 62, 0.15); }
+  50% { box-shadow: 0 4px 16px rgba(229, 62, 62, 0.25); }
+}
+
+.yield-warning .warning-icon {
+  font-size: 24px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.yield-warning .warning-text {
+  font-size: 14px;
+  color: #742a2a;
+  line-height: 1.5;
+}
+
+.yield-warning .warning-text strong {
+  color: #c53030;
+}
+
+#yieldWarningValue {
+  font-weight: 700;
+  color: #e53e3e;
+}
