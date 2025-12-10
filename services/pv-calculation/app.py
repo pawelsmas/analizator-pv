@@ -264,6 +264,8 @@ class VariantResult(BaseModel):
     auto_consumption_pct: float
     coverage_pct: float
     meets_threshold: bool
+    # Hourly production data (AC output with DC/AC clipping applied)
+    hourly_production: Optional[List[float]] = None
     # BESS results (only populated when BESS enabled)
     bess_power_kw: Optional[float] = None
     bess_energy_kwh: Optional[float] = None
@@ -2628,6 +2630,12 @@ async def analyze(request: AnalysisRequest):
                             soc_initial=bess_config.soc_initial
                         )
 
+                # Calculate hourly production for this variant (AC output with clipping)
+                # pv_profile is normalized per 1 kWp
+                variant_pv_dc = pv_profile * variant_scenario.capacity  # DC production
+                variant_ac_capacity = variant_scenario.capacity / variant_scenario.dcac_ratio  # AC limit
+                variant_hourly_production = np.minimum(variant_pv_dc, variant_ac_capacity)  # AC with clipping
+
                 variant_result = VariantResult(
                     variant=variant_name,
                     threshold=threshold,
@@ -2638,7 +2646,8 @@ async def analyze(request: AnalysisRequest):
                     exported=variant_scenario.exported,
                     auto_consumption_pct=variant_scenario.auto_consumption_pct,
                     coverage_pct=variant_scenario.coverage_pct,
-                    meets_threshold=True
+                    meets_threshold=True,
+                    hourly_production=variant_hourly_production.tolist()  # Include hourly data for Profile Analysis
                 )
 
                 # Add BESS fields if available

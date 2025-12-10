@@ -564,7 +564,9 @@ async function handleFileUpload(event) {
       annual_consumption_kwh: stats ? stats.total_consumption_gwh * 1000000 : null, // GWh -> kWh
       total_consumption_gwh: stats?.total_consumption_gwh,
       peak_power_mw: stats?.peak_power_mw,
-      avg_power_mw: stats?.avg_power_mw
+      avg_power_mw: stats?.avg_power_mw,
+      // CRITICAL: Include analytical year for correct month mapping in profile analysis
+      analytical_year: result.analytical_year
     });
 
   } catch (error) {

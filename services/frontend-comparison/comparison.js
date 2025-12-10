@@ -285,13 +285,17 @@ function hideNoData() {
 
 // Populate variant selectors
 function populateVariantSelectors() {
-  const selectors = ['variantA', 'variantB', 'variantC'];
+  const selectors = ['variantA', 'variantB', 'variantC', 'masterVariant'];
 
   selectors.forEach(selectorId => {
     const select = document.getElementById(selectorId);
+    if (!select) return;
+
     const currentValue = select.value;
 
-    select.innerHTML = '<option value="">Wybierz wariant...</option>';
+    select.innerHTML = selectorId === 'masterVariant'
+      ? '<option value="">Wybierz wariant główny...</option>'
+      : '<option value="">Wybierz wariant...</option>';
 
     variants.forEach((variant, index) => {
       const option = document.createElement('option');
@@ -777,4 +781,60 @@ function clearComparison() {
   if (kpiChart) kpiChart.destroy();
 
   showNoData();
+}
+
+// Set master variant and notify shell
+function setMasterVariant() {
+  const masterSelect = document.getElementById('masterVariant');
+  const masterInfo = document.getElementById('masterVariantInfo');
+  const selectedIndex = masterSelect.value;
+
+  if (selectedIndex === '' || !variants[selectedIndex]) {
+    if (masterInfo) masterInfo.textContent = '';
+    return;
+  }
+
+  const variant = variants[selectedIndex];
+
+  // Build variant data object matching what config module sends
+  const variantData = {
+    capacity: variant.installedCapacity * 1000, // MWp -> kWp
+    production: variant.annualProduction * 1000000, // GWh -> kWh
+    self_consumed: variant.selfConsumed * 1000000,
+    exported: variant.exported * 1000000,
+    auto_consumption_pct: variant.autoConsumption,
+    coverage_pct: variant.coverage,
+    threshold: variant.threshold,
+    meets_threshold: variant.meetsThreshold,
+    dcac_ratio: variant.dcacRatio,
+    // BESS data
+    bess_power_kw: variant.bessPowerKw || 0,
+    bess_energy_kwh: variant.bessEnergyKwh || 0,
+    bess_cycles_equivalent: variant.bessCycles || 0,
+    bess_discharged_kwh: (variant.bessFromBattery || 0) * 1000, // MWh -> kWh
+    bess_curtailed_kwh: (variant.bessCurtailed || 0) * 1000
+  };
+
+  // Determine variant key (A, B, C, D, etc.)
+  const variantKey = variant.name ? variant.name.replace('Wariant ', '') : String.fromCharCode(65 + parseInt(selectedIndex));
+
+  console.log('🌟 Comparison: Setting master variant:', variantKey, variantData);
+
+  // Notify shell about master variant selection
+  if (window.parent !== window) {
+    window.parent.postMessage({
+      type: 'MASTER_VARIANT_SELECTED',
+      data: {
+        variantKey: variantKey,
+        variantData: variantData
+      }
+    }, '*');
+    console.log('📤 Comparison: Sent MASTER_VARIANT_SELECTED to shell');
+  }
+
+  // Update info display
+  if (masterInfo) {
+    masterInfo.textContent = `✅ ${variant.name}: ${(variant.installedCapacity * 1000).toFixed(0)} kWp` +
+      (variant.bessEnergyKwh > 0 ? ` + BESS ${variant.bessEnergyKwh.toFixed(0)} kWh` : '');
+  }
 }

@@ -57,6 +57,11 @@ class ProfileAnalysisRequest(BaseModel):
     load_kwh: List[float] = Field(..., description="Hourly load [kWh]")
     pv_capacity_kwp: float = Field(..., gt=0, description="PV capacity [kWp]")
 
+    # Timestamps for proper month mapping (ISO format strings)
+    # IMPORTANT: Required to correctly assign data to calendar months
+    # Analytical year may start from any month (e.g., July 2024 to June 2025)
+    timestamps: Optional[List[str]] = Field(None, description="ISO timestamps for each hour")
+
     # Optional BESS parameters for comparison
     bess_power_kw: Optional[float] = Field(None, description="Current BESS power [kW]")
     bess_energy_kwh: Optional[float] = Field(None, description="Current BESS energy [kWh]")
@@ -140,6 +145,7 @@ class ParetoPoint(BaseModel):
     energy_kwh: float
     npv_mln_pln: float
     annual_cycles: float
+    annual_discharge_mwh: float  # From real hourly simulation - single source of truth!
     payback_years: float
     is_selected: bool = False
 
@@ -155,17 +161,32 @@ class PvOversizingRecommendation(BaseModel):
     additional_annual_savings_pln: float
 
 
-class VariantComparison(BaseModel):
-    """Side-by-side variant comparison"""
-    variant_id: str
-    name: str
-    power_kw: float
-    energy_kwh: float
+class BaselineVariant(BaseModel):
+    """Baseline variant (without BESS)"""
+    self_consumption_pct: float
+    surplus_lost_mwh: float
+    grid_import_mwh: float
+    annual_energy_cost_pln: float
+
+
+class RecommendedVariant(BaseModel):
+    """Recommended BESS variant"""
+    bess_power_kw: float
+    bess_energy_kwh: float
+    self_consumption_pct: float
     annual_cycles: float
-    npv_mln_pln: float
+    grid_import_mwh: float
+    capex_pln: float
+    annual_savings_pln: float
+    npv_pln: float
     payback_years: float
-    curtailment_pct: float
-    is_recommended: bool = False
+
+
+class VariantComparisonResult(BaseModel):
+    """Side-by-side variant comparison: baseline vs recommended"""
+    baseline: BaselineVariant
+    recommended: RecommendedVariant
+    project_years: int
 
 
 class ProfileAnalysisResult(BaseModel):
@@ -193,14 +214,31 @@ class ProfileAnalysisResult(BaseModel):
 
     # Current BESS performance (if provided)
     current_bess_annual_cycles: Optional[float]
+    current_bess_annual_discharge_mwh: Optional[float]  # From real hourly simulation
     current_bess_utilization_pct: Optional[float]
     current_curtailment_ratio: Optional[float]
+
+    # Hourly BESS simulation data for CURRENT/FORM BESS (from form parameters)
+    # These arrays have 8760 elements (hourly for full year)
+    hourly_bess_charge: Optional[List[float]] = None  # kWh charged each hour
+    hourly_bess_discharge: Optional[List[float]] = None  # kWh discharged each hour
+    hourly_bess_soc: Optional[List[float]] = None  # SoC % at end of each hour
+
+    # Hourly BESS simulation data for RECOMMENDED BESS (Best NPV from Pareto)
+    # THIS IS THE SINGLE SOURCE OF TRUTH for EKONOMIA and Excel export!
+    recommended_bess_power_kw: Optional[float] = None
+    recommended_bess_energy_kwh: Optional[float] = None
+    recommended_bess_annual_cycles: Optional[float] = None
+    recommended_bess_annual_discharge_mwh: Optional[float] = None
+    recommended_hourly_bess_charge: Optional[List[float]] = None
+    recommended_hourly_bess_discharge: Optional[List[float]] = None
+    recommended_hourly_bess_soc: Optional[List[float]] = None
 
     # Optimization results
     selected_strategy: str
     bess_recommendations: List[BessSizingRecommendation]
     pareto_frontier: List[ParetoPoint]
-    variant_comparison: List[VariantComparison]
+    variant_comparison: Optional[VariantComparisonResult] = None
 
     # PV recommendations
     pv_recommendations: List[PvOversizingRecommendation]
@@ -303,14 +341,94 @@ def analyze_monthly(
     load_kwh: np.ndarray,
     bess_energy_kwh: Optional[float],
     bess_efficiency: float,
-    hours_per_step: float = 1.0
+    hours_per_step: float = 1.0,
+    timestamps: Optional[List[str]] = None
 ) -> List[MonthlyAnalysis]:
-    """Analyze patterns by month"""
+    """Analyze patterns by month using actual timestamps if provided.
 
-    days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    IMPORTANT: If timestamps are provided, data is grouped by actual calendar months.
+    This is critical because analytical year may start from any month (e.g., July 2024).
+    Without timestamps, the function assumes data starts from January which may be wrong.
+    """
+    from datetime import datetime
+    from collections import defaultdict
+
     month_names = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze',
                    'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru']
 
+    # If timestamps provided, group by actual calendar months
+    if timestamps and len(timestamps) == len(pv_kwh):
+        # Parse timestamps and group data by month
+        month_data = defaultdict(lambda: {'pv': [], 'load': [], 'days': set()})
+
+        for i, ts_str in enumerate(timestamps):
+            try:
+                # Parse ISO timestamp (e.g., "2024-07-01T00:00:00")
+                ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00').split('+')[0])
+                month_num = ts.month  # 1-12
+                day = ts.day
+                month_data[month_num]['pv'].append(pv_kwh[i])
+                month_data[month_num]['load'].append(load_kwh[i])
+                month_data[month_num]['days'].add(day)
+            except (ValueError, AttributeError):
+                continue
+
+        results = []
+        # Iterate through months 1-12 (January to December)
+        for month_num in range(1, 13):
+            if month_num not in month_data:
+                continue
+
+            data = month_data[month_num]
+            month_pv = np.array(data['pv'])
+            month_load = np.array(data['load'])
+            days = len(data['days'])
+
+            if days == 0 or len(month_pv) == 0:
+                continue
+
+            surplus = np.maximum(month_pv - month_load, 0)
+            deficit = np.maximum(month_load - month_pv, 0)
+
+            total_pv = np.sum(month_pv) * hours_per_step
+            total_load = np.sum(month_load) * hours_per_step
+            total_surplus = np.sum(surplus) * hours_per_step
+            total_deficit = np.sum(deficit) * hours_per_step
+
+            avg_daily_surplus = total_surplus / days
+            avg_daily_deficit = total_deficit / days
+
+            surplus_hours = np.sum(surplus > 0) * hours_per_step / days
+            deficit_hours = np.sum(deficit > 0) * hours_per_step / days
+
+            optimal_bess = avg_daily_surplus * 0.8 / np.sqrt(bess_efficiency)
+
+            current_cycles = None
+            if bess_energy_kwh and bess_energy_kwh > 0:
+                usable = bess_energy_kwh * 0.8
+                daily_charge = min(avg_daily_surplus * np.sqrt(bess_efficiency), usable)
+                current_cycles = daily_charge / usable * days if usable > 0 else 0
+
+            results.append(MonthlyAnalysis(
+                month=month_num,
+                month_name=month_names[month_num - 1],
+                days=days,
+                total_pv_mwh=total_pv / 1000,
+                total_load_mwh=total_load / 1000,
+                total_surplus_mwh=total_surplus / 1000,
+                total_deficit_mwh=total_deficit / 1000,
+                avg_daily_surplus_kwh=avg_daily_surplus,
+                avg_daily_deficit_kwh=avg_daily_deficit,
+                surplus_hours_per_day=surplus_hours,
+                deficit_hours_per_day=deficit_hours,
+                optimal_bess_kwh=optimal_bess,
+                current_bess_cycles=current_cycles
+            ))
+
+        return results
+
+    # Fallback: old logic (assumes data starts from January)
+    days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     steps_per_hour = int(1 / hours_per_step)
     steps_per_day = 24 * steps_per_hour
 
@@ -418,6 +536,111 @@ async def call_bess_optimizer(
     return None
 
 
+def simulate_bess_hourly(
+    pv_kwh: np.ndarray,
+    load_kwh: np.ndarray,
+    bess_energy_kwh: float,
+    bess_power_kw: float,
+    efficiency: float,
+    soc_min_pct: float = 10.0,
+    soc_max_pct: float = 90.0
+) -> dict:
+    """
+    Simulate BESS operation hour by hour with real SoC tracking.
+
+    This is the accurate simulation that should be used for all calculations.
+    It replaces the simplified statistical model that overestimates performance.
+
+    Args:
+        pv_kwh: Hourly PV generation array [kWh]
+        load_kwh: Hourly load array [kWh]
+        bess_energy_kwh: Total BESS capacity [kWh]
+        bess_power_kw: Maximum charge/discharge power [kW]
+        efficiency: Round-trip efficiency (e.g., 0.90 for 90%)
+        soc_min_pct: Minimum SoC in % (default 10%)
+        soc_max_pct: Maximum SoC in % (default 90%)
+
+    Returns:
+        dict with:
+            - annual_charge_kwh: Total energy charged from surplus
+            - annual_discharge_kwh: Total energy delivered to load
+            - annual_cycles: Equivalent full cycles (discharge / usable_capacity)
+            - hourly_charge: Array of hourly charge values
+            - hourly_discharge: Array of hourly discharge values
+            - hourly_soc: Array of hourly SoC values (%)
+    """
+    n_hours = len(pv_kwh)
+    one_way_eff = np.sqrt(efficiency)
+
+    # Usable capacity (DoD)
+    usable_capacity = bess_energy_kwh * (soc_max_pct - soc_min_pct) / 100.0
+
+    # Initialize arrays
+    hourly_charge = np.zeros(n_hours)
+    hourly_discharge = np.zeros(n_hours)
+    hourly_soc = np.zeros(n_hours)
+
+    # Start at middle SoC
+    soc_pct = (soc_min_pct + soc_max_pct) / 2.0
+
+    total_charge = 0.0
+    total_discharge = 0.0
+
+    for i in range(n_hours):
+        surplus = max(0, pv_kwh[i] - load_kwh[i])
+        deficit = max(0, load_kwh[i] - pv_kwh[i])
+
+        charge = 0.0
+        discharge = 0.0
+
+        if surplus > 0 and soc_pct < soc_max_pct:
+            # Charge from surplus
+            # Available capacity in battery
+            available_capacity_kwh = (soc_max_pct - soc_pct) / 100.0 * bess_energy_kwh
+            # Maximum we can charge this hour (limited by power and surplus)
+            max_charge_from_surplus = min(bess_power_kw, surplus)
+            # Energy that will be stored (after charging losses)
+            energy_to_store = min(max_charge_from_surplus * one_way_eff, available_capacity_kwh)
+            # Energy taken from surplus
+            charge = energy_to_store / one_way_eff if one_way_eff > 0 else 0
+            # Update SoC
+            soc_pct += energy_to_store / bess_energy_kwh * 100.0
+            total_charge += charge
+
+        elif deficit > 0 and soc_pct > soc_min_pct:
+            # Discharge to cover deficit
+            # Available energy in battery
+            available_energy_kwh = (soc_pct - soc_min_pct) / 100.0 * bess_energy_kwh
+            # Energy needed to cover deficit
+            energy_needed = min(bess_power_kw, deficit)
+            # Energy we need to extract from battery (to deliver energy_needed after losses)
+            energy_from_battery = min(energy_needed / one_way_eff, available_energy_kwh) if one_way_eff > 0 else 0
+            # What we actually deliver to load
+            discharge = energy_from_battery * one_way_eff
+            # Update SoC
+            soc_pct -= energy_from_battery / bess_energy_kwh * 100.0
+            total_discharge += discharge
+
+        # Ensure SoC bounds
+        soc_pct = max(soc_min_pct, min(soc_max_pct, soc_pct))
+
+        hourly_charge[i] = charge
+        hourly_discharge[i] = discharge
+        hourly_soc[i] = soc_pct
+
+    # Calculate equivalent cycles based on discharge
+    annual_cycles = total_discharge / usable_capacity if usable_capacity > 0 else 0
+
+    return {
+        'annual_charge_kwh': total_charge,
+        'annual_discharge_kwh': total_discharge,
+        'annual_cycles': annual_cycles,
+        'hourly_charge': hourly_charge,
+        'hourly_discharge': hourly_discharge,
+        'hourly_soc': hourly_soc
+    }
+
+
 async def generate_pareto_frontier(
     pv_kwh: np.ndarray,
     load_kwh: np.ndarray,
@@ -431,43 +654,53 @@ async def generate_pareto_frontier(
     project_years: int,
     n_points: int = 10
 ) -> List[ParetoPoint]:
-    """Generate Pareto frontier of NPV vs Cycles"""
+    """Generate Pareto frontier of NPV vs Cycles using REAL hourly simulation.
+
+    This function now uses simulate_bess_hourly() for accurate results instead of
+    the simplified statistical model that overestimated performance by ~6x.
+    """
 
     # Calculate range of BESS sizes to explore
     avg_daily_surplus = np.mean([m.avg_daily_surplus_kwh for m in monthly_analysis])
     max_daily_surplus = max(m.avg_daily_surplus_kwh for m in monthly_analysis)
 
     # Energy range: from small (high cycles) to large (low cycles)
-    min_energy = avg_daily_surplus * 0.3
-    max_energy = max_daily_surplus * 1.5
+    # Minimum 50 kWh for small installations
+    min_energy = max(50, avg_daily_surplus * 0.3)
+    max_energy = max(min_energy * 3, max_daily_surplus * 1.5, 200)  # At least 200 kWh max
 
     energy_range = np.linspace(min_energy, max_energy, n_points)
 
     pareto_points = []
 
     for energy_kwh in energy_range:
-        if energy_kwh < 100:
+        # Allow smaller BESS for small PV installations
+        if energy_kwh < 20:
             continue
 
         # Duration 2-4h based on size
-        duration = min(4, max(2, energy_kwh / avg_daily_surplus))
+        duration = min(4, max(2, energy_kwh / avg_daily_surplus)) if avg_daily_surplus > 0 else 3
         power_kw = energy_kwh / duration
 
-        # Simulate BESS performance
-        usable = energy_kwh * 0.8
-        annual_cycles = 0
-        annual_discharge = 0
+        # ============================================
+        # USE REAL HOURLY SIMULATION (not statistical)
+        # ============================================
+        sim_result = simulate_bess_hourly(
+            pv_kwh=pv_kwh,
+            load_kwh=load_kwh,
+            bess_energy_kwh=energy_kwh,
+            bess_power_kw=power_kw,
+            efficiency=efficiency,
+            soc_min_pct=10.0,
+            soc_max_pct=90.0
+        )
 
-        for m in monthly_analysis:
-            daily_available = m.avg_daily_surplus_kwh * np.sqrt(efficiency)
-            daily_charge = min(daily_available, usable, power_kw * 8)
-            daily_discharge = daily_charge * np.sqrt(efficiency)
-            monthly_cycles = daily_discharge / usable * m.days if usable > 0 else 0
-            annual_cycles += monthly_cycles
-            annual_discharge += daily_discharge * m.days
+        annual_cycles = sim_result['annual_cycles']
+        annual_discharge = sim_result['annual_discharge_kwh']
 
+        # Calculate economics
         capex = power_kw * capex_per_kw + energy_kwh * capex_per_kwh
-        annual_savings = annual_discharge * energy_price / 1000
+        annual_savings = annual_discharge * energy_price / 1000  # kWh -> MWh, then * PLN/MWh
         npv = calculate_npv(annual_savings, capex, discount_rate, project_years)
         payback = capex / annual_savings if annual_savings > 0 else 99
 
@@ -475,7 +708,8 @@ async def generate_pareto_frontier(
             power_kw=round(power_kw, 0),
             energy_kwh=round(energy_kwh, 0),
             npv_mln_pln=round(npv / 1e6, 2),
-            annual_cycles=round(annual_cycles, 0),
+            annual_cycles=round(annual_cycles, 1),
+            annual_discharge_mwh=round(annual_discharge / 1000, 2),  # kWh -> MWh
             payback_years=round(payback, 1),
             is_selected=False
         ))
@@ -509,6 +743,10 @@ def select_by_strategy(
     if not optimal:
         optimal = pareto_points
 
+    # Return None if no points available
+    if not optimal:
+        return None
+
     if strategy == OptimizationStrategy.NPV_MAX:
         # Simply max NPV
         return max(optimal, key=lambda p: p.npv_mln_pln)
@@ -528,6 +766,8 @@ def select_by_strategy(
 
 
 def calculate_bess_recommendations(
+    pv_kwh: np.ndarray,
+    load_kwh: np.ndarray,
     monthly_analysis: List[MonthlyAnalysis],
     pareto_points: List[ParetoPoint],
     strategy: OptimizationStrategy,
@@ -541,7 +781,7 @@ def calculate_bess_recommendations(
     min_cycles: int,
     max_cycles: int
 ) -> List[BessSizingRecommendation]:
-    """Generate BESS sizing recommendations based on strategy"""
+    """Generate BESS sizing recommendations based on strategy using REAL hourly simulation."""
 
     recommendations = []
     total_annual_surplus = sum(m.total_surplus_mwh for m in monthly_analysis) * 1000
@@ -563,21 +803,25 @@ def calculate_bess_recommendations(
         duration = energy / power if power > 0 else 2
         usable = energy * 0.8
 
-        # Detailed calculation
-        annual_cycles = 0
-        annual_discharge = 0
-        annual_curtailment = 0
+        # ============================================
+        # USE REAL HOURLY SIMULATION (not statistical)
+        # ============================================
+        sim_result = simulate_bess_hourly(
+            pv_kwh=pv_kwh,
+            load_kwh=load_kwh,
+            bess_energy_kwh=energy,
+            bess_power_kw=power,
+            efficiency=bess_efficiency,
+            soc_min_pct=10.0,
+            soc_max_pct=90.0
+        )
 
-        for m in monthly_analysis:
-            daily_available = m.avg_daily_surplus_kwh * np.sqrt(bess_efficiency)
-            daily_charge = min(daily_available, usable, power * 8)
-            daily_discharge = daily_charge * np.sqrt(bess_efficiency)
-            daily_curtail = max(0, m.avg_daily_surplus_kwh - daily_charge / np.sqrt(bess_efficiency))
+        annual_cycles = sim_result['annual_cycles']
+        annual_discharge = sim_result['annual_discharge_kwh']
+        annual_charge = sim_result['annual_charge_kwh']
 
-            monthly_cycles = daily_discharge / usable * m.days if usable > 0 else 0
-            annual_cycles += monthly_cycles
-            annual_discharge += daily_discharge * m.days
-            annual_curtailment += daily_curtail * m.days
+        # Curtailment = surplus that couldn't be charged
+        annual_curtailment = max(0, total_annual_surplus - annual_charge)
 
         capex = power * capex_per_kw + energy * capex_per_kwh
         annual_savings = annual_discharge * energy_price_plnmwh / 1000
@@ -591,9 +835,9 @@ def calculate_bess_recommendations(
             power_kw=round(power, 0),
             energy_kwh=round(energy, 0),
             duration_h=round(duration, 1),
-            estimated_annual_cycles=round(annual_cycles, 0),
-            estimated_annual_discharge_mwh=round(annual_discharge / 1000, 1),
-            estimated_curtailment_mwh=round(annual_curtailment / 1000, 1),
+            estimated_annual_cycles=round(annual_cycles, 1),
+            estimated_annual_discharge_mwh=round(annual_discharge / 1000, 2),
+            estimated_curtailment_mwh=round(annual_curtailment / 1000, 2),
             capex_pln=round(capex, 0),
             annual_savings_pln=round(annual_savings, 0),
             npv_pln=round(npv, 0),
@@ -607,28 +851,65 @@ def calculate_bess_recommendations(
 
 def generate_variant_comparison(
     recommendations: List[BessSizingRecommendation],
-    annual_surplus_mwh: float
-) -> List[VariantComparison]:
-    """Generate side-by-side variant comparison"""
+    annual_surplus_mwh: float,
+    annual_deficit_mwh: float,
+    annual_pv_mwh: float,
+    annual_load_mwh: float,
+    energy_price_pln_per_mwh: float,
+    project_years: int
+) -> Optional[VariantComparisonResult]:
+    """Generate side-by-side variant comparison: baseline vs recommended BESS"""
 
-    comparisons = []
+    if not recommendations:
+        return None
 
-    for i, rec in enumerate(recommendations):
-        curtailment_pct = rec.estimated_curtailment_mwh / annual_surplus_mwh * 100 if annual_surplus_mwh > 0 else 0
+    # Find recommended variant (pareto optimal with best NPV)
+    pareto_recs = [r for r in recommendations if r.pareto_optimal]
+    if not pareto_recs:
+        pareto_recs = recommendations
 
-        comparisons.append(VariantComparison(
-            variant_id=f"V{i+1}",
-            name=rec.scenario,
-            power_kw=rec.power_kw,
-            energy_kwh=rec.energy_kwh,
-            annual_cycles=rec.estimated_annual_cycles,
-            npv_mln_pln=rec.npv_pln / 1e6,
-            payback_years=rec.simple_payback_years,
-            curtailment_pct=round(curtailment_pct, 1),
-            is_recommended=rec.pareto_optimal
-        ))
+    recommended_rec = max(pareto_recs, key=lambda r: r.npv_pln)
 
-    return comparisons
+    # Calculate baseline (without BESS)
+    direct_consumption = min(annual_pv_mwh, annual_load_mwh) - annual_surplus_mwh + min(annual_surplus_mwh, 0)
+    # Simplified: direct consumption = PV - surplus (what's used directly)
+    direct_consumption = annual_pv_mwh - annual_surplus_mwh
+    baseline_self_consumption_pct = (direct_consumption / annual_pv_mwh * 100) if annual_pv_mwh > 0 else 0
+    baseline_grid_import = annual_deficit_mwh
+    baseline_annual_cost = baseline_grid_import * energy_price_pln_per_mwh
+
+    baseline = BaselineVariant(
+        self_consumption_pct=round(baseline_self_consumption_pct, 1),
+        surplus_lost_mwh=round(annual_surplus_mwh, 2),
+        grid_import_mwh=round(baseline_grid_import, 2),
+        annual_energy_cost_pln=round(baseline_annual_cost, 0)
+    )
+
+    # Calculate recommended variant metrics
+    # BESS captures part of surplus and reduces grid import
+    bess_annual_throughput = recommended_rec.estimated_annual_cycles * recommended_rec.energy_kwh / 1000  # MWh
+    energy_shifted = min(bess_annual_throughput * 0.9, annual_surplus_mwh)  # 90% efficiency
+
+    recommended_self_consumption_pct = baseline_self_consumption_pct + (energy_shifted / annual_pv_mwh * 100) if annual_pv_mwh > 0 else 0
+    recommended_grid_import = max(0, baseline_grid_import - energy_shifted)
+
+    recommended = RecommendedVariant(
+        bess_power_kw=recommended_rec.power_kw,
+        bess_energy_kwh=recommended_rec.energy_kwh,
+        self_consumption_pct=round(min(recommended_self_consumption_pct, 100), 1),
+        annual_cycles=round(recommended_rec.estimated_annual_cycles, 0),
+        grid_import_mwh=round(recommended_grid_import, 2),
+        capex_pln=round(recommended_rec.capex_pln, 0),
+        annual_savings_pln=round(recommended_rec.annual_savings_pln, 0),
+        npv_pln=round(recommended_rec.npv_pln, 0),
+        payback_years=round(recommended_rec.simple_payback_years, 1)
+    )
+
+    return VariantComparisonResult(
+        baseline=baseline,
+        recommended=recommended,
+        project_years=project_years
+    )
 
 
 def calculate_pv_recommendations(
@@ -838,36 +1119,74 @@ async def analyze_profile(request: ProfileAnalysisRequest):
         # Generate heatmap
         heatmap_data = generate_heatmap(pv_kwh, load_kwh, hours_per_step)
 
-        # Monthly analysis
+        # Monthly analysis (pass timestamps for correct month mapping)
         monthly_analysis = analyze_monthly(
             pv_kwh, load_kwh,
             request.bess_energy_kwh,
             request.bess_efficiency,
-            hours_per_step
+            hours_per_step,
+            timestamps=request.timestamps
         )
 
-        # Quarterly summary
-        quarterly_cycles = {}
+        # Quarterly summary - surplus from monthly analysis (this is correct)
         quarterly_surplus = {}
-
         for q_name, months in [("Q1", [1,2,3]), ("Q2", [4,5,6]), ("Q3", [7,8,9]), ("Q4", [10,11,12])]:
             q_months = [m for m in monthly_analysis if m.month in months]
-            quarterly_cycles[q_name] = sum(m.current_bess_cycles or 0 for m in q_months)
             quarterly_surplus[q_name] = sum(m.total_surplus_mwh for m in q_months)
 
-        # Current BESS performance
+        # quarterly_cycles will be calculated later from real hourly simulation
+        quarterly_cycles = {"Q1": 0, "Q2": 0, "Q3": 0, "Q4": 0}
+
+        # Current BESS performance - using REAL hourly simulation
         current_annual_cycles = None
         current_utilization = None
         current_curtailment_ratio = None
+        current_annual_discharge_mwh = None
+
+        # Hourly BESS data for Excel export (single source of truth)
+        hourly_bess_charge = None
+        hourly_bess_discharge = None
+        hourly_bess_soc = None
 
         if request.bess_energy_kwh and request.bess_energy_kwh > 0:
-            current_annual_cycles = sum(m.current_bess_cycles or 0 for m in monthly_analysis)
+            # Use real hourly simulation instead of statistical estimation
+            current_bess_sim = simulate_bess_hourly(
+                pv_kwh=pv_kwh,
+                load_kwh=load_kwh,
+                bess_energy_kwh=request.bess_energy_kwh,
+                bess_power_kw=request.bess_power_kw,
+                efficiency=request.bess_efficiency
+            )
+            current_annual_cycles = current_bess_sim['annual_cycles']
+            current_annual_discharge_mwh = current_bess_sim['annual_discharge_kwh'] / 1000
             current_utilization = current_annual_cycles / 365 * 100
 
-            usable = request.bess_energy_kwh * 0.8
-            estimated_discharge = current_annual_cycles * usable / 1000
+            # Store hourly data for Excel export (single source of truth!)
+            # Round to 2 decimals to reduce JSON size
+            hourly_bess_charge = [round(x, 2) for x in current_bess_sim['hourly_charge'].tolist()]
+            hourly_bess_discharge = [round(x, 2) for x in current_bess_sim['hourly_discharge'].tolist()]
+            hourly_bess_soc = [round(x, 1) for x in current_bess_sim['hourly_soc'].tolist()]
+
             if annual_surplus > 0:
-                current_curtailment_ratio = 1 - (estimated_discharge / annual_surplus)
+                current_curtailment_ratio = 1 - (current_annual_discharge_mwh / annual_surplus)
+
+            # Calculate quarterly cycles from hourly simulation data
+            hourly_discharge = current_bess_sim['hourly_discharge']
+            usable_capacity = request.bess_energy_kwh * 0.8  # 80% DoD
+
+            # Quarter definitions (hour ranges for 8760 hours)
+            # Q1: Jan-Mar (hours 0-2159), Q2: Apr-Jun (2160-4343), Q3: Jul-Sep (4344-6551), Q4: Oct-Dec (6552-8759)
+            # Using approximate hours per quarter (31+28+31=90, 30+31+30=91, 31+31+30=92, 31+30+31=92 days)
+            q_hours = {
+                "Q1": (0, 90*24),           # Jan-Mar
+                "Q2": (90*24, 181*24),      # Apr-Jun
+                "Q3": (181*24, 273*24),     # Jul-Sep
+                "Q4": (273*24, 365*24)      # Oct-Dec
+            }
+            for q_name, (start_h, end_h) in q_hours.items():
+                end_h = min(end_h, len(hourly_discharge))
+                q_discharge = np.sum(hourly_discharge[start_h:end_h])
+                quarterly_cycles[q_name] = q_discharge / usable_capacity if usable_capacity > 0 else 0
 
         # Generate Pareto frontier
         pareto_frontier = await generate_pareto_frontier(
@@ -883,8 +1202,50 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             request.pareto_points
         )
 
-        # Generate recommendations based on strategy
+        # ============================================================
+        # SIMULATE RECOMMENDED BESS (Best NPV from Pareto)
+        # This is the SINGLE SOURCE OF TRUTH for EKONOMIA and Excel!
+        # ============================================================
+        recommended_bess_power_kw = None
+        recommended_bess_energy_kwh = None
+        recommended_bess_annual_cycles = None
+        recommended_bess_annual_discharge_mwh = None
+        recommended_hourly_charge = None
+        recommended_hourly_discharge = None
+        recommended_hourly_soc = None
+
+        if pareto_frontier:
+            # Find Best NPV point from Pareto frontier
+            best_npv_point = max(pareto_frontier, key=lambda p: p.npv_mln_pln)
+            print(f"📊 Best NPV from Pareto: {best_npv_point.npv_mln_pln:.2f} mln PLN, "
+                  f"{best_npv_point.power_kw:.0f} kW / {best_npv_point.energy_kwh:.0f} kWh")
+
+            # Run hourly simulation for recommended BESS
+            recommended_sim = simulate_bess_hourly(
+                pv_kwh=pv_kwh,
+                load_kwh=load_kwh,
+                bess_energy_kwh=best_npv_point.energy_kwh,
+                bess_power_kw=best_npv_point.power_kw,
+                efficiency=request.bess_efficiency
+            )
+
+            recommended_bess_power_kw = best_npv_point.power_kw
+            recommended_bess_energy_kwh = best_npv_point.energy_kwh
+            recommended_bess_annual_cycles = recommended_sim['annual_cycles']
+            recommended_bess_annual_discharge_mwh = recommended_sim['annual_discharge_kwh'] / 1000
+
+            # Store hourly data for Excel export (rounded to reduce JSON size)
+            recommended_hourly_charge = [round(x, 2) for x in recommended_sim['hourly_charge'].tolist()]
+            recommended_hourly_discharge = [round(x, 2) for x in recommended_sim['hourly_discharge'].tolist()]
+            recommended_hourly_soc = [round(x, 1) for x in recommended_sim['hourly_soc'].tolist()]
+
+            print(f"✅ Recommended BESS simulation: {recommended_bess_annual_discharge_mwh:.2f} MWh/year, "
+                  f"{recommended_bess_annual_cycles:.1f} cycles")
+
+        # Generate recommendations based on strategy (using hourly simulation)
         bess_recommendations = calculate_bess_recommendations(
+            pv_kwh,
+            load_kwh,
             monthly_analysis,
             pareto_frontier,
             request.strategy,
@@ -900,7 +1261,15 @@ async def analyze_profile(request: ProfileAnalysisRequest):
         )
 
         # Generate variant comparison
-        variant_comparison = generate_variant_comparison(bess_recommendations, annual_surplus)
+        variant_comparison = generate_variant_comparison(
+            bess_recommendations,
+            annual_surplus,
+            annual_deficit,
+            annual_pv,
+            annual_load,
+            request.energy_price_plnmwh,
+            request.project_years
+        )
 
         # PV recommendations
         pv_recommendations = calculate_pv_recommendations(
@@ -937,8 +1306,21 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             quarterly_cycles=quarterly_cycles,
             quarterly_surplus_mwh=quarterly_surplus,
             current_bess_annual_cycles=round(current_annual_cycles, 1) if current_annual_cycles else None,
+            current_bess_annual_discharge_mwh=round(current_annual_discharge_mwh, 2) if current_annual_discharge_mwh else None,
             current_bess_utilization_pct=round(current_utilization, 1) if current_utilization else None,
             current_curtailment_ratio=round(current_curtailment_ratio, 2) if current_curtailment_ratio else None,
+            # Hourly BESS data for FORM BESS (from request parameters)
+            hourly_bess_charge=hourly_bess_charge,
+            hourly_bess_discharge=hourly_bess_discharge,
+            hourly_bess_soc=hourly_bess_soc,
+            # RECOMMENDED BESS data (Best NPV from Pareto) - SINGLE SOURCE OF TRUTH!
+            recommended_bess_power_kw=round(recommended_bess_power_kw, 0) if recommended_bess_power_kw else None,
+            recommended_bess_energy_kwh=round(recommended_bess_energy_kwh, 0) if recommended_bess_energy_kwh else None,
+            recommended_bess_annual_cycles=round(recommended_bess_annual_cycles, 1) if recommended_bess_annual_cycles else None,
+            recommended_bess_annual_discharge_mwh=round(recommended_bess_annual_discharge_mwh, 3) if recommended_bess_annual_discharge_mwh else None,
+            recommended_hourly_bess_charge=recommended_hourly_charge,
+            recommended_hourly_bess_discharge=recommended_hourly_discharge,
+            recommended_hourly_bess_soc=recommended_hourly_soc,
             selected_strategy=request.strategy.value,
             bess_recommendations=bess_recommendations,
             pareto_frontier=pareto_frontier,

@@ -97,6 +97,57 @@ body::-webkit-scrollbar {
   border-color: #3498db;
 }
 
+/* Master Variant Selector */
+.master-variant-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 2px solid #e0e0e0;
+}
+
+.master-variant-section h3 {
+  font-size: 16px;
+  color: #2c3e50;
+  margin-bottom: 12px;
+}
+
+.master-variant-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.master-variant-controls select {
+  padding: 12px 20px;
+  border: 2px solid #27ae60;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #e8f8f0 0%, #d5f5e3 100%);
+  cursor: pointer;
+  transition: all 0.3s;
+  min-width: 300px;
+}
+
+.master-variant-controls select:focus {
+  outline: none;
+  border-color: #1e8449;
+  box-shadow: 0 0 0 3px rgba(39, 174, 96, 0.2);
+}
+
+.master-variant-controls select:hover {
+  border-color: #1e8449;
+}
+
+.master-info {
+  font-size: 14px;
+  color: #27ae60;
+  font-weight: 600;
+  padding: 8px 16px;
+  background: #e8f8f0;
+  border-radius: 6px;
+}
+
 .comparison-table-section {
   background: white;
   padding: 24px;

@@ -456,6 +456,23 @@ body {
     font-weight: 600;
 }
 
+/* Export button in table */
+.export-btn {
+    background: #1976d2;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.export-btn:hover {
+    background: #1565c0;
+    transform: scale(1.1);
+}
+
 /* Quarterly Grid */
 .quarterly-grid {
     display: grid;

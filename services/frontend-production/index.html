@@ -118,6 +118,20 @@
         <br><em>Warstwy: autokonsumpcja (dół) → produkcja PV (środek) → zużycie (góra)</em>
       </div>
 
+      <!-- BESS Source Selector -->
+      <div id="bessSourceSection" style="display: none; margin: 15px 0; padding: 10px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 8px; border: 1px solid #81c784;">
+        <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+          <strong style="color: #2e7d32;">🔋 Źródło danych BESS:</strong>
+          <select id="bessSourceSelect" onchange="changeBessSource()" style="padding: 6px 12px; border-radius: 4px; border: 1px solid #66bb6a; background: white; font-size: 14px;">
+            <option value="pv-calculation">Konfiguracja (BESS LIGHT/PRO)</option>
+            <option value="profile-analysis">Analiza Profilu (rekomendacja)</option>
+          </select>
+          <span id="bessSourceConfigInfo" style="display: none; font-size: 12px; color: #388e3c;"></span>
+          <span id="bessSourceProfileInfo" style="display: none; font-size: 12px; color: #1565c0;"></span>
+          <span id="bessSourceWarning" style="display: none; color: #e65100; font-size: 12px;">⚠️ Różne wielkości BESS!</span>
+        </div>
+      </div>
+
       <!-- Visibility Controls -->
       <div style="margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
         <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
@@ -327,6 +341,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="production.js?v=2.7-bess-baseline-fix"></script>
+<script src="production.js?v=20251210-SINGLE-SOURCE"></script>
 </body>
 </html>

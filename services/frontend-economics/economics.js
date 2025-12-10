@@ -76,6 +76,9 @@ let currentVariant = 'A'; // Default variant
 let consumptionData = null;
 let systemSettings = null; // Settings from Settings module
 let hourlyData = null; // Hourly consumption/production data
+let profileAnalysisBessData = null; // BESS data from Profile Analysis module
+let configBessData = null; // BESS data from pv-calculation (via key_variants)
+let currentBessSource = 'pv-calculation'; // 'pv-calculation' or 'profile-analysis'
 
 // CENTRALIZED FINANCIAL METRICS STORAGE
 // This is the SINGLE SOURCE OF TRUTH for all NPV calculations
@@ -1845,6 +1848,12 @@ window.addEventListener('message', (event) => {
         console.log('  - settings loaded from sharedData:', systemSettings.totalEnergyPrice);
       }
 
+      // Load profile analysis BESS data if available
+      if (event.data.data.profileAnalysis?.bessData) {
+        profileAnalysisBessData = event.data.data.profileAnalysis.bessData;
+        console.log('  - profileAnalysisBessData loaded:', profileAnalysisBessData.bess_energy_kwh, 'kWh');
+      }
+
       console.log('🚀 Calling performEconomicAnalysis() from SHARED_DATA_RESPONSE');
       performEconomicAnalysis();
       break;
@@ -1888,7 +1897,7 @@ window.addEventListener('message', (event) => {
           hourlyData = event.data.data.hourlyData;
           console.log('  - hourlyData loaded');
         }
-        // Load shared data (includes settings, consumptionData, etc.)
+        // Load shared data (includes settings, consumptionData, profileAnalysis, etc.)
         if (event.data.data.sharedData) {
           if (event.data.data.sharedData.settings) {
             systemSettings = event.data.data.sharedData.settings;
@@ -1896,6 +1905,11 @@ window.addEventListener('message', (event) => {
           }
           if (event.data.data.sharedData.consumptionData) {
             consumptionData = event.data.data.sharedData.consumptionData;
+          }
+          // Load profile analysis BESS data if available
+          if (event.data.data.sharedData.profileAnalysis?.bessData) {
+            profileAnalysisBessData = event.data.data.sharedData.profileAnalysis.bessData;
+            console.log('  - profileAnalysisBessData loaded:', profileAnalysisBessData.bess_energy_kwh, 'kWh');
           }
         }
         console.log('🚀 Calling performEconomicAnalysis() from ANALYSIS_RESULTS');
@@ -1927,6 +1941,43 @@ window.addEventListener('message', (event) => {
       // Recalculate if we have analysis data
       if (analysisResults) {
         performEconomicAnalysis();
+      }
+      break;
+
+    case 'PROFILE_ANALYSIS_UPDATED':
+      // Received BESS analysis results from Profile Analysis module
+      console.log('📊 Profile analysis received from shell:', event.data.data);
+      if (event.data.data?.bessData) {
+        profileAnalysisBessData = event.data.data.bessData;
+        console.log('🔋 BESS data from profile analysis:', {
+          power_kw: profileAnalysisBessData.bess_power_kw,
+          energy_kwh: profileAnalysisBessData.bess_energy_kwh,
+          annual_cycles: profileAnalysisBessData.annual_cycles,
+          annual_discharge_mwh: profileAnalysisBessData.annual_discharge_mwh,  // <-- KEY: from hourly simulation!
+          strategy: profileAnalysisBessData.strategy
+        });
+
+        // Store config BESS data before potentially overwriting
+        const variant = variants[currentVariant];
+        if (variant && variant.bess_power_kw > 0 && !configBessData) {
+          configBessData = {
+            bess_power_kw: variant.bess_power_kw,
+            bess_energy_kwh: variant.bess_energy_kwh,
+            bess_cycles_equivalent: variant.bess_cycles_equivalent,
+            // Store original BESS energy data for table calculations
+            bess_self_consumed_from_bess_kwh: variant.bess_self_consumed_from_bess_kwh || 0,
+            bess_discharged_kwh: variant.bess_discharged_kwh || 0
+          };
+        }
+
+        // IMPORTANT: Update BESS source selector and auto-select profile-analysis
+        // This MUST be called after profileAnalysisBessData is set!
+        updateBessSourceSelector();
+
+        // Recalculate economics with new BESS data available
+        if (analysisResults) {
+          performEconomicAnalysis();
+        }
       }
       break;
     case 'PV_TYPE_UPDATED':
@@ -2162,9 +2213,26 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
   // BESS autoconsumption breakdown (for table display)
   const bessSelfConsumedMwh = ((variant.bess_self_consumed_from_bess_kwh || 0) * scenarioFactor) / 1000; // MWh from BESS
-  const pvDirectSelfConsumedMwh = selfConsumedMwh - bessSelfConsumedMwh; // MWh direct from PV
 
-  console.log(`  🔋 Autoconsumption breakdown: PV=${pvDirectSelfConsumedMwh.toFixed(1)} MWh + BESS=${bessSelfConsumedMwh.toFixed(1)} MWh = ${selfConsumedMwh.toFixed(1)} MWh total`);
+  // PV direct autoconsumption - CRITICAL: use profile-analysis data when available!
+  // The variant.self_consumed was calculated with CONFIG BESS, not recommended BESS,
+  // so we MUST use direct_consumption_mwh from profile-analysis for consistency with Excel.
+  let pvDirectSelfConsumedMwh;
+  console.log(`  📊 DEBUG: currentBessSource=${currentBessSource}, profileAnalysisBessData?.direct_consumption_mwh=${profileAnalysisBessData?.direct_consumption_mwh}`);
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData?.direct_consumption_mwh) {
+    // Use REAL direct consumption from profile-analysis (PV direct, without BESS)
+    pvDirectSelfConsumedMwh = profileAnalysisBessData.direct_consumption_mwh * scenarioFactor;
+    console.log(`  ✅ Using profile-analysis direct_consumption: ${pvDirectSelfConsumedMwh.toFixed(1)} MWh (from backend)`);
+  } else {
+    // Fallback: calculate from total self_consumed minus BESS
+    pvDirectSelfConsumedMwh = selfConsumedMwh - bessSelfConsumedMwh;
+    console.log(`  ⚠️ FALLBACK: pvDirectSelfConsumedMwh = ${selfConsumedMwh.toFixed(1)} - ${bessSelfConsumedMwh.toFixed(1)} = ${pvDirectSelfConsumedMwh.toFixed(1)} MWh`);
+  }
+
+  // Recalculate total self-consumed as PV direct + BESS (ensures consistency)
+  const actualSelfConsumedMwh = pvDirectSelfConsumedMwh + bessSelfConsumedMwh;
+
+  console.log(`  🔋 Autoconsumption breakdown: PV=${pvDirectSelfConsumedMwh.toFixed(1)} MWh + BESS=${bessSelfConsumedMwh.toFixed(1)} MWh = ${actualSelfConsumedMwh.toFixed(1)} MWh total`);
 
   // PV CAPEX
   const capexPerKwp = getCapexForCapacity(capacityKwp);
@@ -2468,6 +2536,9 @@ async function performEconomicAnalysis() {
   }
 
   console.log('✅ Found variant:', currentVariant, variant);
+
+  // Update BESS source selector UI and apply selected source
+  updateBessSourceSelector();
 
   try {
     // Get parameters from sidebar inputs
@@ -5912,6 +5983,199 @@ function generateBessDegradationTable(
   // Update total energy display
   document.getElementById('bessEconTotalEnergy').textContent = formatNumberEU(cumulativeEnergyMWh, 0);
   document.getElementById('bessEconTotalEnergyPeriod').textContent = `przez ${analysisPeriod} lat`;
+}
+
+// ============================================
+// BESS SOURCE SELECTOR FUNCTIONS
+// ============================================
+
+/**
+ * Update the BESS source selector UI based on available data
+ */
+function updateBessSourceSelector() {
+  const section = document.getElementById('bessSourceSection');
+  const select = document.getElementById('bessSourceSelect');
+  const configInfo = document.getElementById('bessSourceConfig');
+  const profileInfo = document.getElementById('bessSourceProfile');
+  const warning = document.getElementById('bessSourceWarning');
+
+  if (!section) return;
+
+  // Get BESS data from both sources
+  const variant = variants[currentVariant];
+  const hasConfigBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  const hasProfileBess = profileAnalysisBessData && profileAnalysisBessData.bess_energy_kwh > 0;
+
+  // Store config BESS data for later comparison
+  if (hasConfigBess) {
+    configBessData = {
+      bess_power_kw: variant.bess_power_kw,
+      bess_energy_kwh: variant.bess_energy_kwh,
+      bess_cycles_equivalent: variant.bess_cycles_equivalent,
+      // Store original BESS energy data for table calculations
+      bess_self_consumed_from_bess_kwh: variant.bess_self_consumed_from_bess_kwh || 0,
+      bess_discharged_kwh: variant.bess_discharged_kwh || 0
+    };
+  }
+
+  // Show section only if at least one source has BESS data
+  if (!hasConfigBess && !hasProfileBess) {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Show section if we have both sources OR profile source
+  if (hasConfigBess && hasProfileBess) {
+    section.style.display = 'block';
+
+    // Update info displays
+    configInfo.style.display = 'inline';
+    document.getElementById('bessConfigPower').textContent = configBessData.bess_power_kw.toFixed(0);
+    document.getElementById('bessConfigEnergy').textContent = configBessData.bess_energy_kwh.toFixed(0);
+
+    profileInfo.style.display = 'inline';
+    document.getElementById('bessProfilePower').textContent = profileAnalysisBessData.bess_power_kw.toFixed(0);
+    document.getElementById('bessProfileEnergy').textContent = profileAnalysisBessData.bess_energy_kwh.toFixed(0);
+
+    // Enable both options
+    select.querySelector('option[value="pv-calculation"]').disabled = false;
+    select.querySelector('option[value="profile-analysis"]').disabled = false;
+
+    // Show warning if sources differ significantly (>10%)
+    const energyDiff = Math.abs(configBessData.bess_energy_kwh - profileAnalysisBessData.bess_energy_kwh) / configBessData.bess_energy_kwh;
+    warning.style.display = energyDiff > 0.1 ? 'block' : 'none';
+
+    // IMPORTANT: If profile-analysis data was just received (newer/more accurate),
+    // auto-select it and apply to variant for consistent hourly simulation data
+    // Check if annual_discharge_mwh exists (even if 0) - this is our "single source of truth" marker
+    const hasHourlySimData = 'annual_discharge_mwh' in profileAnalysisBessData;
+    console.log('🔋 Checking auto-select:', {
+      hasHourlySimData,
+      annual_discharge_mwh: profileAnalysisBessData.annual_discharge_mwh,
+      currentBessSource
+    });
+    if (hasHourlySimData) {
+      select.value = 'profile-analysis';
+      currentBessSource = 'profile-analysis';
+      applyBessSourceToVariant();
+      console.log('🔋 Auto-selected profile-analysis (has hourly simulation data)');
+    }
+
+  } else if (hasProfileBess && !hasConfigBess) {
+    // Only profile source available
+    section.style.display = 'block';
+    configInfo.style.display = 'none';
+    profileInfo.style.display = 'inline';
+    document.getElementById('bessProfilePower').textContent = profileAnalysisBessData.bess_power_kw.toFixed(0);
+    document.getElementById('bessProfileEnergy').textContent = profileAnalysisBessData.bess_energy_kwh.toFixed(0);
+
+    // Disable config option, auto-select profile
+    select.querySelector('option[value="pv-calculation"]').disabled = true;
+    select.querySelector('option[value="profile-analysis"]').disabled = false;
+    select.value = 'profile-analysis';
+    currentBessSource = 'profile-analysis';
+    warning.style.display = 'none';
+
+    // IMPORTANT: Apply profile-analysis data to variant immediately
+    applyBessSourceToVariant();
+
+  } else if (hasConfigBess && !hasProfileBess) {
+    // Only config source available - hide section (no choice needed)
+    section.style.display = 'none';
+  }
+
+  console.log('🔋 BESS source selector updated:', {
+    hasConfigBess,
+    hasProfileBess,
+    currentSource: currentBessSource
+  });
+}
+
+/**
+ * Handle BESS source change from dropdown
+ */
+function changeBessSource() {
+  const select = document.getElementById('bessSourceSelect');
+  const newSource = select.value;
+
+  if (newSource === currentBessSource) return;
+
+  currentBessSource = newSource;
+  console.log('🔋 BESS source changed to:', currentBessSource);
+
+  // Apply BESS data from selected source to current variant
+  applyBessSourceToVariant();
+
+  // Recalculate economics
+  if (analysisResults) {
+    performEconomicAnalysis();
+  }
+}
+window.changeBessSource = changeBessSource;
+
+/**
+ * Apply BESS data from selected source to the current variant
+ *
+ * IMPORTANT: This function updates ALL BESS-related fields including:
+ * - bess_power_kw, bess_energy_kwh (sizing)
+ * - bess_cycles_equivalent (cycles per year)
+ * - bess_self_consumed_from_bess_kwh (energy delivered to load - used in NPV tables!)
+ * - bess_discharged_kwh (total discharge)
+ */
+function applyBessSourceToVariant() {
+  const variant = variants[currentVariant];
+  if (!variant) return;
+
+  // Get BESS efficiency from settings (default 90% round-trip = 95% one-way)
+  const settings = systemSettings || {};
+  const roundtripEfficiency = settings.bessRoundtripEfficiency || 0.90;
+  const oneWayEfficiency = Math.sqrt(roundtripEfficiency);
+  const usableDepthOfDischarge = 0.8; // 80% DoD
+
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData) {
+    // Override with profile analysis data
+    variant.bess_power_kw = profileAnalysisBessData.bess_power_kw;
+    variant.bess_energy_kwh = profileAnalysisBessData.bess_energy_kwh;
+    variant.bess_cycles_equivalent = profileAnalysisBessData.annual_cycles;
+    variant.bess_source = 'profile-analysis';
+
+    // USE annual_discharge_mwh DIRECTLY from profile-analysis!
+    // This value comes from real hourly simulation - DO NOT recalculate from cycles!
+    // The cycles × usable_capacity formula was overestimating by ~6x because it assumed
+    // every day could fully utilize the average surplus.
+    const annualDischargeMwh = profileAnalysisBessData.annual_discharge_mwh || 0;
+    const annualDischargeKwh = annualDischargeMwh * 1000;
+
+    variant.bess_self_consumed_from_bess_kwh = annualDischargeKwh;
+    variant.bess_discharged_kwh = annualDischargeKwh;
+
+    console.log('✅ Applied profile-analysis BESS:', variant.bess_power_kw, 'kW /', variant.bess_energy_kwh, 'kWh');
+    console.log('   📊 Annual discharge from hourly simulation:', annualDischargeMwh.toFixed(1), 'MWh');
+    console.log('   📊 Annual cycles:', (profileAnalysisBessData.annual_cycles || 0).toFixed(1));
+
+  } else if (currentBessSource === 'pv-calculation' && configBessData) {
+    // Restore original config data (from pv-calculation simulation)
+    variant.bess_power_kw = configBessData.bess_power_kw;
+    variant.bess_energy_kwh = configBessData.bess_energy_kwh;
+    variant.bess_cycles_equivalent = configBessData.bess_cycles_equivalent;
+    variant.bess_self_consumed_from_bess_kwh = configBessData.bess_self_consumed_from_bess_kwh;
+    variant.bess_discharged_kwh = configBessData.bess_discharged_kwh;
+    variant.bess_source = 'pv-calculation';
+    console.log('✅ Applied pv-calculation BESS:', variant.bess_power_kw, 'kW /', variant.bess_energy_kwh, 'kWh');
+    console.log('   📊 Original annual discharge:', ((configBessData.bess_self_consumed_from_bess_kwh || 0) / 1000).toFixed(1), 'MWh');
+  }
+}
+
+/**
+ * Get current BESS data based on selected source
+ */
+function getCurrentBessData() {
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData) {
+    return profileAnalysisBessData;
+  } else if (configBessData) {
+    return configBessData;
+  }
+  return null;
 }
 
 console.log('📦 economics.js fully loaded');

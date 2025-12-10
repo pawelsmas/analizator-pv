@@ -93,6 +93,32 @@
     <div style="height:10px"></div>
 
     <div class="content-grid">
+    <!-- BESS Source Selector -->
+    <div id="bessSourceSection" class="bess-source-section" style="display:none;background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;color:#495057;">🔋 Źródło danych BESS:</span>
+          <select id="bessSourceSelect" onchange="changeBessSource()" style="padding:6px 12px;border:1px solid #ced4da;border-radius:4px;font-size:13px;background:white;cursor:pointer;">
+            <option value="pv-calculation">Konfiguracja (BESS LIGHT/PRO)</option>
+            <option value="profile-analysis">Analiza Profilu (rekomendacja)</option>
+          </select>
+        </div>
+        <div id="bessSourceInfo" style="display:flex;gap:20px;font-size:12px;color:#6c757d;">
+          <div id="bessSourceConfig" style="display:none;">
+            <span style="font-weight:500;">Konfiguracja:</span>
+            <span id="bessConfigPower">-</span> kW / <span id="bessConfigEnergy">-</span> kWh
+          </div>
+          <div id="bessSourceProfile" style="display:none;">
+            <span style="font-weight:500;">Profil:</span>
+            <span id="bessProfilePower">-</span> kW / <span id="bessProfileEnergy">-</span> kWh
+          </div>
+        </div>
+      </div>
+      <div id="bessSourceWarning" style="display:none;margin-top:8px;padding:8px;background:#fff3cd;border-radius:4px;font-size:12px;color:#856404;">
+        ⚠️ Wybrane źródło BESS różni się od danych w wariancie. Obliczenia ekonomiczne używają wybranego źródła.
+      </div>
+    </div>
+
     <!-- Wskaźniki kluczowe -->
     <div class="stats-section">
       <h2>Kluczowe Wskaźniki Ekonomiczne</h2>
@@ -569,6 +595,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20241208-BESS-INFO"></script>
+<script src="economics.js?v=20251211-DIRECT-CONSUMPTION"></script>
 </body>
 </html>

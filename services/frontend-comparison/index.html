@@ -39,6 +39,17 @@
           </select>
         </div>
       </div>
+
+      <!-- Master variant selector -->
+      <div class="master-variant-section">
+        <h3>⭐ Wariant Główny (do dalszych analiz)</h3>
+        <div class="master-variant-controls">
+          <select id="masterVariant" onchange="setMasterVariant()">
+            <option value="">Wybierz wariant główny...</option>
+          </select>
+          <span id="masterVariantInfo" class="master-info"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Tabela porównawcza -->

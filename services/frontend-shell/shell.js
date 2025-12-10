@@ -457,6 +457,27 @@ window.addEventListener('message', (event) => {
       });
       console.log('Master variant updated:', sharedData.masterVariantKey);
       break;
+    case 'PROFILE_ANALYSIS_COMPLETE':
+      // Store BESS analysis results from Profile Analysis module
+      if (event.data.data) {
+        sharedData.profileAnalysis = event.data.data;
+        console.log('📊 Profile analysis stored:', {
+          bess_power_kw: event.data.data.bessData?.bess_power_kw,
+          bess_energy_kwh: event.data.data.bessData?.bess_energy_kwh,
+          annual_cycles: event.data.data.bessData?.annual_cycles,
+          annual_discharge_mwh: event.data.data.bessData?.annual_discharge_mwh,  // <-- SINGLE SOURCE OF TRUTH!
+          strategy: event.data.data.bessData?.strategy
+        });
+        // Auto-save to current project
+        autoSaveToProject('profileAnalysis', event.data.data);
+      }
+      // Broadcast to Economics and other modules
+      broadcastToModules({
+        type: 'PROFILE_ANALYSIS_UPDATED',
+        data: sharedData.profileAnalysis
+      });
+      break;
+
     case 'ECONOMICS_CALCULATED':
       // Store economics data from Economics module
       if (event.data.data) {
@@ -724,35 +745,93 @@ window.addEventListener('message', (event) => {
     case 'REQUEST_PV_DATA':
       // Profile module requests hourly PV generation data
       console.log('📊 Shell responding to REQUEST_PV_DATA');
+      console.log('  - masterVariantKey:', sharedData.masterVariantKey);
+      console.log('  - masterVariant?.capacity:', sharedData.masterVariant?.capacity);
       let pvHourlyGeneration = null;
+      let pvCapacityUsed = null;
 
-      // Try to get hourly production from master variant or first scenario
-      if (sharedData.analysisResults) {
-        // First try to get from master variant
-        if (sharedData.masterVariantKey && sharedData.analysisResults.key_variants) {
-          const masterData = sharedData.analysisResults.key_variants[sharedData.masterVariantKey];
-          if (masterData?.hourly_production) {
-            pvHourlyGeneration = masterData.hourly_production;
-            console.log(`  - Using master variant ${sharedData.masterVariantKey} hourly_production: ${pvHourlyGeneration.length} values`);
-          }
+      // PRIORITY 1: Use masterVariant data (user's selected variant!)
+      // This MUST come first - we always want to use the variant the user selected
+      if (sharedData.masterVariant?.capacity) {
+        pvCapacityUsed = sharedData.masterVariant.capacity;
+        console.log(`  ✓ PRIORITY 1: masterVariant.capacity = ${pvCapacityUsed} kWp`);
+
+        // Check if masterVariant has hourly_production
+        if (sharedData.masterVariant.hourly_production?.length > 0) {
+          pvHourlyGeneration = sharedData.masterVariant.hourly_production;
+          console.log(`  ✓ Using masterVariant.hourly_production: ${pvHourlyGeneration.length} values`);
         }
-        // Fallback to first scenario
-        if (!pvHourlyGeneration && sharedData.analysisResults.scenarios?.length > 0) {
-          const firstScenario = sharedData.analysisResults.scenarios[0];
-          if (firstScenario?.hourly_production) {
-            pvHourlyGeneration = firstScenario.hourly_production;
-            console.log(`  - Using first scenario hourly_production: ${pvHourlyGeneration.length} values`);
+      }
+
+      // PRIORITY 2: Try key_variants with masterVariantKey
+      if (!pvHourlyGeneration && sharedData.masterVariantKey && sharedData.analysisResults?.key_variants) {
+        const masterData = sharedData.analysisResults.key_variants[sharedData.masterVariantKey];
+        if (masterData) {
+          if (!pvCapacityUsed) {
+            pvCapacityUsed = masterData.capacity;
+            console.log(`  ✓ PRIORITY 2: key_variants[${sharedData.masterVariantKey}].capacity = ${pvCapacityUsed} kWp`);
+          }
+          if (masterData.hourly_production?.length > 0) {
+            pvHourlyGeneration = masterData.hourly_production;
+            console.log(`  ✓ Using key_variants[${sharedData.masterVariantKey}].hourly_production: ${pvHourlyGeneration.length} values`);
           }
         }
       }
 
+      // PRIORITY 3: Calculate from pv_profile * capacity
+      // pv_profile is NORMALIZED per 1 kWp, so multiply by capacity to get actual kWh
+      // This is the CORRECT way - never use pre-scaled hourly_production!
+      if (!pvHourlyGeneration && sharedData.analysisResults?.pv_profile?.length > 0) {
+        const pvProfile = sharedData.analysisResults.pv_profile;
+
+        // Get capacity - MUST have it from masterVariant or key_variants
+        let capacity = pvCapacityUsed;
+
+        // If no capacity yet, try to find it
+        if (!capacity) {
+          // Try key_variants with masterVariantKey
+          if (sharedData.masterVariantKey && sharedData.analysisResults.key_variants) {
+            capacity = sharedData.analysisResults.key_variants[sharedData.masterVariantKey]?.capacity;
+            if (capacity) console.log(`  - Found capacity from key_variants[${sharedData.masterVariantKey}]: ${capacity} kWp`);
+          }
+          // Try pvConfig
+          if (!capacity && sharedData.pvConfig?.capacity) {
+            capacity = sharedData.pvConfig.capacity;
+            console.log(`  - Found capacity from pvConfig: ${capacity} kWp`);
+          }
+          // LAST RESORT: first scenario (with warning)
+          if (!capacity && sharedData.analysisResults.scenarios?.length > 0) {
+            capacity = sharedData.analysisResults.scenarios[0].capacity;
+            console.log(`  ⚠️ WARNING: Using first scenario capacity: ${capacity} kWp`);
+            console.log(`  ⚠️ This may not match your selected variant! Please select a master variant.`);
+          }
+        }
+
+        if (capacity && pvProfile.length > 0) {
+          pvHourlyGeneration = pvProfile.map(v => v * capacity);
+          pvCapacityUsed = capacity;
+          console.log(`  ✓ PRIORITY 3: Calculated from pv_profile * ${capacity} kWp: ${pvHourlyGeneration.length} values`);
+
+          // Verify sum
+          const totalMWh = pvHourlyGeneration.reduce((a, b) => a + b, 0) / 1000;
+          console.log(`  ✓ Total annual production: ${totalMWh.toFixed(1)} MWh`);
+        } else {
+          console.log(`  ❌ ERROR: Cannot calculate PV data - no capacity available`);
+          console.log(`  ❌ Please select a master variant in PORÓWNANIE WYNIKÓW`);
+        }
+      }
+
+      // NOTE: We intentionally do NOT use analysisResults.hourly_production as fallback
+      // because it is pre-scaled for a specific scenario capacity, not the masterVariant!
+
       broadcastToModules({
         type: 'PV_DATA_RESPONSE',
         data: {
-          hourly_generation: pvHourlyGeneration || []
+          hourly_generation: pvHourlyGeneration || [],
+          capacity_kwp: pvCapacityUsed
         }
       });
-      console.log(`📤 Sent PV_DATA_RESPONSE: ${pvHourlyGeneration?.length || 0} values`);
+      console.log(`📤 Sent PV_DATA_RESPONSE: ${pvHourlyGeneration?.length || 0} values, capacity: ${pvCapacityUsed || 'unknown'} kWp`);
       break;
 
     case 'REQUEST_LOAD_DATA':
@@ -777,6 +856,9 @@ window.addEventListener('message', (event) => {
     case 'REQUEST_ANALYSIS_RESULTS':
       // Profile module requests analysis results for config population
       console.log('📊 Shell responding to REQUEST_ANALYSIS_RESULTS');
+      console.log('  - masterVariantKey:', sharedData.masterVariantKey);
+      console.log('  - masterVariant.capacity:', sharedData.masterVariant?.capacity);
+      console.log('  - analyticalYear:', sharedData.analyticalYear);
       broadcastToModules({
         type: 'ANALYSIS_RESULTS',
         data: {
@@ -784,6 +866,11 @@ window.addEventListener('message', (event) => {
           pvConfig: sharedData.pvConfig,
           hourlyData: sharedData.hourlyData,
           scenarios: sharedData.analysisResults?.scenarios || [],
+          // Include master variant data directly for easy access
+          masterVariant: sharedData.masterVariant,
+          masterVariantKey: sharedData.masterVariantKey,
+          // Include analytical year for correct month mapping
+          analyticalYear: sharedData.analyticalYear,
           sharedData: sharedData
         }
       });

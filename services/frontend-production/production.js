@@ -1,4 +1,4 @@
-console.log('🚀 production.js v16 LOADED - Fixed: use actualProduction from hourly data - timestamp:', new Date().toISOString());
+console.log('🚀 production.js v17 LOADED - Fixed: use key_variants[X].hourly_production (PVGIS data) instead of synthetic - timestamp:', new Date().toISOString());
 
 // Production mode - use nginx reverse proxy routes
 const USE_PROXY = true;
@@ -24,6 +24,11 @@ let currentVariant = 'A'; // Default variant
 let variants = {};
 let systemSettings = null;
 let analyticalYear = null; // { start_date, end_date, total_hours, total_days, is_complete }
+
+// BESS source selection (similar to economics module)
+let profileAnalysisBessData = null; // BESS data from Profile Analysis module
+let configBessData = null; // BESS data from pv-calculation (via key_variants)
+let currentBessSource = 'pv-calculation'; // 'pv-calculation' or 'profile-analysis'
 
 // ============================================
 // PRODUCTION SCENARIO P50/P75/P90
@@ -265,6 +270,19 @@ window.addEventListener('message', (event) => {
           if (analysisResults && analysisResults.key_variants) {
             variants = analysisResults.key_variants;
             console.log('  - variants loaded:', Object.keys(variants));
+
+            // Store original BESS config data for BESS source selector
+            const variantKey = event.data.data.masterVariantKey || currentVariant || 'A';
+            const variant = variants[variantKey];
+            if (variant && variant.bess_power_kw > 0 && !configBessData) {
+              configBessData = {
+                bess_power_kw: variant.bess_power_kw,
+                bess_energy_kwh: variant.bess_energy_kwh,
+                bess_cycles_equivalent: variant.bess_cycles_equivalent,
+                bess_discharged_kwh: variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0
+              };
+              console.log('  - configBessData stored:', configBessData);
+            }
           }
         }
         pvConfig = event.data.data.pvConfig;
@@ -309,6 +327,33 @@ window.addEventListener('message', (event) => {
         systemSettings = event.data.data;
         initializeScenarioSelector();
         performAnalysis();
+      }
+      break;
+    case 'PROFILE_ANALYSIS_UPDATED':
+      // Received BESS analysis results from Profile Analysis module
+      console.log('📊 Production: PROFILE_ANALYSIS_UPDATED received:', event.data.data);
+      if (event.data.data?.bessData) {
+        profileAnalysisBessData = event.data.data.bessData;
+        console.log('🔋 Production: BESS data from profile analysis:', {
+          power_kw: profileAnalysisBessData.bess_power_kw,
+          energy_kwh: profileAnalysisBessData.bess_energy_kwh,
+          annual_cycles: profileAnalysisBessData.annual_cycles,
+          strategy: profileAnalysisBessData.strategy
+        });
+
+        // Store config BESS data before potentially overwriting
+        const variant = variants[currentVariant];
+        if (variant && variant.bess_power_kw > 0 && !configBessData) {
+          configBessData = {
+            bess_power_kw: variant.bess_power_kw,
+            bess_energy_kwh: variant.bess_energy_kwh,
+            bess_cycles_equivalent: variant.bess_cycles_equivalent,
+            bess_discharged_kwh: variant.bess_discharged_kwh || variant.bess_self_consumed_from_bess_kwh || 0
+          };
+        }
+
+        // Update BESS source selector UI
+        updateBessSourceSelector();
       }
       break;
     case 'SCENARIO_CHANGED':
@@ -389,6 +434,31 @@ async function loadAllData() {
       if (storedConsumption) consumptionData = JSON.parse(storedConsumption);
       if (storedConfig) pvConfig = JSON.parse(storedConfig);
 
+      // IMPORTANT: ALWAYS use hourly_production from key_variants (PVGIS data)!
+      // This ensures we display accurate production based on selected variant
+      if (analysisResults && analysisResults.key_variants) {
+        const variantKey = currentVariant || 'A';
+        const variant = analysisResults.key_variants[variantKey];
+        console.log(`📊 Loading production data for variant ${variantKey}: capacity=${variant?.capacity} kWp`);
+
+        if (variant && variant.hourly_production && variant.hourly_production.length > 0) {
+          // ALWAYS use PVGIS data from key_variants - ignore localStorage productionData
+          const pvgisSum = variant.hourly_production.reduce((a,b) => a+b, 0);
+          console.log(`✅ Using PVGIS hourly_production from key_variants[${variantKey}]`);
+          console.log(`   Production: ${(pvgisSum/1000).toFixed(1)} MWh (${(pvgisSum/variant.capacity).toFixed(0)} kWh/kWp)`);
+
+          productionData = {
+            filename: `PVGIS/pvlib for Variant ${variantKey}`,
+            hourlyProduction: variant.hourly_production,
+            dataPoints: variant.hourly_production.length,
+            source: 'pvgis'
+          };
+          // Don't save to localStorage - always get fresh data from key_variants
+        } else {
+          console.log(`⚠️ No hourly_production in key_variants[${variantKey}] - using localStorage fallback`);
+        }
+      }
+
       performAnalysis();
       return;
     } catch (error) {
@@ -450,15 +520,40 @@ async function loadAllData() {
       }
     }
 
-    // Build production data
-    if (analysisResults && analysisResults.hourly_production) {
+    // Build production data - use hourly_production from key_variants (PVGIS/pvlib data)
+    // NOTE: analysisResults.hourly_production does NOT exist in API response!
+    // We must use key_variants[X].hourly_production which contains actual PVGIS data
+    let hourlyProductionData = null;
+
+    if (analysisResults && analysisResults.key_variants) {
+      // Try to get hourly_production from current variant or default to 'A'
+      const variantKey = currentVariant || 'A';
+      const variant = analysisResults.key_variants[variantKey];
+
+      if (variant && variant.hourly_production && variant.hourly_production.length > 0) {
+        hourlyProductionData = variant.hourly_production;
+        console.log(`✅ Using hourly_production from key_variants[${variantKey}]: ${hourlyProductionData.length} values, sum: ${(hourlyProductionData.reduce((a,b) => a+b, 0)/1000).toFixed(1)} MWh`);
+      } else {
+        // Fallback: try other variants
+        for (const [key, v] of Object.entries(analysisResults.key_variants)) {
+          if (v.hourly_production && v.hourly_production.length > 0) {
+            hourlyProductionData = v.hourly_production;
+            console.log(`✅ Using hourly_production from key_variants[${key}] (fallback): ${hourlyProductionData.length} values`);
+            break;
+          }
+        }
+      }
+    }
+
+    if (hourlyProductionData) {
       productionData = {
-        filename: 'Dane z backendu',
-        hourlyProduction: analysisResults.hourly_production,
-        dataPoints: analysisResults.hourly_production.length
+        filename: 'Dane z PVGIS/pvlib',
+        hourlyProduction: hourlyProductionData,
+        dataPoints: hourlyProductionData.length
       };
     } else {
       // Generate sample production data if analysis not available
+      console.log('⚠️ No hourly_production in key_variants, using zeros as fallback');
       productionData = {
         filename: 'Dane z backendu',
         hourlyProduction: hourlyData.values.map(() => 0),
@@ -623,18 +718,48 @@ function performAnalysis() {
   const scenarioFactor = productionFactors[currentScenario] || 1.0;
   console.log(`📊 Using scenario ${currentScenario} with factor ${scenarioFactor}`);
 
-  if (analysisResults && variants && currentVariant && consumptionData) {
-    console.log('✓ All conditions met, attempting to generate hourly production');
+  if (analysisResults && variants && currentVariant) {
+    console.log('✓ All conditions met, attempting to use hourly production');
     const variant = variants[currentVariant];
     console.log('  - Variant object:', variant);
     console.log('  - Variant capacity:', variant?.capacity);
-    console.log('  - consumptionData.hourlyData:', consumptionData.hourlyData ? 'EXISTS' : 'NULL');
-    console.log('  - Timestamps count:', consumptionData.hourlyData?.timestamps?.length);
+    console.log('  - Variant hourly_production:', variant?.hourly_production?.length || 'NONE');
 
-    if (variant && consumptionData.hourlyData && consumptionData.hourlyData.timestamps) {
-      console.log('🚀 Generating hourly production with scenario factor...');
+    // PRIORITY 1: Use hourly_production from key_variants (PVGIS/pvlib data)
+    // This is the accurate production profile calculated by the backend
+    if (variant && variant.hourly_production && variant.hourly_production.length > 0) {
+      console.log('✅ Using hourly_production from key_variants (PVGIS/pvlib data)');
 
-      // Generate base hourly production (P50)
+      // Apply scenario factor to PVGIS hourly production
+      const baseHourlyProduction = variant.hourly_production;
+      const hourlyProduction = baseHourlyProduction.map(val => val * scenarioFactor);
+
+      console.log('  - Data points:', hourlyProduction.length);
+      console.log('  - Scenario factor:', scenarioFactor);
+      console.log('  - Sum (base PVGIS):', (baseHourlyProduction.reduce((a, b) => a + b, 0) / 1000).toFixed(1), 'MWh');
+      console.log('  - Sum (adjusted):', (hourlyProduction.reduce((a, b) => a + b, 0) / 1000).toFixed(1), 'MWh');
+      console.log('  - Max:', Math.max(...hourlyProduction).toFixed(2), 'kW');
+
+      productionData = {
+        filename: `PVGIS/pvlib for Variant ${currentVariant} (${currentScenario})`,
+        hourlyProduction: hourlyProduction,
+        dataPoints: hourlyProduction.length,
+        scenario: currentScenario,
+        scenarioFactor: scenarioFactor,
+        source: 'pvgis'  // Mark as PVGIS data
+      };
+
+      // Save to localStorage for persistence
+      localStorage.setItem('pvProductionData', JSON.stringify(productionData));
+      console.log('✅ productionData with PVGIS data saved to localStorage');
+
+    // PRIORITY 2: FALLBACK - Generate synthetic production if no PVGIS data
+    } else if (variant && consumptionData?.hourlyData?.timestamps) {
+      console.log('⚠️ No PVGIS hourly_production, falling back to synthetic generation');
+      console.log('  - consumptionData.hourlyData:', consumptionData.hourlyData ? 'EXISTS' : 'NULL');
+      console.log('  - Timestamps count:', consumptionData.hourlyData?.timestamps?.length);
+
+      // Generate base hourly production (P50) using synthetic model
       const baseHourlyProduction = generateHourlyProduction(
         variant.capacity,
         consumptionData.hourlyData.timestamps
@@ -643,25 +768,22 @@ function performAnalysis() {
       // Apply scenario factor to hourly production
       const hourlyProduction = baseHourlyProduction.map(val => val * scenarioFactor);
 
-      console.log('✅ Generated hourly production:');
+      console.log('⚠️ Generated SYNTHETIC hourly production:');
       console.log('  - Data points:', hourlyProduction.length);
-      console.log('  - Scenario factor:', scenarioFactor);
-      console.log('  - Sum (base):', baseHourlyProduction.reduce((a, b) => a + b, 0).toFixed(2), 'kWh');
-      console.log('  - Sum (adjusted):', hourlyProduction.reduce((a, b) => a + b, 0).toFixed(2), 'kWh');
-      console.log('  - Max:', Math.max(...hourlyProduction).toFixed(2), 'kW');
+      console.log('  - Sum (base synthetic):', (baseHourlyProduction.reduce((a, b) => a + b, 0) / 1000).toFixed(1), 'MWh');
+      console.log('  - Sum (adjusted):', (hourlyProduction.reduce((a, b) => a + b, 0) / 1000).toFixed(1), 'MWh');
 
       productionData = {
-        filename: `Generated for Variant ${currentVariant} (${currentScenario})`,
+        filename: `Synthetic for Variant ${currentVariant} (${currentScenario})`,
         hourlyProduction: hourlyProduction,
         dataPoints: hourlyProduction.length,
         scenario: currentScenario,
-        scenarioFactor: scenarioFactor
+        scenarioFactor: scenarioFactor,
+        source: 'synthetic'  // Mark as synthetic data
       };
 
-      // Save to localStorage for persistence
       localStorage.setItem('pvProductionData', JSON.stringify(productionData));
-
-      console.log('✅ productionData object created and saved to localStorage');
+      console.log('⚠️ productionData with SYNTHETIC data saved to localStorage');
     } else {
       console.log('❌ Inner condition failed - missing variant or consumption data');
     }
@@ -678,6 +800,7 @@ function performAnalysis() {
   // Update UI
   updateStatistics(stats);
   updateBessSection();
+  updateBessSourceSelector();
   updateDataInfo();
 
   // Generate charts
@@ -1070,6 +1193,147 @@ function updateBessSection() {
     baseline: baseline,
     autoIncrease: diffAuto
   });
+}
+
+// ============================================
+// BESS SOURCE SELECTOR
+// ============================================
+
+/**
+ * Update BESS source selector visibility and info display
+ * Shows selector only when profile analysis BESS data is available
+ */
+function updateBessSourceSelector() {
+  const bessSourceSection = document.getElementById('bessSourceSection');
+  const bessSourceSelect = document.getElementById('bessSourceSelect');
+  const configInfo = document.getElementById('bessSourceConfigInfo');
+  const profileInfo = document.getElementById('bessSourceProfileInfo');
+  const warningEl = document.getElementById('bessSourceWarning');
+
+  if (!bessSourceSection) return;
+
+  const variant = variants[currentVariant];
+  const hasBess = variant && variant.bess_power_kw > 0;
+
+  // Only show selector if we have profile analysis BESS data
+  if (profileAnalysisBessData && hasBess) {
+    bessSourceSection.style.display = 'block';
+
+    // Set current selection
+    if (bessSourceSelect) {
+      bessSourceSelect.value = currentBessSource;
+    }
+
+    // Show config BESS info
+    if (configInfo && configBessData) {
+      configInfo.style.display = 'inline';
+      configInfo.textContent = `Konfiguracja: ${configBessData.bess_power_kw} kW / ${configBessData.bess_energy_kwh} kWh, ${configBessData.bess_cycles_equivalent?.toFixed(0) || 0} cykli`;
+    }
+
+    // Show profile analysis BESS info
+    if (profileInfo && profileAnalysisBessData) {
+      profileInfo.style.display = 'inline';
+      profileInfo.textContent = `Analiza Profilu: ${profileAnalysisBessData.bess_power_kw} kW / ${profileAnalysisBessData.bess_energy_kwh} kWh, ${profileAnalysisBessData.annual_cycles?.toFixed(0) || 0} cykli (${profileAnalysisBessData.strategy || 'balanced'})`;
+    }
+
+    // Show warning if BESS sizes differ significantly
+    if (warningEl && configBessData && profileAnalysisBessData) {
+      const configEnergy = configBessData.bess_energy_kwh || 0;
+      const profileEnergy = profileAnalysisBessData.bess_energy_kwh || 0;
+      const diff = Math.abs(configEnergy - profileEnergy) / Math.max(configEnergy, profileEnergy, 1);
+      warningEl.style.display = diff > 0.1 ? 'inline' : 'none'; // Show if >10% difference
+    }
+
+    console.log('🔋 Production: BESS source selector updated', {
+      currentSource: currentBessSource,
+      configBess: configBessData,
+      profileBess: profileAnalysisBessData
+    });
+  } else {
+    bessSourceSection.style.display = 'none';
+  }
+}
+
+/**
+ * Handle BESS source change from UI selector
+ * Updates variant data and refreshes charts
+ */
+function changeBessSource() {
+  const bessSourceSelect = document.getElementById('bessSourceSelect');
+  if (!bessSourceSelect) return;
+
+  const newSource = bessSourceSelect.value;
+  console.log(`🔋 Production: Changing BESS source from ${currentBessSource} to ${newSource}`);
+
+  currentBessSource = newSource;
+
+  // Apply BESS source to variant
+  applyBessSourceToVariant();
+
+  // Update BESS section display
+  updateBessSourceSelector();
+  updateBessSection();
+
+  // Regenerate charts with new BESS data
+  generateHourlyProfileChart();
+
+  console.log(`✅ Production: BESS source changed to ${newSource}`);
+}
+
+/**
+ * Apply selected BESS source data to current variant
+ * Similar to economics module implementation
+ */
+function applyBessSourceToVariant() {
+  const variant = variants[currentVariant];
+  if (!variant) return;
+
+  // Get efficiency settings
+  const settings = systemSettings || {};
+  const roundtripEfficiency = settings.bessRoundtripEfficiency || 0.90;
+  const oneWayEfficiency = Math.sqrt(roundtripEfficiency);
+  const usableDepthOfDischarge = 0.8;
+
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData) {
+    // Use profile analysis BESS data
+    variant.bess_power_kw = profileAnalysisBessData.bess_power_kw;
+    variant.bess_energy_kwh = profileAnalysisBessData.bess_energy_kwh;
+    variant.bess_cycles_equivalent = profileAnalysisBessData.annual_cycles;
+    variant.bess_source = 'profile-analysis';
+
+    // USE annual_discharge_mwh DIRECTLY from profile-analysis!
+    // This value comes from real hourly simulation - DO NOT recalculate from cycles!
+    // The cycles × usable_capacity formula was overestimating by ~2-6x because it assumed
+    // every day could fully utilize the average surplus.
+    const annualDischargeMwh = profileAnalysisBessData.annual_discharge_mwh || 0;
+    const annualDischargeKwh = annualDischargeMwh * 1000;
+
+    variant.bess_self_consumed_from_bess_kwh = annualDischargeKwh;
+    variant.bess_discharged_kwh = annualDischargeKwh;
+
+    console.log('🔋 Production: Applied profile-analysis BESS data:', {
+      power_kw: variant.bess_power_kw,
+      energy_kwh: variant.bess_energy_kwh,
+      cycles: variant.bess_cycles_equivalent,
+      annual_discharge_mwh: annualDischargeMwh,
+      discharged_kwh: annualDischargeKwh
+    });
+  } else if (currentBessSource === 'pv-calculation' && configBessData) {
+    // Use original pv-calculation BESS data
+    variant.bess_power_kw = configBessData.bess_power_kw;
+    variant.bess_energy_kwh = configBessData.bess_energy_kwh;
+    variant.bess_cycles_equivalent = configBessData.bess_cycles_equivalent;
+    variant.bess_self_consumed_from_bess_kwh = configBessData.bess_discharged_kwh;
+    variant.bess_discharged_kwh = configBessData.bess_discharged_kwh;
+    variant.bess_source = 'pv-calculation';
+
+    console.log('🔋 Production: Applied pv-calculation BESS data:', {
+      power_kw: variant.bess_power_kw,
+      energy_kwh: variant.bess_energy_kwh,
+      cycles: variant.bess_cycles_equivalent,
+      discharged_kwh: configBessData.bess_discharged_kwh
+    });
+  }
 }
 
 // Update data info

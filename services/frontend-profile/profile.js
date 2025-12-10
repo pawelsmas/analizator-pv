@@ -15,11 +15,13 @@
     let monthlyChart = null;
     let quarterlyChart = null;
     let paretoChart = null;
+    let cachedShellData = null;  // Cache data from shell for later use
 
     // Initialize module
     function init() {
         console.log('📊 Profile Analysis module v2.0 initializing...');
         setupEventListeners();
+        setupMessageListener();
         loadDataFromShell();
     }
 
@@ -36,31 +38,235 @@
         });
     }
 
-    function loadDataFromShell() {
-        // Request analysis results from shell
-        window.parent.postMessage({
-            type: 'REQUEST_ANALYSIS_RESULTS'
-        }, '*');
-
-        // Listen for results
+    function setupMessageListener() {
         window.addEventListener('message', (event) => {
-            if (event.data?.type === 'ANALYSIS_RESULTS') {
-                const results = event.data.data;
-                if (results) {
-                    populateCurrentConfig(results);
+            const { type, data } = event.data || {};
+
+            if (type === 'ANALYSIS_RESULTS') {
+                console.log('📥 Received ANALYSIS_RESULTS:', data);
+                if (data) {
+                    cachedShellData = data;
+                    populateCurrentConfig(data);
                 }
+            } else if (type === 'SHARED_DATA_RESPONSE') {
+                console.log('📥 Received SHARED_DATA_RESPONSE');
+                if (data) {
+                    cachedShellData = data;
+                    populateCurrentConfig(data);
+                }
+            } else if (type === 'SETTINGS_UPDATED' && data) {
+                console.log('📥 Received SETTINGS_UPDATED');
+                applySettings(data);
             }
         });
     }
 
-    function populateCurrentConfig(results) {
-        // Populate form with current analysis data
-        if (results.scenarios && results.scenarios.length > 0) {
-            const scenario = results.scenarios[0];
+    function loadDataFromShell() {
+        // Request analysis results from shell
+        window.parent.postMessage({ type: 'REQUEST_ANALYSIS_RESULTS' }, '*');
+        window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
+        window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+    }
 
-            document.getElementById('pvCapacity').value = scenario.capacity || '';
-            document.getElementById('bessEnergy').value = scenario.bess_energy_kwh || '';
-            document.getElementById('bessPower').value = scenario.bess_power_kw || '';
+    /**
+     * Send profile analysis results to shell for propagation to Economics module.
+     * This includes BESS sizing recommendations and energy flow data.
+     *
+     * IMPORTANT: Uses recommended_* fields from backend which contain
+     * hourly simulation data for Best NPV BESS - this is the SINGLE SOURCE OF TRUTH!
+     */
+    function notifyShellProfileAnalysis(result) {
+        if (!result) return;
+
+        // ============================================================
+        // USE RECOMMENDED BESS DATA FROM BACKEND (Best NPV from Pareto)
+        // This is the SINGLE SOURCE OF TRUTH for EKONOMIA and Excel!
+        // ============================================================
+        const hasRecommendedBess = result.recommended_bess_power_kw && result.recommended_bess_energy_kwh;
+
+        if (hasRecommendedBess) {
+            console.log('📊 Using RECOMMENDED BESS from backend (Best NPV):',
+                        result.recommended_bess_power_kw, 'kW /',
+                        result.recommended_bess_energy_kwh, 'kWh,',
+                        result.recommended_bess_annual_discharge_mwh?.toFixed(2), 'MWh/year');
+        } else {
+            console.warn('⚠️ No recommended BESS data from backend - falling back to Pareto search');
+        }
+
+        // Fallback: Find best NPV from Pareto if backend didn't provide recommended_*
+        let fallbackPower = 0, fallbackEnergy = 0, fallbackCycles = 0, fallbackDischarge = 0;
+        if (!hasRecommendedBess && result.pareto_frontier?.length > 0) {
+            const bestVariant = result.pareto_frontier.reduce((best, current) => {
+                const currentNpv = current.npv_mln_pln || 0;
+                const bestNpv = best?.npv_mln_pln || -Infinity;
+                return currentNpv > bestNpv ? current : best;
+            }, null);
+            if (bestVariant) {
+                fallbackPower = bestVariant.power_kw || 0;
+                fallbackEnergy = bestVariant.energy_kwh || 0;
+                fallbackCycles = bestVariant.annual_cycles || 0;
+                fallbackDischarge = bestVariant.annual_discharge_mwh || 0;
+            }
+        }
+
+        const variantComparison = result.variant_comparison;
+
+        const bessData = {
+            // Recommended BESS sizing (BEST NPV) - from backend or fallback
+            bess_power_kw: result.recommended_bess_power_kw || fallbackPower,
+            bess_energy_kwh: result.recommended_bess_energy_kwh || fallbackEnergy,
+
+            // Annual energy flows from REAL HOURLY SIMULATION
+            annual_cycles: result.recommended_bess_annual_cycles || fallbackCycles,
+            annual_discharge_mwh: result.recommended_bess_annual_discharge_mwh || fallbackDischarge,
+
+            // Hourly data for Excel export (SINGLE SOURCE OF TRUTH!)
+            recommended_hourly_bess_charge: result.recommended_hourly_bess_charge,
+            recommended_hourly_bess_discharge: result.recommended_hourly_bess_discharge,
+            recommended_hourly_bess_soc: result.recommended_hourly_bess_soc,
+
+            // NPV and payback from profile analysis
+            npv_pln: (result.pareto_frontier?.find(p =>
+                Math.abs(p.power_kw - (result.recommended_bess_power_kw || 0)) < 10)?.npv_mln_pln || 0) * 1_000_000,
+            payback_years: result.pareto_frontier?.find(p =>
+                Math.abs(p.power_kw - (result.recommended_bess_power_kw || 0)) < 10)?.payback_years || 0,
+            capex_pln: variantComparison?.recommended?.capex_pln || 0,
+            annual_savings_pln: variantComparison?.recommended?.annual_savings_pln || 0,
+
+            // Energy balance
+            annual_surplus_mwh: result.annual_surplus_mwh,
+            annual_deficit_mwh: result.annual_deficit_mwh,
+            direct_consumption_mwh: result.direct_consumption_mwh,  // PV direct without BESS!
+            direct_consumption_pct: result.direct_consumption_pct,
+
+            // Strategy used
+            strategy: result.selected_strategy,
+
+            // Full recommendations array for reference
+            all_recommendations: result.bess_recommendations,
+            pareto_frontier: result.pareto_frontier
+        };
+
+        console.log('📤 Profile: Sending PROFILE_ANALYSIS_COMPLETE to shell:', {
+            bess_power_kw: bessData.bess_power_kw,
+            bess_energy_kwh: bessData.bess_energy_kwh,
+            annual_discharge_mwh: bessData.annual_discharge_mwh,
+            has_hourly_data: !!bessData.recommended_hourly_bess_discharge?.length
+        });
+
+        window.parent.postMessage({
+            type: 'PROFILE_ANALYSIS_COMPLETE',
+            data: {
+                bessData: bessData,
+                fullResult: result
+            }
+        }, '*');
+    }
+
+    function applySettings(settings) {
+        // Apply settings from shell to form
+        if (settings.energyPrice) {
+            document.getElementById('energyPrice').value = settings.energyPrice;
+        }
+        if (settings.bessCapexPerKwh) {
+            document.getElementById('bessCapexKwh').value = settings.bessCapexPerKwh;
+        }
+        if (settings.bessCapexPerKw) {
+            document.getElementById('bessCapexKw').value = settings.bessCapexPerKw;
+        }
+        // bessRoundtripEfficiency comes as decimal (0.90), convert to percentage (90)
+        if (settings.bessRoundtripEfficiency) {
+            document.getElementById('bessEfficiency').value = settings.bessRoundtripEfficiency * 100;
+        }
+        // discountRate already comes as percentage (7), no conversion needed
+        if (settings.discountRate) {
+            document.getElementById('discountRate').value = settings.discountRate;
+        }
+        // analysisPeriod - project years
+        if (settings.analysisPeriod) {
+            document.getElementById('projectYears').value = settings.analysisPeriod;
+        }
+        console.log('⚙️ Applied settings from shell');
+    }
+
+    function populateCurrentConfig(data) {
+        console.log('📋 Populating config from data:', Object.keys(data || {}));
+
+        // Try to get PV capacity from various sources
+        let pvCapacity = null;
+        let bessEnergy = null;
+        let bessPower = null;
+
+        // PRIORITY 1: Use masterVariant directly (the user's selected variant!)
+        if (data.masterVariant) {
+            pvCapacity = data.masterVariant.capacity;
+            bessEnergy = data.masterVariant.bess_energy_kwh;
+            bessPower = data.masterVariant.bess_power_kw;
+            console.log('  ✓ Using masterVariant:', {
+                capacity: pvCapacity,
+                bess_energy: bessEnergy,
+                bess_power: bessPower,
+                variant: data.masterVariantKey
+            });
+        }
+
+        // PRIORITY 2: Check sharedData.masterVariant
+        if (!pvCapacity && data.sharedData?.masterVariant) {
+            pvCapacity = data.sharedData.masterVariant.capacity;
+            bessEnergy = data.sharedData.masterVariant.bess_energy_kwh;
+            bessPower = data.sharedData.masterVariant.bess_power_kw;
+            console.log('  ✓ Using sharedData.masterVariant:', {
+                capacity: pvCapacity,
+                bess_energy: bessEnergy,
+                bess_power: bessPower
+            });
+        }
+
+        // PRIORITY 3: Check key_variants with masterVariantKey
+        if (!pvCapacity && data.sharedData?.masterVariantKey && data.fullResults?.key_variants) {
+            const masterData = data.fullResults.key_variants[data.sharedData.masterVariantKey];
+            if (masterData) {
+                pvCapacity = masterData.capacity;
+                bessEnergy = masterData.bess_energy_kwh;
+                bessPower = masterData.bess_power_kw;
+                console.log('  ✓ Using key_variants[' + data.sharedData.masterVariantKey + ']:', {
+                    capacity: pvCapacity,
+                    bess_energy: bessEnergy,
+                    bess_power: bessPower
+                });
+            }
+        }
+
+        // FALLBACK: Check pvConfig (less reliable)
+        if (!pvCapacity && data.pvConfig?.capacity) {
+            pvCapacity = data.pvConfig.capacity;
+            console.log('  - Fallback to pvConfig.capacity:', pvCapacity);
+        }
+
+        // LAST RESORT: First scenario (should not be used normally)
+        if (!pvCapacity && data.scenarios && data.scenarios.length > 0) {
+            const scenario = data.scenarios[0];
+            pvCapacity = scenario.capacity;
+            bessEnergy = bessEnergy || scenario.bess_energy_kwh;
+            bessPower = bessPower || scenario.bess_power_kw;
+            console.log('  ⚠️ WARNING: Fallback to first scenario (not master variant!):', pvCapacity);
+        }
+
+        // Apply values to form (round to whole numbers for practical use)
+        if (pvCapacity) {
+            const roundedPv = Math.round(pvCapacity);
+            document.getElementById('pvCapacity').value = roundedPv;
+            console.log('  ✓ Set PV capacity:', roundedPv, 'kWp');
+        }
+        if (bessEnergy) {
+            const roundedEnergy = Math.round(bessEnergy);
+            document.getElementById('bessEnergy').value = roundedEnergy;
+            console.log('  ✓ Set BESS energy:', roundedEnergy, 'kWh');
+        }
+        if (bessPower) {
+            const roundedPower = Math.round(bessPower);
+            document.getElementById('bessPower').value = roundedPower;
+            console.log('  ✓ Set BESS power:', roundedPower, 'kW');
         }
     }
 
@@ -69,21 +275,126 @@
         btn.disabled = true;
         btn.textContent = 'Analizuję (PyPSA)...';
 
-        showLoading(true, 'Uruchamiam optymalizację PyPSA...');
+        showLoading(true, 'Pobieranie danych...');
 
         try {
             // Get data from shell
             const pvData = await getPvDataFromShell();
             const loadData = await getLoadDataFromShell();
 
-            if (!pvData || !loadData) {
-                showError('Brak danych PV lub zużycia. Najpierw wykonaj analizę w module konfiguracji.');
+            // Get hourly generation - try multiple sources
+            let hourlyGeneration = pvData?.hourly_generation || [];
+            let hourlyConsumption = loadData?.hourly_consumption || [];
+
+            console.log('📊 Data from shell:');
+            console.log('  - PV generation:', hourlyGeneration.length, 'values');
+            console.log('  - Load consumption:', hourlyConsumption.length, 'values');
+
+            // If PV data is empty, try to get from cached shell data
+            if (hourlyGeneration.length === 0 && cachedShellData) {
+                console.log('  ⚠️ PV data empty, trying cached data...');
+
+                // Try fullResults.hourly_production
+                if (cachedShellData.fullResults?.hourly_production) {
+                    hourlyGeneration = cachedShellData.fullResults.hourly_production;
+                    console.log('  ✓ Using fullResults.hourly_production:', hourlyGeneration.length);
+                }
+                // Try sharedData.analysisResults.hourly_production
+                else if (cachedShellData.sharedData?.analysisResults?.hourly_production) {
+                    hourlyGeneration = cachedShellData.sharedData.analysisResults.hourly_production;
+                    console.log('  ✓ Using sharedData.analysisResults.hourly_production:', hourlyGeneration.length);
+                }
+                // Try key_variants master
+                else if (cachedShellData.fullResults?.key_variants) {
+                    const variants = Object.values(cachedShellData.fullResults.key_variants);
+                    const withProduction = variants.find(v => v.hourly_production?.length > 0);
+                    if (withProduction) {
+                        hourlyGeneration = withProduction.hourly_production;
+                        console.log('  ✓ Using key_variant hourly_production:', hourlyGeneration.length);
+                    }
+                }
+            }
+
+            // If load data is empty, try cached
+            if (hourlyConsumption.length === 0 && cachedShellData) {
+                if (cachedShellData.hourlyData?.values) {
+                    hourlyConsumption = cachedShellData.hourlyData.values;
+                    console.log('  ✓ Using cached hourlyData.values:', hourlyConsumption.length);
+                } else if (cachedShellData.sharedData?.hourlyData?.values) {
+                    hourlyConsumption = cachedShellData.sharedData.hourlyData.values;
+                    console.log('  ✓ Using sharedData.hourlyData.values:', hourlyConsumption.length);
+                }
+            }
+
+            // Validate data
+            if (hourlyGeneration.length === 0) {
+                showError('Brak danych produkcji PV. Najpierw wykonaj analizę w module KONFIGURACJA.');
+                return;
+            }
+            if (hourlyConsumption.length === 0) {
+                showError('Brak danych zużycia. Najpierw wgraj profil zużycia w module KONFIGURACJA.');
                 return;
             }
 
+            console.log('✅ Data ready:', hourlyGeneration.length, 'PV values,', hourlyConsumption.length, 'load values');
+
+            // Get timestamps for correct month mapping
+            // CRITICAL: This ensures monthly data is correctly assigned to calendar months
+            // Analytical year may start from any month (e.g., July 2024 to June 2025)
+            let timestamps = null;
+
+            // Debug: show all possible sources
+            console.log('📅 Looking for timestamps...');
+            console.log('   cachedShellData.hourlyData:', cachedShellData?.hourlyData);
+            console.log('   cachedShellData.hourlyData?.timestamps:', cachedShellData?.hourlyData?.timestamps?.length || 'N/A');
+            console.log('   cachedShellData.sharedData?.hourlyData?.timestamps:', cachedShellData?.sharedData?.hourlyData?.timestamps?.length || 'N/A');
+            console.log('   cachedShellData.sharedData?.analyticalYear:', cachedShellData?.sharedData?.analyticalYear);
+
+            // PRIORITY 1: Try to get timestamps directly from hourlyData
+            if (cachedShellData?.hourlyData?.timestamps?.length > 0) {
+                timestamps = cachedShellData.hourlyData.timestamps;
+                console.log('📅 Using timestamps from hourlyData:', timestamps.length, 'values');
+                console.log('   First timestamp:', timestamps[0]);
+                console.log('   Last timestamp:', timestamps[timestamps.length - 1]);
+            }
+            // PRIORITY 2: Try sharedData.hourlyData.timestamps
+            else if (cachedShellData?.sharedData?.hourlyData?.timestamps?.length > 0) {
+                timestamps = cachedShellData.sharedData.hourlyData.timestamps;
+                console.log('📅 Using timestamps from sharedData.hourlyData:', timestamps.length, 'values');
+                console.log('   First timestamp:', timestamps[0]);
+            }
+            // PRIORITY 3: Try fullResults or sharedData.analysisResults for timestamps
+            else if (cachedShellData?.fullResults?.timestamps?.length > 0) {
+                timestamps = cachedShellData.fullResults.timestamps;
+                console.log('📅 Using timestamps from fullResults:', timestamps.length, 'values');
+            }
+            // PRIORITY 4: Generate from analyticalYear.start_date
+            else {
+                const analyticalYear = cachedShellData?.sharedData?.analyticalYear ||
+                                       cachedShellData?.analyticalYear ||
+                                       cachedShellData?.fullResults?.analytical_year;
+
+                if (analyticalYear?.start_date) {
+                    console.log('📅 Generating timestamps from analytical year:', analyticalYear.start_date);
+                    timestamps = [];
+                    const startDate = new Date(analyticalYear.start_date);
+                    for (let i = 0; i < hourlyConsumption.length; i++) {
+                        const ts = new Date(startDate.getTime() + i * 3600000); // Add hours
+                        timestamps.push(ts.toISOString());
+                    }
+                    console.log(`   Generated ${timestamps.length} timestamps, starting from ${timestamps[0]}`);
+                } else {
+                    console.warn('⚠️ No timestamps or analytical year found - monthly analysis may be incorrect!');
+                    console.warn('   cachedShellData keys:', Object.keys(cachedShellData || {}));
+                    console.warn('   hourlyData type:', typeof cachedShellData?.hourlyData);
+                    console.warn('   hourlyData keys:', cachedShellData?.hourlyData ? Object.keys(cachedShellData.hourlyData) : 'N/A');
+                }
+            }
+
             const request = {
-                pv_generation_kwh: pvData.hourly_generation || [],
-                load_kwh: loadData.hourly_consumption || [],
+                pv_generation_kwh: hourlyGeneration,
+                load_kwh: hourlyConsumption,
+                timestamps: timestamps,  // IMPORTANT: For correct month mapping
                 pv_capacity_kwp: parseFloat(document.getElementById('pvCapacity').value) || 1000,
                 bess_energy_kwh: parseFloat(document.getElementById('bessEnergy').value) || null,
                 bess_power_kw: parseFloat(document.getElementById('bessPower').value) || null,
@@ -112,6 +423,9 @@
 
             analysisResult = await response.json();
             displayResults(analysisResult);
+
+            // Send BESS analysis results to shell for Economics module
+            notifyShellProfileAnalysis(analysisResult);
 
         } catch (error) {
             console.error('Analysis failed:', error);
@@ -614,11 +928,26 @@
                     <td>${m.surplus_hours_per_day.toFixed(1)}</td>
                     <td>${m.optimal_bess_kwh.toFixed(0)}</td>
                     <td class="cycles">${m.current_bess_cycles?.toFixed(1) || '-'}</td>
+                    <td><button class="export-btn" onclick="exportMonthByNumber(${m.month})" title="Eksportuj ${m.month_name} do Excel">📥</button></td>
                 </tr>
             `;
         });
         tbody.innerHTML = html;
     }
+
+    /**
+     * Quick export for specific month (called from table row button)
+     */
+    function exportMonthByNumber(monthNum) {
+        const monthSelect = document.getElementById('exportMonthSelect');
+        if (monthSelect) {
+            monthSelect.value = monthNum;
+        }
+        exportMonthlyHourlyData();
+    }
+
+    // Expose for onclick
+    window.exportMonthByNumber = exportMonthByNumber;
 
     function displayMonthlyChart(monthly) {
         const ctx = document.getElementById('monthlyChart');
@@ -869,6 +1198,327 @@
             }, 10000);
         }
     }
+
+    // ============================================
+    // EXCEL EXPORT - Monthly Hourly Data
+    // ============================================
+
+    /**
+     * Export hourly data for selected month to Excel
+     * Columns: Date, Hour, Load [kWh], PV [kWh], Surplus [kWh], Deficit [kWh],
+     *          BESS Charge [kWh], BESS Discharge [kWh], SoC [%]
+     */
+    function exportMonthlyHourlyData() {
+        const monthSelect = document.getElementById('exportMonthSelect');
+        const selectedMonth = parseInt(monthSelect.value);
+
+        const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                           'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+
+        // 0 = full year, 1-12 = specific month
+        const isFullYear = selectedMonth === 0;
+        const monthName = isFullYear ? 'Cały_rok' : monthNames[selectedMonth - 1];
+
+        console.log(`📊 Exporting hourly data for ${isFullYear ? 'full year' : `month ${selectedMonth} (${monthName})`}`);
+        console.log('📊 cachedShellData structure:', {
+            hasHourlyData: !!cachedShellData?.hourlyData,
+            hourlyDataKeys: cachedShellData?.hourlyData ? Object.keys(cachedShellData.hourlyData) : [],
+            hasSharedData: !!cachedShellData?.sharedData,
+            sharedDataKeys: cachedShellData?.sharedData ? Object.keys(cachedShellData.sharedData) : [],
+            hasFullResults: !!cachedShellData?.fullResults,
+            hasAnalysisResults: !!cachedShellData?.analysisResults
+        });
+
+        // Get data from cached shell data
+        if (!cachedShellData) {
+            alert('Brak danych do eksportu. Najpierw wykonaj analizę.');
+            return;
+        }
+
+        // Get hourly consumption and production
+        let hourlyConsumption = null;
+        let hourlyGeneration = null;
+        let timestamps = null;
+
+        // Try to get consumption data from multiple sources
+        // Source 1: Direct hourlyData.values
+        if (cachedShellData.hourlyData?.values?.length > 0) {
+            hourlyConsumption = cachedShellData.hourlyData.values;
+            timestamps = cachedShellData.hourlyData.timestamps;
+            console.log('📊 Found consumption in hourlyData.values:', hourlyConsumption.length);
+        }
+        // Source 2: sharedData.hourlyData.values
+        else if (cachedShellData.sharedData?.hourlyData?.values?.length > 0) {
+            hourlyConsumption = cachedShellData.sharedData.hourlyData.values;
+            timestamps = cachedShellData.sharedData.hourlyData.timestamps;
+            console.log('📊 Found consumption in sharedData.hourlyData.values:', hourlyConsumption.length);
+        }
+        // Source 3: Direct analysisResults.hourlyData (from ANALYSIS_RESULTS message)
+        else if (cachedShellData.analysisResults?.hourlyData?.values?.length > 0) {
+            hourlyConsumption = cachedShellData.analysisResults.hourlyData.values;
+            timestamps = cachedShellData.analysisResults.hourlyData.timestamps;
+            console.log('📊 Found consumption in analysisResults.hourlyData:', hourlyConsumption.length);
+        }
+        // Source 4: Try localStorage as last resort
+        else {
+            try {
+                const stored = localStorage.getItem('consumptionData');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed.hourlyData?.values?.length > 0) {
+                        hourlyConsumption = parsed.hourlyData.values;
+                        timestamps = parsed.hourlyData.timestamps;
+                        console.log('📊 Found consumption in localStorage:', hourlyConsumption.length);
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not load from localStorage:', e);
+            }
+        }
+
+        // Try to get PV production data from MASTER VARIANT
+        // IMPORTANT: Must use same variant as EKONOMIA (masterVariantKey)
+        const masterVariantKey = cachedShellData.masterVariantKey
+            || cachedShellData.sharedData?.masterVariantKey
+            || localStorage.getItem('masterVariantKey')
+            || 'D';
+        console.log('📊 Using master variant for PV export:', masterVariantKey);
+
+        // Source 1: key_variants[masterVariantKey] in analysisResults (PREFERRED - same as EKONOMIA)
+        if (cachedShellData.analysisResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.analysisResults.key_variants[masterVariantKey].hourly_production;
+            console.log(`📊 Found PV in analysisResults.key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
+        }
+        // Source 2: key_variants[masterVariantKey] in fullResults
+        else if (cachedShellData.fullResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.fullResults.key_variants[masterVariantKey].hourly_production;
+            console.log(`📊 Found PV in fullResults.key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
+        }
+        // Source 3: key_variants[masterVariantKey] in sharedData
+        else if (cachedShellData.sharedData?.analysisResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.sharedData.analysisResults.key_variants[masterVariantKey].hourly_production;
+            console.log(`📊 Found PV in sharedData.key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
+        }
+        // Source 4: fullResults.hourly_production (generic fallback)
+        else if (cachedShellData.fullResults?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.fullResults.hourly_production;
+            console.log('📊 FALLBACK: Found PV in fullResults.hourly_production:', hourlyGeneration.length);
+        }
+        // Source 5: analysisResults.hourly_production (generic fallback)
+        else if (cachedShellData.analysisResults?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.analysisResults.hourly_production;
+            console.log('📊 FALLBACK: Found PV in analysisResults.hourly_production:', hourlyGeneration.length);
+        }
+        // Source 6: sharedData.analysisResults.hourly_production
+        else if (cachedShellData.sharedData?.analysisResults?.hourly_production?.length > 0) {
+            hourlyGeneration = cachedShellData.sharedData.analysisResults.hourly_production;
+            console.log('📊 FALLBACK: Found PV in sharedData.analysisResults.hourly_production:', hourlyGeneration.length);
+        }
+        // Source 7: Try localStorage as last resort (use masterVariantKey)
+        else {
+            try {
+                const stored = localStorage.getItem('pv_analysis_results');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    // Try master variant first
+                    if (parsed.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+                        hourlyGeneration = parsed.key_variants[masterVariantKey].hourly_production;
+                        console.log(`📊 Found PV in localStorage key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
+                    } else if (parsed.hourly_production?.length > 0) {
+                        hourlyGeneration = parsed.hourly_production;
+                        console.log('📊 FALLBACK: Found PV in localStorage hourly_production:', hourlyGeneration.length);
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not load PV from localStorage:', e);
+            }
+        }
+
+        if (!hourlyConsumption || !hourlyGeneration || !timestamps) {
+            console.error('Missing data for export:', {
+                hasConsumption: !!hourlyConsumption,
+                consumptionLength: hourlyConsumption?.length || 0,
+                hasGeneration: !!hourlyGeneration,
+                generationLength: hourlyGeneration?.length || 0,
+                hasTimestamps: !!timestamps,
+                timestampsLength: timestamps?.length || 0
+            });
+            alert('Brak kompletnych danych godzinowych. Upewnij się, że wykonałeś analizę w module KONFIGURACJA i masz wgrane dane zużycia.');
+            return;
+        }
+
+        console.log(`📊 Data available: ${hourlyConsumption.length} load values, ${hourlyGeneration.length} PV values, ${timestamps.length} timestamps`);
+
+        // Get BESS parameters from UI
+        const bessEnergyKwh = parseFloat(document.getElementById('bessEnergy')?.value) || 2000;
+
+        // ============================================
+        // USE RECOMMENDED BESS DATA FROM BACKEND (Best NPV from Pareto)
+        // This ensures Excel export matches EKONOMIA module exactly!
+        // Priority: 1) recommended_hourly_* (Best NPV), 2) hourly_* (form BESS), 3) zeros
+        // ============================================
+        const hasRecommendedBessData = analysisResult?.recommended_hourly_bess_charge?.length > 0 &&
+                                       analysisResult?.recommended_hourly_bess_discharge?.length > 0 &&
+                                       analysisResult?.recommended_hourly_bess_soc?.length > 0;
+
+        const hasFormBessData = analysisResult?.hourly_bess_charge?.length > 0 &&
+                                analysisResult?.hourly_bess_discharge?.length > 0 &&
+                                analysisResult?.hourly_bess_soc?.length > 0;
+
+        // Select BESS data source - prefer recommended (Best NPV)
+        let bessChargeArray, bessDischargeArray, bessSocArray, bessSourceName, annualDischargeMwh;
+        let bessPowerKw, bessEnergyKwhExport;  // For summary sheet
+
+        if (hasRecommendedBessData) {
+            bessChargeArray = analysisResult.recommended_hourly_bess_charge;
+            bessDischargeArray = analysisResult.recommended_hourly_bess_discharge;
+            bessSocArray = analysisResult.recommended_hourly_bess_soc;
+            annualDischargeMwh = analysisResult.recommended_bess_annual_discharge_mwh || 0;
+            bessPowerKw = analysisResult.recommended_bess_power_kw || 0;
+            bessEnergyKwhExport = analysisResult.recommended_bess_energy_kwh || bessEnergyKwh;
+            bessSourceName = `RECOMMENDED (Best NPV: ${bessPowerKw}kW / ${bessEnergyKwhExport}kWh)`;
+            console.log('✅ Using RECOMMENDED BESS data from backend (Best NPV - SINGLE SOURCE OF TRUTH!)');
+            console.log(`   Recommended BESS: ${bessPowerKw} kW / ${bessEnergyKwhExport} kWh`);
+            console.log(`   Annual discharge: ${annualDischargeMwh.toFixed(2)} MWh`);
+        } else if (hasFormBessData) {
+            bessChargeArray = analysisResult.hourly_bess_charge;
+            bessDischargeArray = analysisResult.hourly_bess_discharge;
+            bessSocArray = analysisResult.hourly_bess_soc;
+            annualDischargeMwh = analysisResult.current_bess_annual_discharge_mwh || 0;
+            bessPowerKw = parseFloat(document.getElementById('bessPower')?.value) || 500;
+            bessEnergyKwhExport = bessEnergyKwh;
+            bessSourceName = 'FORM BESS (not recommended - values may differ from EKONOMIA!)';
+            console.warn('⚠️ Using FORM BESS data - no recommended BESS available');
+            console.warn('   This may not match EKONOMIA module values!');
+            console.log(`   Annual discharge: ${annualDischargeMwh.toFixed(2)} MWh`);
+        } else {
+            bessChargeArray = null;
+            bessDischargeArray = null;
+            bessSocArray = null;
+            annualDischargeMwh = 0;
+            bessPowerKw = parseFloat(document.getElementById('bessPower')?.value) || 500;
+            bessEnergyKwhExport = bessEnergyKwh;
+            bessSourceName = 'NONE (no backend data)';
+            console.warn('⚠️ No backend BESS data available - Excel will have zeros for BESS');
+        }
+
+        console.log(`📊 BESS source for Excel: ${bessSourceName}`);
+
+        // Filter data for selected month (or all months if isFullYear)
+        const monthData = [];
+
+        for (let i = 0; i < Math.min(timestamps.length, hourlyConsumption.length, hourlyGeneration.length); i++) {
+            const ts = timestamps[i];
+            const date = new Date(ts);
+            const month = date.getMonth() + 1; // 1-12
+
+            // Include data if: full year export OR matching month
+            if (isFullYear || month === selectedMonth) {
+                const load = hourlyConsumption[i] || 0;
+                const pv = hourlyGeneration[i] || 0;
+                const surplus = Math.max(0, pv - load);
+                const deficit = Math.max(0, load - pv);
+
+                // Get BESS data from selected source (recommended > form > zeros)
+                const bessCharge = bessChargeArray ? (bessChargeArray[i] || 0) : 0;
+                const bessDischarge = bessDischargeArray ? (bessDischargeArray[i] || 0) : 0;
+                const soc = bessSocArray ? (bessSocArray[i] || 50) : 50;
+
+                // Use standard dot decimal format (Excel compatible)
+                monthData.push({
+                    'Data': date.toLocaleDateString('pl-PL'),
+                    'Dzień tygodnia': date.toLocaleDateString('pl-PL', { weekday: 'long' }),
+                    'Miesiąc': monthNames[month - 1],
+                    'Godzina': date.getHours(),
+                    'Load [kWh]': parseFloat(load.toFixed(2)),
+                    'PV [kWh]': parseFloat(pv.toFixed(2)),
+                    'Nadwyżka [kWh]': parseFloat(surplus.toFixed(2)),
+                    'Deficyt [kWh]': parseFloat(deficit.toFixed(2)),
+                    'BESS Ładowanie [kWh]': parseFloat(bessCharge.toFixed(2)),
+                    'BESS Rozładowanie [kWh]': parseFloat(bessDischarge.toFixed(2)),
+                    'SoC [%]': parseFloat(soc.toFixed(1)),
+                    'Bilans netto [kWh]': parseFloat((pv - load).toFixed(2))
+                });
+            }
+        }
+
+        if (monthData.length === 0) {
+            const errorMsg = isFullYear
+                ? 'Brak danych do eksportu. Sprawdź czy dane są załadowane.'
+                : `Brak danych dla miesiąca ${monthName}. Sprawdź czy dane obejmują ten miesiąc.`;
+            alert(errorMsg);
+            return;
+        }
+
+        console.log(`📊 Found ${monthData.length} hourly records for ${isFullYear ? 'full year' : monthName}`);
+
+        // Calculate summary statistics (values are already numbers, not strings)
+        const totalLoad = monthData.reduce((sum, row) => sum + row['Load [kWh]'], 0);
+        const totalPV = monthData.reduce((sum, row) => sum + row['PV [kWh]'], 0);
+        const totalSurplus = monthData.reduce((sum, row) => sum + row['Nadwyżka [kWh]'], 0);
+        const totalDeficit = monthData.reduce((sum, row) => sum + row['Deficyt [kWh]'], 0);
+        const totalCharge = monthData.reduce((sum, row) => sum + row['BESS Ładowanie [kWh]'], 0);
+        const totalDischarge = monthData.reduce((sum, row) => sum + row['BESS Rozładowanie [kWh]'], 0);
+
+        // Create summary sheet with standard dot formatting
+        const periodLabel = isFullYear ? 'Cały rok' : monthName;
+        const summaryData = [
+            { 'Parametr': 'Okres', 'Wartość': periodLabel },
+            { 'Parametr': 'Liczba godzin', 'Wartość': monthData.length },
+            { 'Parametr': 'Całkowite zużycie [MWh]', 'Wartość': parseFloat((totalLoad / 1000).toFixed(2)) },
+            { 'Parametr': 'Całkowita produkcja PV [MWh]', 'Wartość': parseFloat((totalPV / 1000).toFixed(2)) },
+            { 'Parametr': 'Całkowita nadwyżka [MWh]', 'Wartość': parseFloat((totalSurplus / 1000).toFixed(2)) },
+            { 'Parametr': 'Całkowity deficyt [MWh]', 'Wartość': parseFloat((totalDeficit / 1000).toFixed(2)) },
+            { 'Parametr': 'BESS - energia załadowana [MWh]', 'Wartość': parseFloat((totalCharge / 1000).toFixed(2)) },
+            { 'Parametr': 'BESS - energia rozładowana [MWh]', 'Wartość': parseFloat((totalDischarge / 1000).toFixed(2)) },
+            { 'Parametr': 'BESS - ekw. cykli', 'Wartość': parseFloat((totalDischarge / bessEnergyKwhExport / 0.8).toFixed(1)) },
+            { 'Parametr': '', 'Wartość': '' },
+            { 'Parametr': 'Parametry BESS', 'Wartość': '' },
+            { 'Parametr': 'Moc BESS [kW]', 'Wartość': bessPowerKw },
+            { 'Parametr': 'Pojemność BESS [kWh]', 'Wartość': bessEnergyKwhExport },
+            { 'Parametr': 'Sprawność round-trip [%]', 'Wartość': Math.round(bessEfficiency * 100) },
+            { 'Parametr': 'DoD [%]', 'Wartość': 80 }
+        ];
+
+        // Create workbook with two sheets
+        const wb = XLSX.utils.book_new();
+
+        // Summary sheet
+        const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+        wsSummary['!cols'] = [{ wch: 35 }, { wch: 15 }];
+        XLSX.utils.book_append_sheet(wb, wsSummary, 'Podsumowanie');
+
+        // Hourly data sheet
+        const wsData = XLSX.utils.json_to_sheet(monthData);
+        wsData['!cols'] = [
+            { wch: 12 }, // Data
+            { wch: 14 }, // Dzień tygodnia
+            { wch: 10 }, // Miesiąc
+            { wch: 8 },  // Godzina
+            { wch: 12 }, // Load
+            { wch: 12 }, // PV
+            { wch: 14 }, // Nadwyżka
+            { wch: 12 }, // Deficyt
+            { wch: 18 }, // BESS Ładowanie
+            { wch: 20 }, // BESS Rozładowanie
+            { wch: 10 }, // SoC
+            { wch: 16 }  // Bilans netto
+        ];
+
+        // Sheet name (max 31 chars for Excel)
+        const sheetName = isFullYear ? 'Dane godzinowe rok' : `Dane ${monthName}`;
+        XLSX.utils.book_append_sheet(wb, wsData, sheetName.substring(0, 31));
+
+        // Generate filename
+        const filename = `Analiza_profilu_${monthName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+        // Download file
+        XLSX.writeFile(wb, filename);
+        console.log(`✅ Excel file exported: ${filename}`);
+    }
+
+    // Expose export function globally for onclick handler
+    window.exportMonthlyHourlyData = exportMonthlyHourlyData;
 
     // Initialize on load
     if (document.readyState === 'loading') {

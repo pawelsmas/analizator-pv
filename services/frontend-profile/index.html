@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analiza Profilu PV+BESS v2.0</title>
-    <link rel="stylesheet" href="profile.css">
+    <link rel="stylesheet" href="profile.css?v=20251210-EXPORT">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -156,11 +157,39 @@
                                 <th>Godzin<br>nadwyżki/d</th>
                                 <th>Opt. BESS<br>[kWh]</th>
                                 <th>Cykle<br>BESS</th>
+                                <th>Eksport</th>
                             </tr>
                         </thead>
                         <tbody id="monthlyTableBody">
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Export Section -->
+                <div class="export-section" style="margin-top: 20px; padding: 15px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 8px; border: 1px solid #64b5f6;">
+                    <h4 style="margin: 0 0 10px 0; color: #1565c0;">📥 Eksport szczegółowych danych godzinowych</h4>
+                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                        <label style="font-weight: 500;">Wybierz miesiąc:</label>
+                        <select id="exportMonthSelect" style="padding: 8px 12px; border-radius: 4px; border: 1px solid #64b5f6; font-size: 14px; min-width: 150px;">
+                            <option value="0">📅 Cały rok (wszystkie miesiące)</option>
+                            <option value="1">Styczeń</option>
+                            <option value="2">Luty</option>
+                            <option value="3">Marzec</option>
+                            <option value="4">Kwiecień</option>
+                            <option value="5" selected>Maj</option>
+                            <option value="6">Czerwiec</option>
+                            <option value="7">Lipiec</option>
+                            <option value="8">Sierpień</option>
+                            <option value="9">Wrzesień</option>
+                            <option value="10">Październik</option>
+                            <option value="11">Listopad</option>
+                            <option value="12">Grudzień</option>
+                        </select>
+                        <button id="exportMonthBtn" onclick="exportMonthlyHourlyData()" style="padding: 10px 20px; background: #1976d2; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                            📊 Eksportuj do Excel
+                        </button>
+                        <span id="exportInfo" style="color: #666; font-size: 12px;">Zawiera: Load, PV, Nadwyżka, Ładowanie BESS, Rozładowanie BESS</span>
+                    </div>
                 </div>
             </div>
 
@@ -199,6 +228,6 @@
         <p id="loadingText">Uruchamiam optymalizację PyPSA...</p>
     </div>
 
-    <script src="profile.js"></script>
+    <script src="profile.js?v=20251211-DIRECT-CONSUMPTION"></script>
 </body>
 </html>

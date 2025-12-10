@@ -223,12 +223,12 @@ def run_pypsa_optimization(
             hours_per_step=hours_per_step
         )
 
-    # Final result
-    optimal_power_kw = best_power
-    optimal_energy_kwh = best_energy
+    # Final result - round to whole numbers for practical use
+    optimal_power_kw = round(best_power)
+    optimal_energy_kwh = round(best_energy)
 
     # Calculate duration
-    optimal_duration_h = optimal_energy_kwh / optimal_power_kw if optimal_power_kw > 0 else 2.0
+    optimal_duration_h = round(optimal_energy_kwh / optimal_power_kw, 1) if optimal_power_kw > 0 else 2.0
 
     # Use cached dispatch result if available
     dispatch_result = best_dispatch
