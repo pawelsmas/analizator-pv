@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analiza Profilu PV+BESS v2.0</title>
+    <link rel="stylesheet" href="profile.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>📊 Analiza Profilu PV + BESS v2.0</h1>
+            <p>Optymalizacja multi-obiektywowa z integracją PyPSA</p>
+        </header>
+
+        <div id="errorMessage"></div>
+
+        <!-- Configuration Panel -->
+        <section class="config-panel">
+            <h2>Parametry analizy</h2>
+            <div class="config-grid">
+                <div class="form-group">
+                    <label for="pvCapacity">Moc PV [kWp]</label>
+                    <input type="number" id="pvCapacity" value="1200" min="10" step="10">
+                </div>
+                <div class="form-group">
+                    <label for="bessEnergy">Pojemność BESS [kWh]</label>
+                    <input type="number" id="bessEnergy" value="2000" min="0" step="100">
+                </div>
+                <div class="form-group">
+                    <label for="bessPower">Moc BESS [kW]</label>
+                    <input type="number" id="bessPower" value="500" min="0" step="50">
+                </div>
+                <div class="form-group">
+                    <label for="bessEfficiency">Sprawność BESS [%]</label>
+                    <input type="number" id="bessEfficiency" value="90" min="70" max="98" step="1">
+                </div>
+                <div class="form-group">
+                    <label for="energyPrice">Cena energii [PLN/MWh]</label>
+                    <input type="number" id="energyPrice" value="800" min="100" step="50">
+                </div>
+                <div class="form-group">
+                    <label for="bessCapexKwh">CAPEX BESS [PLN/kWh]</label>
+                    <input type="number" id="bessCapexKwh" value="1500" min="500" step="100">
+                </div>
+                <div class="form-group">
+                    <label for="bessCapexKw">CAPEX BESS [PLN/kW]</label>
+                    <input type="number" id="bessCapexKw" value="300" min="0" step="50">
+                </div>
+                <div class="form-group">
+                    <label for="discountRate">Stopa dyskontowa [%]</label>
+                    <input type="number" id="discountRate" value="8" min="0" max="20" step="0.5">
+                </div>
+                <div class="form-group">
+                    <label for="projectYears">Okres analizy [lat]</label>
+                    <input type="number" id="projectYears" value="15" min="5" max="25" step="1">
+                </div>
+                <div class="form-group">
+                    <label for="strategy">Strategia optymalizacji</label>
+                    <select id="strategy">
+                        <option value="npv_max">NPV Max (największy zwrot)</option>
+                        <option value="cycles_max">Cycles Max (max cykli)</option>
+                        <option value="balanced" selected>Balanced (równowaga NPV/cykle)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="minCycles">Min. cykli rocznie</label>
+                    <input type="number" id="minCycles" value="200" min="50" max="500" step="10">
+                </div>
+                <div class="form-group">
+                    <label for="maxCycles">Max. cykli rocznie</label>
+                    <input type="number" id="maxCycles" value="365" min="200" max="700" step="10">
+                </div>
+                <button id="analyzeBtn" class="btn-analyze">🔬 Analizuj profil (PyPSA)</button>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section id="results">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="summary">Podsumowanie</button>
+                <button class="tab-btn" data-tab="pareto">Pareto Front</button>
+                <button class="tab-btn" data-tab="heatmap">Heatmapa</button>
+                <button class="tab-btn" data-tab="variants">Porównanie wariantów</button>
+                <button class="tab-btn" data-tab="hourly">Profil godzinowy</button>
+                <button class="tab-btn" data-tab="monthly">Analiza miesięczna</button>
+                <button class="tab-btn" data-tab="quarterly">Kwartały</button>
+                <button class="tab-btn" data-tab="bessRec">Rekomendacje BESS</button>
+                <button class="tab-btn" data-tab="pvRec">Rekomendacje PV</button>
+                <button class="tab-btn" data-tab="insights">Wnioski</button>
+            </div>
+
+            <!-- Summary Tab -->
+            <div id="summaryTab" class="tab-panel active">
+                <h3>Podsumowanie roczne</h3>
+                <div id="summaryContent"></div>
+                <div id="selectedStrategy" class="strategy-badge"></div>
+            </div>
+
+            <!-- Pareto Front Tab -->
+            <div id="paretoTab" class="tab-panel">
+                <h3>Pareto Front: NPV vs Cykle</h3>
+                <p class="description">Punkty Pareto-optymalne - każdy jest optymalny dla różnego kompromisu między NPV a liczbą cykli</p>
+                <div class="chart-container pareto-chart">
+                    <canvas id="paretoChart"></canvas>
+                </div>
+                <div id="paretoTable" class="pareto-table-container"></div>
+            </div>
+
+            <!-- Heatmap Tab -->
+            <div id="heatmapTab" class="tab-panel">
+                <h3>Heatmapa surplus/deficit</h3>
+                <p class="description">Rozkład nadwyżek i deficytów: 24 godziny × 12 miesięcy</p>
+                <div id="heatmapContainer" class="heatmap-container"></div>
+                <div class="heatmap-legend">
+                    <span class="legend-deficit">← Deficyt</span>
+                    <span class="legend-neutral">Bilans</span>
+                    <span class="legend-surplus">Nadwyżka →</span>
+                </div>
+            </div>
+
+            <!-- Variants Comparison Tab -->
+            <div id="variantsTab" class="tab-panel">
+                <h3>Porównanie wariantów</h3>
+                <p class="description">Side-by-side porównanie: Bez BESS vs Rekomendowany BESS</p>
+                <div id="variantsContent" class="variants-grid"></div>
+            </div>
+
+            <!-- Hourly Tab -->
+            <div id="hourlyTab" class="tab-panel">
+                <h3>Średni profil godzinowy</h3>
+                <p class="description">Średnie wartości dla każdej godziny w ciągu roku</p>
+                <div class="chart-container">
+                    <canvas id="hourlyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Monthly Tab -->
+            <div id="monthlyTab" class="tab-panel">
+                <h3>Analiza miesięczna</h3>
+                <div class="chart-container">
+                    <canvas id="monthlyChart"></canvas>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Miesiąc</th>
+                                <th>PV<br>[MWh]</th>
+                                <th>Zużycie<br>[MWh]</th>
+                                <th>Nadwyżka<br>[MWh]</th>
+                                <th>Deficyt<br>[MWh]</th>
+                                <th>Śr. nadwyżka<br>[kWh/d]</th>
+                                <th>Godzin<br>nadwyżki/d</th>
+                                <th>Opt. BESS<br>[kWh]</th>
+                                <th>Cykle<br>BESS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="monthlyTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Quarterly Tab -->
+            <div id="quarterlyTab" class="tab-panel">
+                <h3>Rozkład kwartalny</h3>
+                <p class="description">Porównanie aktywności BESS w poszczególnych kwartałach</p>
+                <div id="quarterlyContent"></div>
+            </div>
+
+            <!-- BESS Recommendations Tab -->
+            <div id="bessRecTab" class="tab-panel">
+                <h3>Rekomendacje rozmiaru BESS</h3>
+                <p class="description">Optymalne warianty rozmiaru magazynu dla Twojego profilu (symulacja PyPSA)</p>
+                <div id="bessRecommendations"></div>
+            </div>
+
+            <!-- PV Recommendations Tab -->
+            <div id="pvRecTab" class="tab-panel">
+                <h3>Rekomendacje przewymiarowania PV</h3>
+                <p class="description">Ile dodatkowego PV potrzeba dla lepszego wykorzystania BESS</p>
+                <div id="pvRecommendations"></div>
+            </div>
+
+            <!-- Insights Tab -->
+            <div id="insightsTab" class="tab-panel">
+                <h3>Kluczowe wnioski</h3>
+                <div id="insightsContent"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading">
+        <div class="spinner"></div>
+        <p id="loadingText">Uruchamiam optymalizację PyPSA...</p>
+    </div>
+
+    <script src="profile.js"></script>
+</body>
+</html>

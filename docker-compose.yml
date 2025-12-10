@@ -504,6 +504,44 @@ services:
       retries: 3
       start_period: 10s
 
+  # Profile Analysis Service (PV+BESS sizing optimization)
+  profile-analysis:
+    build:
+      context: ./services/profile-analysis
+      dockerfile: Dockerfile
+    container_name: pv-profile-analysis
+    ports:
+      - "8040:8040"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8040/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Profile Analysis Frontend Module
+  frontend-profile:
+    build:
+      context: ./services/frontend-profile
+      dockerfile: Dockerfile
+    container_name: pv-frontend-profile
+    ports:
+      - "9014:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 networks:
   pv-network:
     driver: bridge

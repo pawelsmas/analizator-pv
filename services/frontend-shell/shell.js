@@ -12,6 +12,7 @@ const MODULES = USE_PROXY ? {
   consumption: '/modules/consumption/',
   production: '/modules/production/',
   bess: '/modules/bess/',
+  profile: '/modules/profile/',
   comparison: '/modules/comparison/',
   economics: '/modules/economics/',
   settings: '/modules/settings/',
@@ -26,6 +27,7 @@ const MODULES = USE_PROXY ? {
   consumption: 'http://localhost:9003',
   production: 'http://localhost:9004',
   bess: 'http://localhost:9013',
+  profile: 'http://localhost:9014',
   comparison: 'http://localhost:9005',
   economics: 'http://localhost:9006',
   settings: 'http://localhost:9007',
@@ -368,11 +370,15 @@ window.addEventListener('message', (event) => {
     : Object.values(MODULES).some(url => event.origin === new URL(url).origin);
 
   if (!isValidOrigin) {
-    console.log('Ignoring message from invalid origin:', event.origin);
+    // Silently ignore invalid origins (e.g. react-devtools)
     return;
   }
 
-  console.log('Message from module:', event.data);
+  // Only log important messages, skip noise from devtools and frequent pings
+  const msgType = event.data?.type;
+  if (msgType && !['PING', 'HEARTBEAT'].includes(msgType) && !event.data?.source?.includes('devtools')) {
+    console.log('Message from module:', msgType, event.data?.data ? '(has data)' : '');
+  }
 
   // Handle different message types
   switch (event.data.type) {
@@ -712,6 +718,74 @@ window.addEventListener('message', (event) => {
       broadcastToModules({
         type: 'PROJECT_CHANGED',
         data: sharedData.currentProject
+      });
+      break;
+
+    case 'REQUEST_PV_DATA':
+      // Profile module requests hourly PV generation data
+      console.log('📊 Shell responding to REQUEST_PV_DATA');
+      let pvHourlyGeneration = null;
+
+      // Try to get hourly production from master variant or first scenario
+      if (sharedData.analysisResults) {
+        // First try to get from master variant
+        if (sharedData.masterVariantKey && sharedData.analysisResults.key_variants) {
+          const masterData = sharedData.analysisResults.key_variants[sharedData.masterVariantKey];
+          if (masterData?.hourly_production) {
+            pvHourlyGeneration = masterData.hourly_production;
+            console.log(`  - Using master variant ${sharedData.masterVariantKey} hourly_production: ${pvHourlyGeneration.length} values`);
+          }
+        }
+        // Fallback to first scenario
+        if (!pvHourlyGeneration && sharedData.analysisResults.scenarios?.length > 0) {
+          const firstScenario = sharedData.analysisResults.scenarios[0];
+          if (firstScenario?.hourly_production) {
+            pvHourlyGeneration = firstScenario.hourly_production;
+            console.log(`  - Using first scenario hourly_production: ${pvHourlyGeneration.length} values`);
+          }
+        }
+      }
+
+      broadcastToModules({
+        type: 'PV_DATA_RESPONSE',
+        data: {
+          hourly_generation: pvHourlyGeneration || []
+        }
+      });
+      console.log(`📤 Sent PV_DATA_RESPONSE: ${pvHourlyGeneration?.length || 0} values`);
+      break;
+
+    case 'REQUEST_LOAD_DATA':
+      // Profile module requests hourly consumption data
+      console.log('📊 Shell responding to REQUEST_LOAD_DATA');
+      let loadHourlyConsumption = null;
+
+      if (sharedData.hourlyData?.values) {
+        loadHourlyConsumption = sharedData.hourlyData.values;
+        console.log(`  - Using hourlyData.values: ${loadHourlyConsumption.length} values`);
+      }
+
+      broadcastToModules({
+        type: 'LOAD_DATA_RESPONSE',
+        data: {
+          hourly_consumption: loadHourlyConsumption || []
+        }
+      });
+      console.log(`📤 Sent LOAD_DATA_RESPONSE: ${loadHourlyConsumption?.length || 0} values`);
+      break;
+
+    case 'REQUEST_ANALYSIS_RESULTS':
+      // Profile module requests analysis results for config population
+      console.log('📊 Shell responding to REQUEST_ANALYSIS_RESULTS');
+      broadcastToModules({
+        type: 'ANALYSIS_RESULTS',
+        data: {
+          fullResults: sharedData.analysisResults,
+          pvConfig: sharedData.pvConfig,
+          hourlyData: sharedData.hourlyData,
+          scenarios: sharedData.analysisResults?.scenarios || [],
+          sharedData: sharedData
+        }
       });
       break;
   }
