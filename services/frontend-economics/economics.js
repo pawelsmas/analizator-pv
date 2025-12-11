@@ -110,6 +110,13 @@ window.productionFactors = {
  * Uses multiple sources with fallbacks
  */
 function getAnnualConsumptionKwh() {
+  // Priority 0 (HIGHEST): profileAnalysisBessData.annual_load_mwh - from profile analysis hourly simulation
+  if (profileAnalysisBessData?.annual_load_mwh > 0) {
+    const kwh = profileAnalysisBessData.annual_load_mwh * 1000; // MWh -> kWh
+    console.log('📊 Using annual_load_mwh from profileAnalysisBessData:', profileAnalysisBessData.annual_load_mwh, 'MWh =', kwh, 'kWh');
+    return kwh;
+  }
+
   // Priority 1: consumptionData.annual_consumption_kwh (sent from config module)
   if (consumptionData?.annual_consumption_kwh) {
     console.log('📊 Using annual_consumption_kwh from consumptionData:', consumptionData.annual_consumption_kwh);
@@ -1676,6 +1683,10 @@ document.addEventListener('DOMContentLoaded', () => {
   requestSharedData();
   requestSettingsFromShell();
 
+  // CRITICAL: Fetch consumption statistics from backend directly
+  // This ensures we have annual_consumption_kwh even if CONFIG didn't send it
+  fetchConsumptionStatistics();
+
   // Fallback: try to load from localStorage after a short delay
   // (in case shell doesn't respond)
   setTimeout(() => {
@@ -1685,6 +1696,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 500);
 });
+
+// Fetch consumption statistics directly from data-analysis backend
+async function fetchConsumptionStatistics() {
+  try {
+    const response = await fetch('/api/data/statistics');
+    if (!response.ok) {
+      console.log('📊 No consumption statistics available from backend');
+      return;
+    }
+    const stats = await response.json();
+    console.log('📊 Fetched consumption statistics from backend:', stats);
+
+    // Store in consumptionData if not already set or missing annual_consumption_kwh
+    if (!consumptionData) {
+      consumptionData = {};
+    }
+    if (!consumptionData.annual_consumption_kwh && stats.total_consumption_gwh) {
+      consumptionData.annual_consumption_kwh = stats.total_consumption_gwh * 1000000; // GWh -> kWh
+      consumptionData.total_consumption_gwh = stats.total_consumption_gwh;
+      console.log('📊 Set annual_consumption_kwh from backend:', consumptionData.annual_consumption_kwh, 'kWh');
+    }
+  } catch (error) {
+    console.log('📊 Could not fetch consumption statistics:', error.message);
+  }
+}
 
 // Show loading state
 function showLoadingState() {
@@ -1828,7 +1864,7 @@ window.addEventListener('message', (event) => {
 
       if (event.data.data.consumptionData) {
         consumptionData = event.data.data.consumptionData;
-        console.log('  - consumptionData loaded:', consumptionData.dataPoints, 'points');
+        console.log('  - consumptionData loaded:', consumptionData.dataPoints, 'points, annual_consumption_kwh:', consumptionData.annual_consumption_kwh);
       }
 
       if (event.data.data.masterVariant) {

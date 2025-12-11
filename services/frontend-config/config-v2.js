@@ -598,8 +598,8 @@ async function handleFileUpload(event) {
     fileUploadedThisSession = true; // Mark that file was uploaded THIS session
     sessionStorage.setItem('file_uploaded', 'true'); // Session flag
 
-    // Update statistics
-    await updateStatisticsFromAPI();
+    // Update statistics and get them for shell notification
+    const stats = await updateStatisticsFromAPI();
 
     // Save to localStorage
     localStorage.setItem('pv_data_uploaded', 'true');
@@ -610,11 +610,18 @@ async function handleFileUpload(event) {
       uploadedAt: new Date().toISOString()
     }));
 
-    // Notify parent shell that data is available
+    // Notify parent shell that data is available - include consumption data
     notifyShell('DATA_UPLOADED', {
       filename: file.name,
       dataPoints: result.data_points,
-      year: result.year
+      year: result.year,
+      // CRITICAL: Include consumption statistics for economics module
+      annual_consumption_kwh: stats ? stats.total_consumption_gwh * 1000000 : null, // GWh -> kWh
+      total_consumption_gwh: stats?.total_consumption_gwh,
+      peak_power_mw: stats?.peak_power_mw,
+      avg_power_mw: stats?.avg_power_mw,
+      // Include analytical year for correct month mapping in profile analysis
+      analytical_year: result.analytical_year
     });
 
   } catch (error) {
@@ -624,7 +631,7 @@ async function handleFileUpload(event) {
   }
 }
 
-// Update statistics from API
+// Update statistics from API - returns stats for use elsewhere
 async function updateStatisticsFromAPI() {
   try {
     const response = await fetch(`${API.dataAnalysis}/statistics`);
@@ -632,8 +639,10 @@ async function updateStatisticsFromAPI() {
 
     const stats = await response.json();
     updateStatistics(stats);
+    return stats; // Return stats for shell notification
   } catch (error) {
     console.error('Failed to update statistics:', error);
+    return null;
   }
 }
 

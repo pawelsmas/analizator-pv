@@ -138,6 +138,7 @@
             annual_deficit_mwh: result.annual_deficit_mwh,
             direct_consumption_mwh: result.direct_consumption_mwh,  // PV direct without BESS!
             direct_consumption_pct: result.direct_consumption_pct,
+            annual_load_mwh: result.annual_load_mwh,  // CRITICAL: Total plant consumption for economics!
 
             // Strategy used
             strategy: result.selected_strategy,
@@ -151,6 +152,7 @@
             bess_power_kw: bessData.bess_power_kw,
             bess_energy_kwh: bessData.bess_energy_kwh,
             annual_discharge_mwh: bessData.annual_discharge_mwh,
+            annual_load_mwh: bessData.annual_load_mwh,  // CRITICAL: Total plant consumption
             has_hourly_data: !!bessData.recommended_hourly_bess_discharge?.length
         });
 

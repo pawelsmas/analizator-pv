@@ -393,6 +393,11 @@ window.addEventListener('message', (event) => {
       // Store consumption data and fetch full hourly data for project storage
       if (event.data.data) {
         sharedData.consumptionData = event.data.data;
+        console.log('📊 Shell: consumptionData stored:', {
+          dataPoints: event.data.data.dataPoints,
+          annual_consumption_kwh: event.data.data.annual_consumption_kwh,
+          total_consumption_gwh: event.data.data.total_consumption_gwh
+        });
 
         // Store analytical year metadata if present
         if (event.data.data.analytical_year) {
@@ -466,7 +471,8 @@ window.addEventListener('message', (event) => {
           bess_energy_kwh: event.data.data.bessData?.bess_energy_kwh,
           annual_cycles: event.data.data.bessData?.annual_cycles,
           annual_discharge_mwh: event.data.data.bessData?.annual_discharge_mwh,  // <-- SINGLE SOURCE OF TRUTH!
-          strategy: event.data.data.bessData?.strategy
+          strategy: event.data.data.bessData?.strategy,
+          annual_load_mwh: event.data.data.bessData?.annual_load_mwh  // CRITICAL: Total plant consumption for economics!
         });
         // Auto-save to current project
         autoSaveToProject('profileAnalysis', event.data.data);
