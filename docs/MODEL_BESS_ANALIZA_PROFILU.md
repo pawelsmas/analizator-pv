@@ -1,8 +1,8 @@
 # Model Analizy Profilu PV+BESS - Dokumentacja Techniczna
 
 
-**Data:** 2024-12-10
-**Status:** Produkcja (model uproszczony)
+**Data:** 2024-12-12 (v2.1)
+**Status:** Produkcja (model z godzinową symulacją SoC, degradacją i stratami pomocniczymi)
 
 ---
 
@@ -12,17 +12,17 @@ Model służy do **wstępnego doboru wielkości magazynu energii (BESS)** dla in
 
 ### Co model robi:
 - Analizuje godzinowy bilans energii (PV vs zużycie)
+- **Pełna godzinowa symulacja SoC** z śledzeniem stanu naładowania
 - Identyfikuje nadwyżki i deficyty w podziale miesięcznym
 - Generuje front Pareto (NPV vs cykle)
 - Rekomenduje rozmiar BESS według trzech strategii
 - Oblicza NPV, payback, curtailment
+- **Uwzględnia degradację baterii** (spadek pojemności w czasie)
+- **Uwzględnia straty pomocnicze BESS** (standby power)
 
 ### Czego model NIE robi (jeszcze):
-- Godzinowa symulacja stanu naładowania (SoC)
-- Optymalizacja dispatch (LP/MILP)
-- Uwzględnienie strat pomocniczych BESS
-- Degradacja baterii
-- Dynamiczne ceny energii
+- Optymalizacja dispatch (LP/MILP z PyPSA)
+- Dynamiczne ceny energii (arbitraż RDN)
 
 ---
 
@@ -74,6 +74,12 @@ class ProfileAnalysisRequest(BaseModel):
     bess_efficiency: float = 0.90            # Sprawność round-trip
     discount_rate: float = 0.08              # Stopa dyskontowa
     project_years: int = 15                  # Okres analizy [lat]
+
+    # ========== NOWE w v2.1 ==========
+    # Straty pomocnicze BESS (standby power)
+    bess_auxiliary_loss_pct_per_day: float = 1.0  # % pojemności/dzień (BMS, chłodzenie, etc.)
+    # Degradacja baterii
+    bess_degradation_pct_per_year: float = 2.0    # % spadku pojemności/rok
 
     # Strategia optymalizacji
     strategy: str = "balanced"               # npv_max | cycles_max | balanced
@@ -215,18 +221,48 @@ def generate_pareto_frontier(monthly_analysis, n_points=10):
 
 ## 5. Obliczenia Ekonomiczne
 
-### 5.1 NPV (Net Present Value)
+### 5.1 NPV z Degradacją i Stratami Pomocniczymi (NOWE w v2.1)
+
+Model uwzględnia teraz:
+1. **Degradację baterii** - pojemność maleje co roku, więc discharge też maleje
+2. **Straty pomocnicze** - stałe zużycie energii przez BMS, chłodzenie, monitoring
 
 ```python
-def calculate_npv(annual_savings, capex, discount_rate, project_years):
+def calculate_npv_with_degradation(
+    year1_discharge_kwh,      # Rozładowanie w roku 1 [kWh]
+    bess_energy_kwh,          # Pojemność nominalna [kWh]
+    energy_price_plnmwh,      # Cena energii [PLN/MWh]
+    capex,                    # CAPEX całkowity [PLN]
+    discount_rate,            # Stopa dyskontowa
+    project_years,            # Okres projektu [lat]
+    degradation_pct_per_year, # Degradacja [%/rok] - domyślnie 2%
+    auxiliary_loss_pct_per_day # Straty pomocnicze [%/dzień] - domyślnie 1%
+):
     """
-    NPV = -CAPEX + Σ (annual_savings / (1 + r)^t)
+    NPV z uwzględnieniem degradacji i strat pomocniczych.
+
+    Dla każdego roku:
+    - effective_capacity = 100% - degradation * (year - 1)
+    - year_discharge = year1_discharge * effective_capacity / 100
+    - year_savings = year_discharge * energy_price
+    - year_auxiliary_cost = bess_energy * aux_loss_pct/100 * 365 * energy_price
+    - net_cf = year_savings - year_auxiliary_cost
+    - npv += net_cf / (1 + r)^year
     """
-    npv = -capex
-    for year in range(1, project_years + 1):
-        npv += annual_savings / ((1 + discount_rate) ** year)
-    return npv
 ```
+
+**Przykład wpływu degradacji (15 lat, 2%/rok):**
+| Rok | Pojemność | Rozładowanie | Oszczędności |
+|-----|-----------|--------------|--------------|
+| 1   | 100%      | 300 MWh      | 240,000 PLN  |
+| 5   | 92%       | 276 MWh      | 220,800 PLN  |
+| 10  | 82%       | 246 MWh      | 196,800 PLN  |
+| 15  | 72%       | 216 MWh      | 172,800 PLN  |
+
+**Straty pomocnicze (2 MWh BESS, 1%/dzień):**
+- Dzienny: 2000 kWh × 1% = 20 kWh
+- Roczny: 20 kWh × 365 = 7,300 kWh = 7.3 MWh
+- Koszt roczny: 7.3 MWh × 800 PLN = 5,840 PLN
 
 ### 5.2 CAPEX BESS
 
@@ -268,9 +304,9 @@ Oddano do sieci: 900 kWh
 
 ## 6. Co Model Pomija (Ograniczenia)
 
-### 6.1 Zużycie Własne BESS (Auxiliary Losses)
+### 6.1 Zużycie Własne BESS (Auxiliary Losses) ✅ ZAIMPLEMENTOWANE
 
-**Aktualnie NIE uwzględnione:**
+**Od v2.1 uwzględnione** poprzez parametr `bess_auxiliary_loss_pct_per_day`:
 
 | Składnik | Typowa wartość | Rocznie (2 MWh BESS) |
 |----------|----------------|----------------------|
@@ -280,22 +316,31 @@ Oddano do sieci: 900 kWh
 | Monitoring | 20-50 W | ~175-440 kWh |
 | **SUMA** | **~3-8% throughput** | **~1-3 MWh** |
 
-### 6.2 Degradacja Baterii
+Domyślnie model przyjmuje 1% pojemności/dzień jako uproszczony parametr obejmujący wszystkie straty pomocnicze.
 
-**Aktualnie NIE uwzględnione:**
+### 6.2 Degradacja Baterii ✅ ZAIMPLEMENTOWANE
+
+**Od v2.1 uwzględnione** poprzez parametr `bess_degradation_pct_per_year`:
 
 - **Calendar aging:** ~2-3% pojemności/rok (niezależnie od użycia)
-- **Cycle aging:** ~0.02% pojemności/cykl (LFP)
-- Po 15 latach: pozostaje ~70-80% początkowej pojemności
+- **Cycle aging:** ~0.02% pojemności/cykl (LFP) - pominięte (uproszczenie)
+- Po 15 latach przy 2%/rok: pozostaje 70% początkowej pojemności
 
-### 6.3 Brak Godzinowej Symulacji SoC
+Model używa uproszczonego liniowego spadku pojemności, co jest wystarczające dla wstępnej analizy.
 
-**Problem:** Model agreguje na poziomie dziennym, nie śledzi godzinowego stanu naładowania.
+### 6.3 Godzinowa Symulacja SoC ✅ ZAIMPLEMENTOWANE
 
-**Konsekwencje:**
-- Nie wykrywa sytuacji gdy bateria jest pełna a nadal jest nadwyżka
-- Nie optymalizuje momentu ładowania/rozładowania
-- Nie uwzględnia ograniczeń mocy w szczytach
+**Od v2.0 model posiada pełną godzinową symulację:**
+
+```python
+def simulate_bess_hourly(pv_kwh, load_kwh, bess_energy_kwh, bess_power_kw, efficiency):
+    """
+    Pełna godzinowa symulacja z śledzeniem SoC.
+    - Śledzi stan naładowania godzina po godzinie
+    - Uwzględnia ograniczenia mocy i pojemności
+    - Oblicza curtailment gdy bateria pełna
+    """
+```
 
 ### 6.4 Brak Dynamicznych Cen
 
@@ -310,66 +355,19 @@ Oddano do sieci: 900 kWh
 
 ## 7. Roadmapa Rozwoju
 
-### Faza 1: Ulepszenia Modelu (Priorytet: ŚREDNI)
+### Faza 1: Ulepszenia Modelu ✅ ZREALIZOWANE (v2.1)
 
-- [ ] **Dodanie strat pomocniczych BESS**
-  ```python
-  bess_auxiliary_kw: float = 0.1      # Stałe zużycie [kW]
-  bess_cooling_pct: float = 0.02      # % throughput na chłodzenie
-  bess_self_discharge_pct: float = 0.1  # %/dzień samorozładowania
-  ```
+- [x] **Straty pomocnicze BESS** - parametr `bess_auxiliary_loss_pct_per_day`
+- [x] **Degradacja baterii** - parametr `bess_degradation_pct_per_year`
+- [x] **Sezonowe różnice** - niepotrzebne, godzinowa symulacja używa rzeczywistego profilu PV
 
-- [ ] **Degradacja baterii**
-  ```python
-  def apply_degradation(year, cycles_per_year, initial_capacity):
-      calendar_loss = 0.025 * year  # 2.5%/rok
-      cycle_loss = 0.0002 * cycles_per_year * year  # 0.02%/cykl
-      return initial_capacity * (1 - calendar_loss - cycle_loss)
-  ```
+### Faza 2: Godzinowa Symulacja SoC ✅ ZREALIZOWANE (v2.0)
 
-- [ ] **Sezonowe różnice w czasie ładowania**
-  - Zima: `power * 5` (krótszy dzień)
-  - Lato: `power * 10` (dłuższy dzień)
-
-### Faza 2: Godzinowa Symulacja SoC (Priorytet: WYSOKI)
-
-```python
-def simulate_hourly_dispatch(pv_kwh, load_kwh, bess_params):
-    """
-    Pełna godzinowa symulacja z śledzeniem SoC.
-    """
-    soc = bess_params.soc_initial
-    results = []
-
-    for hour in range(8760):
-        surplus = pv_kwh[hour] - load_kwh[hour]
-
-        if surplus > 0:
-            # Ładowanie
-            charge_possible = min(
-                surplus,
-                bess_params.power_kw,
-                (bess_params.soc_max - soc) * bess_params.energy_kwh
-            )
-            charge_actual = charge_possible * sqrt(bess_params.efficiency)
-            soc += charge_actual / bess_params.energy_kwh
-            curtailed = surplus - charge_possible
-        else:
-            # Rozładowanie
-            discharge_needed = -surplus
-            discharge_possible = min(
-                discharge_needed,
-                bess_params.power_kw,
-                (soc - bess_params.soc_min) * bess_params.energy_kwh
-            )
-            discharge_actual = discharge_possible * sqrt(bess_params.efficiency)
-            soc -= discharge_possible / bess_params.energy_kwh
-            grid_import = discharge_needed - discharge_actual
-
-        results.append({...})
-
-    return results
-```
+Funkcja `simulate_bess_hourly()` w pełni zaimplementowana:
+- Śledzi SoC godzina po godzinie
+- Uwzględnia ograniczenia mocy i pojemności
+- Oblicza rzeczywiste cykle i curtailment
+- Dane godzinowe dostępne w Excel export
 
 ### Faza 3: Integracja PyPSA (Priorytet: NISKI)
 

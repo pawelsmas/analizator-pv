@@ -74,6 +74,24 @@ class ProfileAnalysisRequest(BaseModel):
     discount_rate: float = Field(default=0.08, description="Discount rate for NPV")
     project_years: int = Field(default=15, description="Project lifetime")
 
+    # BESS auxiliary losses and degradation parameters
+    # Auxiliary losses: standby power consumption (% of capacity per day)
+    # Typical values: 0.5-2% for Li-ion, represents BMS, cooling, etc.
+    bess_auxiliary_loss_pct_per_day: float = Field(
+        default=1.0,
+        ge=0,
+        le=5,
+        description="BESS standby power consumption [% of capacity per day]"
+    )
+    # Degradation: annual capacity fade (% per year)
+    # Typical values: 2-3% for Li-ion at moderate cycling
+    bess_degradation_pct_per_year: float = Field(
+        default=2.0,
+        ge=0,
+        le=10,
+        description="BESS annual capacity degradation [% per year]"
+    )
+
     # Optimization settings
     strategy: OptimizationStrategy = Field(default=OptimizationStrategy.BALANCED)
     min_cycles_per_year: int = Field(default=200, description="Minimum target cycles")
@@ -233,6 +251,11 @@ class ProfileAnalysisResult(BaseModel):
     recommended_hourly_bess_charge: Optional[List[float]] = None
     recommended_hourly_bess_discharge: Optional[List[float]] = None
     recommended_hourly_bess_soc: Optional[List[float]] = None
+
+    # BESS degradation and auxiliary parameters used in NPV calculation
+    bess_degradation_pct_per_year: Optional[float] = None
+    bess_auxiliary_loss_pct_per_day: Optional[float] = None
+    bess_capacity_at_project_end_pct: Optional[float] = None  # Remaining capacity after degradation
 
     # Hourly PV and Load data for Excel export (8760 elements)
     # These are needed for complete hourly export with all columns
@@ -499,11 +522,107 @@ def calculate_npv(
     discount_rate: float,
     project_years: int
 ) -> float:
-    """Calculate Net Present Value"""
+    """Calculate Net Present Value (simple model without degradation)"""
     npv = -capex
     for year in range(1, project_years + 1):
         npv += annual_savings / ((1 + discount_rate) ** year)
     return npv
+
+
+def calculate_npv_with_degradation(
+    year1_discharge_kwh: float,
+    bess_energy_kwh: float,
+    energy_price_plnmwh: float,
+    capex: float,
+    discount_rate: float,
+    project_years: int,
+    degradation_pct_per_year: float = 2.0,
+    auxiliary_loss_pct_per_day: float = 1.0
+) -> dict:
+    """
+    Calculate NPV with realistic BESS degradation and auxiliary losses.
+
+    This is the advanced NPV model that accounts for:
+    1. Battery degradation: capacity decreases each year (reduces discharge)
+    2. Auxiliary losses: standby power consumption (additional cost)
+
+    Args:
+        year1_discharge_kwh: First year annual discharge [kWh] from simulation
+        bess_energy_kwh: Nominal BESS capacity [kWh]
+        energy_price_plnmwh: Energy price [PLN/MWh]
+        capex: Total CAPEX [PLN]
+        discount_rate: Discount rate (e.g., 0.08 for 8%)
+        project_years: Project lifetime [years]
+        degradation_pct_per_year: Annual capacity fade [% per year]
+        auxiliary_loss_pct_per_day: Standby power consumption [% of capacity per day]
+
+    Returns:
+        dict with:
+            - npv: Net Present Value [PLN]
+            - npv_mln_pln: NPV in millions [mln PLN]
+            - total_savings: Total undiscounted savings [PLN]
+            - total_auxiliary_cost: Total undiscounted auxiliary costs [PLN]
+            - yearly_details: List of yearly breakdowns
+            - effective_capacity_year_end: Capacity at end of project [%]
+    """
+    # Calculate annual auxiliary loss (converted to energy cost)
+    # Auxiliary losses = % of capacity * 365 days * energy price
+    annual_auxiliary_kwh = bess_energy_kwh * auxiliary_loss_pct_per_day / 100 * 365
+    annual_auxiliary_cost_base = annual_auxiliary_kwh * energy_price_plnmwh / 1000  # PLN
+
+    npv = -capex
+    total_savings = 0.0
+    total_auxiliary_cost = 0.0
+    yearly_details = []
+
+    for year in range(1, project_years + 1):
+        # Calculate effective capacity for this year (degradation applied)
+        # Degradation reduces capacity linearly each year
+        effective_capacity_pct = 100 - degradation_pct_per_year * (year - 1)
+        effective_capacity_pct = max(effective_capacity_pct, 0)  # Can't go below 0
+
+        # Discharge scales with remaining capacity
+        year_discharge_kwh = year1_discharge_kwh * effective_capacity_pct / 100
+
+        # Savings from discharge
+        year_savings = year_discharge_kwh * energy_price_plnmwh / 1000  # PLN
+
+        # Auxiliary costs scale with capacity (smaller as battery degrades)
+        year_auxiliary_cost = annual_auxiliary_cost_base * effective_capacity_pct / 100
+
+        # Net cash flow for the year
+        year_net_cf = year_savings - year_auxiliary_cost
+
+        # Discount to present value
+        discount_factor = 1 / ((1 + discount_rate) ** year)
+        npv += year_net_cf * discount_factor
+
+        total_savings += year_savings
+        total_auxiliary_cost += year_auxiliary_cost
+
+        yearly_details.append({
+            'year': year,
+            'effective_capacity_pct': round(effective_capacity_pct, 1),
+            'discharge_kwh': round(year_discharge_kwh, 0),
+            'savings_pln': round(year_savings, 0),
+            'auxiliary_cost_pln': round(year_auxiliary_cost, 0),
+            'net_cf_pln': round(year_net_cf, 0),
+            'discounted_cf_pln': round(year_net_cf * discount_factor, 0)
+        })
+
+    # Final capacity at end of project
+    effective_capacity_year_end = 100 - degradation_pct_per_year * project_years
+    effective_capacity_year_end = max(effective_capacity_year_end, 0)
+
+    return {
+        'npv': round(npv, 0),
+        'npv_mln_pln': round(npv / 1e6, 3),
+        'total_savings': round(total_savings, 0),
+        'total_auxiliary_cost': round(total_auxiliary_cost, 0),
+        'total_discharge_mwh': round(sum(d['discharge_kwh'] for d in yearly_details) / 1000, 1),
+        'effective_capacity_year_end_pct': round(effective_capacity_year_end, 1),
+        'yearly_details': yearly_details
+    }
 
 
 async def call_bess_optimizer(
@@ -657,7 +776,9 @@ async def generate_pareto_frontier(
     efficiency: float,
     discount_rate: float,
     project_years: int,
-    n_points: int = 10
+    n_points: int = 10,
+    degradation_pct_per_year: float = 2.0,
+    auxiliary_loss_pct_per_day: float = 1.0
 ) -> List[ParetoPoint]:
     """Generate Pareto frontier of NPV vs Cycles using REAL hourly simulation.
 
@@ -668,6 +789,10 @@ async def generate_pareto_frontier(
     1. Annual surplus energy (to capture more of available surplus)
     2. Hourly surplus distribution (peak hours need larger power)
     3. Theoretical max useful BESS = annual_surplus / target_cycles
+
+    NPV calculation includes:
+    - Battery degradation (capacity fade over years)
+    - Auxiliary losses (standby power consumption)
     """
 
     # Calculate range of BESS sizes to explore
@@ -764,18 +889,35 @@ async def generate_pareto_frontier(
         annual_cycles = sim_result['annual_cycles']
         annual_discharge = sim_result['annual_discharge_kwh']
 
-        # Calculate economics
+        # Calculate economics with degradation and auxiliary losses
         capex = power_kw * capex_per_kw + energy_kwh * capex_per_kwh
-        annual_savings = annual_discharge * energy_price / 1000  # kWh -> MWh, then * PLN/MWh
-        npv = calculate_npv(annual_savings, capex, discount_rate, project_years)
-        payback = capex / annual_savings if annual_savings > 0 else 99
+
+        # Use advanced NPV calculation with degradation and auxiliary losses
+        npv_result = calculate_npv_with_degradation(
+            year1_discharge_kwh=annual_discharge,
+            bess_energy_kwh=energy_kwh,
+            energy_price_plnmwh=energy_price,
+            capex=capex,
+            discount_rate=discount_rate,
+            project_years=project_years,
+            degradation_pct_per_year=degradation_pct_per_year,
+            auxiliary_loss_pct_per_day=auxiliary_loss_pct_per_day
+        )
+        npv = npv_result['npv']
+
+        # Payback calculation (simplified - year 1 net savings)
+        year1_savings = annual_discharge * energy_price / 1000
+        annual_auxiliary_kwh = energy_kwh * auxiliary_loss_pct_per_day / 100 * 365
+        year1_aux_cost = annual_auxiliary_kwh * energy_price / 1000
+        year1_net = year1_savings - year1_aux_cost
+        payback = capex / year1_net if year1_net > 0 else 99
 
         pareto_points.append(ParetoPoint(
             power_kw=round(power_kw, 0),
             energy_kwh=round(energy_kwh, 0),
             npv_mln_pln=round(npv / 1e6, 2),
             annual_cycles=round(annual_cycles, 1),
-            annual_discharge_mwh=round(annual_discharge / 1000, 2),  # kWh -> MWh
+            annual_discharge_mwh=round(annual_discharge / 1000, 2),  # kWh -> MWh (Year 1)
             payback_years=round(payback, 1),
             is_selected=False
         ))
@@ -1271,7 +1413,9 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             request.bess_efficiency,
             request.discount_rate,
             request.project_years,
-            request.pareto_points
+            request.pareto_points,
+            request.bess_degradation_pct_per_year,
+            request.bess_auxiliary_loss_pct_per_day
         )
 
         # ============================================================
@@ -1393,6 +1537,10 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             recommended_hourly_bess_charge=recommended_hourly_charge,
             recommended_hourly_bess_discharge=recommended_hourly_discharge,
             recommended_hourly_bess_soc=recommended_hourly_soc,
+            # Degradation and auxiliary parameters
+            bess_degradation_pct_per_year=request.bess_degradation_pct_per_year,
+            bess_auxiliary_loss_pct_per_day=request.bess_auxiliary_loss_pct_per_day,
+            bess_capacity_at_project_end_pct=round(100 - request.bess_degradation_pct_per_year * request.project_years, 1),
             selected_strategy=request.strategy.value,
             bess_recommendations=bess_recommendations,
             pareto_frontier=pareto_frontier,
