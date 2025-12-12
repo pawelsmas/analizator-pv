@@ -1242,9 +1242,31 @@
         let hourlyGeneration = null;
         let timestamps = null;
 
-        // Try to get consumption data from multiple sources
+        // ============================================
+        // BEST SOURCE: Direct from profile-analysis API response
+        // This ensures exact match with backend calculations
+        // ============================================
+        console.log('📊 Checking analysisResult for hourly data:', {
+            hasAnalysisResult: !!analysisResult,
+            hourly_pv_kwh_length: analysisResult?.hourly_pv_kwh?.length || 0,
+            hourly_load_kwh_length: analysisResult?.hourly_load_kwh?.length || 0
+        });
+        if (analysisResult?.hourly_load_kwh?.length > 0 && analysisResult?.hourly_pv_kwh?.length > 0) {
+            hourlyConsumption = analysisResult.hourly_load_kwh;
+            hourlyGeneration = analysisResult.hourly_pv_kwh;
+            // Generate timestamps for 8760 hours (one year)
+            const startDate = new Date(cachedShellData?.hourlyData?.timestamps?.[0] || '2024-01-01T00:00:00');
+            timestamps = [];
+            for (let h = 0; h < hourlyConsumption.length; h++) {
+                const d = new Date(startDate.getTime() + h * 3600000);
+                timestamps.push(d.toISOString());
+            }
+            console.log('📊 ✅ Using PROFILE-ANALYSIS API data (hourly_pv_kwh & hourly_load_kwh):', hourlyConsumption.length);
+        }
+
+        // Try to get consumption data from multiple sources (fallbacks)
         // Source 1: Direct hourlyData.values
-        if (cachedShellData.hourlyData?.values?.length > 0) {
+        if (!hourlyConsumption && cachedShellData.hourlyData?.values?.length > 0) {
             hourlyConsumption = cachedShellData.hourlyData.values;
             timestamps = cachedShellData.hourlyData.timestamps;
             console.log('📊 Found consumption in hourlyData.values:', hourlyConsumption.length);
@@ -1280,6 +1302,7 @@
 
         // Try to get PV production data from MASTER VARIANT
         // IMPORTANT: Must use same variant as EKONOMIA (masterVariantKey)
+        // NOTE: If we already have data from profile-analysis API above, skip these fallbacks
         const masterVariantKey = cachedShellData.masterVariantKey
             || cachedShellData.sharedData?.masterVariantKey
             || localStorage.getItem('masterVariantKey')
@@ -1287,12 +1310,12 @@
         console.log('📊 Using master variant for PV export:', masterVariantKey);
 
         // Source 1: key_variants[masterVariantKey] in analysisResults (PREFERRED - same as EKONOMIA)
-        if (cachedShellData.analysisResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+        if (!hourlyGeneration && cachedShellData.analysisResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
             hourlyGeneration = cachedShellData.analysisResults.key_variants[masterVariantKey].hourly_production;
             console.log(`📊 Found PV in analysisResults.key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
         }
         // Source 2: key_variants[masterVariantKey] in fullResults
-        else if (cachedShellData.fullResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
+        else if (!hourlyGeneration && cachedShellData.fullResults?.key_variants?.[masterVariantKey]?.hourly_production?.length > 0) {
             hourlyGeneration = cachedShellData.fullResults.key_variants[masterVariantKey].hourly_production;
             console.log(`📊 Found PV in fullResults.key_variants[${masterVariantKey}]:`, hourlyGeneration.length);
         }

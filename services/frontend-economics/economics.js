@@ -1101,11 +1101,15 @@ async function fetchEaasMonthlyLog(variant, settings, params) {
  * @param {number} annualEnergyMWh - Annual energy delivered to client [MWh]
  * @param {object} settings - System settings with all EaaS parameters
  * @param {object} economicParams - Economic parameters
+ * @param {object} bessData - BESS data (power_kw, energy_kwh) or null if no BESS
  * @returns {object} - Full model results
  */
-function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicParams) {
+function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicParams, bessData = null) {
   console.log(`\n📊 ========== PEŁNY MODEL EaaS ==========`);
-  console.log(`   Moc: ${capacityKw} kW, Energia roczna: ${annualEnergyMWh?.toFixed(0) || 'N/A'} MWh`);
+  console.log(`   Moc PV: ${capacityKw} kW, Energia roczna: ${annualEnergyMWh?.toFixed(0) || 'N/A'} MWh`);
+  if (bessData && bessData.bess_energy_kwh > 0) {
+    console.log(`   BESS: ${bessData.bess_power_kw?.toFixed(0) || 0} kW / ${bessData.bess_energy_kwh?.toFixed(0) || 0} kWh`);
+  }
 
   // ========== PARAMETERS ==========
   const currency = settings.eaasCurrency || 'PLN';
@@ -1146,19 +1150,46 @@ function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicP
   // FX
   const fxPlnEur = settings.fxPlnEur || 4.5;
 
-  // ========== CAPEX ==========
+  // ========== PV CAPEX ==========
   const capexPerKwp = getCapexForCapacity(capacityKw);
-  const totalCapex = capacityKw * capexPerKwp;
+  const pvCapex = capacityKw * capexPerKwp;
 
-  // ========== OPEX (annual) ==========
+  // ========== BESS CAPEX ==========
+  let bessCapex = 0;
+  let bessPowerKw = 0;
+  let bessEnergyKwh = 0;
+  if (bessData && bessData.bess_energy_kwh > 0) {
+    bessPowerKw = bessData.bess_power_kw || 0;
+    bessEnergyKwh = bessData.bess_energy_kwh || 0;
+    // BESS cost: PLN per kWh capacity + PLN per kW power
+    const bessCapexPerKwh = settings.bessCapexPerKwh || economicParams?.bess_capex_per_kwh || 750;
+    const bessCapexPerKw = settings.bessCapexPerKw || economicParams?.bess_capex_per_kw || 100;
+    bessCapex = bessEnergyKwh * bessCapexPerKwh + bessPowerKw * bessCapexPerKw;
+  }
+
+  // ========== TOTAL CAPEX ==========
+  const totalCapex = pvCapex + bessCapex;
+
+  // ========== PV OPEX (annual) ==========
   const opexPerKwp = economicParams?.opex_per_kwp || settings.opexPerKwp || 15;
   const insuranceRate = getInsuranceRate(settings);
   const landLeasePerKwp = settings.landLeasePerKwp || 0;
 
   const annualOM = capacityKw * opexPerKwp;
-  const annualInsurance = totalCapex * insuranceRate;
+  const annualInsurance = pvCapex * insuranceRate;  // Insurance on PV only
   const annualLandLease = capacityKw * landLeasePerKwp;
-  const baseOpex = annualOM + annualInsurance + annualLandLease;
+  const pvOpex = annualOM + annualInsurance + annualLandLease;
+
+  // ========== BESS OPEX (annual) ==========
+  let bessOpex = 0;
+  if (bessCapex > 0) {
+    // BESS O&M: typically 1-2% of BESS CAPEX per year
+    const bessOpexRate = settings.bessOpexRate || economicParams?.bess_opex_rate || 0.015; // 1.5% default
+    bessOpex = bessCapex * bessOpexRate;
+  }
+
+  // ========== TOTAL OPEX ==========
+  const baseOpex = pvOpex + bessOpex;
 
   // ========== DEPRECIATION ==========
   const annualDepreciation = totalCapex / depPeriod;
@@ -1168,8 +1199,12 @@ function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicP
   const equityAmount = totalCapex - debtAmount;
 
   console.log(`\n📋 PARAMETRY WEJŚCIOWE:`);
-  console.log(`   CAPEX: ${(totalCapex/1e6).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
-  console.log(`   OPEX bazowy: ${(baseOpex/1e3).toFixed(0)} tys. PLN/rok`);
+  console.log(`   PV CAPEX: ${(pvCapex/1e6).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp × ${capacityKw} kW)`);
+  if (bessCapex > 0) {
+    console.log(`   BESS CAPEX: ${(bessCapex/1e6).toFixed(2)} mln PLN (${bessPowerKw.toFixed(0)} kW / ${bessEnergyKwh.toFixed(0)} kWh)`);
+  }
+  console.log(`   TOTAL CAPEX: ${(totalCapex/1e6).toFixed(2)} mln PLN`);
+  console.log(`   OPEX bazowy: ${(baseOpex/1e3).toFixed(0)} tys. PLN/rok (PV: ${(pvOpex/1e3).toFixed(0)}, BESS: ${(bessOpex/1e3).toFixed(0)})`);
   console.log(`   Amortyzacja: ${(annualDepreciation/1e3).toFixed(0)} tys. PLN/rok (${depPeriod} lat)`);
   console.log(`   Leverage: ${(leverageRatio*100).toFixed(0)}% → Dług: ${(debtAmount/1e6).toFixed(2)} mln, Equity: ${(equityAmount/1e6).toFixed(2)} mln`);
   console.log(`   Target IRR: ${(targetIrr*100).toFixed(1)}% (${irrDriver})`);
@@ -4160,6 +4195,7 @@ function calculateGridEnergyPrice(tariffComponents) {
 
 /**
  * Calculate effective EaaS price per kWh
+ * UPDATED: Now uses profile-analysis data when available for accurate self-consumption
  */
 function calculateEaaSEffectivePrice(params) {
   const {
@@ -4171,7 +4207,18 @@ function calculateEaaSEffectivePrice(params) {
     omCostPerKWp
   } = params;
 
-  const pvSelfConsumedKWh = annualPVProductionKWh * selfConsumptionRatio;
+  // PRIORITY: Use profile-analysis data if available (includes BESS discharge)
+  let pvSelfConsumedKWh;
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData) {
+    const pvDirectKwh = (profileAnalysisBessData.direct_consumption_mwh || 0) * 1000;
+    const bessDischargeKwh = (profileAnalysisBessData.annual_discharge_mwh || 0) * 1000;
+    pvSelfConsumedKWh = pvDirectKwh + bessDischargeKwh;
+    console.log(`📊 EaaS Effective Price using profile-analysis: ${(pvSelfConsumedKWh/1000).toFixed(1)} MWh`);
+  } else {
+    // Fallback: use production × ratio
+    pvSelfConsumedKWh = annualPVProductionKWh * selfConsumptionRatio;
+    console.log(`📊 EaaS Effective Price using fallback: ${(pvSelfConsumedKWh/1000).toFixed(1)} MWh`);
+  }
 
   if (pvSelfConsumedKWh <= 0) {
     return {
@@ -4190,6 +4237,8 @@ function calculateEaaSEffectivePrice(params) {
   const eaasTotalAnnualCostPLN = eaasSubscriptionPLNperYear;
 
   const eaasPricePLNperKWh = eaasTotalAnnualCostPLN / pvSelfConsumedKWh;
+
+  console.log(`📊 calculateEaaSEffectivePrice RESULT: ${(eaasPricePLNperKWh * 1000).toFixed(2)} PLN/MWh (subscription=${(eaasTotalAnnualCostPLN/1000).toFixed(0)}k / energy=${(pvSelfConsumedKWh/1000).toFixed(1)} MWh)`);
 
   return {
     error: null,
@@ -4394,14 +4443,46 @@ async function calculateEaaS() {
 
   // ========== FULL MODEL CALCULATION ==========
   // Calculate annual energy delivered to client (MWh)
-  const annualEnergyMWh = variant.self_consumed / 1000; // kWh -> MWh
+  //
+  // CRITICAL: We need to use the CORRECT self-consumption value:
+  // 1. variant.self_consumed = PV direct autoconsumption (calculated in CONFIG with CONFIG BESS)
+  // 2. profileAnalysisBessData.annual_discharge_mwh = energy from RECOMMENDED BESS (from profile-analysis)
+  // 3. profileAnalysisBessData.direct_consumption_mwh = PV direct autoconsumption (from profile-analysis)
+  //
+  // When profile-analysis is available, we should use:
+  // - direct_consumption_mwh (PV direct) + annual_discharge_mwh (BESS discharge)
+  // This gives us the TOTAL energy delivered to client with RECOMMENDED BESS sizing
 
-  // Run full investor model with all parameters from Settings
+  let annualEnergyMWh;
+
+  if (currentBessSource === 'profile-analysis' && profileAnalysisBessData) {
+    // Use profile-analysis data (RECOMMENDED BESS from Pareto optimization)
+    const pvDirectMwh = profileAnalysisBessData.direct_consumption_mwh || 0;
+    const bessDischargedMwh = profileAnalysisBessData.annual_discharge_mwh || 0;
+    annualEnergyMWh = pvDirectMwh + bessDischargedMwh;
+
+    console.log(`📊 EaaS using profile-analysis data:`);
+    console.log(`   PV Direct: ${pvDirectMwh.toFixed(2)} MWh`);
+    console.log(`   BESS Discharge: ${bessDischargedMwh.toFixed(2)} MWh`);
+    console.log(`   TOTAL Self-Consumed: ${annualEnergyMWh.toFixed(2)} MWh`);
+  } else {
+    // Fallback: use variant.self_consumed (from pv-calculation with CONFIG BESS)
+    annualEnergyMWh = variant.self_consumed / 1000; // kWh -> MWh
+    console.log(`📊 EaaS using variant.self_consumed: ${annualEnergyMWh.toFixed(2)} MWh (CONFIG BESS)`);
+  }
+
+  // Get BESS data based on current source
+  const bessDataForEaaS = getCurrentBessData();
+  console.log(`📊 EaaS BESS data (source: ${currentBessSource}):`, bessDataForEaaS ?
+    `${bessDataForEaaS.bess_power_kw?.toFixed(0) || 0} kW / ${bessDataForEaaS.bess_energy_kwh?.toFixed(0) || 0} kWh` : 'none');
+
+  // Run full investor model with all parameters from Settings (including BESS data)
   const fullModelResult = calculateEaasFullModel(
     variant.capacity,
     annualEnergyMWh,
     systemSettings || {},
-    params
+    params,
+    bessDataForEaaS  // Pass BESS data for CAPEX/OPEX calculation
   );
 
   console.log('Full EaaS Model Result:', fullModelResult);
@@ -5197,11 +5278,12 @@ function exportEaaSToExcel() {
     ['Równoważny okres zwrotu [lat]:', result.metrics.eaasEquivalentPaybackYears.toFixed(1)],
     ['Równoważny ROI [%]:', result.metrics.eaasEquivalentROI.toFixed(1)],
     [''],
-    ['STRUKTURA KOSZTÓW EaaS [PLN/rok]'],
-    ['Abonament:', result.metrics.breakdown.subscriptionCost],
-    ['O&M:', result.metrics.breakdown.omCost.toFixed(0)],
-    ['Ubezpieczenie:', result.metrics.breakdown.insuranceCost.toFixed(0)],
-    ['RAZEM:', result.metrics.breakdown.totalAnnualCost.toFixed(0)]
+    ['KOSZT DLA KLIENTA EaaS [PLN/rok]'],
+    ['Abonament EaaS (jedyny koszt dla klienta):', result.metrics.breakdown.subscriptionCost],
+    [''],
+    ['Koszty ESCO wbudowane w abonament (informacyjnie):'],
+    ['  - O&M:', result.metrics.breakdown.omCost.toFixed(0)],
+    ['  - Ubezpieczenie:', result.metrics.breakdown.insuranceCost.toFixed(0)]
   ];
 
   const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
@@ -5263,10 +5345,14 @@ function exportEaaSToExcel() {
     let phase;
 
     if (year <= eaasDuration) {
-      eaasCost = adjustedSubscriptionCost + adjustedOmCost + adjustedInsuranceCost;
+      // KLIENT płaci TYLKO abonament - O&M i ubezpieczenie to koszty ESCO wbudowane w abonament
+      // Solver w calculateEaasFullModel() oblicza abonament tak, że: EBITDA = Subscription - OPEX
+      // Więc abonament już uwzględnia OPEX ESCO, ale klient płaci tylko abonament
+      eaasCost = adjustedSubscriptionCost;
       phase = 'EaaS';
       eaasPhaseSavings += gridCost - eaasCost;
     } else {
+      // Po zakończeniu umowy EaaS klient przejmuje instalację i sam ponosi koszty O&M i ubezpieczenia
       eaasCost = adjustedOmCost + adjustedInsuranceCost;
       phase = 'Własność';
       ownershipPhaseSavings += gridCost - eaasCost;
@@ -5314,11 +5400,13 @@ function exportEaaSToExcel() {
   // ========== SHEET 3: Monthly Cash Flows (Full Model) ==========
   // Run full model to get monthly flows
   const annualEnergyMWh = variant.self_consumed / 1000;
+  const bessDataForExport = getCurrentBessData();
   const fullModelResult = calculateEaasFullModel(
     capacityKwp,
     annualEnergyMWh,
     systemSettings || {},
-    params
+    params,
+    bessDataForExport  // Include BESS in CAPEX/OPEX for export
   );
 
   if (fullModelResult && fullModelResult.monthlyFlows && fullModelResult.monthlyFlows.length > 0) {

@@ -80,7 +80,7 @@ class ProfileAnalysisRequest(BaseModel):
     max_cycles_per_year: int = Field(default=400, description="Maximum target cycles")
 
     # Pareto analysis
-    pareto_points: int = Field(default=10, description="Number of Pareto points to calculate")
+    pareto_points: int = Field(default=15, description="Number of Pareto points to calculate")
 
 
 class HourlyPattern(BaseModel):
@@ -233,6 +233,11 @@ class ProfileAnalysisResult(BaseModel):
     recommended_hourly_bess_charge: Optional[List[float]] = None
     recommended_hourly_bess_discharge: Optional[List[float]] = None
     recommended_hourly_bess_soc: Optional[List[float]] = None
+
+    # Hourly PV and Load data for Excel export (8760 elements)
+    # These are needed for complete hourly export with all columns
+    hourly_pv_kwh: Optional[List[float]] = None
+    hourly_load_kwh: Optional[List[float]] = None
 
     # Optimization results
     selected_strategy: str
@@ -658,16 +663,62 @@ async def generate_pareto_frontier(
 
     This function now uses simulate_bess_hourly() for accurate results instead of
     the simplified statistical model that overestimated performance by ~6x.
+
+    BESS sizing range is now based on:
+    1. Annual surplus energy (to capture more of available surplus)
+    2. Hourly surplus distribution (peak hours need larger power)
+    3. Theoretical max useful BESS = annual_surplus / target_cycles
     """
 
     # Calculate range of BESS sizes to explore
     avg_daily_surplus = np.mean([m.avg_daily_surplus_kwh for m in monthly_analysis])
     max_daily_surplus = max(m.avg_daily_surplus_kwh for m in monthly_analysis)
 
-    # Energy range: from small (high cycles) to large (low cycles)
-    # Minimum 50 kWh for small installations
+    # NEW: Calculate annual surplus from monthly data (in kWh)
+    annual_surplus_kwh = sum(m.total_surplus_mwh * 1000 for m in monthly_analysis)
+
+    # NEW: Analyze hourly surplus distribution for better power sizing
+    surplus_per_hour = np.maximum(pv_kwh - load_kwh, 0)
+    hours_with_surplus = np.sum(surplus_per_hour > 0)
+    avg_surplus_when_positive = np.mean(surplus_per_hour[surplus_per_hour > 0]) if hours_with_surplus > 0 else 0
+    max_hourly_surplus = np.max(surplus_per_hour)
+    p95_hourly_surplus = np.percentile(surplus_per_hour[surplus_per_hour > 0], 95) if hours_with_surplus > 0 else 0
+
+    print(f"📊 Pareto analysis inputs:")
+    print(f"   Annual surplus: {annual_surplus_kwh/1000:.1f} MWh")
+    print(f"   Hours with surplus: {hours_with_surplus}")
+    print(f"   Avg surplus/hour (when positive): {avg_surplus_when_positive:.1f} kWh")
+    print(f"   Max hourly surplus: {max_hourly_surplus:.1f} kWh")
+    print(f"   P95 hourly surplus: {p95_hourly_surplus:.1f} kWh")
+
+    # Energy range calculation (improved):
+    # - Minimum: enough to store 0.3x of avg daily surplus (high cycle scenario)
+    # - Maximum: enough to capture significant portion of annual surplus
+    #   Target: 300 cycles/year means max useful = annual_surplus / 300
+    #   But also limited by practical daily charging capacity
+
     min_energy = max(50, avg_daily_surplus * 0.3)
-    max_energy = max(min_energy * 3, max_daily_surplus * 1.5, 200)  # At least 200 kWh max
+
+    # Maximum useful BESS based on annual surplus at ~250-300 cycles
+    # Larger BESS means fewer cycles, so there's a practical upper limit
+    max_useful_at_250_cycles = annual_surplus_kwh / 250 if annual_surplus_kwh > 0 else 200
+
+    # Also consider peak day capacity (can charge multiple times per day)
+    max_from_daily = max_daily_surplus * 2.0  # Allow 2x max daily surplus
+
+    # Take the larger of the two approaches, but cap at reasonable multiple of PV capacity
+    max_energy = max(
+        min_energy * 3,
+        max_useful_at_250_cycles,
+        max_from_daily,
+        max_daily_surplus * 1.5,  # Original fallback
+        200  # Absolute minimum
+    )
+
+    # Cap at 3x PV capacity (rarely useful to go higher)
+    max_energy = min(max_energy, pv_capacity * 3)
+
+    print(f"   BESS range: {min_energy:.0f} - {max_energy:.0f} kWh")
 
     energy_range = np.linspace(min_energy, max_energy, n_points)
 
@@ -678,9 +729,24 @@ async def generate_pareto_frontier(
         if energy_kwh < 20:
             continue
 
+        # Power sizing based on hourly surplus distribution:
+        # - Power should be high enough to capture peak surplus hours
+        # - But not so high that CAPEX becomes unreasonable
+        # - Duration typically 2-4h for industrial BESS
+
+        # Calculate power based on P95 surplus (captures most hours effectively)
+        # This ensures power is adequate to charge from typical surplus
+        power_from_surplus = min(p95_hourly_surplus, max_hourly_surplus * 0.8)
+
         # Duration 2-4h based on size
-        duration = min(4, max(2, energy_kwh / avg_daily_surplus)) if avg_daily_surplus > 0 else 3
-        power_kw = energy_kwh / duration
+        if avg_daily_surplus > 0:
+            duration_from_daily = energy_kwh / avg_daily_surplus
+            duration = min(4, max(2, duration_from_daily))
+        else:
+            duration = 3
+
+        # Take the higher of: power from duration OR power from surplus distribution
+        power_kw = max(energy_kwh / duration, power_from_surplus * 0.8)
 
         # ============================================
         # USE REAL HOURLY SIMULATION (not statistical)
@@ -1113,6 +1179,12 @@ async def analyze_profile(request: ProfileAnalysisRequest):
         annual_deficit = np.sum(deficit) * hours_per_step / 1000
         annual_direct = np.sum(direct) * hours_per_step / 1000
 
+        print(f"📊 Energy balance:")
+        print(f"   Annual PV: {annual_pv:.1f} MWh")
+        print(f"   Annual Load: {annual_load:.1f} MWh")
+        print(f"   Annual Direct (PV self-consumed): {annual_direct:.1f} MWh")
+        print(f"   Annual Surplus (PV exported): {annual_surplus:.1f} MWh")
+
         # Hourly patterns
         hourly_patterns = analyze_hourly_patterns(pv_kwh, load_kwh, hours_per_step)
 
@@ -1326,7 +1398,10 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             pareto_frontier=pareto_frontier,
             variant_comparison=variant_comparison,
             pv_recommendations=pv_recommendations,
-            insights=insights
+            insights=insights,
+            # Hourly PV and Load data for Excel export
+            hourly_pv_kwh=[round(x, 2) for x in pv_kwh.tolist()],
+            hourly_load_kwh=[round(x, 2) for x in load_kwh.tolist()]
         )
 
     except HTTPException:

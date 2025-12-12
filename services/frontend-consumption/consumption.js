@@ -541,32 +541,336 @@ function generateLoadDurationCurve(values) {
   });
 }
 
-// Export analysis
-function exportAnalysis() {
+// Export analysis to Excel
+async function exportAnalysis() {
   if (!consumptionData) {
     alert('Brak danych do eksportu');
     return;
   }
 
-  const stats = calculateStatistics(consumptionData.hourlyData.values);
+  console.log('📥 Eksport analizy zużycia do Excel...');
 
-  const report = {
-    filename: consumptionData.filename,
-    analyzedAt: new Date().toISOString(),
-    statistics: stats,
-    dataSource: consumptionData
-  };
+  try {
+    // Fetch fresh statistics from backend
+    const statsResponse = await fetch(`${API_URLS.dataAnalysis}/statistics`);
+    const stats = statsResponse.ok ? await statsResponse.json() : null;
 
-  const dataStr = JSON.stringify(report, null, 2);
-  const dataBlob = new Blob([dataStr], { type: 'application/json' });
-  const url = URL.createObjectURL(dataBlob);
+    // Fetch seasonality data
+    let seasonalityData = null;
+    try {
+      const seasonResponse = await fetch(`${API_URLS.dataAnalysis}/seasonality`);
+      if (seasonResponse.ok) {
+        seasonalityData = await seasonResponse.json();
+      }
+    } catch (e) {
+      console.log('Brak danych sezonowości');
+    }
 
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `analiza-zuzycia-${new Date().toISOString().split('T')[0]}.json`;
-  link.click();
+    // Create workbook
+    const wb = XLSX.utils.book_new();
 
-  URL.revokeObjectURL(url);
+    // ========== SHEET 1: PODSUMOWANIE ==========
+    const summaryData = [
+      ['ANALIZA ZUŻYCIA ENERGII'],
+      [''],
+      ['Data eksportu:', new Date().toLocaleString('pl-PL')],
+      ['Źródło danych:', consumptionData.filename || 'Backend'],
+      [''],
+      ['STATYSTYKI ROCZNE'],
+      ['Zużycie roczne [GWh]:', stats?.total_consumption_gwh?.toFixed(3) || '-'],
+      ['Zużycie roczne [MWh]:', stats ? (stats.total_consumption_gwh * 1000).toFixed(1) : '-'],
+      ['Moc szczytowa [MW]:', stats?.peak_power_mw?.toFixed(3) || '-'],
+      ['Moc szczytowa [kW]:', stats ? (stats.peak_power_mw * 1000).toFixed(1) : '-'],
+      ['Moc minimalna [kW]:', stats?.min_power_kw?.toFixed(1) || '-'],
+      ['Moc średnia [MW]:', stats?.avg_power_mw?.toFixed(3) || '-'],
+      ['Moc średnia [kW]:', stats ? (stats.avg_power_mw * 1000).toFixed(1) : '-'],
+      [''],
+      ['STATYSTYKI SZCZEGÓŁOWE'],
+      ['Średnie zużycie dzienne [MWh]:', stats?.avg_daily_mwh?.toFixed(2) || '-'],
+      ['Odchylenie standardowe [MW]:', stats?.std_dev_mw?.toFixed(3) || '-'],
+      ['Współczynnik zmienności [%]:', stats?.variation_coef_pct?.toFixed(1) || '-'],
+      ['Współczynnik obciążenia [%]:', stats?.load_factor_pct?.toFixed(1) || '-'],
+      [''],
+      ['OKRES DANYCH'],
+      ['Liczba godzin:', stats?.hours || consumptionData.hourlyData?.values?.length || '-'],
+      ['Liczba dni:', stats?.days || '-'],
+      ['Data początkowa:', stats?.date_start || '-'],
+      ['Data końcowa:', stats?.date_end || '-']
+    ];
+
+    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+    ws1['!cols'] = [{ wch: 30 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Podsumowanie');
+
+    // ========== SHEET 2: PROFIL DOBOWY ==========
+    const dailyData = [
+      ['ŚREDNI PROFIL DOBOWY'],
+      [''],
+      ['Godzina', 'Średnia moc [MW]', 'Średnia moc [kW]']
+    ];
+
+    if (stats?.daily_profile_mw) {
+      stats.daily_profile_mw.forEach((mw, hour) => {
+        dailyData.push([
+          `${hour.toString().padStart(2, '0')}:00`,
+          mw.toFixed(3),
+          (mw * 1000).toFixed(1)
+        ]);
+      });
+
+      // Add summary row
+      const avgMw = stats.daily_profile_mw.reduce((a, b) => a + b, 0) / 24;
+      const maxMw = Math.max(...stats.daily_profile_mw);
+      const minMw = Math.min(...stats.daily_profile_mw);
+      dailyData.push(['']);
+      dailyData.push(['Średnia:', avgMw.toFixed(3), (avgMw * 1000).toFixed(1)]);
+      dailyData.push(['Maximum:', maxMw.toFixed(3), (maxMw * 1000).toFixed(1)]);
+      dailyData.push(['Minimum:', minMw.toFixed(3), (minMw * 1000).toFixed(1)]);
+    }
+
+    const ws2 = XLSX.utils.aoa_to_sheet(dailyData);
+    ws2['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Profil Dobowy');
+
+    // ========== SHEET 3: PROFIL TYGODNIOWY ==========
+    const dayNames = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela'];
+    const weeklyData = [
+      ['PROFIL TYGODNIOWY'],
+      [''],
+      ['Dzień tygodnia', 'Średnie zużycie [MWh/dzień]', 'Typ dnia']
+    ];
+
+    if (stats?.weekly_profile_mwh) {
+      stats.weekly_profile_mwh.forEach((mwh, day) => {
+        const dayType = day < 5 ? 'Roboczy' : 'Weekend';
+        weeklyData.push([dayNames[day], mwh.toFixed(2), dayType]);
+      });
+
+      // Add summary
+      const workdays = stats.weekly_profile_mwh.slice(0, 5);
+      const weekend = stats.weekly_profile_mwh.slice(5, 7);
+      const avgWorkday = workdays.reduce((a, b) => a + b, 0) / 5;
+      const avgWeekend = weekend.reduce((a, b) => a + b, 0) / 2;
+
+      weeklyData.push(['']);
+      weeklyData.push(['Średnia dni robocze:', avgWorkday.toFixed(2), '']);
+      weeklyData.push(['Średnia weekend:', avgWeekend.toFixed(2), '']);
+      weeklyData.push(['Różnica weekend vs robocze [%]:', ((avgWeekend / avgWorkday - 1) * 100).toFixed(1), '']);
+    }
+
+    const ws3 = XLSX.utils.aoa_to_sheet(weeklyData);
+    ws3['!cols'] = [{ wch: 18 }, { wch: 28 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws3, 'Profil Tygodniowy');
+
+    // ========== SHEET 4: PROFIL MIESIĘCZNY ==========
+    const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                        'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+    const monthlyData = [
+      ['PROFIL MIESIĘCZNY'],
+      [''],
+      ['Miesiąc', 'Zużycie [MWh]', 'Zużycie [kWh]', 'Moc szczytowa [kW]', '% Rocznego']
+    ];
+
+    if (stats?.monthly_consumption) {
+      const totalKwh = stats.monthly_consumption.reduce((a, b) => a + b, 0);
+
+      stats.monthly_consumption.forEach((kwh, month) => {
+        const mwh = kwh / 1000;
+        const peakKw = stats.monthly_peaks ? stats.monthly_peaks[month] : '-';
+        const pct = totalKwh > 0 ? (kwh / totalKwh * 100).toFixed(1) : '-';
+
+        monthlyData.push([
+          monthNames[month],
+          mwh.toFixed(2),
+          kwh.toFixed(0),
+          typeof peakKw === 'number' ? peakKw.toFixed(1) : peakKw,
+          pct + '%'
+        ]);
+      });
+
+      // Add totals
+      monthlyData.push(['']);
+      monthlyData.push(['RAZEM:', (totalKwh / 1000).toFixed(2), totalKwh.toFixed(0), '', '100%']);
+    }
+
+    const ws4 = XLSX.utils.aoa_to_sheet(monthlyData);
+    ws4['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 20 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws4, 'Profil Miesięczny');
+
+    // ========== SHEET 5: SEZONOWOŚĆ ==========
+    if (seasonalityData) {
+      const seasonData = [
+        ['ANALIZA SEZONOWOŚCI'],
+        [''],
+        ['Wynik sezonowości [%]:', (seasonalityData.seasonality_score * 100).toFixed(1)],
+        ['Sezonowość wykryta:', seasonalityData.detected ? 'TAK' : 'NIE'],
+        ['Komunikat:', seasonalityData.message || ''],
+        [''],
+        ['PODZIAŁ DNI NA PASMA'],
+        ['Pasmo', 'Liczba dni', 'Opis']
+      ];
+
+      // Count bands
+      const bandCounts = { High: 0, Mid: 0, Low: 0 };
+      if (seasonalityData.daily_bands) {
+        seasonalityData.daily_bands.forEach(day => {
+          if (day.band in bandCounts) bandCounts[day.band]++;
+        });
+      }
+
+      seasonData.push(['HIGH', bandCounts.High, 'Dni z wysokim zużyciem']);
+      seasonData.push(['MID', bandCounts.Mid, 'Dni ze średnim zużyciem']);
+      seasonData.push(['LOW', bandCounts.Low, 'Dni z niskim zużyciem']);
+      seasonData.push(['']);
+
+      // Monthly bands
+      if (seasonalityData.monthly_bands && seasonalityData.monthly_bands.length > 0) {
+        seasonData.push(['MIESIĘCZNA KLASYFIKACJA PASM']);
+        seasonData.push(['Miesiąc', 'Dominujące pasmo', 'Zużycie [MWh]', 'P95 Mocy [kW]', 'Śr. Moc [kW]']);
+
+        const sortedMonths = [...seasonalityData.monthly_bands].sort((a, b) => a.month.localeCompare(b.month));
+        sortedMonths.forEach(mb => {
+          seasonData.push([
+            mb.month,
+            mb.dominant_band,
+            ((mb.consumption_kwh || 0) / 1000).toFixed(2),
+            (mb.p95_power || 0).toFixed(0),
+            (mb.avg_power || 0).toFixed(0)
+          ]);
+        });
+      }
+
+      // Recommended powers
+      if (seasonalityData.band_powers) {
+        seasonData.push(['']);
+        seasonData.push(['REKOMENDOWANE LIMITY MOCY AC']);
+        seasonData.push(['Pasmo', 'Rekomendowana moc [kW]', 'Opis']);
+        seasonalityData.band_powers.forEach(bp => {
+          seasonData.push([bp.band, Math.round(bp.p_recommended), `P95 z okresu ${bp.band}`]);
+        });
+      }
+
+      const ws5 = XLSX.utils.aoa_to_sheet(seasonData);
+      ws5['!cols'] = [{ wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws5, 'Sezonowość');
+    }
+
+    // ========== SHEET 6: DANE GODZINOWE ==========
+    if (consumptionData.hourlyData && consumptionData.hourlyData.values) {
+      const hourlySheetData = [
+        ['DANE GODZINOWE'],
+        [''],
+        ['Timestamp', 'Data', 'Godzina', 'Dzień tygodnia', 'Miesiąc', 'Zużycie [kWh]', 'Moc [kW]']
+      ];
+
+      const values = consumptionData.hourlyData.values;
+      const timestamps = consumptionData.hourlyData.timestamps;
+      const dayNamesShort = ['Nd', 'Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So'];
+
+      // Limit to 50000 rows for Excel performance (full year = 8760)
+      const maxRows = Math.min(values.length, 50000);
+
+      for (let i = 0; i < maxRows; i++) {
+        const ts = timestamps[i];
+        const date = new Date(ts);
+        const dateStr = date.toLocaleDateString('pl-PL');
+        const hour = date.getHours();
+        const dayOfWeek = dayNamesShort[date.getDay()];
+        const month = date.getMonth() + 1;
+        const kwh = values[i];
+
+        hourlySheetData.push([
+          ts,
+          dateStr,
+          `${hour.toString().padStart(2, '0')}:00`,
+          dayOfWeek,
+          month,
+          kwh.toFixed(2),
+          kwh.toFixed(2)  // For hourly data, kWh = kW (1 hour)
+        ]);
+      }
+
+      if (values.length > maxRows) {
+        hourlySheetData.push(['']);
+        hourlySheetData.push([`... (pokazano ${maxRows} z ${values.length} wierszy)`]);
+      }
+
+      const ws6 = XLSX.utils.aoa_to_sheet(hourlySheetData);
+      ws6['!cols'] = [
+        { wch: 22 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 12 }
+      ];
+      XLSX.utils.book_append_sheet(wb, ws6, 'Dane Godzinowe');
+    }
+
+    // ========== SHEET 7: KRZYWA UPORZĄDKOWANA ==========
+    if (consumptionData.hourlyData && consumptionData.hourlyData.values) {
+      const values = consumptionData.hourlyData.values;
+      const sorted = [...values].sort((a, b) => b - a);
+
+      const ldcData = [
+        ['KRZYWA UPORZĄDKOWANA MOCY (Load Duration Curve)'],
+        [''],
+        ['Pozycja', 'Czas trwania [h]', '% czasu', 'Moc [kW]', 'Moc [MW]']
+      ];
+
+      // Sample points for LDC (every 100 hours + key percentiles)
+      const totalHours = sorted.length;
+      const samplePoints = new Set([0, 1, 2, 3, 4, 5, 10, 20, 50, 100]);
+
+      // Add percentile points
+      [1, 5, 10, 25, 50, 75, 90, 95, 99].forEach(pct => {
+        samplePoints.add(Math.floor(totalHours * pct / 100));
+      });
+
+      // Add every 100th hour
+      for (let i = 0; i < totalHours; i += 100) {
+        samplePoints.add(i);
+      }
+      samplePoints.add(totalHours - 1);
+
+      const sortedPoints = [...samplePoints].sort((a, b) => a - b).filter(p => p < totalHours);
+
+      sortedPoints.forEach(pos => {
+        const pct = (pos / totalHours * 100).toFixed(2);
+        const kw = sorted[pos];
+        ldcData.push([
+          pos + 1,
+          pos + 1,
+          pct + '%',
+          kw.toFixed(2),
+          (kw / 1000).toFixed(3)
+        ]);
+      });
+
+      // Add statistics
+      ldcData.push(['']);
+      ldcData.push(['STATYSTYKI KRZYWEJ']);
+      ldcData.push(['Moc maksymalna [kW]:', '', '', sorted[0].toFixed(2)]);
+      ldcData.push(['Moc minimalna [kW]:', '', '', sorted[sorted.length - 1].toFixed(2)]);
+      ldcData.push(['Percentyl P95 [kW]:', '', '', sorted[Math.floor(totalHours * 0.05)].toFixed(2)]);
+      ldcData.push(['Percentyl P50 (mediana) [kW]:', '', '', sorted[Math.floor(totalHours * 0.5)].toFixed(2)]);
+      ldcData.push(['Percentyl P5 [kW]:', '', '', sorted[Math.floor(totalHours * 0.95)].toFixed(2)]);
+
+      const ws7 = XLSX.utils.aoa_to_sheet(ldcData);
+      ws7['!cols'] = [{ wch: 30 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws7, 'Krzywa Uporządkowana');
+    }
+
+    // Generate filename
+    const dateStr = new Date().toISOString().split('T')[0];
+    const periodStr = stats?.date_start && stats?.date_end
+      ? `${stats.date_start.replace(/-/g, '')}_${stats.date_end.replace(/-/g, '')}`
+      : dateStr;
+    const filename = `Analiza_Zuzycia_${periodStr}.xlsx`;
+
+    // Save file
+    XLSX.writeFile(wb, filename);
+    console.log('✅ Eksport zakończony:', filename);
+
+  } catch (error) {
+    console.error('Błąd eksportu:', error);
+    alert('Błąd podczas eksportu: ' + error.message);
+  }
 }
 
 // Refresh data
