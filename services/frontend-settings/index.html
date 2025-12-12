@@ -980,13 +980,18 @@
               </div>
               <div class="setting-item">
                 <label>Degradacja rok 1</label>
-                <input type="number" id="bessDegradationYear1" value="3.0" min="0" max="10" step="0.1">
+                <input type="number" id="bessDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="syncDegradationParams('light')">
                 <span class="setting-hint">% (pierwszy rok - wyższa)</span>
               </div>
               <div class="setting-item">
                 <label>Degradacja lata 2+</label>
-                <input type="number" id="bessDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1">
+                <input type="number" id="bessDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="syncDegradationParams('light')">
                 <span class="setting-hint">% (pozostałe lata)</span>
+              </div>
+              <div class="setting-item">
+                <label>Straty pomocnicze</label>
+                <input type="number" id="bessAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('light')">
+                <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
               </div>
             </div>
           </div>
@@ -1079,7 +1084,7 @@
         </div>
 
         <!-- PRO Zero-Export Settings -->
-        <div>
+        <div style="margin-bottom:16px">
           <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">🚫 Ograniczenie 0-Export</div>
           <div class="settings-grid">
             <div class="setting-item">
@@ -1093,6 +1098,133 @@
               <label>Kara za eksport [PLN/MWh]</label>
               <input type="number" id="bessProExportPenalty" value="1000" min="0" max="10000" step="100">
               <span class="setting-hint">Soft constraint (gdy 0-Export off)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- PRO Degradation Parameters (same as LIGHT - centralized) -->
+        <div>
+          <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">🔋 Degradacja BESS (centralne ustawienia)</div>
+          <div style="font-size:10px;color:#888;margin-bottom:8px">Te same parametry co w wersji LIGHT - zmiana tutaj = zmiana wszędzie</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Degradacja rok 1</label>
+              <input type="number" id="bessProDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="syncDegradationParams('pro')">
+              <span class="setting-hint">% (pierwszy rok - wyższa)</span>
+            </div>
+            <div class="setting-item">
+              <label>Degradacja lata 2+</label>
+              <input type="number" id="bessProDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="syncDegradationParams('pro')">
+              <span class="setting-hint">% (pozostałe lata)</span>
+            </div>
+            <div class="setting-item">
+              <label>Straty pomocnicze</label>
+              <input type="number" id="bessProAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('pro')">
+              <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BESS Advanced Features - Peak Shaving & Price Arbitrage (shared for LIGHT and PRO) -->
+      <div id="bessAdvancedFeaturesSection" style="display:none">
+        <!-- Peak Shaving Section -->
+        <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #e1f5fe 0%, #b3e5fc 100%);border-radius:8px;border:1px solid #4fc3f7">
+          <div style="font-weight:600;color:#0277bd;margin-bottom:12px;font-size:14px">
+            📉 Peak Shaving (Redukcja szczytów mocy)
+          </div>
+          <div style="font-size:11px;color:#666;margin-bottom:16px">
+            Redukcja opłat mocowych przez obcinanie szczytów zużycia. BESS rozładowuje się gdy moc pobierana przekracza zadany próg.
+            Oszczędność = (Pmax_przed - Pmax_po) × opłata_mocowa × 12 miesięcy.
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="bessPeakShavingEnabled" style="width:18px;height:18px">
+                Włącz Peak Shaving
+              </label>
+              <span class="setting-hint">Optymalizacja pod redukcję szczytów</span>
+            </div>
+            <div class="setting-item">
+              <label>Tryb redukcji</label>
+              <select id="bessPeakShavingMode" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="auto">🤖 AUTO (P95 z profilu)</option>
+                <option value="manual">Ręczny (podaj wartość kW)</option>
+                <option value="percentage">Procentowy (% redukcji)</option>
+              </select>
+              <span class="setting-hint">AUTO = próg = percentyl 95%</span>
+            </div>
+            <div class="setting-item">
+              <label>Próg mocy [kW]</label>
+              <input type="number" id="bessPeakShavingTargetKw" value="0" min="0" max="100000" step="10">
+              <span class="setting-hint">Dla trybu ręcznego (0 = auto)</span>
+            </div>
+            <div class="setting-item">
+              <label>Redukcja [%]</label>
+              <input type="number" id="bessPeakShavingPctReduction" value="15" min="1" max="50" step="1">
+              <span class="setting-hint">Dla trybu procentowego</span>
+            </div>
+            <div class="setting-item">
+              <label>Opłata mocowa [PLN/kW/m-c]</label>
+              <input type="number" id="bessPowerChargePlnPerKwMonth" value="50" min="0" max="200" step="5">
+              <span class="setting-hint">Typowo 40-80 PLN/kW/miesiąc</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Price Arbitrage Section -->
+        <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%);border-radius:8px;border:1px solid #f48fb1">
+          <div style="font-weight:600;color:#c2185b;margin-bottom:12px;font-size:14px">
+            💹 Arbitraż Cenowy (RDN)
+          </div>
+          <div style="font-size:11px;color:#666;margin-bottom:16px">
+            Kupuj energię tanio (ładuj BESS), sprzedawaj drogo (rozładuj BESS).
+            Wymaga dostępu do cen godzinowych RDN lub ręcznego profilu cenowego.
+            Zysk = Σ(cena_sprzedaży - cena_kupna) × energia × sprawność.
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="bessPriceArbitrageEnabled" style="width:18px;height:18px">
+                Włącz Arbitraż Cenowy
+              </label>
+              <span class="setting-hint">Optymalizacja pod różnice cen RDN</span>
+            </div>
+            <div class="setting-item">
+              <label>Źródło cen RDN</label>
+              <select id="bessPriceArbitrageSource" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="manual">Ręczne progi (buy/sell)</option>
+                <option value="tge_api">TGE API (auto)</option>
+                <option value="csv_upload">Upload CSV (8760 cen)</option>
+              </select>
+              <span class="setting-hint">TGE = Towarowa Giełda Energii</span>
+            </div>
+            <div class="setting-item">
+              <label>Próg kupna [PLN/MWh]</label>
+              <input type="number" id="bessPriceArbitrageBuyThreshold" value="300" min="0" max="1000" step="10">
+              <span class="setting-hint">Ładuj gdy cena &lt; próg</span>
+            </div>
+            <div class="setting-item">
+              <label>Próg sprzedaży [PLN/MWh]</label>
+              <input type="number" id="bessPriceArbitrageSellThreshold" value="600" min="100" max="2000" step="10">
+              <span class="setting-hint">Rozładuj gdy cena &gt; próg</span>
+            </div>
+            <div class="setting-item">
+              <label>Min. spread [PLN/MWh]</label>
+              <input type="number" id="bessPriceArbitrageSpread" value="100" min="0" max="500" step="10">
+              <span class="setting-hint">Min. różnica cen do arbitrażu</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena bazowa RDN [PLN/MWh]</label>
+              <input type="number" id="bessRdnPriceFlat" value="500" min="100" max="1500" step="10">
+              <span class="setting-hint">Dla trybu ręcznego</span>
+            </div>
+            <div class="setting-item">
+              <label>Mnożnik cen RDN</label>
+              <input type="number" id="bessRdnPriceMultiplier" value="1.0" min="0.5" max="2.0" step="0.1">
+              <span class="setting-hint">Scenariusze: 1.2 = +20% cen</span>
             </div>
           </div>
         </div>
@@ -1477,6 +1609,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<script src="settings.js"></script>
+<script src="settings.js?v=20251212-PEAK-ARBITRAGE"></script>
 </body>
 </html>

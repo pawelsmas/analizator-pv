@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analiza Profilu PV+BESS v2.0</title>
-    <link rel="stylesheet" href="profile.css?v=20251210-EXPORT">
+    <link rel="stylesheet" href="profile.css?v=20251212-PEAK-ARBITRAGE">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 </head>
@@ -73,8 +73,73 @@
                     <label for="maxCycles">Max. cykli rocznie</label>
                     <input type="number" id="maxCycles" value="365" min="200" max="700" step="10">
                 </div>
-                <button id="analyzeBtn" class="btn-analyze">🔬 Analizuj profil (PyPSA)</button>
             </div>
+
+            <!-- Advanced BESS Features (collapsible) -->
+            <details class="advanced-features" style="margin-top: 20px;">
+                <summary style="cursor:pointer;padding:12px;background:linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);border-radius:8px;font-weight:600;color:#1565c0;">
+                    ⚡ Zaawansowane funkcje BESS (Peak Shaving & Arbitraż)
+                </summary>
+                <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+                    <div class="config-grid">
+                        <!-- Peak Shaving -->
+                        <div class="form-group" style="grid-column: 1 / -1;">
+                            <h4 style="margin:0 0 10px 0;color:#0277bd;">📉 Peak Shaving <span class="tooltip-icon" data-tooltip="Redukcja szczytów mocy przez rozładowanie BESS gdy zapotrzebowanie przekracza ustalony próg. Zmniejsza opłaty mocowe naliczane od maksymalnej mocy zamówionej.">?</span></h4>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex;align-items:center;gap:8px">
+                                <input type="checkbox" id="peakShavingEnabled" style="width:18px;height:18px">
+                                Włącz Peak Shaving <span class="tooltip-icon" data-tooltip="Włącz symulację peak shaving. BESS będzie rezerwować część pojemności na pokrycie szczytów mocy zamiast pełnej autokonsumpcji.">?</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="peakShavingMode">Tryb <span class="tooltip-icon" data-tooltip="AUTO: próg = 95 percentyl zużycia (redukuje 5% najwyższych szczytów). Ręczny: ustaw stały próg kW. Procentowy: redukcja o X% od max.">?</span></label>
+                            <select id="peakShavingMode">
+                                <option value="auto" selected>AUTO (P95)</option>
+                                <option value="manual">Ręczny</option>
+                                <option value="percentage">Procentowy</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="peakShavingTargetKw">Próg [kW] <span class="tooltip-icon" data-tooltip="W trybie ręcznym: stały próg mocy. Gdy zużycie > próg, BESS rozładowuje się. Przykład: próg 800 kW, szczyt 1000 kW → BESS dostarcza 200 kW.">?</span></label>
+                            <input type="number" id="peakShavingTargetKw" value="0" min="0" step="10">
+                        </div>
+                        <div class="form-group">
+                            <label for="powerChargePlnPerKwMonth">Opłata moc. [PLN/kW/m-c] <span class="tooltip-icon" data-tooltip="Opłata mocowa za 1 kW mocy zamówionej/szczytowej na miesiąc. W Polsce typowo 30-80 PLN/kW/m-c dla przemysłu. Roczna oszczędność = (ΔP × 12 × opłata).">?</span></label>
+                            <input type="number" id="powerChargePlnPerKwMonth" value="50" min="0" step="5">
+                        </div>
+
+                        <!-- Price Arbitrage -->
+                        <div class="form-group" style="grid-column: 1 / -1; margin-top: 15px;">
+                            <h4 style="margin:0 0 10px 0;color:#c2185b;">💹 Arbitraż Cenowy (RDN) <span class="tooltip-icon" data-tooltip="Kupuj energię gdy tania, sprzedawaj gdy droga. Wykorzystuje zmienność cen na Rynku Dnia Następnego. Wymaga analizy historycznych cen TGE lub własnych prognoz.">?</span></h4>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex;align-items:center;gap:8px">
+                                <input type="checkbox" id="priceArbitrageEnabled" style="width:18px;height:18px">
+                                Włącz Arbitraż <span class="tooltip-icon" data-tooltip="Włącz symulację arbitrażu cenowego. BESS będzie ładować się z sieci gdy cena < próg kupna i rozładowywać gdy cena > próg sprzedaży.">?</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="arbitrageSource">Źródło cen <span class="tooltip-icon" data-tooltip="Ręczne progi: ustaw stałe wartości. TGE API: pobierz rzeczywiste ceny RDN (wymaga integracji). CSV: wgraj własny plik z cenami godzinowymi.">?</span></label>
+                            <select id="arbitrageSource">
+                                <option value="manual" selected>Ręczne progi</option>
+                                <option value="tge_api">TGE API</option>
+                                <option value="csv_upload">Upload CSV</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="arbitrageBuyThreshold">Próg kupna [PLN/MWh] <span class="tooltip-icon" data-tooltip="BESS ładuje się z sieci gdy cena < tego progu. Przykład: 300 PLN/MWh to typowa cena nocna/weekendowa. Niższy próg = mniej okazji ale tańszy zakup.">?</span></label>
+                            <input type="number" id="arbitrageBuyThreshold" value="300" min="0" step="10">
+                        </div>
+                        <div class="form-group">
+                            <label for="arbitrageSellThreshold">Próg sprzedaży [PLN/MWh] <span class="tooltip-icon" data-tooltip="BESS rozładowuje do sieci gdy cena > tego progu. Przykład: 600 PLN/MWh to typowy szczyt poranny/wieczorny. Wyższy próg = mniej okazji ale drożej sprzedasz.">?</span></label>
+                            <input type="number" id="arbitrageSellThreshold" value="600" min="100" step="10">
+                        </div>
+                    </div>
+                </div>
+            </details>
+
+            <button id="analyzeBtn" class="btn-analyze" style="margin-top: 15px;">🔬 Analizuj profil (PyPSA)</button>
         </section>
 
         <!-- Results Section -->
@@ -88,6 +153,7 @@
                 <button class="tab-btn" data-tab="hourly">Profil godzinowy</button>
                 <button class="tab-btn" data-tab="monthly">Analiza miesięczna</button>
                 <button class="tab-btn" data-tab="quarterly">Kwartały</button>
+                <button class="tab-btn" data-tab="peakShaving">📉 Peak Shaving</button>
                 <button class="tab-btn" data-tab="bessRec">Rekomendacje BESS</button>
                 <button class="tab-btn" data-tab="pvRec">Rekomendacje PV</button>
                 <button class="tab-btn" data-tab="insights">Wnioski</button>
@@ -200,6 +266,89 @@
                 <div id="quarterlyContent"></div>
             </div>
 
+            <!-- Peak Shaving Tab -->
+            <div id="peakShavingTab" class="tab-panel">
+                <h3>📉 Analiza Peak Shaving</h3>
+                <p class="description">Redukcja szczytów mocy i oszczędności na opłatach mocowych</p>
+
+                <div id="peakShavingDisabled" style="display:none; padding: 30px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 20px 0;">
+                    <p style="font-size: 1.1rem; color: #666;">⚠️ Peak Shaving jest wyłączony</p>
+                    <p style="color: #888;">Włącz funkcję w sekcji "Zaawansowane funkcje BESS" powyżej i uruchom analizę ponownie.</p>
+                </div>
+
+                <div id="peakShavingResults" style="display:none;">
+                    <!-- Summary Cards -->
+                    <div class="summary-grid" style="margin-bottom: 25px;">
+                        <div class="summary-card">
+                            <div class="summary-label">Moc szczytowa PRZED</div>
+                            <div class="summary-value" id="psPeakBefore">-</div>
+                            <div class="summary-unit">kW (historyczna)</div>
+                        </div>
+                        <div class="summary-card highlight-green">
+                            <div class="summary-label">Moc szczytowa PO</div>
+                            <div class="summary-value" id="psPeakAfter">-</div>
+                            <div class="summary-unit">kW (po redukcji)</div>
+                        </div>
+                        <div class="summary-card highlight-blue">
+                            <div class="summary-label">Redukcja szczytu</div>
+                            <div class="summary-value" id="psReduction">-</div>
+                            <div class="summary-unit">kW / %</div>
+                        </div>
+                        <div class="summary-card highlight-orange">
+                            <div class="summary-label">Próg Peak Shaving</div>
+                            <div class="summary-value" id="psThreshold">-</div>
+                            <div class="summary-unit">kW (P95 lub ręczny)</div>
+                        </div>
+                    </div>
+
+                    <!-- Chart: Load Duration Curve with Peak Shaving -->
+                    <div style="background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <h4 style="margin: 0 0 15px 0; color: #0277bd;">📊 Krzywa obciążenia z redukcją szczytów</h4>
+                        <div class="chart-container" style="height: 350px;">
+                            <canvas id="peakShavingChart"></canvas>
+                        </div>
+                        <p style="font-size: 0.85rem; color: #666; margin-top: 10px;">
+                            Czerwona linia = oryginalne zużycie | Zielona linia = po redukcji przez BESS | Przerywana = próg peak shaving
+                        </p>
+                    </div>
+
+                    <!-- Detailed Calculations -->
+                    <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 12px; padding: 20px; margin-bottom: 25px;">
+                        <h4 style="margin: 0 0 15px 0; color: #0277bd;">🧮 Szczegółowe obliczenia oszczędności</h4>
+                        <div id="psCalculations" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <!-- Filled by JS -->
+                        </div>
+                    </div>
+
+                    <!-- Monthly Breakdown -->
+                    <div style="background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <h4 style="margin: 0 0 15px 0; color: #0277bd;">📅 Rozkład miesięczny szczytów</h4>
+                        <div class="table-container">
+                            <table class="data-table" id="psMonthlyTable">
+                                <thead>
+                                    <tr>
+                                        <th>Miesiąc</th>
+                                        <th>Szczyt PRZED [kW]</th>
+                                        <th>Szczyt PO [kW]</th>
+                                        <th>Redukcja [kW]</th>
+                                        <th>Oszczędność [PLN]</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="psMonthlyTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Export Button -->
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button onclick="exportPeakShavingReport()" style="padding: 12px 30px; background: linear-gradient(135deg, #0277bd, #01579b); color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;">
+                            📥 Eksportuj raport Peak Shaving do Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- BESS Recommendations Tab -->
             <div id="bessRecTab" class="tab-panel">
                 <h3>Rekomendacje rozmiaru BESS</h3>
@@ -228,6 +377,6 @@
         <p id="loadingText">Uruchamiam optymalizację PyPSA...</p>
     </div>
 
-    <script src="profile.js?v=20251211-DIRECT-CONSUMPTION"></script>
+    <script src="profile.js?v=20251212-PEAK-ARBITRAGE"></script>
 </body>
 </html>

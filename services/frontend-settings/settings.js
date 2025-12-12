@@ -279,6 +279,7 @@ const DEFAULT_CONFIG = {
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
   bessDegradationYear1: 3.0,           // First year degradation [%] (higher due to initial settling)
   bessDegradationPctPerYear: 2.0,      // Annual capacity degradation for years 2+ [%/year]
+  bessAuxiliaryLossPctPerDay: 0.1,     // Standby losses [% of capacity/day] (BMS, cooling, etc.)
 
   // ============================================================================
   // BESS PRO - Advanced LP/MIP Optimization (PyPSA + HiGHS)
@@ -300,7 +301,27 @@ const DEFAULT_CONFIG = {
 
   // PRO Mode Zero-Export Constraint
   bessProZeroExport: true,             // Enforce zero grid export constraint
-  bessProExportPenalty: 1000           // Penalty for grid export [PLN/MWh] (soft constraint)
+  bessProExportPenalty: 1000,          // Penalty for grid export [PLN/MWh] (soft constraint)
+
+  // ============================================================================
+  // BESS Advanced Features - Peak Shaving & Price Arbitrage
+  // ============================================================================
+
+  // Peak Shaving (redukcja opłat mocowych przez obcinanie szczytów zużycia)
+  bessPeakShavingEnabled: false,       // Enable peak shaving optimization
+  bessPeakShavingMode: 'auto',         // 'auto' (P95) | 'manual' | 'percentage'
+  bessPeakShavingTargetKw: 0,          // Target peak power [kW] (for manual mode)
+  bessPeakShavingPctReduction: 15,     // Target % reduction from historical peak (for percentage mode)
+  bessPowerChargePlnPerKwMonth: 50,    // Power charge [PLN/kW/month] for peak shaving savings
+
+  // Price Arbitrage (arbitraż cenowy RDN - kupuj tanio, sprzedawaj drogo)
+  bessPriceArbitrageEnabled: false,    // Enable price arbitrage optimization
+  bessPriceArbitrageSource: 'manual',  // 'manual' | 'tge_api' | 'csv_upload'
+  bessPriceArbitrageBuyThreshold: 300, // Buy energy when price below [PLN/MWh]
+  bessPriceArbitrageSellThreshold: 600,// Sell energy when price above [PLN/MWh]
+  bessPriceArbitrageSpread: 100,       // Minimum spread to trigger arbitrage [PLN/MWh]
+  bessRdnPriceFlat: 500,               // Flat RDN price [PLN/MWh] (for manual mode without profile)
+  bessRdnPriceMultiplier: 1.0          // RDN price multiplier (for scenario analysis)
 };
 
 // Initialize on load
@@ -379,7 +400,49 @@ function toggleBessSection() {
   // PRO-specific section
   if (proSection) proSection.style.display = isPro ? 'block' : 'none';
 
+  // Advanced features section (Peak Shaving & Arbitrage - shown for both LIGHT and PRO)
+  const advancedSection = document.getElementById('bessAdvancedFeaturesSection');
+  if (advancedSection) advancedSection.style.display = isEnabled ? 'block' : 'none';
+
   console.log(`🔋 BESS mode: ${bessMode} (enabled: ${isEnabled}, pro: ${isPro})`);
+}
+
+/**
+ * Synchronize degradation parameters between LIGHT and PRO sections
+ * When user changes a value in one mode, it updates the other mode
+ * @param {string} source - 'light' or 'pro' - which section triggered the change
+ */
+function syncDegradationParams(source) {
+  // Field mappings: LIGHT field ID -> PRO field ID
+  const fieldMappings = {
+    'bessDegradationYear1': 'bessProDegradationYear1',
+    'bessDegradationPctPerYear': 'bessProDegradationPctPerYear',
+    'bessAuxiliaryLossPctPerDay': 'bessProAuxiliaryLossPctPerDay'
+  };
+
+  if (source === 'light') {
+    // Copy from LIGHT to PRO
+    Object.entries(fieldMappings).forEach(([lightId, proId]) => {
+      const lightEl = document.getElementById(lightId);
+      const proEl = document.getElementById(proId);
+      if (lightEl && proEl) {
+        proEl.value = lightEl.value;
+      }
+    });
+    console.log('🔄 Degradation params synced: LIGHT → PRO');
+  } else if (source === 'pro') {
+    // Copy from PRO to LIGHT
+    Object.entries(fieldMappings).forEach(([lightId, proId]) => {
+      const lightEl = document.getElementById(lightId);
+      const proEl = document.getElementById(proId);
+      if (lightEl && proEl) {
+        lightEl.value = proEl.value;
+      }
+    });
+    console.log('🔄 Degradation params synced: PRO → LIGHT');
+  }
+
+  markUnsaved();
 }
 
 // Setup event listeners for auto-save and calculations
@@ -495,7 +558,7 @@ function applySettingsToUI(config) {
     // BESS economic parameters
     'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
     // BESS technical parameters
-    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear',
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear', 'bessAuxiliaryLossPctPerDay',
     // BESS PRO parameters
     'bessProMinPowerKw', 'bessProMaxPowerKw', 'bessProMinEnergyKwh', 'bessProMaxEnergyKwh',
     'bessProDurationMin', 'bessProDurationMax', 'bessProTypicalDays', 'bessProExportPenalty'
@@ -592,6 +655,10 @@ function applySettingsToUI(config) {
 
   // Update BESS section visibility after loading settings
   toggleBessSection();
+
+  // Sync degradation params from LIGHT to PRO (LIGHT is the master)
+  // This ensures PRO fields show the same values as LIGHT after loading
+  syncDegradationParams('light');
 }
 
 // Get current settings from UI
@@ -758,6 +825,7 @@ function getCurrentSettings() {
     bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
     bessDegradationYear1: parseFloat(document.getElementById('bessDegradationYear1')?.value || DEFAULT_CONFIG.bessDegradationYear1),
     bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
+    bessAuxiliaryLossPctPerDay: parseFloat(document.getElementById('bessAuxiliaryLossPctPerDay')?.value || DEFAULT_CONFIG.bessAuxiliaryLossPctPerDay),
 
     // BESS PRO - Advanced LP/MIP Optimization
     bessProMinPowerKw: parseFloat(document.getElementById('bessProMinPowerKw')?.value || DEFAULT_CONFIG.bessProMinPowerKw),
@@ -772,6 +840,22 @@ function getCurrentSettings() {
     bessProTypicalDays: parseInt(document.getElementById('bessProTypicalDays')?.value || DEFAULT_CONFIG.bessProTypicalDays),
     bessProZeroExport: document.getElementById('bessProZeroExport')?.checked ?? DEFAULT_CONFIG.bessProZeroExport,
     bessProExportPenalty: parseFloat(document.getElementById('bessProExportPenalty')?.value || DEFAULT_CONFIG.bessProExportPenalty),
+
+    // BESS Peak Shaving
+    bessPeakShavingEnabled: document.getElementById('bessPeakShavingEnabled')?.checked ?? DEFAULT_CONFIG.bessPeakShavingEnabled,
+    bessPeakShavingMode: document.getElementById('bessPeakShavingMode')?.value || DEFAULT_CONFIG.bessPeakShavingMode,
+    bessPeakShavingTargetKw: parseFloat(document.getElementById('bessPeakShavingTargetKw')?.value || DEFAULT_CONFIG.bessPeakShavingTargetKw),
+    bessPeakShavingPctReduction: parseFloat(document.getElementById('bessPeakShavingPctReduction')?.value || DEFAULT_CONFIG.bessPeakShavingPctReduction),
+    bessPowerChargePlnPerKwMonth: parseFloat(document.getElementById('bessPowerChargePlnPerKwMonth')?.value || DEFAULT_CONFIG.bessPowerChargePlnPerKwMonth),
+
+    // BESS Price Arbitrage
+    bessPriceArbitrageEnabled: document.getElementById('bessPriceArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessPriceArbitrageEnabled,
+    bessPriceArbitrageSource: document.getElementById('bessPriceArbitrageSource')?.value || DEFAULT_CONFIG.bessPriceArbitrageSource,
+    bessPriceArbitrageBuyThreshold: parseFloat(document.getElementById('bessPriceArbitrageBuyThreshold')?.value || DEFAULT_CONFIG.bessPriceArbitrageBuyThreshold),
+    bessPriceArbitrageSellThreshold: parseFloat(document.getElementById('bessPriceArbitrageSellThreshold')?.value || DEFAULT_CONFIG.bessPriceArbitrageSellThreshold),
+    bessPriceArbitrageSpread: parseFloat(document.getElementById('bessPriceArbitrageSpread')?.value || DEFAULT_CONFIG.bessPriceArbitrageSpread),
+    bessRdnPriceFlat: parseFloat(document.getElementById('bessRdnPriceFlat')?.value || DEFAULT_CONFIG.bessRdnPriceFlat),
+    bessRdnPriceMultiplier: parseFloat(document.getElementById('bessRdnPriceMultiplier')?.value || DEFAULT_CONFIG.bessRdnPriceMultiplier),
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,

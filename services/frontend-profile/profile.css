@@ -222,6 +222,22 @@ body {
     border-left: 4px solid var(--purple);
 }
 
+.summary-section-header {
+    grid-column: 1 / -1;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--purple);
+    padding: 10px 0 5px 0;
+    margin-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.summary-unit {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-top: 3px;
+}
+
 .summary-label {
     font-size: 0.8rem;
     color: var(--text-secondary);
@@ -727,6 +743,173 @@ body {
 }
 
 /* Responsive */
+/* ============================================
+   TOOLTIP SYSTEM
+   ============================================ */
+
+/* Tooltip Icon - znak zapytania */
+.tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 12px;
+    font-weight: 700;
+    color: white;
+    background: linear-gradient(135deg, #1976d2, #2196f3);
+    border-radius: 50%;
+    cursor: help;
+    margin-left: 6px;
+    vertical-align: middle;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    user-select: none;
+}
+
+.tooltip-icon:hover {
+    background: linear-gradient(135deg, #1565c0, #1976d2);
+    transform: scale(1.15);
+    box-shadow: 0 2px 6px rgba(25, 118, 210, 0.4);
+}
+
+/* Tooltip Popup */
+.custom-tooltip {
+    position: fixed;
+    z-index: 10000;
+    max-width: 350px;
+    min-width: 200px;
+    padding: 14px 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8f9fa 100%);
+    color: #333;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2), 0 2px 6px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e0e0e0;
+    pointer-events: none;
+    opacity: 0;
+    animation: tooltipFadeIn 0.2s ease forwards;
+}
+
+.custom-tooltip.visible {
+    opacity: 1;
+}
+
+@keyframes tooltipFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Tooltip arrow */
+.custom-tooltip::before {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-right: none;
+    border-bottom: none;
+    transform: rotate(45deg);
+    top: -7px;
+    left: 20px;
+}
+
+.custom-tooltip.arrow-bottom::before {
+    top: auto;
+    bottom: -7px;
+    transform: rotate(225deg);
+}
+
+/* Tooltip title styling */
+.custom-tooltip strong {
+    display: block;
+    color: #1976d2;
+    font-size: 14px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* Tooltip example box */
+.custom-tooltip .tooltip-example {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+    border-radius: 6px;
+    border-left: 3px solid #1976d2;
+    font-size: 12px;
+}
+
+.custom-tooltip .tooltip-example strong {
+    color: #0d47a1;
+    font-size: 12px;
+    margin-bottom: 4px;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+/* Summary card with tooltip - proper alignment */
+.summary-card .summary-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+}
+
+/* Form group tooltip alignment */
+.form-group label .tooltip-icon {
+    margin-left: 4px;
+}
+
+/* Summary section header with tooltip */
+.summary-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Peak Shaving section highlight */
+.summary-section-header.peak-shaving {
+    color: #0277bd;
+    border-top-color: #0277bd;
+}
+
+/* Arbitrage section highlight */
+.summary-section-header.arbitrage {
+    color: #c2185b;
+    border-top-color: #c2185b;
+}
+
+/* Feature disabled indicator */
+.feature-disabled {
+    grid-column: 1 / -1;
+    padding: 15px;
+    background: rgba(158, 158, 158, 0.1);
+    border-radius: 8px;
+    color: #666;
+    font-style: italic;
+    text-align: center;
+}
+
+.feature-disabled .enable-hint {
+    display: block;
+    margin-top: 5px;
+    font-size: 0.85rem;
+    color: #1976d2;
+}
+
+/* ============================================
+   RESPONSIVE STYLES
+   ============================================ */
+
 @media (max-width: 768px) {
     .quarterly-grid {
         grid-template-columns: repeat(2, 1fr);
@@ -754,5 +937,17 @@ body {
 
     .heatmap-grid {
         min-width: 600px;
+    }
+
+    /* Tooltip mobile adjustments */
+    .custom-tooltip {
+        max-width: 280px;
+        font-size: 12px;
+    }
+
+    .tooltip-icon {
+        width: 16px;
+        height: 16px;
+        font-size: 11px;
     }
 }

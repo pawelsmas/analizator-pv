@@ -1094,27 +1094,56 @@ async function runAnalysis() {
 
     updateProgress(8, 'Zapisywanie wyników', 95);
 
-    // Save results to localStorage
-    localStorage.setItem('pv_analysis_results', JSON.stringify(results));
-    localStorage.setItem('pv_analysis_config', JSON.stringify(pvConfig));
+    // Save results to localStorage (with quota error handling)
+    try {
+      // Clear old data first to free up space
+      localStorage.removeItem('pv_analysis_results');
+      localStorage.removeItem('pv_analysis_config');
+      localStorage.removeItem('pvConfig');
+      localStorage.removeItem('analysisResults');
+      localStorage.removeItem('pvProductionData');
 
-    // Save PV config for other modules
-    localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
+      localStorage.setItem('pv_analysis_results', JSON.stringify(results));
+      localStorage.setItem('pv_analysis_config', JSON.stringify(pvConfig));
 
-    // Save analysis results in format expected by other modules
-    localStorage.setItem('analysisResults', JSON.stringify(results));
+      // Save PV config for other modules
+      localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
 
-    // Generate and save PV production data for Production module
-    if (results.key_variants && Object.keys(results.key_variants).length > 0) {
-      const firstVariant = results.key_variants[Object.keys(results.key_variants)[0]];
-      localStorage.setItem('pvProductionData', JSON.stringify({
-        capacity: firstVariant.capacity,
-        production: firstVariant.production,
-        self_consumed: firstVariant.self_consumed,
-        exported: firstVariant.exported,
-        variants: results.key_variants,
-        scenarios: results.scenarios
-      }));
+      // Save analysis results in format expected by other modules
+      localStorage.setItem('analysisResults', JSON.stringify(results));
+
+      // Generate and save PV production data for Production module
+      if (results.key_variants && Object.keys(results.key_variants).length > 0) {
+        const firstVariant = results.key_variants[Object.keys(results.key_variants)[0]];
+        localStorage.setItem('pvProductionData', JSON.stringify({
+          capacity: firstVariant.capacity,
+          production: firstVariant.production,
+          self_consumed: firstVariant.self_consumed,
+          exported: firstVariant.exported,
+          variants: results.key_variants,
+          scenarios: results.scenarios
+        }));
+      }
+    } catch (storageError) {
+      console.warn('⚠️ localStorage quota exceeded, clearing old data and retrying...');
+      // Clear all app-related localStorage and retry
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('pv_') || key.startsWith('analysis') || key.startsWith('pvConfig') || key.startsWith('pvProduction'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+
+      // Retry saving essential data only
+      try {
+        localStorage.setItem('pv_analysis_results', JSON.stringify(results));
+        localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
+        console.log('✅ Saved essential data after clearing old storage');
+      } catch (retryError) {
+        console.warn('⚠️ Could not save to localStorage, continuing without persistence');
+      }
     }
 
     // Show analysis results with variant selector

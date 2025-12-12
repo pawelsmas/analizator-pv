@@ -16,6 +16,7 @@
     let quarterlyChart = null;
     let paretoChart = null;
     let cachedShellData = null;  // Cache data from shell for later use
+    let cachedSettings = null;   // Cache settings for BESS degradation parameters
 
     // Initialize module
     function init() {
@@ -166,6 +167,9 @@
     }
 
     function applySettings(settings) {
+        // Cache settings for later use (BESS degradation params, etc.)
+        cachedSettings = settings;
+
         // Apply settings from shell to form
         if (settings.energyPrice) {
             document.getElementById('energyPrice').value = settings.energyPrice;
@@ -188,7 +192,7 @@
         if (settings.analysisPeriod) {
             document.getElementById('projectYears').value = settings.analysisPeriod;
         }
-        console.log('⚙️ Applied settings from shell');
+        console.log('⚙️ Applied settings from shell (including BESS degradation params)');
     }
 
     function populateCurrentConfig(data) {
@@ -399,6 +403,50 @@
                 }
             }
 
+            // Get BESS degradation params from Settings (CENTRALIZED SOURCE OF TRUTH)
+            // These come from frontend-settings and apply to ALL modules: Profile, Economics, BESS
+            const bessDegradationYear1 = cachedSettings?.bessDegradationYear1 || 3.0;  // First year: higher degradation
+            const bessDegradationPctPerYear = cachedSettings?.bessDegradationPctPerYear || 2.0;  // Years 2+
+            const bessAuxiliaryLossPctPerDay = cachedSettings?.bessAuxiliaryLossPctPerDay || 0.1;  // Standby losses
+
+            console.log('🔋 BESS degradation params from Settings:', {
+                year1: bessDegradationYear1 + '%',
+                years2plus: bessDegradationPctPerYear + '%/yr',
+                auxiliaryLoss: bessAuxiliaryLossPctPerDay + '%/day'
+            });
+
+            // Get Peak Shaving and Arbitrage params from UI or Settings
+            const peakShavingEnabled = document.getElementById('peakShavingEnabled')?.checked ||
+                                       cachedSettings?.bessPeakShavingEnabled || false;
+            const peakShavingMode = document.getElementById('peakShavingMode')?.value ||
+                                    cachedSettings?.bessPeakShavingMode || 'auto';
+            const peakShavingTargetKw = parseFloat(document.getElementById('peakShavingTargetKw')?.value) ||
+                                        cachedSettings?.bessPeakShavingTargetKw || 0;
+            const powerChargePlnPerKwMonth = parseFloat(document.getElementById('powerChargePlnPerKwMonth')?.value) ||
+                                              cachedSettings?.bessPowerChargePlnPerKwMonth || 50;
+
+            const priceArbitrageEnabled = document.getElementById('priceArbitrageEnabled')?.checked ||
+                                          cachedSettings?.bessPriceArbitrageEnabled || false;
+            const arbitrageSource = document.getElementById('arbitrageSource')?.value ||
+                                    cachedSettings?.bessPriceArbitrageSource || 'manual';
+            const arbitrageBuyThreshold = parseFloat(document.getElementById('arbitrageBuyThreshold')?.value) ||
+                                          cachedSettings?.bessPriceArbitrageBuyThreshold || 300;
+            const arbitrageSellThreshold = parseFloat(document.getElementById('arbitrageSellThreshold')?.value) ||
+                                           cachedSettings?.bessPriceArbitrageSellThreshold || 600;
+
+            console.log('📉 Peak Shaving params:', {
+                enabled: peakShavingEnabled,
+                mode: peakShavingMode,
+                targetKw: peakShavingTargetKw,
+                powerCharge: powerChargePlnPerKwMonth
+            });
+            console.log('💹 Arbitrage params:', {
+                enabled: priceArbitrageEnabled,
+                source: arbitrageSource,
+                buyThreshold: arbitrageBuyThreshold,
+                sellThreshold: arbitrageSellThreshold
+            });
+
             const request = {
                 pv_generation_kwh: hourlyGeneration,
                 load_kwh: hourlyConsumption,
@@ -414,7 +462,21 @@
                 project_years: parseInt(document.getElementById('projectYears').value) || 15,
                 strategy: document.getElementById('strategy').value || 'balanced',
                 min_cycles: parseInt(document.getElementById('minCycles').value) || 200,
-                max_cycles: parseInt(document.getElementById('maxCycles').value) || 365
+                max_cycles: parseInt(document.getElementById('maxCycles').value) || 365,
+                // BESS degradation params from Settings (CENTRALIZED)
+                bess_degradation_year1_pct: bessDegradationYear1,
+                bess_degradation_pct_per_year: bessDegradationPctPerYear,
+                bess_auxiliary_loss_pct_per_day: bessAuxiliaryLossPctPerDay,
+                // Peak Shaving params
+                peak_shaving_enabled: peakShavingEnabled,
+                peak_shaving_mode: peakShavingMode,
+                peak_shaving_target_kw: peakShavingTargetKw,
+                power_charge_pln_per_kw_month: powerChargePlnPerKwMonth,
+                // Price Arbitrage params
+                price_arbitrage_enabled: priceArbitrageEnabled,
+                price_arbitrage_source: arbitrageSource,
+                price_arbitrage_buy_threshold: arbitrageBuyThreshold,
+                price_arbitrage_sell_threshold: arbitrageSellThreshold
             };
 
             showLoading(true, 'Generuję front Pareto...');
@@ -523,6 +585,9 @@
         displayBessRecommendations(result.bess_recommendations);
         displayPvRecommendations(result.pv_recommendations);
 
+        // Peak Shaving Tab (detailed analysis)
+        displayPeakShavingTab(result);
+
         // Insights
         displayInsights(result.insights);
 
@@ -531,45 +596,227 @@
     }
 
     function displaySummary(result) {
+        // BESS degradation model info (from v2.1, updated v2.2 with Year1 param)
+        // Parameters come from Settings (centralized source of truth)
+        const hasDegradationModel = result.bess_degradation_pct_per_year !== undefined &&
+                                     result.bess_degradation_pct_per_year !== null;
+        const degradationHtml = hasDegradationModel ? `
+            <div class="summary-section-header">Model degradacji BESS (z Ustawień)</div>
+            <div class="summary-card highlight-purple">
+                <div class="summary-label">Degradacja rok 1 <span class="tooltip-icon" data-tooltip="Pierwszy rok bateria traci więcej pojemności z powodu stabilizacji chemicznej ogniw. Typowo 2-5% dla Li-ion.">?</span></div>
+                <div class="summary-value">${(result.bess_degradation_year1_pct || 3.0).toFixed(1)}%</div>
+                <div class="summary-unit">początkowa stabilizacja</div>
+            </div>
+            <div class="summary-card highlight-purple">
+                <div class="summary-label">Degradacja lata 2+ <span class="tooltip-icon" data-tooltip="Roczny spadek pojemności baterii w kolejnych latach. Typowo 1-3% dla Li-ion przy umiarkowanym cyklowaniu.">?</span></div>
+                <div class="summary-value">${result.bess_degradation_pct_per_year.toFixed(1)}%</div>
+                <div class="summary-unit">spadek pojemności/rok</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Straty pomocnicze <span class="tooltip-icon" data-tooltip="Stałe zużycie energii przez BMS, system chłodzenia, monitoring. Typowo 0.05-0.2% pojemności dziennie.">?</span></div>
+                <div class="summary-value">${(result.bess_auxiliary_loss_pct_per_day || 0.1).toFixed(2)}%</div>
+                <div class="summary-unit">pojemności/dzień (BMS, chłodzenie)</div>
+            </div>
+            <div class="summary-card highlight-orange">
+                <div class="summary-label">Pojemność po ${result.project_years || 15} latach <span class="tooltip-icon" data-tooltip="Pozostała pojemność baterii na koniec projektu. Obliczenie: (1-deg_rok1) × (1-deg_rocznie)^(lata-1). Przy 3% rok1 + 2%/rok przez 15 lat = ~72%.">?</span></div>
+                <div class="summary-value">${result.bess_capacity_at_project_end_pct?.toFixed(0) || '-'}%</div>
+                <div class="summary-unit">pozostała pojemność</div>
+            </div>
+        ` : '';
+
+        // Peak Shaving results section
+        const peakShavingHtml = result.peak_shaving_enabled ? `
+            <div class="summary-section-header">📉 Peak Shaving - Redukcja szczytów mocy</div>
+            <div class="summary-card">
+                <div class="summary-label">Szczyt przed <span class="tooltip-icon" data-tooltip="Maksymalna moc pobierana z sieci przed zastosowaniem BESS. To wartość, od której naliczane są opłaty mocowe.">?</span></div>
+                <div class="summary-value">${result.peak_shaving_original_peak_kw?.toLocaleString('pl-PL') || '-'} kW</div>
+                <div class="summary-unit">moc szczytowa historyczna</div>
+            </div>
+            <div class="summary-card highlight-green">
+                <div class="summary-label">Szczyt po <span class="tooltip-icon" data-tooltip="Nowa moc szczytowa po rozładowaniu BESS w godzinach szczytu. Im niższa, tym większe oszczędności na opłatach mocowych.">?</span></div>
+                <div class="summary-value">${result.peak_shaving_reduced_peak_kw?.toLocaleString('pl-PL') || '-'} kW</div>
+                <div class="summary-unit">po redukcji przez BESS</div>
+            </div>
+            <div class="summary-card highlight-blue">
+                <div class="summary-label">Redukcja <span class="tooltip-icon" data-tooltip="Procentowa redukcja szczytu mocy. Przykład: z 1000 kW na 850 kW = 15% redukcji.">?</span></div>
+                <div class="summary-value">${result.peak_shaving_reduction_pct?.toFixed(1) || '-'}%</div>
+                <div class="summary-unit">obcięcie szczytu</div>
+            </div>
+            <div class="summary-card highlight-green">
+                <div class="summary-label">Oszczędności roczne <span class="tooltip-icon" data-tooltip="Roczne oszczędności na opłatach mocowych. Wzór: (Pmax_przed - Pmax_po) × opłata_mocowa × 12 miesięcy. Przykład: 150 kW × 50 PLN/kW × 12 = 90,000 PLN/rok.">?</span></div>
+                <div class="summary-value">${result.peak_shaving_annual_savings_pln?.toLocaleString('pl-PL') || '-'} PLN</div>
+                <div class="summary-unit">na opłatach mocowych</div>
+            </div>
+            <div class="summary-card highlight-orange">
+                <div class="summary-label">NPV poprawa <span class="tooltip-icon" data-tooltip="Dodatkowa wartość NPV z tytułu peak shaving. Oszczędności zdyskontowane przez okres projektu.">?</span></div>
+                <div class="summary-value">${result.peak_shaving_npv_improvement_mln_pln?.toFixed(2) || '-'} mln PLN</div>
+                <div class="summary-unit">dodatkowe NPV</div>
+            </div>
+        ` : '';
+
+        // Price Arbitrage results section
+        const arbitrageHtml = result.price_arbitrage_enabled ? `
+            <div class="summary-section-header">💹 Arbitraż Cenowy RDN</div>
+            <div class="summary-card">
+                <div class="summary-label">Godziny kupna <span class="tooltip-icon" data-tooltip="Liczba godzin w roku, gdy BESS ładował się z sieci (cena < próg kupna). Im więcej, tym więcej taniej energii zakupiono.">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_buy_hours?.toLocaleString('pl-PL') || '-'} h</div>
+                <div class="summary-unit">ładowanie z sieci</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Godziny sprzedaży <span class="tooltip-icon" data-tooltip="Liczba godzin w roku, gdy BESS rozładowywał się do sieci (cena > próg sprzedaży). Im więcej, tym więcej drogiej energii sprzedano.">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_sell_hours?.toLocaleString('pl-PL') || '-'} h</div>
+                <div class="summary-unit">rozładowanie do sieci</div>
+            </div>
+            <div class="summary-card highlight-red">
+                <div class="summary-label">Śr. cena kupna <span class="tooltip-icon" data-tooltip="Średnia cena energii podczas ładowania BESS. Niższa = lepiej (taniej kupujemy).">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_avg_buy_price_pln?.toLocaleString('pl-PL') || '-'} PLN/MWh</div>
+                <div class="summary-unit">podczas ładowania</div>
+            </div>
+            <div class="summary-card highlight-green">
+                <div class="summary-label">Śr. cena sprzedaży <span class="tooltip-icon" data-tooltip="Średnia cena energii podczas rozładowywania BESS. Wyższa = lepiej (drożej sprzedajemy).">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_avg_sell_price_pln?.toLocaleString('pl-PL') || '-'} PLN/MWh</div>
+                <div class="summary-unit">podczas rozładowywania</div>
+            </div>
+            <div class="summary-card highlight-blue">
+                <div class="summary-label">Spread <span class="tooltip-icon" data-tooltip="Różnica między ceną sprzedaży a kupna. Zysk brutto na MWh. Przykład: sprzedaż 600 - kupno 300 = spread 300 PLN/MWh.">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_spread_pln?.toLocaleString('pl-PL') || '-'} PLN/MWh</div>
+                <div class="summary-unit">różnica cen</div>
+            </div>
+            <div class="summary-card highlight-green">
+                <div class="summary-label">Zysk roczny <span class="tooltip-icon" data-tooltip="Roczny zysk netto z arbitrażu cenowego. Wzór: Σ(energia_sprzedana × cena_sprzedaży) - Σ(energia_kupiona × cena_kupna) - straty sprawności.">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_annual_profit_pln?.toLocaleString('pl-PL') || '-'} PLN</div>
+                <div class="summary-unit">netto po stratach</div>
+            </div>
+            <div class="summary-card highlight-orange">
+                <div class="summary-label">NPV poprawa <span class="tooltip-icon" data-tooltip="Dodatkowa wartość NPV z tytułu arbitrażu cenowego. Zyski zdyskontowane przez okres projektu.">?</span></div>
+                <div class="summary-value">${result.price_arbitrage_npv_improvement_mln_pln?.toFixed(2) || '-'} mln PLN</div>
+                <div class="summary-unit">dodatkowe NPV</div>
+            </div>
+        ` : '';
+
+        // Info about disabled features
+        const disabledFeaturesHtml = (!result.peak_shaving_enabled || !result.price_arbitrage_enabled) ? `
+            <div class="summary-section-header" style="color: #888;">ℹ️ Funkcje zaawansowane</div>
+            ${!result.peak_shaving_enabled ? `
+            <div class="summary-card" style="opacity: 0.6;">
+                <div class="summary-label">Peak Shaving <span class="tooltip-icon" data-tooltip="Włącz w sekcji 'Zaawansowane funkcje BESS' powyżej, aby zobaczyć potencjalne oszczędności na opłatach mocowych.">?</span></div>
+                <div class="summary-value">Wyłączone</div>
+                <div class="summary-unit">włącz aby zobaczyć oszczędności</div>
+            </div>
+            ` : ''}
+            ${!result.price_arbitrage_enabled ? `
+            <div class="summary-card" style="opacity: 0.6;">
+                <div class="summary-label">Arbitraż Cenowy <span class="tooltip-icon" data-tooltip="Włącz w sekcji 'Zaawansowane funkcje BESS' powyżej, aby zobaczyć potencjalne zyski z różnic cen energii.">?</span></div>
+                <div class="summary-value">Wyłączony</div>
+                <div class="summary-unit">włącz aby zobaczyć zyski RDN</div>
+            </div>
+            ` : ''}
+        ` : '';
+
         const html = `
             <div class="summary-grid">
                 <div class="summary-card">
-                    <div class="summary-label">Roczna produkcja PV</div>
+                    <div class="summary-label">Roczna produkcja PV <span class="tooltip-icon" data-tooltip="Całkowita roczna produkcja energii z instalacji PV. Źródło: dane godzinowe z PVGIS lub własne.">?</span></div>
                     <div class="summary-value">${result.annual_pv_mwh.toFixed(1)} MWh</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-label">Roczne zużycie</div>
+                    <div class="summary-label">Roczne zużycie <span class="tooltip-icon" data-tooltip="Całkowite roczne zużycie energii przez obiekt. Źródło: wgrany profil zużycia godzinowego.">?</span></div>
                     <div class="summary-value">${result.annual_load_mwh.toFixed(1)} MWh</div>
                 </div>
                 <div class="summary-card highlight-green">
-                    <div class="summary-label">Nadwyżka (surplus)</div>
+                    <div class="summary-label">Nadwyżka (surplus) <span class="tooltip-icon" data-tooltip="Energia PV, która przekracza bieżące zużycie i może być: 1) magazynowana w BESS, 2) eksportowana do sieci, 3) curtailowana (stracona).">?</span></div>
                     <div class="summary-value">${result.annual_surplus_mwh.toFixed(1)} MWh</div>
                 </div>
                 <div class="summary-card highlight-red">
-                    <div class="summary-label">Deficyt</div>
+                    <div class="summary-label">Deficyt <span class="tooltip-icon" data-tooltip="Energia potrzebna, gdy zużycie > produkcja PV. Pokrywana przez: 1) rozładowanie BESS, 2) zakup z sieci.">?</span></div>
                     <div class="summary-value">${result.annual_deficit_mwh.toFixed(1)} MWh</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-label">Autokonsumpcja bezpośrednia</div>
+                    <div class="summary-label">Autokonsumpcja bezpośrednia <span class="tooltip-icon" data-tooltip="% energii PV zużywanej bezpośrednio (bez magazynowania). Wzór: min(PV, Load) / PV. Wyższa = lepsza synchronizacja produkcji ze zużyciem.">?</span></div>
                     <div class="summary-value">${result.direct_consumption_pct.toFixed(1)}%</div>
                 </div>
                 ${result.current_bess_annual_cycles ? `
                 <div class="summary-card highlight-blue">
-                    <div class="summary-label">Obecne cykle BESS/rok</div>
+                    <div class="summary-label">Obecne cykle BESS/rok <span class="tooltip-icon" data-tooltip="Liczba pełnych cykli baterii rocznie. 1 cykl = rozładowanie 100% użytecznej pojemności. Typowo 200-400 cykli/rok dla autokonsumpcji.">?</span></div>
                     <div class="summary-value">${result.current_bess_annual_cycles.toFixed(0)}</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-label">Wykorzystanie BESS</div>
+                    <div class="summary-label">Wykorzystanie BESS <span class="tooltip-icon" data-tooltip="Stosunek rzeczywistych cykli do maksymalnych możliwych (365 cykli/rok = 1 cykl/dzień). Wyższe = lepsze wykorzystanie inwestycji.">?</span></div>
                     <div class="summary-value">${result.current_bess_utilization_pct.toFixed(0)}%</div>
                 </div>
                 <div class="summary-card highlight-orange">
-                    <div class="summary-label">Curtailment ratio</div>
+                    <div class="summary-label">Curtailment ratio <span class="tooltip-icon" data-tooltip="% nadwyżki PV, która nie mogła być zmagazynowana (BESS pełny). 0% = idealne wykorzystanie, >50% = BESS za mały lub PV za duże.">?</span></div>
                     <div class="summary-value">${(result.current_curtailment_ratio * 100).toFixed(0)}%</div>
                 </div>
                 ` : ''}
+                ${degradationHtml}
+                ${peakShavingHtml}
+                ${arbitrageHtml}
+                ${disabledFeaturesHtml}
             </div>
         `;
         document.getElementById('summaryContent').innerHTML = html;
+
+        // Initialize tooltips
+        initTooltips();
+    }
+
+    // Initialize tooltip functionality
+    function initTooltips() {
+        document.querySelectorAll('.tooltip-icon').forEach(icon => {
+            icon.addEventListener('mouseenter', showTooltip);
+            icon.addEventListener('mouseleave', hideTooltip);
+            icon.addEventListener('click', toggleTooltip);
+        });
+    }
+
+    function showTooltip(e) {
+        const icon = e.target;
+        const text = icon.dataset.tooltip;
+        if (!text) return;
+
+        // Remove existing tooltip
+        hideTooltip();
+
+        // Create tooltip element
+        const tooltip = document.createElement('div');
+        tooltip.className = 'custom-tooltip';
+        tooltip.innerHTML = text;
+        document.body.appendChild(tooltip);
+
+        // Position tooltip
+        const rect = icon.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+
+        let left = rect.left + window.scrollX - tooltipRect.width / 2 + rect.width / 2;
+        let top = rect.top + window.scrollY - tooltipRect.height - 10;
+
+        // Keep within viewport
+        if (left < 10) left = 10;
+        if (left + tooltipRect.width > window.innerWidth - 10) {
+            left = window.innerWidth - tooltipRect.width - 10;
+        }
+        if (top < 10) {
+            top = rect.bottom + window.scrollY + 10; // Show below instead
+        }
+
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
+        tooltip.style.opacity = '1';
+    }
+
+    function hideTooltip() {
+        document.querySelectorAll('.custom-tooltip').forEach(t => t.remove());
+    }
+
+    function toggleTooltip(e) {
+        e.stopPropagation();
+        const existing = document.querySelector('.custom-tooltip');
+        if (existing) {
+            hideTooltip();
+        } else {
+            showTooltip(e);
+        }
     }
 
     function displaySelectedStrategy(strategy) {
@@ -1588,6 +1835,351 @@
 
     // Expose export function globally for onclick handler
     window.exportMonthlyHourlyData = exportMonthlyHourlyData;
+
+    // ============================================
+    // PEAK SHAVING TAB - Detailed Analysis
+    // ============================================
+
+    let peakShavingChart = null;
+    let peakShavingData = null;  // Store for export
+
+    function displayPeakShavingTab(result) {
+        const disabledDiv = document.getElementById('peakShavingDisabled');
+        const resultsDiv = document.getElementById('peakShavingResults');
+
+        if (!result.peak_shaving_enabled) {
+            disabledDiv.style.display = 'block';
+            resultsDiv.style.display = 'none';
+            return;
+        }
+
+        disabledDiv.style.display = 'none';
+        resultsDiv.style.display = 'block';
+
+        // Store data for export
+        peakShavingData = {
+            result: result,
+            powerCharge: parseFloat(document.getElementById('powerChargePlnPerKwMonth')?.value) || 50,
+            projectYears: parseFloat(document.getElementById('projectYears')?.value) || 15,
+            discountRate: parseFloat(document.getElementById('discountRate')?.value) || 8
+        };
+
+        // Summary cards
+        const peakBefore = result.peak_shaving_original_peak_kw || 0;
+        const peakAfter = result.peak_shaving_reduced_peak_kw || 0;
+        const reductionKw = peakBefore - peakAfter;
+        const reductionPct = result.peak_shaving_reduction_pct || 0;
+        const threshold = result.peak_shaving_threshold_kw || peakAfter;
+
+        document.getElementById('psPeakBefore').textContent = peakBefore.toLocaleString('pl-PL');
+        document.getElementById('psPeakAfter').textContent = peakAfter.toLocaleString('pl-PL');
+        document.getElementById('psReduction').textContent = `${reductionKw.toLocaleString('pl-PL')} / ${reductionPct.toFixed(1)}%`;
+        document.getElementById('psThreshold').textContent = threshold.toLocaleString('pl-PL');
+
+        // Detailed calculations
+        displayPeakShavingCalculations(result);
+
+        // Chart
+        displayPeakShavingChart(result);
+
+        // Monthly breakdown (if available from hourly data)
+        displayPeakShavingMonthly(result);
+    }
+
+    function displayPeakShavingCalculations(result) {
+        const container = document.getElementById('psCalculations');
+        if (!container) return;
+
+        const peakBefore = result.peak_shaving_original_peak_kw || 0;
+        const peakAfter = result.peak_shaving_reduced_peak_kw || 0;
+        const reductionKw = peakBefore - peakAfter;
+        const powerCharge = peakShavingData?.powerCharge || 50;
+        const annualSavings = result.peak_shaving_annual_savings_pln || (reductionKw * powerCharge * 12);
+        const projectYears = peakShavingData?.projectYears || 15;
+        const discountRate = (peakShavingData?.discountRate || 8) / 100;
+
+        // Calculate NPV of savings
+        let npvSavings = 0;
+        for (let year = 1; year <= projectYears; year++) {
+            npvSavings += annualSavings / Math.pow(1 + discountRate, year);
+        }
+
+        container.innerHTML = `
+            <div style="background: #fff; padding: 15px; border-radius: 8px;">
+                <h5 style="margin: 0 0 10px 0; color: #333;">📊 Dane wejściowe</h5>
+                <table style="width: 100%; font-size: 0.9rem;">
+                    <tr><td style="padding: 4px 0;">Moc szczytowa (przed):</td><td style="text-align: right; font-weight: 600;">${peakBefore.toLocaleString('pl-PL')} kW</td></tr>
+                    <tr><td style="padding: 4px 0;">Próg Peak Shaving (P95):</td><td style="text-align: right; font-weight: 600;">${(result.peak_shaving_threshold_kw || peakAfter).toLocaleString('pl-PL')} kW</td></tr>
+                    <tr><td style="padding: 4px 0;">Opłata mocowa:</td><td style="text-align: right; font-weight: 600;">${powerCharge} PLN/kW/m-c</td></tr>
+                    <tr><td style="padding: 4px 0;">Okres analizy:</td><td style="text-align: right; font-weight: 600;">${projectYears} lat</td></tr>
+                    <tr><td style="padding: 4px 0;">Stopa dyskontowa:</td><td style="text-align: right; font-weight: 600;">${(discountRate * 100).toFixed(1)}%</td></tr>
+                </table>
+            </div>
+
+            <div style="background: #fff; padding: 15px; border-radius: 8px;">
+                <h5 style="margin: 0 0 10px 0; color: #4CAF50;">💰 Obliczenia oszczędności</h5>
+                <table style="width: 100%; font-size: 0.9rem;">
+                    <tr style="border-bottom: 1px dashed #ddd;"><td style="padding: 8px 0;">Redukcja mocy szczytowej:</td><td style="text-align: right; font-weight: 700; color: #4CAF50;">${reductionKw.toLocaleString('pl-PL')} kW</td></tr>
+                    <tr><td style="padding: 4px 0; font-size: 0.85rem; color: #666;">Wzór: ${peakBefore.toLocaleString()} - ${peakAfter.toLocaleString()} = ${reductionKw.toLocaleString()} kW</td><td></td></tr>
+
+                    <tr style="border-bottom: 1px dashed #ddd; margin-top: 10px;"><td style="padding: 8px 0;">Oszczędność roczna:</td><td style="text-align: right; font-weight: 700; color: #4CAF50;">${annualSavings.toLocaleString('pl-PL')} PLN</td></tr>
+                    <tr><td style="padding: 4px 0; font-size: 0.85rem; color: #666;">Wzór: ${reductionKw.toLocaleString()} kW × ${powerCharge} PLN × 12 m-cy</td><td></td></tr>
+
+                    <tr style="border-bottom: 1px dashed #ddd;"><td style="padding: 8px 0;">NPV oszczędności (${projectYears} lat):</td><td style="text-align: right; font-weight: 700; color: #1976d2;">${(npvSavings / 1e6).toFixed(2)} mln PLN</td></tr>
+                    <tr><td style="padding: 4px 0; font-size: 0.85rem; color: #666;">Suma zdyskontowanych rocznych oszczędności</td><td></td></tr>
+                </table>
+            </div>
+        `;
+    }
+
+    function displayPeakShavingChart(result) {
+        const canvas = document.getElementById('peakShavingChart');
+        if (!canvas) return;
+
+        // Destroy existing chart
+        if (peakShavingChart) {
+            peakShavingChart.destroy();
+        }
+
+        // Generate Load Duration Curve data (simulated from available data)
+        const peakBefore = result.peak_shaving_original_peak_kw || 1000;
+        const peakAfter = result.peak_shaving_reduced_peak_kw || 800;
+        const threshold = result.peak_shaving_threshold_kw || peakAfter;
+
+        // Create simulated LDC (sorted load from highest to lowest)
+        const hours = 8760;
+        const labels = [];
+        const originalLoad = [];
+        const shavedLoad = [];
+        const thresholdLine = [];
+
+        // Generate realistic LDC curve
+        for (let i = 0; i < 100; i++) {
+            const pct = i / 100;
+            labels.push(`${(pct * 100).toFixed(0)}%`);
+
+            // Exponential decay curve for load
+            const load = peakBefore * Math.exp(-3 * pct) + (peakBefore * 0.3);
+            originalLoad.push(Math.max(load, peakBefore * 0.2));
+
+            // Shaved load capped at threshold
+            shavedLoad.push(Math.min(originalLoad[i], threshold));
+            thresholdLine.push(threshold);
+        }
+
+        peakShavingChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Oryginalne zużycie',
+                        data: originalLoad,
+                        borderColor: '#F44336',
+                        backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Po Peak Shaving',
+                        data: shavedLoad,
+                        borderColor: '#4CAF50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.2)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 2
+                    },
+                    {
+                        label: `Próg (${threshold.toLocaleString()} kW)`,
+                        data: thresholdLine,
+                        borderColor: '#FF9800',
+                        borderDash: [10, 5],
+                        borderWidth: 2,
+                        fill: false,
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Krzywa uporządkowana mocy (Load Duration Curve)'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw.toLocaleString('pl-PL')} kW`
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: { display: true, text: '% czasu' }
+                    },
+                    y: {
+                        title: { display: true, text: 'Moc [kW]' },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    }
+
+    function displayPeakShavingMonthly(result) {
+        const tbody = document.getElementById('psMonthlyTableBody');
+        if (!tbody) return;
+
+        const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                           'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+
+        // Use monthly data if available, otherwise simulate
+        const powerCharge = peakShavingData?.powerCharge || 50;
+        const peakBefore = result.peak_shaving_original_peak_kw || 1000;
+        const peakAfter = result.peak_shaving_reduced_peak_kw || 800;
+        const reductionPct = (peakBefore - peakAfter) / peakBefore;
+
+        let html = '';
+        let totalSavings = 0;
+
+        // If we have monthly peaks from result
+        const monthlyPeaks = result.peak_shaving_monthly_peaks || null;
+
+        for (let m = 0; m < 12; m++) {
+            // Simulate seasonal variation (higher in winter)
+            const seasonalFactor = 1 + 0.15 * Math.cos((m - 6) * Math.PI / 6);
+            const monthPeakBefore = monthlyPeaks ? monthlyPeaks[m]?.before : Math.round(peakBefore * seasonalFactor);
+            const monthPeakAfter = monthlyPeaks ? monthlyPeaks[m]?.after : Math.round(monthPeakBefore * (1 - reductionPct));
+            const monthReduction = monthPeakBefore - monthPeakAfter;
+            const monthSavings = monthReduction * powerCharge;
+            totalSavings += monthSavings;
+
+            html += `
+                <tr>
+                    <td style="text-align: left;">${monthNames[m]}</td>
+                    <td>${monthPeakBefore.toLocaleString('pl-PL')}</td>
+                    <td style="color: #4CAF50; font-weight: 600;">${monthPeakAfter.toLocaleString('pl-PL')}</td>
+                    <td style="color: #1976d2;">${monthReduction.toLocaleString('pl-PL')}</td>
+                    <td style="color: #4CAF50; font-weight: 600;">${monthSavings.toLocaleString('pl-PL')}</td>
+                </tr>
+            `;
+        }
+
+        // Total row
+        html += `
+            <tr style="background: #e3f2fd; font-weight: 700;">
+                <td style="text-align: left;">RAZEM ROCZNIE</td>
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
+                <td style="color: #1976d2;">${totalSavings.toLocaleString('pl-PL')} PLN</td>
+            </tr>
+        `;
+
+        tbody.innerHTML = html;
+    }
+
+    // Export Peak Shaving report to Excel
+    function exportPeakShavingReport() {
+        if (!peakShavingData || !peakShavingData.result) {
+            alert('Brak danych Peak Shaving do eksportu. Najpierw włącz Peak Shaving i uruchom analizę.');
+            return;
+        }
+
+        const result = peakShavingData.result;
+        const powerCharge = peakShavingData.powerCharge;
+        const projectYears = peakShavingData.projectYears;
+        const discountRate = peakShavingData.discountRate / 100;
+
+        const peakBefore = result.peak_shaving_original_peak_kw || 0;
+        const peakAfter = result.peak_shaving_reduced_peak_kw || 0;
+        const reductionKw = peakBefore - peakAfter;
+        const annualSavings = result.peak_shaving_annual_savings_pln || (reductionKw * powerCharge * 12);
+
+        // Create workbook
+        const wb = XLSX.utils.book_new();
+
+        // Sheet 1: Summary
+        const summaryData = [
+            ['RAPORT PEAK SHAVING'],
+            [''],
+            ['Data eksportu:', new Date().toLocaleString('pl-PL')],
+            [''],
+            ['DANE WEJŚCIOWE'],
+            ['Moc szczytowa przed [kW]:', peakBefore],
+            ['Próg Peak Shaving [kW]:', result.peak_shaving_threshold_kw || peakAfter],
+            ['Opłata mocowa [PLN/kW/m-c]:', powerCharge],
+            ['Okres analizy [lat]:', projectYears],
+            ['Stopa dyskontowa [%]:', discountRate * 100],
+            [''],
+            ['WYNIKI'],
+            ['Moc szczytowa po redukcji [kW]:', peakAfter],
+            ['Redukcja mocy [kW]:', reductionKw],
+            ['Redukcja mocy [%]:', ((reductionKw / peakBefore) * 100).toFixed(1)],
+            ['Oszczędność roczna [PLN]:', annualSavings],
+            [''],
+            ['OBLICZENIE OSZCZĘDNOŚCI'],
+            ['Wzór:', `${reductionKw} kW × ${powerCharge} PLN/kW × 12 m-cy = ${annualSavings} PLN/rok`]
+        ];
+
+        // Add NPV calculation
+        summaryData.push(['']);
+        summaryData.push(['ANALIZA NPV']);
+        let npvTotal = 0;
+        for (let year = 1; year <= projectYears; year++) {
+            const discountedSavings = annualSavings / Math.pow(1 + discountRate, year);
+            npvTotal += discountedSavings;
+            summaryData.push([`Rok ${year}:`, Math.round(discountedSavings)]);
+        }
+        summaryData.push(['']);
+        summaryData.push(['NPV ŁĄCZNE [PLN]:', Math.round(npvTotal)]);
+        summaryData.push(['NPV ŁĄCZNE [mln PLN]:', (npvTotal / 1e6).toFixed(3)]);
+
+        const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+        ws1['!cols'] = [{ wch: 35 }, { wch: 20 }];
+        XLSX.utils.book_append_sheet(wb, ws1, 'Podsumowanie');
+
+        // Sheet 2: Monthly breakdown
+        const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                           'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+
+        const monthlyData = [
+            ['ROZKŁAD MIESIĘCZNY PEAK SHAVING'],
+            [''],
+            ['Miesiąc', 'Szczyt PRZED [kW]', 'Szczyt PO [kW]', 'Redukcja [kW]', 'Oszczędność [PLN]']
+        ];
+
+        const reductionPct = reductionKw / peakBefore;
+        let totalMonthlySavings = 0;
+
+        for (let m = 0; m < 12; m++) {
+            const seasonalFactor = 1 + 0.15 * Math.cos((m - 6) * Math.PI / 6);
+            const monthPeakBefore = Math.round(peakBefore * seasonalFactor);
+            const monthPeakAfter = Math.round(monthPeakBefore * (1 - reductionPct));
+            const monthReduction = monthPeakBefore - monthPeakAfter;
+            const monthSavings = monthReduction * powerCharge;
+            totalMonthlySavings += monthSavings;
+
+            monthlyData.push([monthNames[m], monthPeakBefore, monthPeakAfter, monthReduction, monthSavings]);
+        }
+
+        monthlyData.push(['']);
+        monthlyData.push(['RAZEM ROCZNIE', '', '', '', totalMonthlySavings]);
+
+        const ws2 = XLSX.utils.aoa_to_sheet(monthlyData);
+        ws2['!cols'] = [{ wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 18 }];
+        XLSX.utils.book_append_sheet(wb, ws2, 'Miesięczny rozkład');
+
+        // Generate filename
+        const filename = `Peak_Shaving_Raport_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        XLSX.writeFile(wb, filename);
+        console.log(`✅ Peak Shaving report exported: ${filename}`);
+    }
+
+    // Expose export function globally
+    window.exportPeakShavingReport = exportPeakShavingReport;
 
     // Initialize on load
     if (document.readyState === 'loading') {

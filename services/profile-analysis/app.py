@@ -78,18 +78,27 @@ class ProfileAnalysisRequest(BaseModel):
     # Auxiliary losses: standby power consumption (% of capacity per day)
     # Typical values: 0.5-2% for Li-ion, represents BMS, cooling, etc.
     bess_auxiliary_loss_pct_per_day: float = Field(
-        default=1.0,
+        default=0.1,
         ge=0,
         le=5,
         description="BESS standby power consumption [% of capacity per day]"
     )
-    # Degradation: annual capacity fade (% per year)
-    # Typical values: 2-3% for Li-ion at moderate cycling
+    # Degradation Year 1: higher initial capacity fade due to initial settling
+    # Typical values: 2-5% for Li-ion first year
+    # Note: le=50 to handle legacy data that may have wrong values stored
+    bess_degradation_year1_pct: float = Field(
+        default=3.0,
+        ge=0,
+        le=50,
+        description="BESS first year capacity degradation [%]"
+    )
+    # Degradation Years 2+: annual capacity fade (% per year)
+    # Typical values: 1-3% for Li-ion at moderate cycling
     bess_degradation_pct_per_year: float = Field(
         default=2.0,
         ge=0,
-        le=10,
-        description="BESS annual capacity degradation [% per year]"
+        le=50,
+        description="BESS annual capacity degradation for years 2+ [% per year]"
     )
 
     # Optimization settings
@@ -99,6 +108,64 @@ class ProfileAnalysisRequest(BaseModel):
 
     # Pareto analysis
     pareto_points: int = Field(default=15, description="Number of Pareto points to calculate")
+
+    # ============== Peak Shaving Parameters ==============
+    # Peak shaving reduces demand charges by discharging BESS during high load
+    peak_shaving_enabled: bool = Field(
+        default=False,
+        description="Enable peak shaving optimization"
+    )
+    peak_shaving_mode: str = Field(
+        default="auto",
+        description="Peak shaving mode: 'auto' (P95), 'manual', 'percentage'"
+    )
+    peak_shaving_target_kw: float = Field(
+        default=0,
+        ge=0,
+        description="Target peak power [kW] for manual mode (0 = auto)"
+    )
+    peak_shaving_pct_reduction: float = Field(
+        default=15,
+        ge=0,
+        le=50,
+        description="Target % reduction from historical peak (for percentage mode)"
+    )
+    power_charge_pln_per_kw_month: float = Field(
+        default=50,
+        ge=0,
+        description="Power demand charge [PLN/kW/month] for peak shaving savings"
+    )
+
+    # ============== Price Arbitrage Parameters ==============
+    # Price arbitrage buys energy when cheap, sells when expensive
+    price_arbitrage_enabled: bool = Field(
+        default=False,
+        description="Enable price arbitrage optimization"
+    )
+    price_arbitrage_source: str = Field(
+        default="manual",
+        description="Price source: 'manual', 'tge_api', 'csv_upload'"
+    )
+    price_arbitrage_buy_threshold: float = Field(
+        default=300,
+        ge=0,
+        description="Buy energy when price below this threshold [PLN/MWh]"
+    )
+    price_arbitrage_sell_threshold: float = Field(
+        default=600,
+        ge=0,
+        description="Sell energy when price above this threshold [PLN/MWh]"
+    )
+    price_arbitrage_spread: float = Field(
+        default=100,
+        ge=0,
+        description="Minimum spread to trigger arbitrage [PLN/MWh]"
+    )
+    # Optional: hourly RDN prices (8760 values)
+    rdn_prices_plnmwh: Optional[List[float]] = Field(
+        None,
+        description="Hourly RDN prices [PLN/MWh] for arbitrage optimization"
+    )
 
 
 class HourlyPattern(BaseModel):
@@ -253,14 +320,35 @@ class ProfileAnalysisResult(BaseModel):
     recommended_hourly_bess_soc: Optional[List[float]] = None
 
     # BESS degradation and auxiliary parameters used in NPV calculation
-    bess_degradation_pct_per_year: Optional[float] = None
+    # (from Settings - centralized source of truth for all modules)
+    bess_degradation_year1_pct: Optional[float] = None  # First year degradation (higher)
+    bess_degradation_pct_per_year: Optional[float] = None  # Years 2+ degradation
     bess_auxiliary_loss_pct_per_day: Optional[float] = None
     bess_capacity_at_project_end_pct: Optional[float] = None  # Remaining capacity after degradation
+    project_years: Optional[int] = None  # Project lifetime for UI display
 
     # Hourly PV and Load data for Excel export (8760 elements)
     # These are needed for complete hourly export with all columns
     hourly_pv_kwh: Optional[List[float]] = None
     hourly_load_kwh: Optional[List[float]] = None
+
+    # ============== Peak Shaving Results ==============
+    peak_shaving_enabled: bool = False
+    peak_shaving_original_peak_kw: Optional[float] = None  # Original max demand
+    peak_shaving_reduced_peak_kw: Optional[float] = None  # After BESS dispatch
+    peak_shaving_reduction_pct: Optional[float] = None  # % reduction achieved
+    peak_shaving_annual_savings_pln: Optional[float] = None  # PLN/year savings
+    peak_shaving_npv_improvement_mln_pln: Optional[float] = None
+
+    # ============== Price Arbitrage Results ==============
+    price_arbitrage_enabled: bool = False
+    price_arbitrage_buy_hours: Optional[int] = None  # Hours spent buying
+    price_arbitrage_sell_hours: Optional[int] = None  # Hours spent selling
+    price_arbitrage_avg_buy_price_pln: Optional[float] = None
+    price_arbitrage_avg_sell_price_pln: Optional[float] = None
+    price_arbitrage_spread_pln: Optional[float] = None  # Avg spread achieved
+    price_arbitrage_annual_profit_pln: Optional[float] = None  # PLN/year profit
+    price_arbitrage_npv_improvement_mln_pln: Optional[float] = None
 
     # Optimization results
     selected_strategy: str
@@ -536,15 +624,20 @@ def calculate_npv_with_degradation(
     capex: float,
     discount_rate: float,
     project_years: int,
+    degradation_year1_pct: float = 3.0,
     degradation_pct_per_year: float = 2.0,
-    auxiliary_loss_pct_per_day: float = 1.0
+    auxiliary_loss_pct_per_day: float = 0.1
 ) -> dict:
     """
     Calculate NPV with realistic BESS degradation and auxiliary losses.
 
     This is the advanced NPV model that accounts for:
-    1. Battery degradation: capacity decreases each year (reduces discharge)
+    1. Battery degradation: two-phase model (year 1 higher, years 2+ lower)
     2. Auxiliary losses: standby power consumption (additional cost)
+
+    Degradation model (matching economics.js for consistency):
+    - Year 1: (1 - degradation_year1_pct/100)
+    - Year N: (1 - degradation_year1_pct/100) * (1 - degradation_pct_per_year/100)^(N-1)
 
     Args:
         year1_discharge_kwh: First year annual discharge [kWh] from simulation
@@ -553,7 +646,8 @@ def calculate_npv_with_degradation(
         capex: Total CAPEX [PLN]
         discount_rate: Discount rate (e.g., 0.08 for 8%)
         project_years: Project lifetime [years]
-        degradation_pct_per_year: Annual capacity fade [% per year]
+        degradation_year1_pct: First year capacity fade [%] (higher due to initial settling)
+        degradation_pct_per_year: Annual capacity fade for years 2+ [% per year]
         auxiliary_loss_pct_per_day: Standby power consumption [% of capacity per day]
 
     Returns:
@@ -576,19 +670,27 @@ def calculate_npv_with_degradation(
     yearly_details = []
 
     for year in range(1, project_years + 1):
-        # Calculate effective capacity for this year (degradation applied)
-        # Degradation reduces capacity linearly each year
-        effective_capacity_pct = 100 - degradation_pct_per_year * (year - 1)
+        # Calculate effective capacity using two-phase degradation model
+        # Year 1: (1 - year1_deg)
+        # Year N: (1 - year1_deg) * (1 - annual_deg)^(N-1)
+        # This matches the economics.js model for consistency across portal
+        if year == 1:
+            effective_capacity_factor = 1 - degradation_year1_pct / 100
+        else:
+            effective_capacity_factor = (1 - degradation_year1_pct / 100) * \
+                                        ((1 - degradation_pct_per_year / 100) ** (year - 1))
+
+        effective_capacity_pct = effective_capacity_factor * 100
         effective_capacity_pct = max(effective_capacity_pct, 0)  # Can't go below 0
 
         # Discharge scales with remaining capacity
-        year_discharge_kwh = year1_discharge_kwh * effective_capacity_pct / 100
+        year_discharge_kwh = year1_discharge_kwh * effective_capacity_factor
 
         # Savings from discharge
         year_savings = year_discharge_kwh * energy_price_plnmwh / 1000  # PLN
 
         # Auxiliary costs scale with capacity (smaller as battery degrades)
-        year_auxiliary_cost = annual_auxiliary_cost_base * effective_capacity_pct / 100
+        year_auxiliary_cost = annual_auxiliary_cost_base * effective_capacity_factor
 
         # Net cash flow for the year
         year_net_cf = year_savings - year_auxiliary_cost
@@ -610,8 +712,9 @@ def calculate_npv_with_degradation(
             'discounted_cf_pln': round(year_net_cf * discount_factor, 0)
         })
 
-    # Final capacity at end of project
-    effective_capacity_year_end = 100 - degradation_pct_per_year * project_years
+    # Final capacity at end of project (using two-phase model)
+    effective_capacity_year_end = (1 - degradation_year1_pct / 100) * \
+                                   ((1 - degradation_pct_per_year / 100) ** (project_years - 1)) * 100
     effective_capacity_year_end = max(effective_capacity_year_end, 0)
 
     return {
@@ -765,6 +868,317 @@ def simulate_bess_hourly(
     }
 
 
+# ============== Peak Shaving Functions ==============
+
+def calculate_peak_shaving_target(
+    load_kwh: np.ndarray,
+    mode: str = "auto",
+    manual_target_kw: float = 0,
+    pct_reduction: float = 15
+) -> float:
+    """Calculate target peak power for peak shaving.
+
+    Args:
+        load_kwh: Hourly load array [kWh] (power in kW if hourly)
+        mode: "auto" (P95), "manual", or "percentage"
+        manual_target_kw: Manual target for "manual" mode
+        pct_reduction: % reduction for "percentage" mode
+
+    Returns:
+        Target peak power [kW]
+    """
+    original_peak = float(np.max(load_kwh))
+
+    if mode == "manual" and manual_target_kw > 0:
+        return manual_target_kw
+    elif mode == "percentage":
+        return original_peak * (1 - pct_reduction / 100)
+    else:  # auto = P95
+        return float(np.percentile(load_kwh, 95))
+
+
+def simulate_peak_shaving(
+    load_kwh: np.ndarray,
+    pv_kwh: np.ndarray,
+    bess_energy_kwh: float,
+    bess_power_kw: float,
+    target_peak_kw: float,
+    efficiency: float = 0.90,
+    soc_min_pct: float = 10.0,
+    soc_max_pct: float = 90.0
+) -> dict:
+    """
+    Simulate BESS dispatch for peak shaving.
+
+    Strategy:
+    1. When net load (load - PV) > target_peak: discharge BESS to reduce peak
+    2. When net load < target_peak and surplus exists: charge BESS
+    3. Prioritize peak reduction over surplus absorption
+
+    Args:
+        load_kwh: Hourly load [kWh]
+        pv_kwh: Hourly PV generation [kWh]
+        bess_energy_kwh: Battery capacity [kWh]
+        bess_power_kw: Max charge/discharge power [kW]
+        target_peak_kw: Target maximum grid power [kW]
+        efficiency: Round-trip efficiency
+        soc_min_pct, soc_max_pct: SoC limits [%]
+
+    Returns:
+        dict with peak shaving results
+    """
+    n_hours = len(load_kwh)
+    one_way_eff = np.sqrt(efficiency)
+
+    # Initialize
+    hourly_discharge = np.zeros(n_hours)
+    hourly_charge = np.zeros(n_hours)
+    hourly_grid_power = np.zeros(n_hours)
+    soc_pct = (soc_min_pct + soc_max_pct) / 2.0
+
+    original_peak = float(np.max(load_kwh))
+    usable_capacity = bess_energy_kwh * (soc_max_pct - soc_min_pct) / 100.0
+
+    total_discharge = 0.0
+    total_charge = 0.0
+    peak_events_shaved = 0
+
+    for i in range(n_hours):
+        net_load = load_kwh[i] - pv_kwh[i]  # Positive = drawing from grid
+        surplus = max(0, -net_load)  # PV surplus
+        deficit = max(0, net_load)  # Grid demand
+
+        charge = 0.0
+        discharge = 0.0
+
+        # Peak shaving: discharge when deficit exceeds target
+        if deficit > target_peak_kw and soc_pct > soc_min_pct:
+            # How much to shave off
+            needed_reduction = deficit - target_peak_kw
+            # Available energy
+            available_energy = (soc_pct - soc_min_pct) / 100.0 * bess_energy_kwh
+            # Energy to extract (accounting for discharge losses)
+            energy_from_battery = min(
+                needed_reduction / one_way_eff,
+                available_energy,
+                bess_power_kw / one_way_eff
+            )
+            discharge = energy_from_battery * one_way_eff
+            soc_pct -= energy_from_battery / bess_energy_kwh * 100.0
+            total_discharge += discharge
+            peak_events_shaved += 1
+
+        # Charge from surplus when below target
+        elif surplus > 0 and soc_pct < soc_max_pct:
+            available_capacity = (soc_max_pct - soc_pct) / 100.0 * bess_energy_kwh
+            max_charge = min(bess_power_kw, surplus)
+            energy_to_store = min(max_charge * one_way_eff, available_capacity)
+            charge = energy_to_store / one_way_eff if one_way_eff > 0 else 0
+            soc_pct += energy_to_store / bess_energy_kwh * 100.0
+            total_charge += charge
+
+        # Also charge when load is below target (valley filling for next peak)
+        elif deficit < target_peak_kw * 0.5 and soc_pct < soc_max_pct * 0.8:
+            # Charge from grid during low-demand periods to prepare for peaks
+            available_capacity = (soc_max_pct - soc_pct) / 100.0 * bess_energy_kwh
+            grid_charge = min(bess_power_kw * 0.5, available_capacity / one_way_eff)
+            energy_to_store = grid_charge * one_way_eff
+            charge = grid_charge
+            soc_pct += energy_to_store / bess_energy_kwh * 100.0
+            total_charge += charge
+
+        # Ensure bounds
+        soc_pct = max(soc_min_pct, min(soc_max_pct, soc_pct))
+
+        hourly_discharge[i] = discharge
+        hourly_charge[i] = charge
+        hourly_grid_power[i] = load_kwh[i] - pv_kwh[i] - discharge + charge
+
+    # Results
+    reduced_peak = float(np.max(np.maximum(hourly_grid_power, 0)))
+    reduction_pct = (original_peak - reduced_peak) / original_peak * 100 if original_peak > 0 else 0
+    cycles = total_discharge / usable_capacity if usable_capacity > 0 else 0
+
+    return {
+        'original_peak_kw': original_peak,
+        'reduced_peak_kw': reduced_peak,
+        'reduction_pct': reduction_pct,
+        'annual_discharge_kwh': total_discharge,
+        'annual_charge_kwh': total_charge,
+        'annual_cycles': cycles,
+        'peak_events_shaved': peak_events_shaved,
+        'hourly_discharge': hourly_discharge,
+        'hourly_charge': hourly_charge,
+        'hourly_grid_power': hourly_grid_power
+    }
+
+
+# ============== Price Arbitrage Functions ==============
+
+def generate_synthetic_rdn_prices(n_hours: int = 8760, base_price: float = 500) -> np.ndarray:
+    """
+    Generate synthetic hourly RDN prices with typical patterns.
+
+    Price patterns:
+    - Lower at night (22:00-06:00): base * 0.6-0.8
+    - Higher during morning peak (07:00-09:00): base * 1.2-1.4
+    - Higher during evening peak (17:00-21:00): base * 1.3-1.6
+    - Seasonal variation: higher in winter
+    - Random noise: ±15%
+
+    Returns:
+        Array of hourly prices [PLN/MWh]
+    """
+    prices = np.zeros(n_hours)
+
+    for i in range(n_hours):
+        hour_of_day = i % 24
+        day_of_year = (i // 24) % 365
+
+        # Base seasonal factor (higher in winter)
+        # Winter (Nov-Feb): 1.2, Summer (May-Aug): 0.85
+        if day_of_year < 60 or day_of_year > 305:  # Winter
+            seasonal = 1.2
+        elif 120 < day_of_year < 240:  # Summer
+            seasonal = 0.85
+        else:
+            seasonal = 1.0
+
+        # Hour-of-day factor
+        if 22 <= hour_of_day or hour_of_day < 6:  # Night
+            hourly = 0.7
+        elif 7 <= hour_of_day < 10:  # Morning peak
+            hourly = 1.3
+        elif 17 <= hour_of_day < 22:  # Evening peak
+            hourly = 1.5
+        else:  # Midday
+            hourly = 1.0
+
+        # Random noise (±15%)
+        noise = 1 + np.random.uniform(-0.15, 0.15)
+
+        prices[i] = base_price * seasonal * hourly * noise
+
+    return prices
+
+
+def simulate_price_arbitrage(
+    pv_kwh: np.ndarray,
+    load_kwh: np.ndarray,
+    prices_plnmwh: np.ndarray,
+    bess_energy_kwh: float,
+    bess_power_kw: float,
+    buy_threshold: float = 300,
+    sell_threshold: float = 600,
+    efficiency: float = 0.90,
+    soc_min_pct: float = 10.0,
+    soc_max_pct: float = 90.0
+) -> dict:
+    """
+    Simulate BESS dispatch for price arbitrage.
+
+    Strategy:
+    1. Buy (charge) when price < buy_threshold AND there's capacity
+    2. Sell (discharge) when price > sell_threshold AND there's energy
+    3. Also absorb PV surplus when available (as before)
+
+    Returns:
+        dict with arbitrage results
+    """
+    n_hours = len(pv_kwh)
+    one_way_eff = np.sqrt(efficiency)
+
+    # Initialize
+    hourly_discharge = np.zeros(n_hours)
+    hourly_charge = np.zeros(n_hours)
+    hourly_arbitrage_profit = np.zeros(n_hours)
+    soc_pct = (soc_min_pct + soc_max_pct) / 2.0
+
+    usable_capacity = bess_energy_kwh * (soc_max_pct - soc_min_pct) / 100.0
+
+    total_discharge = 0.0
+    total_charge = 0.0
+    total_arbitrage_profit = 0.0
+    buy_hours = 0
+    sell_hours = 0
+    buy_prices_sum = 0.0
+    sell_prices_sum = 0.0
+
+    for i in range(n_hours):
+        price = prices_plnmwh[i]
+        surplus = max(0, pv_kwh[i] - load_kwh[i])
+        deficit = max(0, load_kwh[i] - pv_kwh[i])
+
+        charge = 0.0
+        discharge = 0.0
+        arbitrage_profit = 0.0
+
+        # Arbitrage: sell when price is high
+        if price > sell_threshold and soc_pct > soc_min_pct:
+            available_energy = (soc_pct - soc_min_pct) / 100.0 * bess_energy_kwh
+            energy_from_battery = min(bess_power_kw / one_way_eff, available_energy)
+            discharge = energy_from_battery * one_way_eff
+            soc_pct -= energy_from_battery / bess_energy_kwh * 100.0
+            total_discharge += discharge
+            # Profit = energy sold * price (in MWh, then PLN)
+            arbitrage_profit = (discharge / 1000) * price
+            sell_hours += 1
+            sell_prices_sum += price
+
+        # Arbitrage: buy when price is low
+        elif price < buy_threshold and soc_pct < soc_max_pct:
+            available_capacity = (soc_max_pct - soc_pct) / 100.0 * bess_energy_kwh
+            max_charge = min(bess_power_kw, available_capacity / one_way_eff)
+            energy_to_store = max_charge * one_way_eff
+            charge = max_charge
+            soc_pct += energy_to_store / bess_energy_kwh * 100.0
+            total_charge += charge
+            # Cost = energy bought * price (negative profit)
+            arbitrage_profit = -(charge / 1000) * price
+            buy_hours += 1
+            buy_prices_sum += price
+
+        # Also absorb PV surplus (free energy)
+        elif surplus > 0 and soc_pct < soc_max_pct:
+            available_capacity = (soc_max_pct - soc_pct) / 100.0 * bess_energy_kwh
+            max_charge = min(bess_power_kw, surplus)
+            energy_to_store = min(max_charge * one_way_eff, available_capacity)
+            charge = energy_to_store / one_way_eff if one_way_eff > 0 else 0
+            soc_pct += energy_to_store / bess_energy_kwh * 100.0
+            total_charge += charge
+            # No cost for PV surplus
+
+        # Ensure bounds
+        soc_pct = max(soc_min_pct, min(soc_max_pct, soc_pct))
+
+        hourly_discharge[i] = discharge
+        hourly_charge[i] = charge
+        hourly_arbitrage_profit[i] = arbitrage_profit
+        total_arbitrage_profit += arbitrage_profit
+
+    # Calculate averages
+    avg_buy_price = buy_prices_sum / buy_hours if buy_hours > 0 else 0
+    avg_sell_price = sell_prices_sum / sell_hours if sell_hours > 0 else 0
+    avg_spread = avg_sell_price - avg_buy_price
+
+    cycles = total_discharge / usable_capacity if usable_capacity > 0 else 0
+
+    return {
+        'annual_discharge_kwh': total_discharge,
+        'annual_charge_kwh': total_charge,
+        'annual_cycles': cycles,
+        'annual_profit_pln': total_arbitrage_profit,
+        'buy_hours': buy_hours,
+        'sell_hours': sell_hours,
+        'avg_buy_price_pln': avg_buy_price,
+        'avg_sell_price_pln': avg_sell_price,
+        'avg_spread_pln': avg_spread,
+        'hourly_discharge': hourly_discharge,
+        'hourly_charge': hourly_charge,
+        'hourly_arbitrage_profit': hourly_arbitrage_profit
+    }
+
+
 async def generate_pareto_frontier(
     pv_kwh: np.ndarray,
     load_kwh: np.ndarray,
@@ -777,8 +1191,9 @@ async def generate_pareto_frontier(
     discount_rate: float,
     project_years: int,
     n_points: int = 10,
+    degradation_year1_pct: float = 3.0,
     degradation_pct_per_year: float = 2.0,
-    auxiliary_loss_pct_per_day: float = 1.0
+    auxiliary_loss_pct_per_day: float = 0.1
 ) -> List[ParetoPoint]:
     """Generate Pareto frontier of NPV vs Cycles using REAL hourly simulation.
 
@@ -900,6 +1315,7 @@ async def generate_pareto_frontier(
             capex=capex,
             discount_rate=discount_rate,
             project_years=project_years,
+            degradation_year1_pct=degradation_year1_pct,
             degradation_pct_per_year=degradation_pct_per_year,
             auxiliary_loss_pct_per_day=auxiliary_loss_pct_per_day
         )
@@ -1414,6 +1830,7 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             request.discount_rate,
             request.project_years,
             request.pareto_points,
+            request.bess_degradation_year1_pct,
             request.bess_degradation_pct_per_year,
             request.bess_auxiliary_loss_pct_per_day
         )
@@ -1509,6 +1926,71 @@ async def analyze_profile(request: ProfileAnalysisRequest):
 
         print(f"✓ Analysis complete: {len(pareto_frontier)} Pareto points, {len(bess_recommendations)} recommendations")
 
+        # ============== Peak Shaving Analysis ==============
+        peak_shaving_results = None
+        if request.peak_shaving_enabled and recommended_bess_energy_kwh:
+            print(f"📉 Running Peak Shaving analysis...")
+            # Calculate target peak
+            target_peak = calculate_peak_shaving_target(
+                load_kwh,
+                mode=request.peak_shaving_mode,
+                manual_target_kw=request.peak_shaving_target_kw,
+                pct_reduction=request.peak_shaving_pct_reduction
+            )
+            # Run simulation
+            peak_shaving_results = simulate_peak_shaving(
+                load_kwh=load_kwh,
+                pv_kwh=pv_kwh,
+                bess_energy_kwh=recommended_bess_energy_kwh,
+                bess_power_kw=recommended_bess_power_kw,
+                target_peak_kw=target_peak,
+                efficiency=request.bess_efficiency
+            )
+            # Calculate annual savings
+            power_reduction_kw = peak_shaving_results['original_peak_kw'] - peak_shaving_results['reduced_peak_kw']
+            annual_savings_pln = power_reduction_kw * request.power_charge_pln_per_kw_month * 12
+            peak_shaving_results['annual_savings_pln'] = annual_savings_pln
+            # NPV improvement (simplified: savings * project_years * discount factor)
+            avg_discount = sum(1 / (1 + request.discount_rate) ** y for y in range(1, request.project_years + 1)) / request.project_years
+            peak_shaving_results['npv_improvement_mln_pln'] = annual_savings_pln * request.project_years * avg_discount / 1_000_000
+
+            print(f"   Original peak: {peak_shaving_results['original_peak_kw']:.0f} kW")
+            print(f"   Reduced peak: {peak_shaving_results['reduced_peak_kw']:.0f} kW ({peak_shaving_results['reduction_pct']:.1f}% reduction)")
+            print(f"   Annual savings: {annual_savings_pln:,.0f} PLN")
+
+        # ============== Price Arbitrage Analysis ==============
+        arbitrage_results = None
+        if request.price_arbitrage_enabled and recommended_bess_energy_kwh:
+            print(f"💹 Running Price Arbitrage analysis...")
+            # Get or generate prices
+            if request.rdn_prices_plnmwh and len(request.rdn_prices_plnmwh) >= len(pv_kwh):
+                prices = np.array(request.rdn_prices_plnmwh[:len(pv_kwh)])
+            else:
+                # Generate synthetic prices based on typical RDN patterns
+                prices = generate_synthetic_rdn_prices(
+                    n_hours=len(pv_kwh),
+                    base_price=request.energy_price_plnmwh
+                )
+                print(f"   Using synthetic RDN prices (base: {request.energy_price_plnmwh} PLN/MWh)")
+
+            arbitrage_results = simulate_price_arbitrage(
+                pv_kwh=pv_kwh,
+                load_kwh=load_kwh,
+                prices_plnmwh=prices,
+                bess_energy_kwh=recommended_bess_energy_kwh,
+                bess_power_kw=recommended_bess_power_kw,
+                buy_threshold=request.price_arbitrage_buy_threshold,
+                sell_threshold=request.price_arbitrage_sell_threshold,
+                efficiency=request.bess_efficiency
+            )
+            # NPV improvement
+            avg_discount = sum(1 / (1 + request.discount_rate) ** y for y in range(1, request.project_years + 1)) / request.project_years
+            arbitrage_results['npv_improvement_mln_pln'] = arbitrage_results['annual_profit_pln'] * request.project_years * avg_discount / 1_000_000
+
+            print(f"   Buy hours: {arbitrage_results['buy_hours']}, Sell hours: {arbitrage_results['sell_hours']}")
+            print(f"   Avg spread: {arbitrage_results['avg_spread_pln']:.0f} PLN/MWh")
+            print(f"   Annual profit: {arbitrage_results['annual_profit_pln']:,.0f} PLN")
+
         return ProfileAnalysisResult(
             annual_pv_mwh=round(annual_pv, 2),
             annual_load_mwh=round(annual_load, 2),
@@ -1537,10 +2019,18 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             recommended_hourly_bess_charge=recommended_hourly_charge,
             recommended_hourly_bess_discharge=recommended_hourly_discharge,
             recommended_hourly_bess_soc=recommended_hourly_soc,
-            # Degradation and auxiliary parameters
+            # Degradation and auxiliary parameters (from Settings - centralized)
+            bess_degradation_year1_pct=request.bess_degradation_year1_pct,
             bess_degradation_pct_per_year=request.bess_degradation_pct_per_year,
             bess_auxiliary_loss_pct_per_day=request.bess_auxiliary_loss_pct_per_day,
-            bess_capacity_at_project_end_pct=round(100 - request.bess_degradation_pct_per_year * request.project_years, 1),
+            # Calculate end-of-project capacity using two-phase degradation model
+            # Year 1: (1 - year1_deg), then Years 2+: compound degradation
+            bess_capacity_at_project_end_pct=round(
+                (1 - request.bess_degradation_year1_pct / 100) *
+                ((1 - request.bess_degradation_pct_per_year / 100) ** (request.project_years - 1)) * 100,
+                1
+            ),
+            project_years=request.project_years,
             selected_strategy=request.strategy.value,
             bess_recommendations=bess_recommendations,
             pareto_frontier=pareto_frontier,
@@ -1549,7 +2039,23 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             insights=insights,
             # Hourly PV and Load data for Excel export
             hourly_pv_kwh=[round(x, 2) for x in pv_kwh.tolist()],
-            hourly_load_kwh=[round(x, 2) for x in load_kwh.tolist()]
+            hourly_load_kwh=[round(x, 2) for x in load_kwh.tolist()],
+            # Peak Shaving results
+            peak_shaving_enabled=request.peak_shaving_enabled,
+            peak_shaving_original_peak_kw=round(peak_shaving_results['original_peak_kw'], 0) if peak_shaving_results else None,
+            peak_shaving_reduced_peak_kw=round(peak_shaving_results['reduced_peak_kw'], 0) if peak_shaving_results else None,
+            peak_shaving_reduction_pct=round(peak_shaving_results['reduction_pct'], 1) if peak_shaving_results else None,
+            peak_shaving_annual_savings_pln=round(peak_shaving_results['annual_savings_pln'], 0) if peak_shaving_results else None,
+            peak_shaving_npv_improvement_mln_pln=round(peak_shaving_results['npv_improvement_mln_pln'], 3) if peak_shaving_results else None,
+            # Price Arbitrage results
+            price_arbitrage_enabled=request.price_arbitrage_enabled,
+            price_arbitrage_buy_hours=arbitrage_results['buy_hours'] if arbitrage_results else None,
+            price_arbitrage_sell_hours=arbitrage_results['sell_hours'] if arbitrage_results else None,
+            price_arbitrage_avg_buy_price_pln=round(arbitrage_results['avg_buy_price_pln'], 0) if arbitrage_results else None,
+            price_arbitrage_avg_sell_price_pln=round(arbitrage_results['avg_sell_price_pln'], 0) if arbitrage_results else None,
+            price_arbitrage_spread_pln=round(arbitrage_results['avg_spread_pln'], 0) if arbitrage_results else None,
+            price_arbitrage_annual_profit_pln=round(arbitrage_results['annual_profit_pln'], 0) if arbitrage_results else None,
+            price_arbitrage_npv_improvement_mln_pln=round(arbitrage_results['npv_improvement_mln_pln'], 3) if arbitrage_results else None
         )
 
     except HTTPException:
