@@ -340,6 +340,12 @@
 
             console.log('✅ Data ready:', hourlyGeneration.length, 'PV values,', hourlyConsumption.length, 'load values');
 
+            // Cache PV and Load data for Excel export (in case localStorage fails with large data)
+            if (!cachedShellData) cachedShellData = {};
+            cachedShellData.cachedPvGeneration = hourlyGeneration;
+            cachedShellData.cachedLoadConsumption = hourlyConsumption;
+            console.log('💾 Cached PV and Load data for Excel export');
+
             // Get timestamps for correct month mapping
             // CRITICAL: This ensures monthly data is correctly assigned to calendar months
             // Analytical year may start from any month (e.g., July 2024 to June 2025)
@@ -425,6 +431,14 @@
 
             analysisResult = await response.json();
             displayResults(analysisResult);
+
+            // Persist analysisResult to localStorage for Excel export after page reload
+            try {
+                localStorage.setItem('profileAnalysisResult', JSON.stringify(analysisResult));
+                console.log('💾 Profile analysis result saved to localStorage');
+            } catch (e) {
+                console.warn('Could not save analysis result to localStorage:', e);
+            }
 
             // Send BESS analysis results to shell for Economics module
             notifyShellProfileAnalysis(analysisResult);
@@ -1243,17 +1257,34 @@
         let timestamps = null;
 
         // ============================================
+        // TRY TO RESTORE analysisResult FROM LOCALSTORAGE IF NULL
+        // This handles page reload / module switch scenarios
+        // ============================================
+        let effectiveAnalysisResult = analysisResult;
+        if (!effectiveAnalysisResult) {
+            try {
+                const stored = localStorage.getItem('profileAnalysisResult');
+                if (stored) {
+                    effectiveAnalysisResult = JSON.parse(stored);
+                    console.log('📊 Restored analysisResult from localStorage');
+                }
+            } catch (e) {
+                console.warn('Could not restore analysisResult from localStorage:', e);
+            }
+        }
+
+        // ============================================
         // BEST SOURCE: Direct from profile-analysis API response
         // This ensures exact match with backend calculations
         // ============================================
         console.log('📊 Checking analysisResult for hourly data:', {
-            hasAnalysisResult: !!analysisResult,
-            hourly_pv_kwh_length: analysisResult?.hourly_pv_kwh?.length || 0,
-            hourly_load_kwh_length: analysisResult?.hourly_load_kwh?.length || 0
+            hasAnalysisResult: !!effectiveAnalysisResult,
+            hourly_pv_kwh_length: effectiveAnalysisResult?.hourly_pv_kwh?.length || 0,
+            hourly_load_kwh_length: effectiveAnalysisResult?.hourly_load_kwh?.length || 0
         });
-        if (analysisResult?.hourly_load_kwh?.length > 0 && analysisResult?.hourly_pv_kwh?.length > 0) {
-            hourlyConsumption = analysisResult.hourly_load_kwh;
-            hourlyGeneration = analysisResult.hourly_pv_kwh;
+        if (effectiveAnalysisResult?.hourly_load_kwh?.length > 0 && effectiveAnalysisResult?.hourly_pv_kwh?.length > 0) {
+            hourlyConsumption = effectiveAnalysisResult.hourly_load_kwh;
+            hourlyGeneration = effectiveAnalysisResult.hourly_pv_kwh;
             // Generate timestamps for 8760 hours (one year)
             const startDate = new Date(cachedShellData?.hourlyData?.timestamps?.[0] || '2024-01-01T00:00:00');
             timestamps = [];
@@ -1357,6 +1388,19 @@
             } catch (e) {
                 console.warn('Could not load PV from localStorage:', e);
             }
+        }
+
+        // ============================================
+        // FINAL FALLBACK: Use cached data from runAnalysis()
+        // This ensures data is available even if localStorage fails
+        // ============================================
+        if (!hourlyGeneration && cachedShellData?.cachedPvGeneration?.length > 0) {
+            hourlyGeneration = cachedShellData.cachedPvGeneration;
+            console.log('📊 ✅ Using CACHED PV data from runAnalysis:', hourlyGeneration.length);
+        }
+        if (!hourlyConsumption && cachedShellData?.cachedLoadConsumption?.length > 0) {
+            hourlyConsumption = cachedShellData.cachedLoadConsumption;
+            console.log('📊 ✅ Using CACHED Load data from runAnalysis:', hourlyConsumption.length);
         }
 
         if (!hourlyConsumption || !hourlyGeneration || !timestamps) {
