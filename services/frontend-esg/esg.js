@@ -12,6 +12,9 @@ let systemSettings = null;
 // Electricity Maps data cache
 let lastElectricityMapsData = null;
 
+// Chart instances
+let carbonFootprintChart = null;
+
 // Default ESG parameters (Poland)
 const DEFAULT_ESG_PARAMS = {
   efGrid: 0.658,  // kgCO2e/kWh - Poland grid average
@@ -74,6 +77,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Request shared data from shell
   window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
   window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+
+  // Initialize Carbon Footprint chart with default values
+  setTimeout(() => {
+    updateCarbonFootprintChart({
+      efGrid: DEFAULT_ESG_PARAMS.efGrid,
+      pvTechnology: DEFAULT_ESG_PARAMS.pvTechnology
+    });
+  }, 500);
 
   // Try to fetch Electricity Maps data on load
   setTimeout(() => {
@@ -220,6 +231,11 @@ function updateESGDashboard() {
     if (analysisResults) {
       console.log('🌱 analysisResults keys:', Object.keys(analysisResults));
     }
+    // Still show Carbon Footprint chart with default values
+    updateCarbonFootprintChart({
+      efGrid: DEFAULT_ESG_PARAMS.efGrid,
+      pvTechnology: DEFAULT_ESG_PARAMS.pvTechnology
+    });
     return;
   }
 
@@ -413,6 +429,10 @@ function updateESGUI(metrics) {
   setElementValue('esgTotalProductionKwh', formatWithUnit((metrics.annualProductionKwh || 0) / 1000, 'MWh/rok', 1));
   setElementValue('esgCo2ProductionBased', formatWithUnit(metrics.co2ReductionYearProductionBased || 0, 'tCO2e/rok', 2));
 
+  // CO2 Savings for Environment (in tons) - based on total production
+  // This represents the actual CO2 that won't be emitted due to PV generation
+  updateCo2SavingsSection(metrics);
+
   // Embodied carbon
   setElementValue('esgPvTechnology', getTechnologyLabel(metrics.pvTechnology));
   setElementValue('esgEmbodiedCarbon', formatWithUnit(metrics.embodiedCarbon, 'tCO2e', 2));
@@ -431,7 +451,61 @@ function updateESGUI(metrics) {
     taxonomyBadge.classList.add('compliant');
   }
 
+  // Update Carbon Footprint chart
+  updateCarbonFootprintChart(metrics);
+
+  // Initialize Carbon Clock with metrics
+  initCarbonClock(metrics);
+
   console.log('✅ ESG Dashboard updated');
+}
+
+// Update CO2 Savings section with environmental impact metrics
+function updateCo2SavingsSection(metrics) {
+  // CO2 savings based on total production (environmental perspective)
+  // Formula: annual_production_kWh * (grid_EF - PV_LCA_EF) / 1000 = tons CO2/year
+  const gridEfKgPerKwh = metrics.efGrid || 0.658; // kgCO2/kWh
+  const pvTech = metrics.pvTechnology || 'mono-Si';
+  const pvLcaGPerKwh = PV_LCA_EMISSIONS[pvTech] || PV_LCA_EMISSIONS['default']; // gCO2/kWh
+  const pvLcaKgPerKwh = pvLcaGPerKwh / 1000; // convert to kgCO2/kWh
+
+  const annualProductionKwh = metrics.annualProductionKwh || 0;
+  const pvLifetime = metrics.pvLifetime || 25;
+
+  // Net CO2 savings per kWh (grid emissions minus PV lifecycle emissions)
+  const netSavingsPerKwh = gridEfKgPerKwh - pvLcaKgPerKwh; // kgCO2/kWh
+
+  // Annual CO2 savings in tons
+  const co2SavingsYearTons = (annualProductionKwh * netSavingsPerKwh) / 1000;
+
+  // Lifetime CO2 savings in tons
+  const co2SavingsLifetimeTons = co2SavingsYearTons * pvLifetime;
+
+  // Car equivalent: average car emits ~120 gCO2/km
+  // How many km would emit the same CO2 as we're saving?
+  const carEmissionsGPerKm = 120;
+  const carEquivalentKm = (co2SavingsYearTons * 1000 * 1000) / carEmissionsGPerKm; // convert tons to g
+
+  // Tree equivalent: average deciduous tree absorbs ~22 kg CO2/year
+  const treeAbsorptionKgPerYear = 22;
+  const treeEquivalent = (co2SavingsYearTons * 1000) / treeAbsorptionKgPerYear;
+
+  console.log('🌳 CO2 Savings calculation:', {
+    annualProductionKwh,
+    gridEfKgPerKwh,
+    pvLcaKgPerKwh,
+    netSavingsPerKwh,
+    co2SavingsYearTons,
+    co2SavingsLifetimeTons,
+    carEquivalentKm,
+    treeEquivalent
+  });
+
+  // Update UI elements
+  setElementValue('esgCo2SavingsYearTons', formatNumber(co2SavingsYearTons, 1));
+  setElementValue('esgCo2SavingsLifetimeTons', formatNumber(co2SavingsLifetimeTons, 0));
+  setElementValue('esgCarEquivalent', formatNumber(carEquivalentKm, 0));
+  setElementValue('esgTreeEquivalent', formatNumber(treeEquivalent, 0));
 }
 
 // Helper: Set element value safely
@@ -656,4 +730,393 @@ function exportESGReport() {
   link.click();
 
   console.log('✅ ESG report exported');
+}
+
+// ============================================
+// CARBON FOOTPRINT VISUALIZATION
+// ============================================
+
+// LCA emission factors for PV technologies (gCO2e/kWh over lifetime)
+const PV_LCA_EMISSIONS = {
+  'mono-Si': 40,        // Monokrystaliczny Si
+  'poly-Si': 45,        // Polikrystaliczny Si
+  'thin-film-CdTe': 20, // Cienkowarstwowy CdTe
+  'thin-film-CIGS': 25, // Cienkowarstwowy CIGS
+  'default': 40         // Default mono-Si
+};
+
+// ============================================
+// CARBON CLOCK - Real-time CO2 Savings Animation
+// ============================================
+
+// Carbon Clock state
+let carbonClockInterval = null;
+let carbonClockIsRunning = false;
+let carbonClockStartTime = null;
+let carbonClockSimulatedSeconds = 0;
+let carbonClockSpeed = 'minute'; // realtime, minute, fast, ultrafast
+
+// CO2 savings rate per second (calculated from annual data)
+let co2PerSecond = 0; // kg CO2 per second
+let treesPerYear = 0; // number of trees equivalent
+let carKmPerYear = 0; // car km equivalent
+
+/**
+ * Initialize Carbon Clock with calculated data
+ */
+function initCarbonClock(metrics) {
+  if (!metrics || !metrics.annualProductionKwh) {
+    console.log('Carbon Clock: No metrics available');
+    return;
+  }
+
+  const gridEfKgPerKwh = metrics.efGrid || 0.658;
+  const pvTech = metrics.pvTechnology || 'mono-Si';
+  const pvLcaGPerKwh = PV_LCA_EMISSIONS[pvTech] || PV_LCA_EMISSIONS['default'];
+  const pvLcaKgPerKwh = pvLcaGPerKwh / 1000;
+  const netSavingsPerKwh = gridEfKgPerKwh - pvLcaKgPerKwh;
+
+  // Annual CO2 savings in kg
+  const annualCo2SavingsKg = metrics.annualProductionKwh * netSavingsPerKwh;
+
+  // CO2 per second (annual / seconds in year)
+  const secondsInYear = 365.25 * 24 * 3600;
+  co2PerSecond = annualCo2SavingsKg / secondsInYear;
+
+  // Tree equivalent (22 kg CO2/year per tree)
+  treesPerYear = annualCo2SavingsKg / 22;
+
+  // Car km equivalent (120 g CO2/km)
+  carKmPerYear = (annualCo2SavingsKg * 1000) / 120;
+
+  console.log('Carbon Clock initialized:', {
+    annualCo2SavingsKg,
+    co2PerSecond,
+    treesPerYear,
+    carKmPerYear
+  });
+
+  // Reset display
+  resetCarbonClockDisplay();
+}
+
+/**
+ * Toggle Carbon Clock play/pause
+ */
+function toggleCarbonClock() {
+  if (carbonClockIsRunning) {
+    stopCarbonClock();
+  } else {
+    startCarbonClock();
+  }
+}
+
+/**
+ * Start Carbon Clock animation
+ */
+function startCarbonClock() {
+  if (co2PerSecond <= 0) {
+    console.warn('Carbon Clock: No CO2 data to animate');
+    return;
+  }
+
+  carbonClockIsRunning = true;
+  carbonClockStartTime = Date.now();
+
+  // Update button state
+  const btn = document.getElementById('clockPlayBtn');
+  const icon = document.getElementById('clockPlayIcon');
+  const text = document.getElementById('clockPlayText');
+  if (btn) btn.classList.add('playing');
+  if (icon) icon.textContent = '⏸️';
+  if (text) text.textContent = 'Pauza';
+
+  // Get speed multiplier
+  const speedMultiplier = getClockSpeedMultiplier();
+
+  // Start animation interval (update every 50ms for smooth animation)
+  carbonClockInterval = setInterval(() => {
+    const elapsedMs = Date.now() - carbonClockStartTime;
+    const elapsedSeconds = elapsedMs / 1000;
+
+    // Apply speed multiplier
+    carbonClockSimulatedSeconds += (elapsedSeconds * speedMultiplier) - (carbonClockSimulatedSeconds % 1 === 0 ? 0 : 0);
+    carbonClockSimulatedSeconds = (Date.now() - carbonClockStartTime) / 1000 * speedMultiplier + (carbonClockSimulatedSeconds || 0);
+
+    // Recalculate based on actual elapsed time
+    const totalSimulatedSeconds = ((Date.now() - carbonClockStartTime) / 1000) * speedMultiplier;
+
+    updateCarbonClockDisplay(totalSimulatedSeconds);
+  }, 50);
+
+  console.log('Carbon Clock started with speed:', carbonClockSpeed);
+}
+
+/**
+ * Stop Carbon Clock animation
+ */
+function stopCarbonClock() {
+  carbonClockIsRunning = false;
+
+  if (carbonClockInterval) {
+    clearInterval(carbonClockInterval);
+    carbonClockInterval = null;
+  }
+
+  // Update button state
+  const btn = document.getElementById('clockPlayBtn');
+  const icon = document.getElementById('clockPlayIcon');
+  const text = document.getElementById('clockPlayText');
+  if (btn) btn.classList.remove('playing');
+  if (icon) icon.textContent = '▶️';
+  if (text) text.textContent = 'Start';
+
+  console.log('Carbon Clock stopped');
+}
+
+/**
+ * Reset Carbon Clock to zero
+ */
+function resetCarbonClock() {
+  stopCarbonClock();
+  carbonClockSimulatedSeconds = 0;
+  carbonClockStartTime = null;
+  resetCarbonClockDisplay();
+  console.log('Carbon Clock reset');
+}
+
+/**
+ * Reset Carbon Clock display to initial state
+ */
+function resetCarbonClockDisplay() {
+  setElementValue('clockCo2Value', '0,00');
+  setElementValue('clockTreeCount', '0');
+  setElementValue('clockTreeFraction', ',0');
+  setElementValue('clockCarKm', '0');
+  setElementValue('clockYearCo2', '0,0');
+  setElementValue('clockCurrentTime', '00:00:00');
+
+  // Reset progress bars
+  const ringProgress = document.getElementById('clockRingProgress');
+  if (ringProgress) ringProgress.style.strokeDashoffset = '339.292';
+
+  const treeProgress = document.getElementById('clockTreeProgress');
+  if (treeProgress) treeProgress.style.width = '0%';
+
+  const carProgress = document.getElementById('clockCarProgress');
+  if (carProgress) carProgress.style.width = '0%';
+
+  const yearProgress = document.getElementById('clockYearProgress');
+  if (yearProgress) yearProgress.style.width = '0%';
+}
+
+/**
+ * Update Carbon Clock display with simulated time
+ */
+function updateCarbonClockDisplay(simulatedSeconds) {
+  // Calculate values based on simulated time
+  const co2SavedKg = simulatedSeconds * co2PerSecond;
+  const co2SavedToday = co2SavedKg % (co2PerSecond * 86400); // Reset daily
+  const dayOfYear = Math.floor(simulatedSeconds / 86400) + 1;
+
+  // Trees equivalent (proportional)
+  const treesWorking = (simulatedSeconds / (365.25 * 86400)) * treesPerYear;
+
+  // Car km equivalent (proportional)
+  const carKm = (simulatedSeconds / (365.25 * 86400)) * carKmPerYear;
+
+  // Year CO2 in tons
+  const yearCo2Tons = co2SavedKg / 1000;
+
+  // Update main CO2 display (daily)
+  setElementValue('clockCo2Value', formatNumber(co2SavedToday, 2));
+
+  // Update time display (simulated time of day)
+  const timeOfDay = simulatedSeconds % 86400;
+  const hours = Math.floor(timeOfDay / 3600);
+  const minutes = Math.floor((timeOfDay % 3600) / 60);
+  const seconds = Math.floor(timeOfDay % 60);
+  setElementValue('clockCurrentTime',
+    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+  );
+
+  // Update ring progress (daily cycle)
+  const dayProgress = (timeOfDay / 86400) * 100;
+  const ringProgress = document.getElementById('clockRingProgress');
+  if (ringProgress) {
+    const circumference = 339.292;
+    const offset = circumference - (dayProgress / 100) * circumference;
+    ringProgress.style.strokeDashoffset = offset;
+  }
+
+  // Update trees counter
+  const treeWhole = Math.floor(treesWorking);
+  const treeFraction = Math.floor((treesWorking - treeWhole) * 10);
+  setElementValue('clockTreeCount', formatNumber(treeWhole, 0));
+  setElementValue('clockTreeFraction', `,${treeFraction}`);
+
+  // Update tree progress (to next whole tree)
+  const treeProgressPct = ((treesWorking - treeWhole) * 100);
+  const treeProgressEl = document.getElementById('clockTreeProgress');
+  if (treeProgressEl) treeProgressEl.style.width = `${treeProgressPct}%`;
+
+  // Update car km counter
+  setElementValue('clockCarKm', formatNumber(Math.floor(carKm), 0));
+
+  // Update car progress (to next 100 km milestone)
+  const carProgressPct = (carKm % 100);
+  const carProgressEl = document.getElementById('clockCarProgress');
+  if (carProgressEl) carProgressEl.style.width = `${carProgressPct}%`;
+
+  // Update year CO2 counter
+  setElementValue('clockYearCo2', formatNumber(yearCo2Tons, 1));
+
+  // Update year progress (percentage of annual target)
+  const annualTarget = co2PerSecond * 365.25 * 86400 / 1000; // tons
+  const yearProgressPct = Math.min((yearCo2Tons / annualTarget) * 100, 100);
+  const yearProgressEl = document.getElementById('clockYearProgress');
+  if (yearProgressEl) yearProgressEl.style.width = `${yearProgressPct}%`;
+}
+
+/**
+ * Get speed multiplier based on selected mode
+ */
+function getClockSpeedMultiplier() {
+  const speed = document.getElementById('clockSpeedSelect')?.value || 'minute';
+  carbonClockSpeed = speed;
+
+  switch (speed) {
+    case 'realtime': return 1;           // 1 second = 1 second
+    case 'minute': return 60;            // 1 second = 1 minute (1 min = 1 hour)
+    case 'fast': return 1440;            // 1 second = 24 minutes (1 min = 1 day)
+    case 'ultrafast': return 10080;      // 1 second = 168 minutes (1 min = 1 week)
+    default: return 60;
+  }
+}
+
+/**
+ * Update clock speed (called from select change)
+ */
+function updateClockSpeed() {
+  // If running, restart with new speed
+  if (carbonClockIsRunning) {
+    // Save current simulated time
+    const currentSimulated = carbonClockSimulatedSeconds;
+    stopCarbonClock();
+    carbonClockSimulatedSeconds = currentSimulated;
+    startCarbonClock();
+  }
+  console.log('Clock speed updated to:', document.getElementById('clockSpeedSelect')?.value);
+}
+
+// Create or update Carbon Footprint chart
+function updateCarbonFootprintChart(metrics) {
+  if (!metrics) return;
+
+  const ctx = document.getElementById('carbonFootprintChart');
+  if (!ctx) {
+    console.warn('Carbon footprint chart canvas not found');
+    return;
+  }
+
+  // Get grid emission factor (convert from kgCO2e/kWh to gCO2e/kWh)
+  const gridEF = (metrics.efGrid || 0.658) * 1000; // gCO2e/kWh
+
+  // Get PV LCA emission factor based on technology
+  const pvTech = metrics.pvTechnology || 'mono-Si';
+  const pvLCA = PV_LCA_EMISSIONS[pvTech] || PV_LCA_EMISSIONS['default'];
+
+  // Calculate reduction percentage
+  const reductionPct = ((gridEF - pvLCA) / gridEF * 100).toFixed(0);
+
+  // Update legend values
+  setElementValue('carbonGridValue', `${gridEF.toFixed(0)} gCO2e/kWh`);
+  setElementValue('carbonPvValue', `~${pvLCA} gCO2e/kWh`);
+  setElementValue('carbonSavingsValue', `-${reductionPct}%`);
+
+  // Destroy existing chart if exists
+  if (carbonFootprintChart) {
+    carbonFootprintChart.destroy();
+  }
+
+  // Chart data
+  const chartData = {
+    labels: ['Sieć PL', 'PV (LCA)'],
+    datasets: [{
+      data: [gridEF, pvLCA],
+      backgroundColor: [
+        'rgba(231, 76, 60, 0.8)',   // Red for grid
+        'rgba(39, 174, 96, 0.8)'    // Green for PV
+      ],
+      borderColor: [
+        'rgba(192, 57, 43, 1)',
+        'rgba(30, 132, 73, 1)'
+      ],
+      borderWidth: 2,
+      borderRadius: 8,
+      barThickness: 60
+    }]
+  };
+
+  // Create chart
+  carbonFootprintChart = new Chart(ctx, {
+    type: 'bar',
+    data: chartData,
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return `${context.raw.toFixed(0)} gCO2e/kWh`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          max: Math.ceil(gridEF / 100) * 100 + 100,
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          },
+          title: {
+            display: true,
+            text: 'Emisja CO2 [gCO2e/kWh]',
+            font: {
+              size: 12,
+              weight: 'bold'
+            }
+          },
+          ticks: {
+            callback: function(value) {
+              return value + ' g';
+            }
+          }
+        },
+        y: {
+          grid: {
+            display: false
+          },
+          ticks: {
+            font: {
+              size: 14,
+              weight: 'bold'
+            }
+          }
+        }
+      },
+      animation: {
+        duration: 1000,
+        easing: 'easeOutQuart'
+      }
+    }
+  });
+
+  console.log('📊 Carbon Footprint chart updated');
 }

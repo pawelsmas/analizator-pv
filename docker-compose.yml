@@ -15,7 +15,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -35,7 +35,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,7 +55,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -75,7 +75,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -95,7 +95,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -118,7 +118,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -142,6 +142,7 @@ services:
       - frontend-settings
       - frontend-esg
       - frontend-projects
+      - frontend-hub
       - data-analysis
       - pv-calculation
       - economics
@@ -280,7 +281,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8030/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -361,7 +362,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -402,7 +403,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8012/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8012/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -422,7 +423,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      test: ["CMD", "curl", "-f", "http://localhost/"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -442,7 +443,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8020/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -462,7 +463,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8021/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8021/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -518,7 +519,7 @@ services:
       - pv-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8040/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8040/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -542,6 +543,70 @@ services:
       retries: 3
       start_period: 10s
 
+  # Hub Module (Analysis Dashboard)
+  frontend-hub:
+    build:
+      context: ./services/frontend-hub
+      dockerfile: Dockerfile
+    container_name: pv-frontend-hub
+    ports:
+      - "9015:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: pv-postgres
+    environment:
+      - POSTGRES_USER=pvanalyzer
+      - POSTGRES_PASSWORD=pvanalyzer123
+      - POSTGRES_DB=pvanalyzer
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./services/database-api/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pvanalyzer"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Database API Service
+  database-api:
+    build:
+      context: ./services/database-api
+      dockerfile: Dockerfile
+    container_name: pv-database-api
+    ports:
+      - "8050:8050"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://pvanalyzer:pvanalyzer123@pv-postgres:5432/pvanalyzer
+    depends_on:
+      - postgres
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 networks:
   pv-network:
     driver: bridge
@@ -556,3 +621,5 @@ volumes:
     name: pv-reports-output
   projects-data:
     name: pv-projects-data
+  postgres-data:
+    name: pv-postgres-data

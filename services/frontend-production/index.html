@@ -281,6 +281,146 @@
       <canvas id="dailyProductionProfile"></canvas>
     </div>
 
+    <!-- SEKCJA: Daily Profile Explorer - Interaktywny kalendarz -->
+    <div class="chart-section full-width daily-explorer-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h2 style="margin: 0;">📅 Eksplorator Profilu Dziennego</h2>
+        <button class="btn" onclick="exportDailyExplorerToExcel()" style="margin: 0;">📊 Eksport do Excel</button>
+      </div>
+      <div class="chart-info">
+        Interaktywna analiza Load vs PV vs Autokonsumpcja dla wybranego dnia lub okresu (max 14 dni).
+        Nawiguj strzałkami lub wybierz datę z kalendarza.
+      </div>
+
+      <!-- Navigation Controls -->
+      <div class="daily-explorer-controls" style="display: flex; flex-wrap: wrap; gap: 15px; align-items: center; margin: 15px 0; padding: 15px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; border: 1px solid #dee2e6;">
+
+        <!-- Period Selector -->
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <label style="font-weight: 600; color: #495057;">Okres:</label>
+          <select id="dailyExplorerPeriod" onchange="updateDailyExplorerPeriod()" style="padding: 8px 12px; border-radius: 6px; border: 1px solid #ced4da; font-size: 14px; background: white;">
+            <option value="1">1 dzień</option>
+            <option value="3">3 dni</option>
+            <option value="7" selected>7 dni (tydzień)</option>
+            <option value="14">14 dni</option>
+          </select>
+        </div>
+
+        <!-- Navigation Buttons -->
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <button onclick="navigateDailyExplorer('start')" class="nav-btn" title="Na początek">⏮️</button>
+          <button onclick="navigateDailyExplorer('prev-period')" class="nav-btn" title="Poprzedni okres">⏪</button>
+          <button onclick="navigateDailyExplorer('prev')" class="nav-btn" title="Poprzedni dzień">◀️</button>
+          <button onclick="toggleDailyExplorerPlay()" id="explorerPlayBtn" class="nav-btn play-btn" title="Automatyczne przewijanie" style="background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%); color: white; border-color: #27ae60; min-width: 50px;">▶️</button>
+          <button onclick="navigateDailyExplorer('next')" class="nav-btn" title="Następny dzień">▶️</button>
+          <button onclick="navigateDailyExplorer('next-period')" class="nav-btn" title="Następny okres">⏩</button>
+          <button onclick="navigateDailyExplorer('end')" class="nav-btn" title="Na koniec">⏭️</button>
+        </div>
+
+        <!-- Play Speed Selector -->
+        <div id="explorerSpeedControl" style="display: flex; align-items: center; gap: 6px;">
+          <label style="font-size: 12px; color: #6c757d;">Tempo:</label>
+          <select id="explorerPlaySpeed" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ced4da; font-size: 12px; background: white;">
+            <option value="1000">1s/dzień</option>
+            <option value="500" selected>0.5s/dzień</option>
+            <option value="250">0.25s/dzień</option>
+            <option value="100">0.1s/dzień</option>
+          </select>
+        </div>
+
+        <!-- Date Picker -->
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <label style="font-weight: 600; color: #495057;">Data:</label>
+          <input type="date" id="dailyExplorerDate" onchange="jumpToDailyExplorerDate()" style="padding: 8px 12px; border-radius: 6px; border: 1px solid #ced4da; font-size: 14px;">
+        </div>
+
+        <!-- Current Range Display -->
+        <div id="dailyExplorerRange" style="flex: 1; text-align: center; font-weight: 600; color: #2c3e50; font-size: 16px; padding: 8px 16px; background: white; border-radius: 6px; border: 2px solid #3498db;">
+          Wybierz okres analizy
+        </div>
+
+        <!-- Quick Jump -->
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button onclick="jumpToMonth('01')" class="month-btn">Sty</button>
+          <button onclick="jumpToMonth('04')" class="month-btn">Kwi</button>
+          <button onclick="jumpToMonth('07')" class="month-btn">Lip</button>
+          <button onclick="jumpToMonth('10')" class="month-btn">Paź</button>
+        </div>
+      </div>
+
+      <!-- Summary Stats for Selected Period -->
+      <div id="dailyExplorerStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 15px;">
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #fff5f5 0%, #fed7d7 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #e53e3e;">
+          <div style="font-size: 11px; color: #c53030; font-weight: 600;">🔴 ZUŻYCIE</div>
+          <div id="explorerStatLoad" style="font-size: 20px; font-weight: 700; color: #c53030;">-</div>
+          <div style="font-size: 10px; color: #9b2c2c;">MWh w okresie</div>
+        </div>
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #fffaf0 0%, #feebc8 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #dd6b20;">
+          <div style="font-size: 11px; color: #c05621; font-weight: 600;">🟠 PRODUKCJA PV</div>
+          <div id="explorerStatPV" style="font-size: 20px; font-weight: 700; color: #c05621;">-</div>
+          <div style="font-size: 10px; color: #9c4221;">MWh w okresie</div>
+        </div>
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #f0fff4 0%, #c6f6d5 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #38a169;">
+          <div style="font-size: 11px; color: #276749; font-weight: 600;">🟢 AUTOKONSUMPCJA</div>
+          <div id="explorerStatSelfCons" style="font-size: 20px; font-weight: 700; color: #276749;">-</div>
+          <div style="font-size: 10px; color: #22543d;">MWh w okresie</div>
+        </div>
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #ebf8ff 0%, #bee3f8 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #3182ce;">
+          <div style="font-size: 11px; color: #2b6cb0; font-weight: 600;">📊 AUTOKONS. %</div>
+          <div id="explorerStatAutoPct" style="font-size: 20px; font-weight: 700; color: #2b6cb0;">-</div>
+          <div style="font-size: 10px; color: #2c5282;">% produkcji</div>
+        </div>
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #faf5ff 0%, #e9d8fd 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #805ad5;">
+          <div style="font-size: 11px; color: #6b46c1; font-weight: 600;">⚡ SZCZYT LOAD</div>
+          <div id="explorerStatPeakLoad" style="font-size: 20px; font-weight: 700; color: #6b46c1;">-</div>
+          <div style="font-size: 10px; color: #553c9a;">MW max</div>
+        </div>
+        <div class="explorer-stat" style="background: linear-gradient(135deg, #fffff0 0%, #fefcbf 100%); padding: 12px; border-radius: 8px; border-left: 4px solid #d69e2e;">
+          <div style="font-size: 11px; color: #b7791f; font-weight: 600;">☀️ SZCZYT PV</div>
+          <div id="explorerStatPeakPV" style="font-size: 20px; font-weight: 700; color: #b7791f;">-</div>
+          <div style="font-size: 10px; color: #975a16;">MW max</div>
+        </div>
+      </div>
+
+      <!-- Layer Visibility -->
+      <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+        <strong>Warstwy:</strong>
+        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+          <input type="checkbox" id="explorerToggleLoad" checked onchange="updateDailyExplorerChart()">
+          <span>🔴 Load</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+          <input type="checkbox" id="explorerTogglePV" checked onchange="updateDailyExplorerChart()">
+          <span>🟠 PV</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+          <input type="checkbox" id="explorerToggleSelfCons" checked onchange="updateDailyExplorerChart()">
+          <span>🟢 Autokonsumpcja</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+          <input type="checkbox" id="explorerToggleExport" onchange="updateDailyExplorerChart()">
+          <span>🔵 Eksport do sieci</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+          <input type="checkbox" id="explorerToggleImport" onchange="updateDailyExplorerChart()">
+          <span>🟣 Import z sieci</span>
+        </label>
+      </div>
+
+      <!-- Chart -->
+      <div style="position: relative;">
+        <canvas id="dailyExplorerChart" style="height: 450px;"></canvas>
+        <div id="dailyExplorerNoData" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: #7f8c8d;">
+          <div style="font-size: 48px; margin-bottom: 10px;">📅</div>
+          <div>Brak danych dla wybranego okresu</div>
+          <div style="font-size: 12px; margin-top: 8px;">Wybierz inną datę lub wgraj dane zużycia</div>
+        </div>
+      </div>
+
+      <!-- Day markers for multi-day view -->
+      <div id="dailyExplorerDayMarkers" style="display: flex; justify-content: space-around; margin-top: 8px; font-size: 11px; color: #7f8c8d;"></div>
+    </div>
+
     <!-- LINIA 2: Bilans Miesięczny, Wskaźniki Autokonsumpcji -->
     <div class="chart-section">
       <h2>Bilans Miesięczny</h2>
@@ -318,6 +458,33 @@
           <span class="detail-label">Godziny Pełnego Obciążenia:</span>
           <span class="detail-value" id="fullLoadHours">-</span>
         </div>
+      </div>
+    </div>
+
+    <!-- PVGIS Horizon Diagram Section -->
+    <div class="chart-section horizon-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h2 style="margin: 0;">🏔️ Profil Horyzontu (PVGIS)</h2>
+        <button class="btn" onclick="fetchHorizonData()" id="btnFetchHorizon" style="margin: 0;">🔄 Pobierz dane</button>
+      </div>
+      <div class="chart-info" id="horizonInfo">
+        Diagram pokazuje przeszkody terenowe (góry, wzgórza) wokół lokalizacji instalacji.
+        Wyższe wartości oznaczają większe zacienienie od terenu.
+      </div>
+      <div id="horizonNoData" style="display: block; text-align: center; padding: 40px; color: #7f8c8d;">
+        <div style="font-size: 48px; margin-bottom: 10px;">🏔️</div>
+        <div>Kliknij "Pobierz dane" aby załadować profil horyzontu z PVGIS</div>
+        <div style="font-size: 12px; margin-top: 8px; color: #95a5a6;">Wymaga ustawionej lokalizacji (lat/lon) w module USTAWIENIA</div>
+      </div>
+      <div id="horizonChartContainer" style="display: none;">
+        <canvas id="horizonChart" height="300"></canvas>
+        <div class="horizon-legend" style="display: flex; justify-content: center; gap: 24px; margin-top: 12px; font-size: 12px; color: #7f8c8d;">
+          <span>🧭 <strong>N</strong>=Północ (0°)</span>
+          <span><strong>E</strong>=Wschód (90°)</span>
+          <span><strong>S</strong>=Południe (180°)</span>
+          <span><strong>W</strong>=Zachód (270°)</span>
+        </div>
+        <div id="horizonLocation" style="text-align: center; margin-top: 8px; font-size: 11px; color: #95a5a6;"></div>
       </div>
     </div>
 

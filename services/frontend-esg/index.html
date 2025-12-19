@@ -125,6 +125,149 @@
       </div>
     </div>
 
+    <!-- CO2 Savings Summary Section -->
+    <div class="stats-section co2-savings-section">
+      <h2>🌳 Oszczednosc CO2 dla Srodowiska</h2>
+      <div class="stats-cards">
+        <div class="stat-card esg-card savings-card">
+          <div class="stat-icon">🏭</div>
+          <div class="stat-content">
+            <div class="stat-label">Oszczednosc CO2 Rocznie</div>
+            <div class="stat-value" id="esgCo2SavingsYearTons">-</div>
+            <div class="stat-unit">ton CO2/rok</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card savings-card">
+          <div class="stat-icon">🌲</div>
+          <div class="stat-content">
+            <div class="stat-label">Oszczednosc CO2 Lifetime</div>
+            <div class="stat-value" id="esgCo2SavingsLifetimeTons">-</div>
+            <div class="stat-unit">ton CO2 (25 lat)</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card savings-card">
+          <div class="stat-icon">🚗</div>
+          <div class="stat-content">
+            <div class="stat-label">Ekwiwalent samochodowy</div>
+            <div class="stat-value" id="esgCarEquivalent">-</div>
+            <div class="stat-unit">km rocznie</div>
+          </div>
+        </div>
+        <div class="stat-card esg-card savings-card">
+          <div class="stat-icon">🌳</div>
+          <div class="stat-content">
+            <div class="stat-label">Ekwiwalent drzew</div>
+            <div class="stat-value" id="esgTreeEquivalent">-</div>
+            <div class="stat-unit">drzew/rok</div>
+          </div>
+        </div>
+      </div>
+      <div class="carbon-info-note" style="margin-top: 16px;">
+        <span class="info-icon">ℹ️</span>
+        <span>Obliczenia na podstawie rzeczywistej produkcji PV i faktora emisji sieci PL (658 gCO2/kWh).
+        Ekwiwalent samochodowy: 120 gCO2/km (sredni samochod osobowy).
+        Ekwiwalent drzew: 22 kg CO2/rok absorpcji przez drzewo lisciaste.</span>
+      </div>
+    </div>
+
+    <!-- Carbon Clock - Animated Real-time CO2 Savings -->
+    <div class="stats-section carbon-clock-section" id="carbonClockSection">
+      <h2>⏱️ Carbon Clock - Oszczednosci w Czasie Rzeczywistym</h2>
+      <div class="carbon-clock-container">
+        <!-- Main Clock Display -->
+        <div class="carbon-clock-main">
+          <div class="clock-circle">
+            <svg class="clock-ring" viewBox="0 0 120 120">
+              <circle class="clock-ring-bg" cx="60" cy="60" r="54" />
+              <circle class="clock-ring-progress" id="clockRingProgress" cx="60" cy="60" r="54" />
+            </svg>
+            <div class="clock-content">
+              <div class="clock-value" id="clockCo2Value">0,00</div>
+              <div class="clock-unit">kg CO2</div>
+              <div class="clock-label">zaoszczedzone dzis</div>
+            </div>
+          </div>
+          <div class="clock-time-display">
+            <span id="clockCurrentTime">--:--:--</span>
+          </div>
+        </div>
+
+        <!-- Animated Counters -->
+        <div class="carbon-counters">
+          <div class="counter-card trees-counter">
+            <div class="counter-icon">🌳</div>
+            <div class="counter-content">
+              <div class="counter-label">Ekwiwalent drzew</div>
+              <div class="counter-value">
+                <span class="counter-number" id="clockTreeCount">0</span>
+                <span class="counter-fraction" id="clockTreeFraction">,0</span>
+              </div>
+              <div class="counter-sublabel">drzew pracuje dla Ciebie</div>
+              <div class="counter-progress-bar">
+                <div class="counter-progress" id="clockTreeProgress"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="counter-card car-counter">
+            <div class="counter-icon">🚗</div>
+            <div class="counter-content">
+              <div class="counter-label">Kilometrow bez emisji</div>
+              <div class="counter-value">
+                <span class="counter-number" id="clockCarKm">0</span>
+                <span class="counter-unit-small">km</span>
+              </div>
+              <div class="counter-sublabel">samochodem osobowym</div>
+              <div class="counter-progress-bar">
+                <div class="counter-progress car-progress" id="clockCarProgress"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="counter-card co2-counter">
+            <div class="counter-icon">💨</div>
+            <div class="counter-content">
+              <div class="counter-label">CO2 rok biezacy</div>
+              <div class="counter-value">
+                <span class="counter-number" id="clockYearCo2">0,0</span>
+                <span class="counter-unit-small">ton</span>
+              </div>
+              <div class="counter-sublabel">od poczatku roku</div>
+              <div class="counter-progress-bar">
+                <div class="counter-progress year-progress" id="clockYearProgress"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Clock Controls -->
+      <div class="clock-controls">
+        <button class="clock-btn" id="clockPlayBtn" onclick="toggleCarbonClock()">
+          <span id="clockPlayIcon">▶️</span>
+          <span id="clockPlayText">Start</span>
+        </button>
+        <div class="clock-speed-control">
+          <label>Symulacja:</label>
+          <select id="clockSpeedSelect" onchange="updateClockSpeed()">
+            <option value="realtime">Czas rzeczywisty</option>
+            <option value="minute" selected>1 min = 1 h</option>
+            <option value="fast">1 min = 1 dzien</option>
+            <option value="ultrafast">1 min = 1 tydzien</option>
+          </select>
+        </div>
+        <button class="clock-btn clock-btn-secondary" onclick="resetCarbonClock()">
+          🔄 Reset
+        </button>
+      </div>
+
+      <div class="carbon-info-note" style="margin-top: 16px;">
+        <span class="info-icon">💡</span>
+        <span>Carbon Clock pokazuje w czasie rzeczywistym ile CO2 oszczedza Twoja instalacja PV.
+        Wybierz tryb symulacji aby przyspieszyc wizualizacje i zobaczyc oszczednosci w skali dnia, miesiaca lub roku.</span>
+      </div>
+    </div>
+
     <!-- Embodied Carbon Section -->
     <div class="details-section">
       <h2>🏭 Embodied Carbon (LCA)</h2>
@@ -176,6 +319,43 @@
       </div>
     </div>
 
+    <!-- Carbon Footprint Comparison Section -->
+    <div class="details-section carbon-footprint-section">
+      <h2>🌍 Carbon Footprint - Porównanie Emisyjności</h2>
+      <div class="carbon-comparison-container">
+        <div class="carbon-chart-wrapper">
+          <canvas id="carbonFootprintChart" height="280"></canvas>
+        </div>
+        <div class="carbon-legend">
+          <div class="carbon-legend-item">
+            <span class="carbon-dot grid"></span>
+            <div class="carbon-legend-text">
+              <strong>Sieć elektroenergetyczna (PL)</strong>
+              <span id="carbonGridValue">658 gCO2e/kWh</span>
+            </div>
+          </div>
+          <div class="carbon-legend-item">
+            <span class="carbon-dot pv"></span>
+            <div class="carbon-legend-text">
+              <strong>Instalacja PV (LCA)</strong>
+              <span id="carbonPvValue">~40 gCO2e/kWh</span>
+            </div>
+          </div>
+          <div class="carbon-legend-item highlight">
+            <span class="carbon-dot savings"></span>
+            <div class="carbon-legend-text">
+              <strong>Redukcja emisji</strong>
+              <span id="carbonSavingsValue">-94%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="carbon-info-note">
+        <span class="info-icon">ℹ️</span>
+        <span>Dane dla Polski: EF sieci wg KOBiZE 2023. LCA dla PV obejmuje produkcję, transport i instalację modułów (IPCC 2021).</span>
+      </div>
+    </div>
+
     <!-- Technical Parameters Section -->
     <div class="details-section">
       <h2>⚙️ Parametry Techniczne ESG</h2>
@@ -208,6 +388,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="esg.js"></script>
 </body>
 </html>

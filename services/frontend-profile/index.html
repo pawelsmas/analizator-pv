@@ -135,6 +135,17 @@
                             <label for="arbitrageSellThreshold">Próg sprzedaży [PLN/MWh] <span class="tooltip-icon" data-tooltip="BESS rozładowuje do sieci gdy cena > tego progu. Przykład: 600 PLN/MWh to typowy szczyt poranny/wieczorny. Wyższy próg = mniej okazji ale drożej sprzedasz.">?</span></label>
                             <input type="number" id="arbitrageSellThreshold" value="600" min="100" step="10">
                         </div>
+
+                        <!-- Kraken Protocol: PyPSA Optimizer -->
+                        <div class="form-group" style="grid-column: 1 / -1; margin-top: 15px;">
+                            <h4 style="margin:0 0 10px 0;color:#6a1b9a;">🐙 Protokół Kraken (PyPSA + HiGHS) <span class="tooltip-icon" data-tooltip="Użyj optymalizacji liniowej (LP) zamiast algorytmu zachłannego. PyPSA + HiGHS znajduje globalnie optymalny dispatch BESS. Wolniejsze ale dokładniejsze - różnica widoczna przy arbitrażu cenowym.">?</span></h4>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex;align-items:center;gap:8px">
+                                <input type="checkbox" id="usePypsaOptimizer" style="width:18px;height:18px">
+                                Użyj PyPSA + HiGHS <span class="tooltip-icon" data-tooltip="Włącz optymalizację LP/MIP zamiast symulacji zachłannej. Greedy = szybkie przybliżenie (każda godzina osobno). PyPSA = globalna optymalizacja (wszystkie godziny jednocześnie).">?</span>
+                            </label>
+                        </div>
                     </div>
                 </div>
             </details>

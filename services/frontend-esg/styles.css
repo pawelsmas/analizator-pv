@@ -461,3 +461,524 @@ body::-webkit-scrollbar {
   border-top: 2px solid #1976d2;
   font-weight: 600;
 }
+
+/* ===== CARBON FOOTPRINT SECTION ===== */
+.carbon-footprint-section {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, #f5f5f5 0%, #e8f5e9 100%);
+  border: 2px solid #4caf50;
+}
+
+.carbon-comparison-container {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.carbon-chart-wrapper {
+  flex: 1;
+  min-width: 300px;
+  max-width: 500px;
+}
+
+.carbon-legend {
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.carbon-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.carbon-legend-item.highlight {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  border: 2px solid #4caf50;
+}
+
+.carbon-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.carbon-dot.grid {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.carbon-dot.pv {
+  background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+}
+
+.carbon-dot.savings {
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+}
+
+.carbon-legend-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.carbon-legend-text strong {
+  font-size: 14px;
+  color: #2c3e50;
+}
+
+.carbon-legend-text span {
+  font-size: 18px;
+  font-weight: 700;
+  color: #27ae60;
+}
+
+.carbon-legend-item:first-child .carbon-legend-text span {
+  color: #e74c3c;
+}
+
+.carbon-legend-item:nth-child(2) .carbon-legend-text span {
+  color: #27ae60;
+}
+
+.carbon-legend-item.highlight .carbon-legend-text span {
+  color: #2e7d32;
+  font-size: 20px;
+}
+
+.carbon-info-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #7f8c8d;
+  border-left: 3px solid #95a5a6;
+}
+
+.carbon-info-note .info-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .carbon-comparison-container {
+    flex-direction: column;
+  }
+
+  .carbon-chart-wrapper {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .carbon-legend {
+    width: 100%;
+  }
+}
+
+/* ===== CO2 SAVINGS SECTION ===== */
+.co2-savings-section {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  border: 2px solid #4caf50;
+}
+
+.co2-savings-section h2 {
+  color: #2e7d32;
+}
+
+.savings-card {
+  background: linear-gradient(135deg, #ffffff 0%, #f1f8e9 100%) !important;
+  border-left-color: #43a047 !important;
+}
+
+.savings-card .stat-value {
+  color: #2e7d32;
+  font-size: 32px;
+}
+
+.savings-card .stat-icon {
+  font-size: 40px;
+}
+
+.savings-card:nth-child(1) .stat-value {
+  color: #1b5e20;
+}
+
+.savings-card:nth-child(2) .stat-value {
+  color: #388e3c;
+}
+
+.savings-card:nth-child(3) .stat-value {
+  color: #f57c00;
+}
+
+.savings-card:nth-child(4) .stat-value {
+  color: #558b2f;
+}
+
+/* ===== CARBON CLOCK SECTION ===== */
+.carbon-clock-section {
+  background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
+  border: none;
+  color: white;
+}
+
+.carbon-clock-section h2 {
+  color: white;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.carbon-clock-container {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Main Clock Circle */
+.carbon-clock-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.clock-circle {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+
+.clock-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.clock-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 8;
+}
+
+.clock-ring-progress {
+  fill: none;
+  stroke: #4caf50;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 339.292;
+  stroke-dashoffset: 339.292;
+  transition: stroke-dashoffset 0.5s ease;
+  filter: drop-shadow(0 0 8px rgba(76, 175, 80, 0.6));
+}
+
+.clock-content {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.clock-value {
+  font-size: 36px;
+  font-weight: 700;
+  color: #4caf50;
+  text-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { text-shadow: 0 0 20px rgba(76, 175, 80, 0.5); }
+  50% { text-shadow: 0 0 30px rgba(76, 175, 80, 0.8); }
+}
+
+.clock-unit {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+  margin-top: 4px;
+}
+
+.clock-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-top: 4px;
+}
+
+.clock-time-display {
+  font-family: 'Courier New', monospace;
+  font-size: 24px;
+  color: #64b5f6;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 8px 16px;
+  border-radius: 8px;
+  letter-spacing: 2px;
+}
+
+/* Animated Counters */
+.carbon-counters {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.counter-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: all 0.3s ease;
+}
+
+.counter-card:hover {
+  transform: translateX(8px);
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.counter-icon {
+  font-size: 36px;
+  flex-shrink: 0;
+  animation: bounce-subtle 3s ease-in-out infinite;
+}
+
+@keyframes bounce-subtle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.counter-content {
+  flex: 1;
+}
+
+.counter-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.counter-value {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+.counter-number {
+  font-size: 32px;
+  font-weight: 700;
+  color: white;
+  transition: all 0.3s ease;
+}
+
+.counter-fraction {
+  font-size: 20px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.counter-unit-small {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-left: 4px;
+}
+
+.counter-sublabel {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 2px;
+}
+
+.counter-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.counter-progress {
+  height: 100%;
+  background: linear-gradient(90deg, #4caf50, #8bc34a);
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.5s ease;
+  position: relative;
+}
+
+.counter-progress::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.counter-progress.car-progress {
+  background: linear-gradient(90deg, #2196f3, #64b5f6);
+}
+
+.counter-progress.year-progress {
+  background: linear-gradient(90deg, #ff9800, #ffc107);
+}
+
+/* Trees counter special effect */
+.trees-counter .counter-number {
+  color: #81c784;
+}
+
+.trees-counter .counter-card:hover .counter-icon {
+  animation: tree-shake 0.5s ease-in-out;
+}
+
+@keyframes tree-shake {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-5deg); }
+  75% { transform: rotate(5deg); }
+}
+
+/* Car counter special effect */
+.car-counter .counter-number {
+  color: #64b5f6;
+}
+
+/* CO2 counter special effect */
+.co2-counter .counter-number {
+  color: #ffb74d;
+}
+
+/* Clock Controls */
+.clock-controls {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.clock-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 30px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, #4caf50 0%, #43a047 100%);
+  color: white;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+}
+
+.clock-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(76, 175, 80, 0.5);
+}
+
+.clock-btn.playing {
+  background: linear-gradient(135deg, #f44336 0%, #e53935 100%);
+  box-shadow: 0 4px 15px rgba(244, 67, 54, 0.4);
+  animation: pulse-btn 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-btn {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.clock-btn-secondary {
+  background: linear-gradient(135deg, #78909c 0%, #607d8b 100%);
+  box-shadow: 0 4px 15px rgba(120, 144, 156, 0.4);
+}
+
+.clock-btn-secondary:hover {
+  box-shadow: 0 6px 20px rgba(120, 144, 156, 0.5);
+}
+
+.clock-speed-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+}
+
+.clock-speed-control select {
+  padding: 8px 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.clock-speed-control select option {
+  background: #1a237e;
+  color: white;
+}
+
+/* Carbon Clock info note override */
+.carbon-clock-section .carbon-info-note {
+  background: rgba(255, 255, 255, 0.1);
+  border-left-color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.carbon-clock-section .carbon-info-note .info-icon {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .carbon-clock-container {
+    flex-direction: column;
+  }
+
+  .carbon-counters {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .clock-controls {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .clock-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

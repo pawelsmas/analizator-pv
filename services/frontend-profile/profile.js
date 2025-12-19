@@ -476,10 +476,13 @@
                 price_arbitrage_enabled: priceArbitrageEnabled,
                 price_arbitrage_source: arbitrageSource,
                 price_arbitrage_buy_threshold: arbitrageBuyThreshold,
-                price_arbitrage_sell_threshold: arbitrageSellThreshold
+                price_arbitrage_sell_threshold: arbitrageSellThreshold,
+                // 🐙 Kraken Protocol: PyPSA + HiGHS optimizer
+                use_pypsa_optimizer: document.getElementById('usePypsaOptimizer')?.checked || false
             };
 
-            showLoading(true, 'Generuję front Pareto...');
+            const usePypsa = request.use_pypsa_optimizer;
+            showLoading(true, usePypsa ? '🐙 Kraken: Optymalizacja PyPSA + HiGHS...' : 'Generuję front Pareto...');
 
             const response = await fetch('/api/profile/analyze', {
                 method: 'POST',

@@ -137,6 +137,171 @@
       </div>
     </div>
 
+    <!-- BESS Cycle Animation Section -->
+    <div class="chart-section full-width bess-animation-section">
+      <h2>🔄 Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
+      <div class="bess-animation-container">
+        <!-- Visual Energy Flow Diagram -->
+        <div class="bess-flow-diagram">
+          <!-- PV Panel -->
+          <div class="flow-node pv-node">
+            <div class="node-icon">☀️</div>
+            <div class="node-label">PV</div>
+            <div class="node-value" id="animPvPower">0 kW</div>
+          </div>
+
+          <!-- Flow arrows container -->
+          <div class="flow-arrows">
+            <!-- PV to Battery -->
+            <div class="flow-arrow arrow-pv-battery" id="arrowPvBattery">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesPvBattery"></div>
+              </div>
+              <div class="arrow-value" id="flowPvBattery">0</div>
+            </div>
+
+            <!-- PV to Load -->
+            <div class="flow-arrow arrow-pv-load" id="arrowPvLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesPvLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowPvLoad">0</div>
+            </div>
+
+            <!-- Battery to Load -->
+            <div class="flow-arrow arrow-battery-load" id="arrowBatteryLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesBatteryLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowBatteryLoad">0</div>
+            </div>
+
+            <!-- Grid to Load -->
+            <div class="flow-arrow arrow-grid-load" id="arrowGridLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesGridLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowGridLoad">0</div>
+            </div>
+
+            <!-- Curtailment -->
+            <div class="flow-arrow arrow-curtailment" id="arrowCurtailment">
+              <div class="arrow-line">
+                <div class="arrow-particles curtailment-particles" id="particlesCurtailment"></div>
+              </div>
+              <div class="arrow-value" id="flowCurtailment">0</div>
+            </div>
+          </div>
+
+          <!-- Battery -->
+          <div class="flow-node battery-node">
+            <div class="battery-visual">
+              <div class="battery-body">
+                <div class="battery-fill" id="batteryFill"></div>
+                <div class="battery-level" id="batteryLevel">0%</div>
+              </div>
+              <div class="battery-cap"></div>
+            </div>
+            <div class="node-label">BESS</div>
+            <div class="node-value" id="animBatteryKwh">0 kWh</div>
+          </div>
+
+          <!-- Load -->
+          <div class="flow-node load-node">
+            <div class="node-icon">🏭</div>
+            <div class="node-label">Zużycie</div>
+            <div class="node-value" id="animLoadPower">0 kW</div>
+          </div>
+
+          <!-- Grid -->
+          <div class="flow-node grid-node">
+            <div class="node-icon">⚡</div>
+            <div class="node-label">Sieć</div>
+            <div class="node-value" id="animGridPower">0 kW</div>
+          </div>
+
+          <!-- Curtailment indicator -->
+          <div class="flow-node curtailment-node" id="curtailmentNode" style="display: none;">
+            <div class="node-icon">🚫</div>
+            <div class="node-label">Strata</div>
+            <div class="node-value" id="animCurtailment">0 kW</div>
+          </div>
+        </div>
+
+        <!-- Time Display and Stats -->
+        <div class="bess-animation-stats">
+          <div class="anim-time-display">
+            <div class="anim-date" id="animDate">01 Styczeń</div>
+            <div class="anim-time" id="animTime">00:00</div>
+            <div class="anim-daynight" id="animDayNight">🌙</div>
+          </div>
+
+          <div class="anim-stats-grid">
+            <div class="anim-stat">
+              <span class="anim-stat-label">Energia PV dziś:</span>
+              <span class="anim-stat-value" id="animDailyPv">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Zużycie dziś:</span>
+              <span class="anim-stat-value" id="animDailyLoad">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Z baterii dziś:</span>
+              <span class="anim-stat-value" id="animDailyFromBess">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Cykle dziś:</span>
+              <span class="anim-stat-value" id="animDailyCycles">0,0</span>
+            </div>
+          </div>
+
+          <!-- Progress bar for the year -->
+          <div class="anim-year-progress">
+            <div class="progress-label">
+              <span>Dzień roku:</span>
+              <span id="animDayOfYear">1 / 365</span>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-fill" id="animYearProgress"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animation Controls -->
+      <div class="bess-animation-controls">
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('start')" title="Początek roku">⏮️</button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('prev-day')" title="Poprzedni dzień">⏪</button>
+        <button class="anim-btn anim-btn-play" id="bessAnimPlayBtn" onclick="toggleBessAnimation()">
+          <span id="bessAnimPlayIcon">▶️</span>
+          <span id="bessAnimPlayText">Start</span>
+        </button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('next-day')" title="Następny dzień">⏩</button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('end')" title="Koniec roku">⏭️</button>
+
+        <div class="anim-speed-control">
+          <label>Prędkość:</label>
+          <select id="bessAnimSpeedSelect" onchange="updateBessAnimSpeed()">
+            <option value="1000">1 godz/sek</option>
+            <option value="500" selected>2 godz/sek</option>
+            <option value="250">4 godz/sek</option>
+            <option value="100">10 godz/sek</option>
+            <option value="50">20 godz/sek</option>
+          </select>
+        </div>
+
+        <button class="anim-btn anim-btn-secondary" onclick="resetBessAnimation()">🔄 Reset</button>
+      </div>
+
+      <div class="info-banner" style="margin-top: 16px;">
+        <div class="banner-icon">💡</div>
+        <div class="banner-text">
+          Animacja pokazuje godzinowy przepływ energii przez cały rok. Żółte cząsteczki = energia z PV,
+          zielone = energia z/do baterii, czerwone = pobór z sieci, szare = curtailment (strata).
+        </div>
+      </div>
+    </div>
+
     <!-- NEW in v3.2: Monthly BESS Balance -->
     <div class="table-section full-width">
       <h2>Bilans Miesięczny BESS</h2>

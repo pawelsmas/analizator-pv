@@ -1018,9 +1018,398 @@ function exportBessData() {
   console.log('📥 BESS data exported');
 }
 
+// ============================================
+// BESS CYCLE ANIMATION
+// ============================================
+
+// Animation state
+let bessAnimInterval = null;
+let bessAnimIsPlaying = false;
+let bessAnimCurrentHour = 0;
+let bessAnimSpeed = 500; // ms per hour
+let bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+
+// Simulated hourly data (will be generated from variant data)
+let bessAnimHourlyData = [];
+
+/**
+ * Initialize BESS animation with current variant data
+ */
+function initBessAnimation() {
+  const variant = variants[currentVariant];
+  if (!variant) {
+    console.log('BESS Animation: No variant data');
+    return;
+  }
+
+  // Generate simulated hourly data for 8760 hours
+  bessAnimHourlyData = generateHourlyBessData(variant);
+  bessAnimCurrentHour = 0;
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+
+  // Update initial display
+  updateBessAnimDisplay(0);
+
+  console.log('BESS Animation initialized with', bessAnimHourlyData.length, 'hours of data');
+}
+
+/**
+ * Generate simulated hourly BESS data from variant statistics
+ */
+function generateHourlyBessData(variant) {
+  const hours = 8760;
+  const data = [];
+
+  const totalProduction = variant.production || 0; // kWh/year
+  const totalLoad = variant.consumption || variant.load || totalProduction * 1.5;
+  const bessEnergyKwh = variant.bess_energy_kwh || 100;
+  const bessPowerKw = variant.bess_power_kw || 50;
+  const bessCharged = variant.bess_charged_kwh || 0;
+  const bessDischargedTotal = variant.bess_discharged_kwh || 0;
+  const bessCurtailed = variant.bess_curtailed_kwh || 0;
+
+  // Calculate average hourly values
+  const avgPvPerHour = totalProduction / hours;
+  const avgLoadPerHour = totalLoad / hours;
+
+  // SOC tracking
+  let soc = 20; // Start at 20%
+  const socMin = 10;
+  const socMax = 90;
+
+  for (let h = 0; h < hours; h++) {
+    const hourOfDay = h % 24;
+    const dayOfYear = Math.floor(h / 24);
+    const month = Math.floor(dayOfYear / 30.4);
+
+    // Simulate PV production (peak at noon, seasonal variation)
+    const solarFactor = Math.max(0, Math.sin((hourOfDay - 6) * Math.PI / 12));
+    const seasonFactor = 0.5 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
+    const pvPower = avgPvPerHour * 3 * solarFactor * (0.7 + 0.6 * seasonFactor);
+
+    // Simulate load (higher during day, some variation)
+    const loadFactor = 0.6 + 0.4 * Math.sin((hourOfDay - 14) * Math.PI / 12);
+    const loadPower = avgLoadPerHour * (0.8 + 0.4 * loadFactor);
+
+    // Energy balance
+    const surplus = pvPower - loadPower;
+    let charging = 0;
+    let discharging = 0;
+    let gridImport = 0;
+    let curtailment = 0;
+
+    if (surplus > 0) {
+      // Excess PV - try to charge battery
+      const canCharge = Math.min(surplus, bessPowerKw, (socMax - soc) * bessEnergyKwh / 100);
+      if (canCharge > 0) {
+        charging = canCharge;
+        soc += (charging / bessEnergyKwh) * 100;
+      }
+      // Any remaining surplus is curtailed (0-export mode)
+      curtailment = surplus - charging;
+    } else {
+      // Deficit - try to discharge battery
+      const deficit = -surplus;
+      const canDischarge = Math.min(deficit, bessPowerKw, (soc - socMin) * bessEnergyKwh / 100);
+      if (canDischarge > 0) {
+        discharging = canDischarge;
+        soc -= (discharging / bessEnergyKwh) * 100;
+      }
+      // Remaining deficit from grid
+      gridImport = deficit - discharging;
+    }
+
+    // Clamp SOC
+    soc = Math.max(socMin, Math.min(socMax, soc));
+
+    data.push({
+      hour: h,
+      hourOfDay,
+      dayOfYear,
+      month,
+      pvPower: Math.round(pvPower * 10) / 10,
+      loadPower: Math.round(loadPower * 10) / 10,
+      charging: Math.round(charging * 10) / 10,
+      discharging: Math.round(discharging * 10) / 10,
+      gridImport: Math.round(gridImport * 10) / 10,
+      curtailment: Math.round(curtailment * 10) / 10,
+      soc: Math.round(soc * 10) / 10,
+      batteryKwh: Math.round(soc * bessEnergyKwh / 100)
+    });
+  }
+
+  return data;
+}
+
+/**
+ * Toggle BESS animation play/pause
+ */
+function toggleBessAnimation() {
+  if (bessAnimIsPlaying) {
+    stopBessAnimation();
+  } else {
+    startBessAnimation();
+  }
+}
+
+/**
+ * Start BESS animation
+ */
+function startBessAnimation() {
+  if (bessAnimHourlyData.length === 0) {
+    initBessAnimation();
+  }
+
+  if (bessAnimHourlyData.length === 0) {
+    console.warn('BESS Animation: No data to animate');
+    return;
+  }
+
+  bessAnimIsPlaying = true;
+
+  // Update button state
+  const btn = document.getElementById('bessAnimPlayBtn');
+  const icon = document.getElementById('bessAnimPlayIcon');
+  const text = document.getElementById('bessAnimPlayText');
+  if (btn) btn.classList.add('playing');
+  if (icon) icon.textContent = '⏸️';
+  if (text) text.textContent = 'Pauza';
+
+  // Get speed from selector
+  bessAnimSpeed = parseInt(document.getElementById('bessAnimSpeedSelect')?.value || '500');
+
+  // Start animation loop
+  bessAnimInterval = setInterval(() => {
+    bessAnimCurrentHour++;
+    if (bessAnimCurrentHour >= bessAnimHourlyData.length) {
+      bessAnimCurrentHour = 0;
+      bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+    }
+    updateBessAnimDisplay(bessAnimCurrentHour);
+  }, bessAnimSpeed);
+
+  console.log('BESS Animation started at speed:', bessAnimSpeed, 'ms/hour');
+}
+
+/**
+ * Stop BESS animation
+ */
+function stopBessAnimation() {
+  bessAnimIsPlaying = false;
+
+  if (bessAnimInterval) {
+    clearInterval(bessAnimInterval);
+    bessAnimInterval = null;
+  }
+
+  // Update button state
+  const btn = document.getElementById('bessAnimPlayBtn');
+  const icon = document.getElementById('bessAnimPlayIcon');
+  const text = document.getElementById('bessAnimPlayText');
+  if (btn) btn.classList.remove('playing');
+  if (icon) icon.textContent = '▶️';
+  if (text) text.textContent = 'Start';
+
+  console.log('BESS Animation stopped');
+}
+
+/**
+ * Reset BESS animation
+ */
+function resetBessAnimation() {
+  stopBessAnimation();
+  bessAnimCurrentHour = 0;
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  updateBessAnimDisplay(0);
+  console.log('BESS Animation reset');
+}
+
+/**
+ * Jump to specific position in animation
+ */
+function bessAnimJump(direction) {
+  const wasPlaying = bessAnimIsPlaying;
+  if (wasPlaying) stopBessAnimation();
+
+  switch (direction) {
+    case 'start':
+      bessAnimCurrentHour = 0;
+      bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+      break;
+    case 'end':
+      bessAnimCurrentHour = Math.max(0, bessAnimHourlyData.length - 1);
+      break;
+    case 'prev-day':
+      bessAnimCurrentHour = Math.max(0, bessAnimCurrentHour - 24);
+      recalculateDailyStats();
+      break;
+    case 'next-day':
+      bessAnimCurrentHour = Math.min(bessAnimHourlyData.length - 1, bessAnimCurrentHour + 24);
+      recalculateDailyStats();
+      break;
+  }
+
+  updateBessAnimDisplay(bessAnimCurrentHour);
+  if (wasPlaying) startBessAnimation();
+}
+
+/**
+ * Update animation speed
+ */
+function updateBessAnimSpeed() {
+  if (bessAnimIsPlaying) {
+    stopBessAnimation();
+    startBessAnimation();
+  }
+}
+
+/**
+ * Recalculate daily stats when jumping
+ */
+function recalculateDailyStats() {
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  const dayStart = Math.floor(bessAnimCurrentHour / 24) * 24;
+  const dayEnd = Math.min(dayStart + 24, bessAnimCurrentHour + 1);
+
+  for (let h = dayStart; h < dayEnd; h++) {
+    const hourData = bessAnimHourlyData[h];
+    if (hourData) {
+      bessAnimDailyStats.pv += hourData.pvPower;
+      bessAnimDailyStats.load += hourData.loadPower;
+      bessAnimDailyStats.fromBess += hourData.discharging;
+    }
+  }
+
+  // Calculate equivalent cycles
+  const variant = variants[currentVariant];
+  const bessEnergyKwh = variant?.bess_energy_kwh || 100;
+  bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
+}
+
+/**
+ * Update BESS animation display
+ */
+function updateBessAnimDisplay(hourIndex) {
+  if (hourIndex < 0 || hourIndex >= bessAnimHourlyData.length) return;
+
+  const hourData = bessAnimHourlyData[hourIndex];
+  const variant = variants[currentVariant];
+
+  // Update time display
+  const hourOfDay = hourData.hourOfDay;
+  const dayOfYear = hourData.dayOfYear + 1;
+  const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                      'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+  const dayInMonth = (dayOfYear - 1) % 30 + 1;
+  const monthIndex = Math.min(11, Math.floor((dayOfYear - 1) / 30.4));
+
+  document.getElementById('animDate').textContent = `${dayInMonth} ${monthNames[monthIndex]}`;
+  document.getElementById('animTime').textContent =
+    `${hourOfDay.toString().padStart(2, '0')}:00`;
+
+  // Day/night indicator
+  const dayNightEl = document.getElementById('animDayNight');
+  if (hourOfDay >= 6 && hourOfDay < 20) {
+    dayNightEl.textContent = '☀️';
+    dayNightEl.className = 'anim-daynight day';
+  } else {
+    dayNightEl.textContent = '🌙';
+    dayNightEl.className = 'anim-daynight night';
+  }
+
+  // Update node values
+  document.getElementById('animPvPower').textContent = `${formatNumberEU(hourData.pvPower, 1)} kW`;
+  document.getElementById('animLoadPower').textContent = `${formatNumberEU(hourData.loadPower, 1)} kW`;
+  document.getElementById('animBatteryKwh').textContent = `${formatNumberEU(hourData.batteryKwh, 0)} kWh`;
+  document.getElementById('animGridPower').textContent = `${formatNumberEU(hourData.gridImport, 1)} kW`;
+  document.getElementById('animCurtailment').textContent = `${formatNumberEU(hourData.curtailment, 1)} kW`;
+
+  // Update battery fill level
+  const batteryFill = document.getElementById('batteryFill');
+  const batteryLevel = document.getElementById('batteryLevel');
+  if (batteryFill) {
+    batteryFill.style.height = `${hourData.soc}%`;
+    // Add charging/discharging animation class
+    batteryFill.classList.remove('charging', 'discharging');
+    if (hourData.charging > 0) batteryFill.classList.add('charging');
+    else if (hourData.discharging > 0) batteryFill.classList.add('discharging');
+  }
+  if (batteryLevel) {
+    batteryLevel.textContent = `${Math.round(hourData.soc)}%`;
+  }
+
+  // Update flow arrows
+  updateFlowArrow('arrowPvBattery', hourData.charging > 0);
+  updateFlowArrow('arrowPvLoad', hourData.pvPower > 0 && hourData.loadPower > 0);
+  updateFlowArrow('arrowBatteryLoad', hourData.discharging > 0);
+  updateFlowArrow('arrowGridLoad', hourData.gridImport > 0);
+  updateFlowArrow('arrowCurtailment', hourData.curtailment > 0);
+
+  // Update flow values
+  document.getElementById('flowPvBattery').textContent = hourData.charging > 0 ? `${formatNumberEU(hourData.charging, 0)} kW` : '';
+  document.getElementById('flowPvLoad').textContent = hourData.pvPower > 0 ? `${formatNumberEU(Math.min(hourData.pvPower, hourData.loadPower), 0)} kW` : '';
+  document.getElementById('flowBatteryLoad').textContent = hourData.discharging > 0 ? `${formatNumberEU(hourData.discharging, 0)} kW` : '';
+  document.getElementById('flowGridLoad').textContent = hourData.gridImport > 0 ? `${formatNumberEU(hourData.gridImport, 0)} kW` : '';
+  document.getElementById('flowCurtailment').textContent = hourData.curtailment > 0 ? `${formatNumberEU(hourData.curtailment, 0)} kW` : '';
+
+  // Show/hide curtailment node
+  const curtailmentNode = document.getElementById('curtailmentNode');
+  if (curtailmentNode) {
+    curtailmentNode.style.display = hourData.curtailment > 0 ? 'flex' : 'none';
+  }
+
+  // Update daily stats
+  if (hourOfDay === 0) {
+    bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  }
+  bessAnimDailyStats.pv += hourData.pvPower;
+  bessAnimDailyStats.load += hourData.loadPower;
+  bessAnimDailyStats.fromBess += hourData.discharging;
+
+  const bessEnergyKwh = variant?.bess_energy_kwh || 100;
+  bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
+
+  document.getElementById('animDailyPv').textContent = `${formatNumberEU(bessAnimDailyStats.pv, 0)} kWh`;
+  document.getElementById('animDailyLoad').textContent = `${formatNumberEU(bessAnimDailyStats.load, 0)} kWh`;
+  document.getElementById('animDailyFromBess').textContent = `${formatNumberEU(bessAnimDailyStats.fromBess, 0)} kWh`;
+  document.getElementById('animDailyCycles').textContent = formatNumberEU(bessAnimDailyStats.cycles, 2);
+
+  // Update year progress
+  document.getElementById('animDayOfYear').textContent = `${dayOfYear} / 365`;
+  const yearProgressEl = document.getElementById('animYearProgress');
+  if (yearProgressEl) {
+    yearProgressEl.style.width = `${(dayOfYear / 365) * 100}%`;
+  }
+}
+
+/**
+ * Show/hide flow arrow with animation
+ */
+function updateFlowArrow(arrowId, active) {
+  const arrow = document.getElementById(arrowId);
+  if (arrow) {
+    if (active) {
+      arrow.classList.add('active');
+    } else {
+      arrow.classList.remove('active');
+    }
+  }
+}
+
 // Expose functions globally
 window.selectVariant = selectVariant;
 window.refreshData = refreshData;
 window.exportBessData = exportBessData;
+window.toggleBessAnimation = toggleBessAnimation;
+window.bessAnimJump = bessAnimJump;
+window.resetBessAnimation = resetBessAnimation;
+window.updateBessAnimSpeed = updateBessAnimSpeed;
 
-console.log('📦 bess.js fully loaded');
+// Initialize animation when variant changes
+const originalSelectVariant = selectVariant;
+window.selectVariant = function(v) {
+  originalSelectVariant(v);
+  setTimeout(initBessAnimation, 500);
+};
+
+console.log('📦 bess.js fully loaded with animation support');

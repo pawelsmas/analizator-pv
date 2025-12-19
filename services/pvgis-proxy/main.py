@@ -406,6 +406,93 @@ async def list_databases():
     }
 
 
+class HorizonRequest(BaseModel):
+    """Request model for horizon profile endpoint"""
+    lat: float = Field(..., description="Latitude", ge=-90, le=90)
+    lon: float = Field(..., description="Longitude", ge=-180, le=180)
+    userhorizon: Optional[list] = Field(default=None, description="User-defined horizon heights in degrees")
+
+
+class HorizonResponse(BaseModel):
+    """Response model for horizon profile"""
+    horizon: list  # List of {azimuth, elevation} pairs
+    location: dict
+    source: str
+
+
+@app.post("/pvgis/horizon", response_model=HorizonResponse)
+async def pvgis_horizon(request: HorizonRequest):
+    """
+    Get horizon profile for a location using PVGIS printhorizon endpoint.
+
+    Returns horizon elevation angles at various azimuth points (clockwise from North).
+    The horizon data shows terrain obstructions that affect solar irradiance.
+    """
+    # Check cache
+    cache_key = get_cache_key("horizon", request.lat, request.lon)
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    # Build PVGIS request URL
+    params = {
+        "lat": request.lat,
+        "lon": request.lon,
+        "outputformat": "json"
+    }
+
+    if request.userhorizon:
+        params["userhorizon"] = ",".join(str(h) for h in request.userhorizon)
+
+    try:
+        logger.info(f"🏔️ PVGIS horizon request: lat={request.lat}, lon={request.lon}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(f"{PVGIS_BASE_URL}/printhorizon", params=params)
+            logger.info(f"📡 PVGIS horizon response status: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"✅ PVGIS horizon success for lat={request.lat}, lon={request.lon}")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ PVGIS horizon HTTP error: {e.response.status_code}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"PVGIS API error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ PVGIS horizon fetch failed: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch horizon from PVGIS: {str(e)}")
+
+    # Process horizon data
+    try:
+        outputs = data.get("outputs", {})
+        # PVGIS returns data in "horizon_profile" key
+        horizon_data = outputs.get("horizon_profile", outputs.get("horizon", []))
+
+        # Convert to list of {azimuth, elevation} pairs
+        horizon_points = []
+        for point in horizon_data:
+            azimuth = point.get("A", point.get("azimuth", 0))  # Azimuth in degrees
+            elevation = point.get("H_hor", point.get("elevation", 0))  # Horizon height in degrees
+            horizon_points.append({
+                "azimuth": azimuth,
+                "elevation": elevation
+            })
+
+        # Sort by azimuth
+        horizon_points.sort(key=lambda x: x["azimuth"])
+
+        result = HorizonResponse(
+            horizon=horizon_points,
+            location={"lat": request.lat, "lon": request.lon},
+            source="PVGIS 5.3 DEM"
+        )
+
+        # Cache result
+        set_cache(cache_key, result)
+
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing horizon data: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8020)

@@ -686,3 +686,541 @@ body {
     text-align: center;
   }
 }
+
+/* ============================================
+   BESS CYCLE ANIMATION SECTION
+   ============================================ */
+
+.bess-animation-section {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  border: none;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.bess-animation-section h2 {
+  color: white;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.bess-animation-container {
+  display: flex;
+  gap: 32px;
+  padding: 20px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+/* Flow Diagram */
+.bess-flow-diagram {
+  flex: 2;
+  min-width: 400px;
+  position: relative;
+  height: 350px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 16px;
+  padding: 20px;
+}
+
+/* Flow Nodes */
+.flow-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 10;
+}
+
+.node-icon {
+  font-size: 48px;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+  transition: transform 0.3s ease;
+}
+
+.node-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+
+.node-value {
+  font-size: 13px;
+  color: rgba(255,255,255,0.8);
+  font-family: 'Courier New', monospace;
+  background: rgba(0,0,0,0.3);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* Node Positions */
+.pv-node {
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.battery-node {
+  top: 50%;
+  left: 30px;
+  transform: translateY(-50%);
+}
+
+.load-node {
+  top: 50%;
+  right: 30px;
+  transform: translateY(-50%);
+}
+
+.grid-node {
+  bottom: 20px;
+  right: 30px;
+}
+
+.curtailment-node {
+  bottom: 20px;
+  left: 30px;
+  opacity: 0.6;
+}
+
+/* Battery Visual */
+.battery-visual {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.battery-body {
+  width: 80px;
+  height: 120px;
+  border: 4px solid #4caf50;
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+  background: rgba(0,0,0,0.3);
+}
+
+.battery-cap {
+  width: 30px;
+  height: 12px;
+  background: #4caf50;
+  border-radius: 4px 4px 0 0;
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.battery-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0%;
+  background: linear-gradient(180deg, #81c784 0%, #4caf50 50%, #2e7d32 100%);
+  transition: height 0.3s ease;
+  box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+}
+
+.battery-fill.charging {
+  animation: battery-pulse 1s ease-in-out infinite;
+}
+
+@keyframes battery-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(76, 175, 80, 0.5); }
+  50% { box-shadow: 0 0 40px rgba(76, 175, 80, 0.8); }
+}
+
+.battery-fill.discharging {
+  animation: battery-discharge 0.5s ease-in-out infinite;
+}
+
+@keyframes battery-discharge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+.battery-level {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 18px;
+  font-weight: 700;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  z-index: 5;
+}
+
+/* Flow Arrows */
+.flow-arrows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.flow-arrow {
+  position: absolute;
+  display: none;
+}
+
+.flow-arrow.active {
+  display: block;
+}
+
+.arrow-line {
+  position: relative;
+  height: 4px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 2px;
+  overflow: visible;
+}
+
+.arrow-particles {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 100%;
+  height: 12px;
+}
+
+/* Particle animation */
+.arrow-particles::before,
+.arrow-particles::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  animation: particle-flow 1s linear infinite;
+}
+
+.arrow-particles::before {
+  left: 0;
+  animation-delay: 0s;
+}
+
+.arrow-particles::after {
+  left: 0;
+  animation-delay: 0.5s;
+}
+
+/* PV particles - yellow */
+#particlesPvBattery::before, #particlesPvBattery::after,
+#particlesPvLoad::before, #particlesPvLoad::after {
+  background: linear-gradient(135deg, #ffeb3b, #ff9800);
+  box-shadow: 0 0 10px #ff9800;
+}
+
+/* Battery particles - green */
+#particlesBatteryLoad::before, #particlesBatteryLoad::after {
+  background: linear-gradient(135deg, #81c784, #4caf50);
+  box-shadow: 0 0 10px #4caf50;
+}
+
+/* Grid particles - red */
+#particlesGridLoad::before, #particlesGridLoad::after {
+  background: linear-gradient(135deg, #ef5350, #e53935);
+  box-shadow: 0 0 10px #e53935;
+}
+
+/* Curtailment particles - gray */
+#particlesCurtailment::before, #particlesCurtailment::after {
+  background: linear-gradient(135deg, #9e9e9e, #616161);
+  box-shadow: 0 0 10px #616161;
+}
+
+@keyframes particle-flow {
+  0% { left: 0%; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { left: 100%; opacity: 0; }
+}
+
+/* Arrow positioning */
+.arrow-pv-battery {
+  top: 100px;
+  left: 150px;
+  width: 100px;
+  transform: rotate(135deg);
+}
+
+.arrow-pv-load {
+  top: 100px;
+  right: 150px;
+  width: 100px;
+  transform: rotate(45deg);
+}
+
+.arrow-battery-load {
+  top: 50%;
+  left: 150px;
+  width: calc(100% - 300px);
+  transform: translateY(-50%);
+}
+
+.arrow-grid-load {
+  bottom: 80px;
+  right: 80px;
+  width: 60px;
+  transform: rotate(-90deg);
+}
+
+.arrow-curtailment {
+  bottom: 80px;
+  left: 80px;
+  width: 60px;
+  transform: rotate(90deg);
+}
+
+.arrow-value {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  white-space: nowrap;
+}
+
+/* Animation Stats Panel */
+.bess-animation-stats {
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.anim-time-display {
+  text-align: center;
+  padding: 24px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+.anim-date {
+  font-size: 18px;
+  color: rgba(255,255,255,0.8);
+  margin-bottom: 8px;
+}
+
+.anim-time {
+  font-size: 48px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  color: #64b5f6;
+  text-shadow: 0 0 20px rgba(100, 181, 246, 0.5);
+  letter-spacing: 4px;
+}
+
+.anim-daynight {
+  font-size: 32px;
+  margin-top: 8px;
+  transition: transform 0.5s ease;
+}
+
+.anim-daynight.day {
+  transform: rotate(0deg);
+}
+
+.anim-daynight.night {
+  transform: rotate(180deg);
+}
+
+.anim-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.anim-stat {
+  background: rgba(255,255,255,0.1);
+  padding: 12px;
+  border-radius: 8px;
+  border-left: 3px solid #4caf50;
+}
+
+.anim-stat-label {
+  display: block;
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  margin-bottom: 4px;
+}
+
+.anim-stat-value {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: white;
+}
+
+.anim-year-progress {
+  background: rgba(255,255,255,0.1);
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.anim-year-progress .progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 8px;
+}
+
+.anim-year-progress .progress-bar {
+  height: 8px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.anim-year-progress .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4caf50, #81c784, #c8e6c9);
+  border-radius: 4px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+/* Animation Controls */
+.bess-animation-controls {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 20px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 12px;
+  margin: 0 20px 20px 20px;
+}
+
+.anim-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.anim-btn-nav {
+  background: rgba(255,255,255,0.1);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+.anim-btn-nav:hover {
+  background: rgba(255,255,255,0.2);
+  transform: scale(1.05);
+}
+
+.anim-btn-play {
+  background: linear-gradient(135deg, #4caf50 0%, #43a047 100%);
+  color: white;
+  padding: 12px 24px;
+  font-size: 16px;
+  box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+}
+
+.anim-btn-play:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(76, 175, 80, 0.5);
+}
+
+.anim-btn-play.playing {
+  background: linear-gradient(135deg, #f44336 0%, #e53935 100%);
+  box-shadow: 0 4px 15px rgba(244, 67, 54, 0.4);
+  animation: pulse-anim-btn 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-anim-btn {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.anim-btn-secondary {
+  background: rgba(255,255,255,0.1);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+
+.anim-btn-secondary:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+.anim-speed-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255,255,255,0.8);
+  font-size: 14px;
+}
+
+.anim-speed-control select {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.1);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.anim-speed-control select option {
+  background: #1a1a2e;
+  color: white;
+}
+
+/* Info banner override for dark section */
+.bess-animation-section .info-banner {
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.8);
+  margin: 0 20px 20px 20px;
+}
+
+.bess-animation-section .info-banner .banner-icon {
+  color: #ffeb3b;
+}
+
+/* Responsive for animation section */
+@media (max-width: 900px) {
+  .bess-animation-container {
+    flex-direction: column;
+  }
+
+  .bess-flow-diagram {
+    min-width: 100%;
+    height: 300px;
+  }
+
+  .bess-animation-stats {
+    min-width: 100%;
+  }
+
+  .bess-animation-controls {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .anim-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .anim-speed-control {
+    width: 100%;
+    justify-content: center;
+  }
+}

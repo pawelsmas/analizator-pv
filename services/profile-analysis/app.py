@@ -167,6 +167,12 @@ class ProfileAnalysisRequest(BaseModel):
         description="Hourly RDN prices [PLN/MWh] for arbitrage optimization"
     )
 
+    # ============== PyPSA Optimizer Integration (Kraken Protocol) ==============
+    use_pypsa_optimizer: bool = Field(
+        default=False,
+        description="Use PyPSA + HiGHS LP optimizer instead of greedy simulation (Kraken Protocol)"
+    )
+
 
 class HourlyPattern(BaseModel):
     """Hourly pattern statistics"""
@@ -866,6 +872,111 @@ def simulate_bess_hourly(
         'hourly_discharge': hourly_discharge,
         'hourly_soc': hourly_soc
     }
+
+
+# ============== Kraken Protocol: PyPSA + HiGHS Integration ==============
+
+async def simulate_bess_universal(
+    pv_kwh: np.ndarray,
+    load_kwh: np.ndarray,
+    bess_energy_kwh: float,
+    bess_power_kw: float,
+    efficiency: float,
+    energy_price: float,
+    pv_capacity: float,
+    use_pypsa: bool = False,
+    soc_min_pct: float = 10.0,
+    soc_max_pct: float = 90.0
+) -> dict:
+    """
+    Universal BESS simulation wrapper - Kraken Protocol.
+
+    Chooses between:
+    - Greedy simulation (fast, good approximation)
+    - PyPSA + HiGHS LP optimization (slower, globally optimal)
+
+    Args:
+        pv_kwh: Hourly PV generation array [kWh]
+        load_kwh: Hourly load array [kWh]
+        bess_energy_kwh: Total BESS capacity [kWh]
+        bess_power_kw: Maximum charge/discharge power [kW]
+        efficiency: Round-trip efficiency (e.g., 0.90)
+        energy_price: Energy price [PLN/MWh]
+        pv_capacity: PV capacity [kWp]
+        use_pypsa: If True, use PyPSA + HiGHS optimizer (Kraken Protocol)
+        soc_min_pct: Minimum SoC in % (default 10%)
+        soc_max_pct: Maximum SoC in % (default 90%)
+
+    Returns:
+        dict with simulation results (same format for both methods)
+    """
+    if use_pypsa:
+        # 🐙 KRAKEN: Use PyPSA + HiGHS LP optimizer
+        print(f"🐙 KRAKEN: Using PyPSA + HiGHS optimizer for BESS {bess_power_kw}kW/{bess_energy_kwh}kWh")
+
+        try:
+            optimizer_result = await call_bess_optimizer(
+                pv_kwh=pv_kwh,
+                load_kwh=load_kwh,
+                pv_capacity=pv_capacity,
+                energy_kwh=bess_energy_kwh,
+                power_kw=bess_power_kw,
+                efficiency=efficiency,
+                energy_price=energy_price
+            )
+
+            if optimizer_result:
+                # Convert optimizer result to our standard format
+                usable_capacity = bess_energy_kwh * (soc_max_pct - soc_min_pct) / 100.0
+
+                # Extract hourly data if available
+                hourly_charge = np.zeros(len(pv_kwh))
+                hourly_discharge = np.zeros(len(pv_kwh))
+                hourly_soc = np.zeros(len(pv_kwh))
+
+                if optimizer_result.get('hourly_charge_kw'):
+                    hourly_charge = np.array(optimizer_result['hourly_charge_kw'])
+                if optimizer_result.get('hourly_discharge_kw'):
+                    hourly_discharge = np.array(optimizer_result['hourly_discharge_kw'])
+                if optimizer_result.get('hourly_soc'):
+                    hourly_soc = np.array(optimizer_result['hourly_soc']) * 100  # Convert to %
+
+                annual_discharge = optimizer_result.get('annual_discharge_kwh', 0)
+                annual_cycles = annual_discharge / usable_capacity if usable_capacity > 0 else 0
+
+                print(f"🐙 KRAKEN: PyPSA result - {annual_discharge/1000:.1f} MWh discharge, {annual_cycles:.0f} cycles")
+                print(f"🐙 KRAKEN: Solve time: {optimizer_result.get('solve_time_s', 0):.2f}s, Status: {optimizer_result.get('status', 'unknown')}")
+
+                return {
+                    'annual_charge_kwh': optimizer_result.get('annual_charge_kwh', 0),
+                    'annual_discharge_kwh': annual_discharge,
+                    'annual_cycles': annual_cycles,
+                    'hourly_charge': hourly_charge,
+                    'hourly_discharge': hourly_discharge,
+                    'hourly_soc': hourly_soc,
+                    'optimizer_used': 'pypsa_highs',
+                    'solve_time_s': optimizer_result.get('solve_time_s', 0),
+                    'optimizer_status': optimizer_result.get('status', 'unknown'),
+                    'npv_from_optimizer': optimizer_result.get('npv_bess_pln', 0)
+                }
+            else:
+                print("⚠️ KRAKEN: PyPSA optimizer failed, falling back to greedy simulation")
+
+        except Exception as e:
+            print(f"⚠️ KRAKEN: PyPSA optimizer error: {e}, falling back to greedy simulation")
+
+    # Default: Use greedy simulation
+    result = simulate_bess_hourly(
+        pv_kwh=pv_kwh,
+        load_kwh=load_kwh,
+        bess_energy_kwh=bess_energy_kwh,
+        bess_power_kw=bess_power_kw,
+        efficiency=efficiency,
+        soc_min_pct=soc_min_pct,
+        soc_max_pct=soc_max_pct
+    )
+    result['optimizer_used'] = 'greedy'
+    return result
 
 
 # ============== Peak Shaving Functions ==============
@@ -1779,13 +1890,16 @@ async def analyze_profile(request: ProfileAnalysisRequest):
         hourly_bess_soc = None
 
         if request.bess_energy_kwh and request.bess_energy_kwh > 0:
-            # Use real hourly simulation instead of statistical estimation
-            current_bess_sim = simulate_bess_hourly(
+            # 🐙 KRAKEN: Use PyPSA optimizer if enabled, otherwise greedy simulation
+            current_bess_sim = await simulate_bess_universal(
                 pv_kwh=pv_kwh,
                 load_kwh=load_kwh,
                 bess_energy_kwh=request.bess_energy_kwh,
                 bess_power_kw=request.bess_power_kw,
-                efficiency=request.bess_efficiency
+                efficiency=request.bess_efficiency,
+                energy_price=request.energy_price_plnmwh,
+                pv_capacity=request.pv_capacity_kwp,
+                use_pypsa=request.use_pypsa_optimizer
             )
             current_annual_cycles = current_bess_sim['annual_cycles']
             current_annual_discharge_mwh = current_bess_sim['annual_discharge_kwh'] / 1000
@@ -1853,13 +1967,16 @@ async def analyze_profile(request: ProfileAnalysisRequest):
             print(f"📊 Best NPV from Pareto: {best_npv_point.npv_mln_pln:.2f} mln PLN, "
                   f"{best_npv_point.power_kw:.0f} kW / {best_npv_point.energy_kwh:.0f} kWh")
 
-            # Run hourly simulation for recommended BESS
-            recommended_sim = simulate_bess_hourly(
+            # 🐙 KRAKEN: Run hourly simulation for recommended BESS
+            recommended_sim = await simulate_bess_universal(
                 pv_kwh=pv_kwh,
                 load_kwh=load_kwh,
                 bess_energy_kwh=best_npv_point.energy_kwh,
                 bess_power_kw=best_npv_point.power_kw,
-                efficiency=request.bess_efficiency
+                efficiency=request.bess_efficiency,
+                energy_price=request.energy_price_plnmwh,
+                pv_capacity=request.pv_capacity_kwp,
+                use_pypsa=request.use_pypsa_optimizer
             )
 
             recommended_bess_power_kw = best_npv_point.power_kw
