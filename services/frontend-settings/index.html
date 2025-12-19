@@ -545,11 +545,12 @@
             <div class="setting-item">
               <label>Technologia PV</label>
               <select id="pvgisPvTechChoice" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
-                <option value="crystSi">Krzemowy krystaliczny</option>
+                <option value="crystSi2025">Krzemowy krystaliczny 2025 (zalecany)</option>
+                <option value="crystSi">Krzemowy krystaliczny (starszy model)</option>
                 <option value="CIS">CIS</option>
                 <option value="CdTe">CdTe</option>
               </select>
-              <span class="setting-hint">Typ modułów PV</span>
+              <span class="setting-hint">Typ modułów PV - model 2025 lepiej odwzorowuje nowoczesne moduły Si</span>
             </div>
             <div class="setting-item">
               <label>Typ montażu</label>
@@ -716,12 +717,35 @@
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:20px">
         <div class="setting-item" style="flex:1;min-width:200px">
           <label>Kraj</label>
-          <select id="geoCountry" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
+          <select id="geoCountry" onchange="onCountryChange()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px">
             <option value="PL">🇵🇱 Polska</option>
-            <option value="DE">🇩🇪 Niemcy</option>
+            <option value="AT">🇦🇹 Austria</option>
+            <option value="BE">🇧🇪 Belgia</option>
+            <option value="BG">🇧🇬 Bułgaria</option>
+            <option value="CH">🇨🇭 Szwajcaria</option>
             <option value="CZ">🇨🇿 Czechy</option>
-            <option value="SK">🇸🇰 Słowacja</option>
+            <option value="DE">🇩🇪 Niemcy</option>
+            <option value="DK">🇩🇰 Dania</option>
+            <option value="EE">🇪🇪 Estonia</option>
+            <option value="ES">🇪🇸 Hiszpania</option>
+            <option value="FI">🇫🇮 Finlandia</option>
+            <option value="FR">🇫🇷 Francja</option>
+            <option value="GB">🇬🇧 Wielka Brytania</option>
+            <option value="GR">🇬🇷 Grecja</option>
+            <option value="HR">🇭🇷 Chorwacja</option>
+            <option value="HU">🇭🇺 Węgry</option>
+            <option value="IE">🇮🇪 Irlandia</option>
+            <option value="IT">🇮🇹 Włochy</option>
             <option value="LT">🇱🇹 Litwa</option>
+            <option value="LV">🇱🇻 Łotwa</option>
+            <option value="NL">🇳🇱 Holandia</option>
+            <option value="NO">🇳🇴 Norwegia</option>
+            <option value="PT">🇵🇹 Portugalia</option>
+            <option value="RO">🇷🇴 Rumunia</option>
+            <option value="RS">🇷🇸 Serbia</option>
+            <option value="SE">🇸🇪 Szwecja</option>
+            <option value="SI">🇸🇮 Słowenia</option>
+            <option value="SK">🇸🇰 Słowacja</option>
             <option value="UA">🇺🇦 Ukraina</option>
           </select>
         </div>

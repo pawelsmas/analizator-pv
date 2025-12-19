@@ -148,8 +148,8 @@ const DEFAULT_CONFIG = {
   pvgisRadDatabase: 'PVGIS-SARAH3',  // Radiation database for Poland
   pvgisLossPct: 14,            // System losses [%]
   pvgisStartYear: 2005,        // Start year for timeseries (min 10 years range)
-  pvgisEndYear: 2020,          // End year for timeseries
-  pvgisPvTechChoice: 'crystSi', // PV technology: 'crystSi', 'CIS', 'CdTe'
+  pvgisEndYear: 2023,          // End year for timeseries (SARAH3 data available to 2023)
+  pvgisPvTechChoice: 'crystSi2025', // PV technology: 'crystSi2025' (recommended), 'crystSi', 'CIS', 'CdTe'
   pvgisMountingPlace: 'free',  // 'free' (ground) or 'building' (roof)
 
   // Weather Data Source
@@ -2476,11 +2476,12 @@ let resolvedGeoLocation = null;
 const GEO_SERVICE_URL = API_URLS.geo;
 
 /**
- * Load Polish cities list for autocomplete
+ * Load cities list for autocomplete based on selected country
  */
-async function loadPolishCitiesList() {
+async function loadCitiesList(countryCode) {
+  countryCode = countryCode || 'PL';
   try {
-    const response = await fetch(GEO_SERVICE_URL + '/geo/cities/pl');
+    const response = await fetch(GEO_SERVICE_URL + '/cities/' + countryCode.toUpperCase());
     if (response.ok) {
       const data = await response.json();
       const datalist = document.getElementById('polishCitiesList');
@@ -2488,12 +2489,31 @@ async function loadPolishCitiesList() {
         datalist.innerHTML = data.cities.map(function(city) {
           return '<option value="' + city + '">';
         }).join('');
-        console.log('📍 Loaded ' + data.cities.length + ' Polish cities for autocomplete');
+        console.log('📍 Loaded ' + data.cities.length + ' cities for ' + countryCode + ' autocomplete');
       }
     }
   } catch (err) {
-    console.warn('Could not load Polish cities list:', err.message);
+    console.warn('Could not load cities list for ' + countryCode + ':', err.message);
   }
+}
+
+/**
+ * Legacy function for backward compatibility
+ */
+async function loadPolishCitiesList() {
+  return loadCitiesList('PL');
+}
+
+/**
+ * Called when country selection changes - reload cities list
+ */
+function onCountryChange() {
+  const country = document.getElementById('geoCountry')?.value || 'PL';
+  // Clear current city input
+  const cityInput = document.getElementById('geoCity');
+  if (cityInput) cityInput.value = '';
+  // Load cities for new country
+  loadCitiesList(country);
 }
 
 /**
@@ -2512,7 +2532,7 @@ async function resolveLocation() {
   showGeoStatus('🔄 Szukam lokalizacji...', 'info');
 
   try {
-    let url = GEO_SERVICE_URL + '/geo/resolve?country=' + encodeURIComponent(country);
+    let url = GEO_SERVICE_URL + '/resolve?country=' + encodeURIComponent(country);
     if (postalCode) url += '&postal_code=' + encodeURIComponent(postalCode);
     if (city) url += '&city=' + encodeURIComponent(city);
 

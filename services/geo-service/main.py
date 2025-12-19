@@ -1,18 +1,38 @@
 """
 Geo Service - Geocoding and Elevation API
 Resolves city/postal code to lat/lon coordinates and elevation.
-Uses OpenStreetMap Nominatim for geocoding and Open-Elevation API for altitude.
+Uses comprehensive Polish localities database for instant local lookup.
+Falls back to OpenStreetMap Nominatim for geocoding if not in database.
 """
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 import asyncio
 from datetime import datetime, timedelta
 from functools import lru_cache
 import hashlib
+
+# Import comprehensive Polish localities database (~400 cities)
+from polish_localities import (
+    POLISH_LOCALITIES,
+    POSTAL_CODE_TO_CITY,
+    lookup_city,
+    lookup_postal_code,
+    search_cities,
+    STATS as LOCALITIES_STATS
+)
+
+# Import European cities database for non-Polish countries
+from european_cities import (
+    EUROPEAN_CITIES,
+    lookup_european_city,
+    get_supported_countries,
+    get_cities_for_country,
+    STATS as EUROPEAN_STATS
+)
 
 app = FastAPI(
     title="PV Optimizer Geo Service",
@@ -364,12 +384,24 @@ POLISH_POSTAL_REGIONS = {
 
 def lookup_polish_postal_code(postal_code: str) -> Optional[Dict]:
     """
-    Lookup Polish postal code to get approximate coordinates.
-    Uses first 2 digits to determine region.
+    Lookup Polish postal code to get coordinates.
+    First tries exact match from comprehensive database (~400 postal codes).
+    Falls back to first 2 digits for regional approximation.
     """
     if not postal_code:
         return None
-    # Get first 2 digits
+
+    # Try exact match from comprehensive database first
+    result = lookup_postal_code(postal_code)
+    if result:
+        return {
+            "latitude": result["lat"],
+            "longitude": result["lon"],
+            "elevation": result["elev"],
+            "city": result["city"]
+        }
+
+    # Fallback: Use first 2 digits to determine region
     digits = ''.join(c for c in postal_code if c.isdigit())
     if len(digits) < 2:
         return None
@@ -422,9 +454,25 @@ POLISH_CITIES = {
 }
 
 def lookup_polish_city(city: str) -> Optional[Dict]:
-    """Quick lookup for Polish cities."""
+    """
+    Quick lookup for Polish cities using comprehensive database.
+    Supports ~400 cities with Polish characters and ASCII equivalents.
+    """
     if not city:
         return None
+
+    # Use new comprehensive database
+    result = lookup_city(city)
+    if result:
+        return {
+            "latitude": result["lat"],
+            "longitude": result["lon"],
+            "elevation": result["elev"],
+            "city": result["city"],
+            "postal_code": result.get("postal", "")
+        }
+
+    # Fallback to old smaller database
     city_lower = city.lower().strip()
     if city_lower in POLISH_CITIES:
         data = POLISH_CITIES[city_lower]
@@ -521,6 +569,35 @@ async def resolve_geo(
                 geo_cache.set(country, postal_code or "", city or "", result)
                 return GeoLocation(**result, cached=False)
 
+    # For other European countries, try local database first
+    else:
+        if city:
+            euro_result = lookup_european_city(country, city)
+            if euro_result:
+                country_names = {
+                    "DE": "Deutschland", "CZ": "Česká republika", "SK": "Slovensko",
+                    "AT": "Österreich", "FR": "France", "IT": "Italia", "ES": "España",
+                    "NL": "Nederland", "BE": "Belgique", "CH": "Schweiz", "HU": "Magyarország",
+                    "RO": "România", "UA": "Україна", "GB": "United Kingdom",
+                    "SE": "Sverige", "DK": "Danmark", "NO": "Norge", "FI": "Suomi",
+                    "PT": "Portugal", "GR": "Ελλάδα", "IE": "Ireland", "HR": "Hrvatska",
+                    "SI": "Slovenija", "LT": "Lietuva", "LV": "Latvija", "EE": "Eesti",
+                    "BG": "България", "RS": "Srbija"
+                }
+                country_name = country_names.get(country.upper(), country)
+                result = {
+                    "latitude": euro_result["lat"],
+                    "longitude": euro_result["lon"],
+                    "elevation": euro_result["elev"],
+                    "display_name": f"{euro_result['city']}, {country_name}",
+                    "country": country.upper(),
+                    "postal_code": postal_code,
+                    "city": euro_result["city"],
+                    "source": "european_database"
+                }
+                geo_cache.set(country, postal_code or "", city or "", result)
+                return GeoLocation(**result, cached=False)
+
     # Full geocoding via Nominatim (fallback)
     result = await resolve_location(country, postal_code, city)
 
@@ -599,10 +676,100 @@ async def cache_clear():
 
 @app.get("/geo/cities/pl")
 async def get_polish_cities():
-    """Get list of preloaded Polish cities."""
+    """Get list of all preloaded Polish cities from comprehensive database."""
     return {
-        "count": len(POLISH_CITIES),
-        "cities": list(set(c.title() for c in POLISH_CITIES.keys()))
+        "count": len(POLISH_LOCALITIES),
+        "stats": LOCALITIES_STATS,
+        "cities": sorted(set(c.title() for c in POLISH_LOCALITIES.keys()))
+    }
+
+
+@app.get("/geo/cities/{country_code}")
+async def get_cities_by_country(country_code: str):
+    """
+    Get list of available cities for a country.
+    Supports major European countries: DE, CZ, SK, AT, FR, IT, ES, NL, BE, CH, etc.
+    """
+    country_upper = country_code.upper()
+
+    # Poland uses comprehensive database
+    if country_upper == "PL":
+        return {
+            "country": "PL",
+            "count": len(POLISH_LOCALITIES),
+            "cities": sorted(set(c.title() for c in POLISH_LOCALITIES.keys()))
+        }
+
+    # Other European countries
+    if country_upper in EUROPEAN_CITIES:
+        cities = get_cities_for_country(country_upper)
+        return {
+            "country": country_upper,
+            "count": len(cities),
+            "cities": cities
+        }
+
+    # Country not supported
+    supported = ["PL"] + get_supported_countries()
+    raise HTTPException(
+        status_code=404,
+        detail=f"Country '{country_code}' not in local database. Supported: {', '.join(sorted(supported))}"
+    )
+
+
+@app.get("/geo/countries")
+async def get_supported_countries_list():
+    """Get list of all supported countries with city counts."""
+    countries = []
+
+    # Poland
+    countries.append({
+        "code": "PL",
+        "name": "Polska",
+        "cities_count": len(POLISH_LOCALITIES)
+    })
+
+    # European countries
+    country_names = {
+        "DE": "Niemcy", "CZ": "Czechy", "SK": "Słowacja", "AT": "Austria",
+        "FR": "Francja", "IT": "Włochy", "ES": "Hiszpania", "NL": "Holandia",
+        "BE": "Belgia", "CH": "Szwajcaria", "HU": "Węgry", "RO": "Rumunia",
+        "UA": "Ukraina", "GB": "Wielka Brytania", "SE": "Szwecja", "DK": "Dania",
+        "NO": "Norwegia", "FI": "Finlandia", "PT": "Portugalia", "GR": "Grecja",
+        "IE": "Irlandia", "HR": "Chorwacja", "SI": "Słowenia", "LT": "Litwa",
+        "LV": "Łotwa", "EE": "Estonia", "BG": "Bułgaria", "RS": "Serbia"
+    }
+
+    for code in sorted(EUROPEAN_CITIES.keys()):
+        cities = get_cities_for_country(code)
+        countries.append({
+            "code": code,
+            "name": country_names.get(code, code),
+            "cities_count": len(cities)
+        })
+
+    return {
+        "total_countries": len(countries),
+        "total_cities": LOCALITIES_STATS["total_localities"] + EUROPEAN_STATS["total_cities"],
+        "countries": countries
+    }
+
+
+@app.get("/geo/search")
+async def search_polish_cities(
+    q: str = Query(..., min_length=2, description="Search query (city name)"),
+    limit: int = Query(default=10, ge=1, le=50, description="Max results")
+):
+    """
+    Search for Polish cities by name (autocomplete).
+    Returns matching cities with coordinates and postal codes.
+    Supports both Polish characters and ASCII equivalents.
+    """
+    results = search_cities(q, limit)
+    return {
+        "query": q,
+        "count": len(results),
+        "results": results
     }
 
 if __name__ == "__main__":
