@@ -20,7 +20,13 @@ except ImportError:
     ENTSOE_AVAILABLE = False
     print("⚠️ entsoe-py not installed. Run: pip install entsoe-py")
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(title="Energy Prices Service", version="1.0.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS
 app.add_middleware(

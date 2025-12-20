@@ -143,6 +143,7 @@ services:
       - frontend-esg
       - frontend-projects
       - frontend-hub
+      - frontend-scoring
       - data-analysis
       - pv-calculation
       - economics
@@ -561,6 +562,24 @@ services:
       retries: 3
       start_period: 10s
 
+  # Scoring Module (KPI / Multi-Criteria Analysis)
+  frontend-scoring:
+    build:
+      context: ./services/frontend-scoring
+      dockerfile: Dockerfile
+    container_name: pv-frontend-scoring
+    ports:
+      - "9016:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
@@ -607,6 +626,93 @@ services:
       retries: 3
       start_period: 30s
 
+  # ============================================
+  # MONITORING STACK (Prometheus + Loki + Grafana)
+  # ============================================
+
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: pv-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Loki - Log aggregation
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: pv-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Promtail - Log collector (sends to Loki)
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: pv-promtail
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - pv-network
+    restart: unless-stopped
+
+  # Grafana - Visualization & Dashboards
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: pv-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=pvoptimizer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 networks:
   pv-network:
     driver: bridge
@@ -623,3 +729,10 @@ volumes:
     name: pv-projects-data
   postgres-data:
     name: pv-postgres-data
+  # Monitoring volumes
+  prometheus-data:
+    name: pv-prometheus-data
+  loki-data:
+    name: pv-loki-data
+  grafana-data:
+    name: pv-grafana-data

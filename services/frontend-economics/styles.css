@@ -509,3 +509,333 @@ canvas {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================
+   SKAN WARIANTÓW - Sekcja analizy mocy PV
+   ========================================== */
+
+.variant-scan-section {
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border: 2px solid #3f51b5;
+  position: relative;
+}
+
+.variant-scan-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #4caf50, #2196f3);
+}
+
+.variant-scan-section h2 {
+  color: #1a237e;
+}
+
+.breakeven-selector {
+  font-size: 12px;
+  color: #666;
+  margin-left: 12px;
+}
+
+.breakeven-selector label {
+  margin-left: 8px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.breakeven-selector input[type="radio"] {
+  margin-right: 3px;
+  cursor: pointer;
+}
+
+.breakeven-selector label:hover {
+  color: #3f51b5;
+}
+
+.variant-scan-no-data {
+  text-align: center;
+  padding: 60px 20px;
+  color: #6c757d;
+}
+
+.variant-scan-no-data .no-data-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.6;
+}
+
+.variant-scan-no-data p {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.variant-scan-no-data strong {
+  color: #3f51b5;
+}
+
+.variant-scan-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 16px;
+}
+
+.variant-scan-chart {
+  background: white;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  min-height: 350px;
+}
+
+.variant-scan-table-wrapper {
+  background: white;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.variant-scan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.variant-scan-table thead {
+  position: sticky;
+  top: 0;
+  background: #f8f9fa;
+  z-index: 1;
+}
+
+.variant-scan-table th {
+  padding: 10px 8px;
+  text-align: center;
+  font-weight: 600;
+  color: #495057;
+  border-bottom: 2px solid #dee2e6;
+  white-space: nowrap;
+}
+
+.variant-scan-table th .unit {
+  font-weight: 400;
+  font-size: 10px;
+  color: #6c757d;
+}
+
+.variant-scan-table td {
+  padding: 8px;
+  text-align: center;
+  border-bottom: 1px solid #e9ecef;
+  font-family: 'Courier New', monospace;
+}
+
+.variant-scan-table tbody tr:hover {
+  background: #e3f2fd;
+}
+
+.variant-scan-table tbody tr.current-variant {
+  background: #c8e6c9;
+  font-weight: 600;
+}
+
+.variant-scan-table tbody tr.optimal-npv {
+  background: #fff3e0;
+}
+
+.variant-scan-table tbody tr.threshold-80 {
+  background: linear-gradient(90deg, #fff3e0 0%, #ffe0b2 100%);
+  border-left: 4px solid #ff9800;
+  font-weight: 700;
+}
+
+.variant-scan-table tbody tr.breakeven-zone {
+  background: #fffde7;
+  border-left: 2px solid #ffc107;
+}
+
+.variant-scan-table tbody tr.threshold-80 td:first-child::before {
+  content: '▶ ';
+  color: #ff9800;
+}
+
+/* Kolorowanie wartości */
+.variant-scan-table .value-good {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.variant-scan-table .value-warning {
+  color: #f57c00;
+}
+
+.variant-scan-table .value-bad {
+  color: #c62828;
+}
+
+/* Footer with observation and export button */
+.variant-scan-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+/* Observation box */
+.variant-scan-observation {
+  flex: 1;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border-radius: 8px;
+  border-left: 4px solid #2196f3;
+  font-size: 13px;
+  color: #1565c0;
+  line-height: 1.6;
+}
+
+.variant-scan-observation strong {
+  color: #0d47a1;
+}
+
+/* Export button */
+.btn-export {
+  flex-shrink: 0;
+  padding: 12px 20px;
+  background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(25, 118, 210, 0.3);
+  transition: all 0.2s;
+}
+
+.btn-export:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.4);
+}
+
+/* ==========================================
+   OPTIMUM HIGHLIGHTING - Break-even modes
+   ========================================== */
+
+/* Primary optimum row - highlighted strongly */
+.variant-scan-table tbody tr.optimum-row {
+  background: linear-gradient(90deg, #c8e6c9 0%, #a5d6a7 100%) !important;
+  border-left: 4px solid #2e7d32;
+  font-weight: 700;
+}
+
+.variant-scan-table tbody tr.optimum-row td:first-child::before {
+  content: '★ ';
+  color: #2e7d32;
+}
+
+/* Secondary optimum - shown faintly (the "other" optimum) */
+.variant-scan-table tbody tr.secondary-optimum {
+  background: #fff8e1 !important;
+  border-left: 3px solid #ffc107;
+}
+
+.variant-scan-table tbody tr.secondary-optimum td:first-child::before {
+  content: '◆ ';
+  color: #ffc107;
+}
+
+/* Optimum zone - 5 rows around primary optimum */
+.variant-scan-table tbody tr.optimum-zone {
+  background: #e8f5e9 !important;
+  border-left: 2px solid #81c784;
+}
+
+/* Payback column coloring */
+.variant-scan-table td.payback-good {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.variant-scan-table td.payback-ok {
+  color: #f57c00;
+}
+
+.variant-scan-table td.payback-bad {
+  color: #c62828;
+}
+
+/* NPV column coloring */
+.variant-scan-table td.npv-best {
+  color: #1b5e20;
+  font-weight: 700;
+}
+
+.variant-scan-table td.npv-good {
+  color: #2e7d32;
+}
+
+.variant-scan-table td.npv-negative {
+  color: #c62828;
+}
+
+/* Legend for break-even modes */
+.breakeven-legend {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #666;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-marker {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.legend-marker.optimum {
+  background: linear-gradient(90deg, #c8e6c9, #a5d6a7);
+  border-left: 3px solid #2e7d32;
+}
+
+.legend-marker.secondary {
+  background: #fff8e1;
+  border-left: 3px solid #ffc107;
+}
+
+.legend-marker.zone {
+  background: #e8f5e9;
+  border-left: 2px solid #81c784;
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+  .variant-scan-container {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-scan-chart {
+    min-height: 300px;
+  }
+
+  .variant-scan-table-wrapper {
+    max-height: 300px;
+  }
+}

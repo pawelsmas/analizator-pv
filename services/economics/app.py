@@ -6,7 +6,13 @@ import numpy as np
 import io
 import csv
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(title="Economics Service", version="1.1.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(
@@ -939,6 +945,106 @@ async def comprehensive_sensitivity_analysis(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== SCORING ENGINE ENDPOINTS ==============
+
+from scoring import (
+    ScoringEngine,
+    ScoringRequest,
+    ScoringResponse,
+    OfferInputs,
+    ScoringParameters,
+    WeightProfile,
+    ProfileType,
+    WEIGHT_PROFILES,
+)
+
+
+@app.post("/scoring/analyze", response_model=ScoringResponse)
+async def analyze_scoring(request: ScoringRequest):
+    """
+    Multi-criteria scoring for PV offers.
+
+    Scores offers based on savings vs baseline energy costs.
+    Uses 4 buckets: Value (NPV, Year1), Robustness (conservative scenario),
+    Tech (auto-consumption, coverage), ESG (CO2 reduction).
+
+    Normalization is done to baseline costs (not min-max across offers).
+    Piecewise threshold scoring with linear interpolation.
+    """
+    try:
+        engine = ScoringEngine(request.parameters)
+        return engine.score_offers(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scoring/profiles")
+async def get_weight_profiles():
+    """Get available weight profiles (CFO, ESG, Operations, Custom)"""
+    return {
+        profile_type.value: {
+            "name": profile_type.value.upper(),
+            "value_weight": profile.value_weight,
+            "robustness_weight": profile.robustness_weight,
+            "tech_weight": profile.tech_weight,
+            "esg_weight": profile.esg_weight,
+        }
+        for profile_type, profile in WEIGHT_PROFILES.items()
+    }
+
+
+@app.get("/scoring/thresholds")
+async def get_default_thresholds():
+    """Get default threshold configuration for scoring rules"""
+    from scoring.models import ThresholdConfig
+    config = ThresholdConfig()
+    return {
+        "npv_mln": {
+            "thresholds": config.npv_mln.thresholds,
+            "points": config.npv_mln.points,
+            "higher_is_better": config.npv_mln.higher_is_better,
+            "description": "NPV w milionach PLN",
+        },
+        "payback_years": {
+            "thresholds": config.payback_years.thresholds,
+            "points": config.payback_years.points,
+            "higher_is_better": config.payback_years.higher_is_better,
+            "description": "Okres zwrotu w latach",
+        },
+        "irr_pct": {
+            "thresholds": config.irr_pct.thresholds,
+            "points": config.irr_pct.points,
+            "higher_is_better": config.irr_pct.higher_is_better,
+            "description": "IRR w %",
+        },
+        "lcoe_pln_mwh": {
+            "thresholds": config.lcoe_pln_mwh.thresholds,
+            "points": config.lcoe_pln_mwh.points,
+            "higher_is_better": config.lcoe_pln_mwh.higher_is_better,
+            "description": "LCOE w PLN/MWh",
+        },
+        "auto_consumption_pct": {
+            "thresholds": config.auto_consumption_pct.thresholds,
+            "points": config.auto_consumption_pct.points,
+            "higher_is_better": config.auto_consumption_pct.higher_is_better,
+            "description": "Autokonsumpcja (0-1)",
+        },
+        "coverage_pct": {
+            "thresholds": config.coverage_pct.thresholds,
+            "points": config.coverage_pct.points,
+            "higher_is_better": config.coverage_pct.higher_is_better,
+            "description": "Pokrycie zużycia (0-1)",
+        },
+        "co2_reduction_tons": {
+            "thresholds": config.co2_reduction_tons.thresholds,
+            "points": config.co2_reduction_tons.points,
+            "higher_is_better": config.co2_reduction_tons.higher_is_better,
+            "description": "Redukcja CO2 w tonach/rok",
+        },
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

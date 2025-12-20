@@ -66,6 +66,7 @@ window.formatWithUnitEU = formatWithUnitEU;
 // Chart.js instances
 let capexChart, opexChart, cashFlowChart, revenueChart, sensitivityChart;
 let sensitivityEnergyChart, sensitivityDiscountChart;
+let variantScanChart = null;
 
 // Data storage
 let economicData = null;
@@ -79,6 +80,7 @@ let hourlyData = null; // Hourly consumption/production data
 let profileAnalysisBessData = null; // BESS data from Profile Analysis module
 let configBessData = null; // BESS data from pv-calculation (via key_variants)
 let currentBessSource = 'pv-calculation'; // 'pv-calculation' or 'profile-analysis'
+let breakevenMode = 'npv'; // 'npv' (Max NPV) or 'payback' (Min Payback) - for variant scan table
 
 // CENTRALIZED FINANCIAL METRICS STORAGE
 // This is the SINGLE SOURCE OF TRUTH for all NPV calculations
@@ -319,6 +321,15 @@ function regenerateAllChartsAndTables() {
   // Update ESG Dashboard with new scenario
   if (typeof updateESGDashboard === 'function') {
     updateESGDashboard();
+  }
+
+  // Update Variant Scan chart and table
+  if (typeof generateVariantScanSection === 'function') {
+    try {
+      generateVariantScanSection();
+    } catch (e) {
+      console.log('Variant scan update skipped:', e.message);
+    }
   }
 
   console.log('✅ Charts and tables regenerated for scenario');
@@ -2856,6 +2867,11 @@ async function performEconomicAnalysis() {
     updateBessEconomicsSection();
     console.log('🔋 updateBessEconomicsSection() completed');
 
+    // Generate Variant Scan section (chart + table)
+    console.log('📊 About to call generateVariantScanSection()...');
+    generateVariantScanSection();
+    console.log('📊 generateVariantScanSection() completed');
+
   } catch (error) {
     console.error('❌ Error performing economic analysis:', error);
     showNoData();
@@ -4866,6 +4882,41 @@ function calculateOptimization() {
     });
   }
 
+  // ========== SAVE KPI DATA FOR SCORING MODULE ==========
+  // Store full economic KPIs for all variants so scoring module can access them
+  const scoringKpiData = {};
+  for (const key of variantKeys) {
+    const variant = variants[key];
+    const calc = centralizedMetrics[key];
+    if (!variant || !calc) continue;
+
+    scoringKpiData[key] = {
+      // Basic info
+      capacity_kwp: calc.common.capacityKwp,
+      // Economic KPIs (from centralized calculation)
+      npv_pln: calc.capex?.npv || 0,
+      payback_years: calc.capex?.simplePayback || 25,
+      irr_pct: calc.capex?.irr ? calc.capex.irr * 100 : null,
+      lcoe_pln_mwh: calc.capex?.lcoe ? calc.capex.lcoe * 1000 : null, // kWh -> MWh
+      // Production/consumption metrics
+      annual_production_kwh: variant.production || 0,
+      self_consumed_kwh: variant.self_consumed || 0,
+      exported_kwh: variant.exported || 0,
+      annual_consumption_kwh: calc.common?.annualConsumptionKwh || getAnnualConsumptionKwh(),
+      // Auto-calculated ratios
+      auto_consumption_pct: variant.production > 0 ? (variant.self_consumed / variant.production) : 0,
+      coverage_pct: calc.common?.annualConsumptionKwh > 0 ? (variant.self_consumed / calc.common.annualConsumptionKwh) : 0,
+      // ESG
+      co2_reduction_tons: variant.self_consumed ? (variant.self_consumed * 0.7) / 1000 : 0
+    };
+  }
+  try {
+    localStorage.setItem('scoringKpiData', JSON.stringify(scoringKpiData));
+    console.log('📊 Scoring KPI data saved for', Object.keys(scoringKpiData).length, 'variants');
+  } catch (e) {
+    console.warn('⚠️ Could not save scoring KPI data:', e.message);
+  }
+
   if (results.length === 0) {
     console.log('❌ No variants available for optimization');
     return;
@@ -6301,5 +6352,756 @@ function getCurrentBessData() {
   }
   return null;
 }
+
+// ============================================
+// SKAN WARIANTÓW - Wykres i tabela analizy mocy
+// ============================================
+
+/**
+ * Generate Variant Scan section (chart + table)
+ * Shows autoconsumption vs coverage for different PV capacities
+ * Uses FULL scenarios data from analysisResults (not just key_variants)
+ */
+function generateVariantScanSection() {
+  console.log('📊 Generating Variant Scan section...');
+
+  const noDataEl = document.getElementById('variantScanNoData');
+  const contentEl = document.getElementById('variantScanContent');
+
+  // Check if we have scenarios data (full range analysis)
+  const scenarios = analysisResults?.scenarios || [];
+  const hasScenarios = scenarios.length > 0;
+  const hasVariants = variants && Object.keys(variants).length > 0;
+
+  if (!hasScenarios && !hasVariants) {
+    console.log('⚠️ No scenarios or variants data for scan section - showing placeholder');
+    if (noDataEl) noDataEl.style.display = 'block';
+    if (contentEl) contentEl.style.display = 'none';
+    return;
+  }
+
+  const params = getEconomicParameters();
+  const factor = window.currentScenarioFactor || 1.0;
+
+  // Prepare data - prefer scenarios (full range) over key_variants
+  let scanData;
+  if (hasScenarios) {
+    console.log('📊 Using FULL scenarios data:', scenarios.length, 'points');
+    scanData = prepareVariantScanDataFromScenarios(scenarios, params, factor);
+  } else {
+    console.log('📊 Fallback to key_variants:', Object.keys(variants).length, 'points');
+    scanData = prepareVariantScanDataFromVariants(params, factor);
+  }
+
+  if (scanData.length === 0) {
+    console.log('⚠️ No scan data generated - showing placeholder');
+    if (noDataEl) noDataEl.style.display = 'block';
+    if (contentEl) contentEl.style.display = 'none';
+    return;
+  }
+
+  // Hide placeholder, show content
+  if (noDataEl) noDataEl.style.display = 'none';
+  if (contentEl) contentEl.style.display = 'grid';
+
+  // Generate chart
+  generateVariantScanChart(scanData);
+
+  // Generate table - same density as chart (125 points) or ALL data if less
+  // Table scrolls fast and reads quickly - no need to sample
+  generateVariantScanTable(scanData);
+
+  // Update observation text
+  updateVariantScanObservation(scanData);
+
+  console.log('✅ Variant Scan section generated with', scanData.length, 'chart points,', tableData.length, 'table rows');
+}
+
+/**
+ * Update break-even mode and regenerate table
+ */
+function updateBreakevenMode(mode) {
+  breakevenMode = mode;
+  console.log('📊 Break-even mode changed to:', mode);
+
+  // Regenerate the variant scan section with new mode
+  generateVariantScanSection();
+}
+
+// Expose globally
+window.updateBreakevenMode = updateBreakevenMode;
+
+/**
+ * Sample scan data with UNIFORM distribution
+ * Simple strategy: evenly spaced points across entire range
+ */
+function sampleScanData(scanData, maxRows) {
+  if (scanData.length <= maxRows) return scanData;
+
+  // Find key indices for special highlighting
+  let maxNpvIdx = 0;
+  let minPaybackIdx = 0;
+  let currentIdx = -1;
+  let maxNpv = -Infinity;
+  let minPayback = Infinity;
+
+  scanData.forEach((d, idx) => {
+    if (d.npv > maxNpv) { maxNpv = d.npv; maxNpvIdx = idx; }
+    if (d.payback < minPayback && d.payback < 99) { minPayback = d.payback; minPaybackIdx = idx; }
+    if (d.isCurrent) currentIdx = idx;
+  });
+
+  const modeName = (breakevenMode === 'payback') ? 'Min Payback' : 'Max NPV';
+
+  // SIMPLE UNIFORM SAMPLING: evenly distributed across entire range
+  const step = (scanData.length - 1) / (maxRows - 1);
+  const indices = new Set();
+
+  for (let i = 0; i < maxRows; i++) {
+    const idx = Math.round(i * step);
+    if (idx < scanData.length) {
+      indices.add(idx);
+    }
+  }
+
+  // Always include critical points
+  indices.add(0);                          // First
+  indices.add(scanData.length - 1);        // Last
+  indices.add(maxNpvIdx);                  // Max NPV
+  indices.add(minPaybackIdx);              // Min Payback
+  if (currentIdx >= 0) indices.add(currentIdx); // Current variant
+
+  // Convert to sorted array
+  const sortedIndices = Array.from(indices).sort((a, b) => a - b);
+  const result = sortedIndices.map(idx => scanData[idx]).filter(Boolean);
+
+  console.log(`📊 Table sampling [${modeName}]: ${scanData.length} → ${result.length} rows, step=${step.toFixed(1)}`);
+
+  return result;
+}
+
+/**
+ * Prepare variant scan data from FULL scenarios array
+ */
+function prepareVariantScanDataFromScenarios(scenarios, params, factor) {
+  const scanData = [];
+
+  // Sort scenarios by capacity
+  const sortedScenarios = [...scenarios].sort((a, b) => (a.capacity || 0) - (b.capacity || 0));
+
+  // Get current variant capacity for highlighting
+  const currentVariantData = variants?.[currentVariant];
+  const currentCapacity = currentVariantData?.capacity || 0;
+
+  for (const s of sortedScenarios) {
+    if (!s || !s.capacity) continue;
+
+    const capacityKwp = s.capacity;
+    const productionKwh = (s.production || 0) * factor;
+    const selfConsumedKwh = (s.self_consumed || 0) * factor;
+    const exportedKwh = (s.exported || 0) * factor;
+    const autoConsumptionPct = s.auto_consumption_pct || 0;
+    const coveragePct = s.coverage_pct || 0;
+
+    // Calculate economics for this scenario
+    const economics = calculateVariantEconomics(s, params, factor);
+
+    scanData.push({
+      key: `${capacityKwp}kWp`,
+      capacity: capacityKwp,
+      capacityMWp: capacityKwp / 1000,
+      productionMWh: productionKwh / 1000,
+      selfConsumedMWh: selfConsumedKwh / 1000,
+      exportedMWh: exportedKwh / 1000,
+      autoConsumptionPct: autoConsumptionPct,
+      coveragePct: coveragePct,
+      npv: economics.npv,
+      payback: economics.payback,
+      lcoe: economics.lcoe,
+      irr: economics.irr,
+      isCurrent: Math.abs(capacityKwp - currentCapacity) < 1 // Highlight if matches current
+    });
+  }
+
+  return scanData;
+}
+
+/**
+ * Prepare variant scan data from key_variants (fallback)
+ */
+function prepareVariantScanDataFromVariants(params, factor) {
+  const scanData = [];
+  const variantKeys = Object.keys(variants).sort((a, b) => {
+    const capA = variants[a]?.capacity || 0;
+    const capB = variants[b]?.capacity || 0;
+    return capA - capB;
+  });
+
+  for (const key of variantKeys) {
+    const v = variants[key];
+    if (!v || !v.capacity) continue;
+
+    const capacityKwp = v.capacity;
+    const productionKwh = (v.production || 0) * factor;
+    const selfConsumedKwh = (v.self_consumed || 0) * factor;
+    const exportedKwh = (v.exported || 0) * factor;
+    const autoConsumptionPct = v.auto_consumption_pct || 0;
+    const coveragePct = v.coverage_pct || 0;
+
+    const economics = calculateVariantEconomics(v, params, factor);
+
+    scanData.push({
+      key: key,
+      capacity: capacityKwp,
+      capacityMWp: capacityKwp / 1000,
+      productionMWh: productionKwh / 1000,
+      selfConsumedMWh: selfConsumedKwh / 1000,
+      exportedMWh: exportedKwh / 1000,
+      autoConsumptionPct: autoConsumptionPct,
+      coveragePct: coveragePct,
+      npv: economics.npv,
+      payback: economics.payback,
+      lcoe: economics.lcoe,
+      irr: economics.irr,
+      isCurrent: key === currentVariant
+    });
+  }
+
+  return scanData;
+}
+
+/**
+ * Calculate economics for a single variant
+ */
+function calculateVariantEconomics(variant, params, factor) {
+  const capacityKwp = variant.capacity || 0;
+  const productionKwh = (variant.production || 0) * factor;
+  const selfConsumedKwh = (variant.self_consumed || 0) * factor;
+
+  // CAPEX
+  const capexPerKwp = getCapexForCapacity(capacityKwp);
+  const totalCapex = capacityKwp * capexPerKwp;
+
+  // Energy price
+  const totalPricePerMwh = calculateTotalEnergyPrice(params);
+  const selfConsumedMwh = selfConsumedKwh / 1000;
+
+  // Annual savings (first year)
+  const annualSavings = selfConsumedMwh * totalPricePerMwh;
+
+  // OPEX (use correct param name: opex_per_kwp)
+  const annualOpex = capacityKwp * (params.opex_per_kwp || 15);
+
+  // Net annual benefit
+  const netAnnualBenefit = annualSavings - annualOpex;
+
+  // Simple payback
+  const payback = totalCapex > 0 && netAnnualBenefit > 0
+    ? totalCapex / netAnnualBenefit
+    : 99;
+
+  // NPV calculation (simplified)
+  const discountRate = window.economicsSettings?.discountRate || 0.07;
+  const analysisPeriod = params.analysis_period || 25;
+  const degradationRate = params.degradation_rate || 0.005;
+
+  let npv = -totalCapex;
+  for (let year = 1; year <= analysisPeriod; year++) {
+    const degradationFactor = Math.pow(1 - degradationRate, year - 1);
+    const yearSavings = annualSavings * degradationFactor;
+    const yearNet = yearSavings - annualOpex;
+    const discountFactor = Math.pow(1 + discountRate, -year);
+    npv += yearNet * discountFactor;
+  }
+
+  // LCOE calculation
+  let totalProduction = 0;
+  let totalCosts = totalCapex;
+  for (let year = 1; year <= analysisPeriod; year++) {
+    const degradationFactor = Math.pow(1 - degradationRate, year - 1);
+    totalProduction += (productionKwh / 1000) * degradationFactor; // MWh
+    totalCosts += annualOpex;
+  }
+  const lcoe = totalProduction > 0 ? (totalCosts / totalProduction) : 0;
+
+  return {
+    npv: npv / 1000000, // mln PLN
+    payback: Math.min(payback, 99),
+    lcoe: lcoe,
+    irr: 0 // Simplified, not calculating full IRR here
+  };
+}
+
+/**
+ * Generate variant scan chart - Professional clean design
+ */
+function generateVariantScanChart(scanData) {
+  const ctx = document.getElementById('variantScanChart');
+  if (!ctx) {
+    console.log('⚠️ variantScanChart canvas not found');
+    return;
+  }
+
+  // Destroy existing chart
+  if (variantScanChart) {
+    variantScanChart.destroy();
+    variantScanChart = null;
+  }
+
+  // Use more data points for smoother chart (max 125 points)
+  const step = Math.max(1, Math.floor(scanData.length / 125));
+  const sampledData = scanData.filter((_, i) => i % step === 0 || i === scanData.length - 1);
+
+  const labels = sampledData.map(d => d.capacityMWp.toFixed(1));
+  const autoConsData = sampledData.map(d => d.autoConsumptionPct);
+  const coverageData = sampledData.map(d => d.coveragePct);
+
+  // Find key points for markers
+  let maxNpvIdx = 0;
+  let minPaybackIdx = 0;
+  let maxNpv = -Infinity;
+  let minPayback = Infinity;
+
+  sampledData.forEach((d, idx) => {
+    if (d.npv > maxNpv) { maxNpv = d.npv; maxNpvIdx = idx; }
+    if (d.payback < minPayback && d.payback < 99) { minPayback = d.payback; minPaybackIdx = idx; }
+  });
+
+  // Create gradient fills
+  const ctxCanvas = ctx.getContext('2d');
+
+  // Green gradient for autoconsumption
+  const greenGradient = ctxCanvas.createLinearGradient(0, 0, 0, 300);
+  greenGradient.addColorStop(0, 'rgba(46, 125, 50, 0.25)');
+  greenGradient.addColorStop(0.5, 'rgba(46, 125, 50, 0.08)');
+  greenGradient.addColorStop(1, 'rgba(46, 125, 50, 0)');
+
+  // Blue gradient for coverage
+  const blueGradient = ctxCanvas.createLinearGradient(0, 0, 0, 300);
+  blueGradient.addColorStop(0, 'rgba(25, 118, 210, 0.2)');
+  blueGradient.addColorStop(0.5, 'rgba(25, 118, 210, 0.05)');
+  blueGradient.addColorStop(1, 'rgba(25, 118, 210, 0)');
+
+  // Point radius array - highlight optimum points
+  const autoConsPointRadius = autoConsData.map((_, idx) => {
+    if (breakevenMode === 'npv' && idx === maxNpvIdx) return 6;
+    if (breakevenMode === 'payback' && idx === minPaybackIdx) return 6;
+    return 0; // No points normally - cleaner look
+  });
+
+  const coveragePointRadius = coverageData.map((_, idx) => {
+    if (breakevenMode === 'npv' && idx === maxNpvIdx) return 6;
+    if (breakevenMode === 'payback' && idx === minPaybackIdx) return 6;
+    return 0;
+  });
+
+  variantScanChart = new Chart(ctxCanvas, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Autokonsumpcja [%]',
+          data: autoConsData,
+          borderColor: '#2e7d32',
+          backgroundColor: greenGradient,
+          fill: true,
+          tension: 0.3,
+          pointRadius: autoConsPointRadius,
+          pointHoverRadius: 5,
+          pointBackgroundColor: '#2e7d32',
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2,
+          borderWidth: 2,
+          order: 1
+        },
+        {
+          label: 'Pokrycie zużycia [%]',
+          data: coverageData,
+          borderColor: '#1976d2',
+          backgroundColor: blueGradient,
+          fill: true,
+          tension: 0.3,
+          pointRadius: coveragePointRadius,
+          pointHoverRadius: 5,
+          pointBackgroundColor: '#1976d2',
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2,
+          borderWidth: 2,
+          order: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        legend: {
+          position: 'top',
+          align: 'center',
+          labels: {
+            usePointStyle: true,
+            pointStyle: 'line',
+            padding: 20,
+            font: {
+              size: 12,
+              weight: '500'
+            },
+            color: '#424242'
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(33, 33, 33, 0.95)',
+          titleColor: '#fff',
+          bodyColor: '#e0e0e0',
+          borderColor: 'rgba(255,255,255,0.1)',
+          borderWidth: 1,
+          cornerRadius: 8,
+          padding: 12,
+          displayColors: true,
+          boxPadding: 6,
+          callbacks: {
+            title: function(items) {
+              const idx = items[0].dataIndex;
+              const d = sampledData[idx];
+              return `⚡ ${d.capacity.toFixed(0)} kWp`;
+            },
+            label: function(context) {
+              const value = context.parsed.y.toFixed(1);
+              return ` ${context.dataset.label}: ${value}%`;
+            },
+            afterBody: function(items) {
+              const idx = items[0].dataIndex;
+              const d = sampledData[idx];
+              return [
+                '',
+                `📊 Produkcja: ${formatNumberEU(d.productionMWh, 0)} MWh/rok`,
+                `💰 NPV: ${formatNumberEU(d.npv, 2)} mln PLN`,
+                `⏱️ Payback: ${d.payback < 99 ? formatNumberEU(d.payback, 1) + ' lat' : '> 25 lat'}`
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: 'Moc instalacji PV [MWp]',
+            color: '#616161',
+            font: {
+              size: 12,
+              weight: '600'
+            },
+            padding: { top: 8 }
+          },
+          ticks: {
+            color: '#757575',
+            font: { size: 10 },
+            maxRotation: 45,
+            minRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 15
+          },
+          grid: {
+            display: true,
+            color: 'rgba(0,0,0,0.04)',
+            drawBorder: false
+          },
+          border: {
+            display: false
+          }
+        },
+        y: {
+          min: 0,
+          max: 100,
+          title: {
+            display: true,
+            text: 'Procent [%]',
+            color: '#616161',
+            font: {
+              size: 12,
+              weight: '600'
+            },
+            padding: { bottom: 8 }
+          },
+          ticks: {
+            color: '#757575',
+            font: { size: 10 },
+            stepSize: 20,
+            callback: function(value) {
+              return value + '%';
+            }
+          },
+          grid: {
+            display: true,
+            color: 'rgba(0,0,0,0.06)',
+            drawBorder: false
+          },
+          border: {
+            display: false
+          }
+        }
+      },
+      elements: {
+        line: {
+          capBezierPoints: true
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Generate variant scan table
+ * Highlights optimum point based on selected mode (Max NPV or Min Payback)
+ */
+function generateVariantScanTable(scanData) {
+  const tbody = document.getElementById('variantScanTableBody');
+  if (!tbody) return;
+
+  // Find key indices
+  let maxNpv = -Infinity;
+  let minPayback = Infinity;
+  let maxNpvIdx = -1;
+  let minPaybackIdx = -1;
+
+  scanData.forEach((d, idx) => {
+    if (d.npv > maxNpv) {
+      maxNpv = d.npv;
+      maxNpvIdx = idx;
+    }
+    if (d.payback < minPayback && d.payback < 99) {
+      minPayback = d.payback;
+      minPaybackIdx = idx;
+    }
+  });
+
+  // Select optimum based on current mode
+  const optimumIdx = (breakevenMode === 'payback') ? minPaybackIdx : maxNpvIdx;
+
+  tbody.innerHTML = scanData.map((d, idx) => {
+    const rowClass = [];
+
+    // Current variant highlighting
+    if (d.isCurrent) rowClass.push('current-variant');
+
+    // OPTIMUM row (based on selected mode) - PRIMARY highlight
+    if (idx === optimumIdx) {
+      rowClass.push('optimum-row');
+    }
+
+    // Secondary highlights for the "other" optimum
+    if (breakevenMode === 'npv' && idx === minPaybackIdx && idx !== optimumIdx) {
+      rowClass.push('secondary-optimum');
+    }
+    if (breakevenMode === 'payback' && idx === maxNpvIdx && idx !== optimumIdx) {
+      rowClass.push('secondary-optimum');
+    }
+
+    // Optimum zone highlighting (5 rows around optimum)
+    if (optimumIdx >= 0) {
+      const distanceFromOptimum = idx - optimumIdx;
+      if (distanceFromOptimum >= -5 && distanceFromOptimum <= 5 && distanceFromOptimum !== 0) {
+        rowClass.push('optimum-zone');
+      }
+    }
+
+    // Color coding for autoconsumption
+    let autoConsClass = '';
+    if (d.autoConsumptionPct >= 80) autoConsClass = 'value-good';
+    else if (d.autoConsumptionPct >= 60) autoConsClass = 'value-warning';
+    else autoConsClass = 'value-bad';
+
+    // Color coding for NPV
+    let npvClass = '';
+    if (d.npv > 0) npvClass = 'value-good';
+    else if (d.npv > -0.5) npvClass = 'value-warning';
+    else npvClass = 'value-bad';
+
+    // Color coding for payback
+    let paybackClass = '';
+    if (d.payback < 7) paybackClass = 'value-good';
+    else if (d.payback < 12) paybackClass = 'value-warning';
+    else paybackClass = 'value-bad';
+
+    return `<tr class="${rowClass.join(' ')}">
+      <td>${formatNumberEU(d.capacity, 0)}</td>
+      <td>${formatNumberEU(d.productionMWh, 1)}</td>
+      <td class="${autoConsClass}">${formatNumberEU(d.autoConsumptionPct, 1)}</td>
+      <td>${formatNumberEU(d.coveragePct, 1)}</td>
+      <td>${formatNumberEU(d.exportedMWh, 1)}</td>
+      <td class="${npvClass}">${formatNumberEU(d.npv, 2)}</td>
+      <td class="${paybackClass}">${d.payback < 99 ? formatNumberEU(d.payback, 1) : '> 25'}</td>
+      <td>${formatNumberEU(d.lcoe, 0)}</td>
+    </tr>`;
+  }).join('');
+}
+
+/**
+ * Update observation text based on scan data and selected mode
+ */
+function updateVariantScanObservation(scanData) {
+  const observationEl = document.getElementById('variantScanObservation');
+  if (!observationEl || scanData.length === 0) return;
+
+  // Find key points
+  let threshold80Capacity = null;
+  let maxNpvCapacity = null;
+  let maxNpv = -Infinity;
+  let minPaybackCapacity = null;
+  let minPayback = Infinity;
+
+  for (const d of scanData) {
+    if (d.autoConsumptionPct <= 80 && threshold80Capacity === null) {
+      threshold80Capacity = d.capacity;
+    }
+    if (d.npv > maxNpv) {
+      maxNpv = d.npv;
+      maxNpvCapacity = d.capacity;
+    }
+    if (d.payback < minPayback && d.payback < 99) {
+      minPayback = d.payback;
+      minPaybackCapacity = d.capacity;
+    }
+  }
+
+  let observation = '';
+
+  if (breakevenMode === 'payback') {
+    // Min Payback mode
+    if (minPaybackCapacity) {
+      observation = `<strong>Tryb: Minimalny Payback</strong> — Najkrótszy okres zwrotu (${formatNumberEU(minPayback, 1)} lat) przy mocy ${formatNumberEU(minPaybackCapacity, 0)} kWp.`;
+      if (maxNpvCapacity && maxNpvCapacity !== minPaybackCapacity) {
+        observation += ` Dla porównania: maksymalny NPV (${formatNumberEU(maxNpv, 2)} mln PLN) osiągany jest przy ${formatNumberEU(maxNpvCapacity, 0)} kWp.`;
+      }
+    } else {
+      observation = 'Nie znaleziono optymalnego punktu zwrotu inwestycji w analizowanym zakresie mocy.';
+    }
+  } else {
+    // Max NPV mode (default)
+    if (threshold80Capacity && maxNpvCapacity) {
+      if (maxNpvCapacity < threshold80Capacity) {
+        observation = `<strong>Tryb: Maksymalny NPV</strong> — Optymalny NPV (${formatNumberEU(maxNpv, 2)} mln PLN) osiągany przy ${formatNumberEU(maxNpvCapacity, 0)} kWp, gdzie autokonsumpcja wynosi ponad 80%.`;
+      } else {
+        observation = `<strong>Tryb: Maksymalny NPV</strong> — Maksymalny NPV (${formatNumberEU(maxNpv, 2)} mln PLN) przy ${formatNumberEU(maxNpvCapacity, 0)} kWp. Granica 80% autokonsumpcji: ${formatNumberEU(threshold80Capacity, 0)} kWp.`;
+      }
+      if (minPaybackCapacity && minPaybackCapacity !== maxNpvCapacity) {
+        observation += ` Najkrótszy payback (${formatNumberEU(minPayback, 1)} lat) przy ${formatNumberEU(minPaybackCapacity, 0)} kWp.`;
+      }
+    } else if (maxNpvCapacity) {
+      observation = `<strong>Tryb: Maksymalny NPV</strong> — Najwyższy NPV (${formatNumberEU(maxNpv, 2)} mln PLN) przy mocy ${formatNumberEU(maxNpvCapacity, 0)} kWp.`;
+    } else {
+      observation = 'Wraz ze wzrostem mocy instalacji powyżej pewnego progu, autokonsumpcja spada, co oznacza, że dodatkowa moc generuje głównie nadwyżki eksportowane do sieci.';
+    }
+  }
+
+  observationEl.innerHTML = observation;
+}
+
+// Expose function globally
+window.generateVariantScanSection = generateVariantScanSection;
+
+/**
+ * Export Variant Scan data to Excel with European formatting
+ */
+function exportVariantScanToExcel() {
+  // Get scenarios data
+  const scenarios = analysisResults?.scenarios;
+  if (!scenarios || scenarios.length === 0) {
+    alert('Brak danych do eksportu. Wykonaj najpierw symulację.');
+    return;
+  }
+
+  const params = getEconomicParameters();
+  const factor = window.currentScenarioFactor || 1.0;
+
+  // Prepare data for export
+  const exportData = [];
+
+  // Sort scenarios by capacity
+  const sortedScenarios = [...scenarios].sort((a, b) => (a.capacity || 0) - (b.capacity || 0));
+
+  for (const s of sortedScenarios) {
+    if (!s || !s.capacity) continue;
+
+    const capacityKwp = s.capacity;
+    const productionKwh = (s.production || 0) * factor;
+    const selfConsumedKwh = (s.self_consumed || 0) * factor;
+    const exportedKwh = (s.exported || 0) * factor;
+    const autoConsumptionPct = s.auto_consumption_pct || 0;
+    const coveragePct = s.coverage_pct || 0;
+
+    // Calculate economics
+    const economics = calculateVariantEconomics(s, params, factor);
+
+    exportData.push({
+      'Moc [kWp]': capacityKwp,
+      'Moc [MWp]': capacityKwp / 1000,
+      'Produkcja [MWh/rok]': productionKwh / 1000,
+      'Autokonsumpcja [%]': autoConsumptionPct,
+      'Pokrycie zużycia [%]': coveragePct,
+      'Zużyte na własne potrzeby [MWh]': selfConsumedKwh / 1000,
+      'Eksport do sieci [MWh]': exportedKwh / 1000,
+      'NPV [mln PLN]': economics.npv,
+      'Payback [lat]': economics.payback < 99 ? economics.payback : null,
+      'LCOE [PLN/MWh]': economics.lcoe
+    });
+  }
+
+  if (exportData.length === 0) {
+    alert('Brak danych do eksportu.');
+    return;
+  }
+
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+
+  // Create worksheet from data
+  const ws = XLSX.utils.json_to_sheet(exportData);
+
+  // Set column widths
+  ws['!cols'] = [
+    { wch: 12 }, // Moc kWp
+    { wch: 12 }, // Moc MWp
+    { wch: 18 }, // Produkcja
+    { wch: 16 }, // Autokonsumpcja
+    { wch: 18 }, // Pokrycie
+    { wch: 24 }, // Zużyte
+    { wch: 18 }, // Eksport
+    { wch: 14 }, // NPV
+    { wch: 14 }, // Payback
+    { wch: 16 }  // LCOE
+  ];
+
+  // Add worksheet to workbook
+  XLSX.utils.book_append_sheet(wb, ws, 'Skan Wariantów');
+
+  // Generate filename with date
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const projectName = window.parent?.sharedData?.currentProject?.name || 'Analiza';
+  const filename = `${projectName}_Skan_Wariantow_${dateStr}.xlsx`;
+
+  // Write file with European locale settings
+  XLSX.writeFile(wb, filename, {
+    bookType: 'xlsx',
+    type: 'binary',
+    Props: {
+      Author: 'PV Optimizer',
+      Title: 'Skan Wariantów - Analiza Mocy PV',
+      Subject: 'Ekonomia instalacji fotowoltaicznej'
+    }
+  });
+
+  console.log(`📥 Exported ${exportData.length} rows to ${filename}`);
+}
+
+// Expose export function globally
+window.exportVariantScanToExcel = exportVariantScanToExcel;
 
 console.log('📦 economics.js fully loaded');

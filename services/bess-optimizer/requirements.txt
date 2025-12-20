@@ -7,3 +7,4 @@ xarray==2024.1.0
 pypsa==0.27.1
 highspy==1.7.1
 linopy==0.3.8
+prometheus-fastapi-instrumentator==6.1.0

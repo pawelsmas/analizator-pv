@@ -162,6 +162,62 @@
       </div>
     </div>
 
+    <!-- SKAN WARIANTÓW - Autokonsumpcja vs Pokrycie -->
+    <div class="chart-section full-width variant-scan-section">
+      <h2>📊 Skan Wariantów - Analiza Mocy Instalacji</h2>
+      <div class="chart-info">
+        Porównanie autokonsumpcji i pokrycia zużycia dla różnych mocy PV
+        <span class="breakeven-selector">
+          | Optimum:
+          <label><input type="radio" name="breakevenMode" value="npv" checked onchange="updateBreakevenMode(this.value)"> Max NPV</label>
+          <label><input type="radio" name="breakevenMode" value="payback" onchange="updateBreakevenMode(this.value)"> Min Payback</label>
+        </span>
+      </div>
+
+      <!-- Placeholder gdy brak danych -->
+      <div id="variantScanNoData" class="variant-scan-no-data">
+        <div class="no-data-icon">📊</div>
+        <p>Wykonaj symulację PV w module <strong>Konfiguracja</strong> lub <strong>Produkcja PV</strong>, aby zobaczyć analizę wariantów mocy.</p>
+      </div>
+
+      <div class="variant-scan-container" id="variantScanContent" style="display: none;">
+        <!-- Wykres -->
+        <div class="variant-scan-chart">
+          <canvas id="variantScanChart"></canvas>
+        </div>
+
+        <!-- Tabela -->
+        <div class="variant-scan-table-wrapper">
+          <table id="variantScanTable" class="variant-scan-table">
+            <thead>
+              <tr>
+                <th>Moc<br/><span class="unit">kWp</span></th>
+                <th>Produkcja<br/><span class="unit">MWh/rok</span></th>
+                <th>Autokons.<br/><span class="unit">%</span></th>
+                <th>Pokrycie<br/><span class="unit">%</span></th>
+                <th>Eksport<br/><span class="unit">MWh</span></th>
+                <th>NPV<br/><span class="unit">mln PLN</span></th>
+                <th>Payback<br/><span class="unit">lat</span></th>
+                <th>LCOE<br/><span class="unit">PLN/MWh</span></th>
+              </tr>
+            </thead>
+            <tbody id="variantScanTableBody">
+              <!-- Dynamicznie wypełnione przez JavaScript -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="variant-scan-footer">
+        <div class="variant-scan-observation">
+          <strong>📈 Obserwacja:</strong> <span id="variantScanObservation">Wraz ze wzrostem mocy instalacji powyżej pewnego progu, autokonsumpcja spada, co oznacza, że dodatkowa moc generuje głównie nadwyżki eksportowane do sieci w godzinach niskich cen.</span>
+        </div>
+        <button class="btn btn-export" onclick="exportVariantScanToExcel()" title="Eksportuj do Excel">
+          📥 Eksport Excel
+        </button>
+      </div>
+    </div>
+
     <!-- Przepływy pieniężne -->
     <div class="chart-section full-width">
       <h2>Przepływy Pieniężne</h2>
@@ -595,6 +651,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20251211-EXCEL-EXPORT-FIX"></script>
+<script src="economics.js?v=20251220-BREAKEVEN-FOCUS"></script>
 </body>
 </html>

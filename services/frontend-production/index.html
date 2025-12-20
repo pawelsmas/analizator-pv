@@ -382,6 +382,22 @@
         </div>
       </div>
 
+      <!-- Hours Mode Selector -->
+      <div style="margin: 10px 0; padding: 12px 15px; background: linear-gradient(135deg, #e8f4f8 0%, #d1ecf1 100%); border-radius: 8px; border: 1px solid #bee5eb; display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
+        <strong style="color: #0c5460;">⏰ Tryb godzin:</strong>
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px; background: white; border-radius: 6px; border: 2px solid transparent; transition: all 0.2s;" id="explorerModeLabel24h">
+          <input type="radio" name="explorerHoursMode" id="explorerMode24h" value="24h" checked onchange="updateExplorerHoursMode()">
+          <span style="font-weight: 500;">🌓 Pełne 24h</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 12px; background: white; border-radius: 6px; border: 2px solid transparent; transition: all 0.2s;" id="explorerModeLabelDaylight">
+          <input type="radio" name="explorerHoursMode" id="explorerModeDaylight" value="daylight" onchange="updateExplorerHoursMode()">
+          <span style="font-weight: 500;">☀️ Tylko godziny PV</span>
+        </label>
+        <span id="explorerHoursModeInfo" style="font-size: 12px; color: #0c5460; font-style: italic;">
+          (wszystkie godziny doby)
+        </span>
+      </div>
+
       <!-- Layer Visibility -->
       <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
         <strong>Warstwy:</strong>

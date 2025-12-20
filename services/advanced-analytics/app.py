@@ -6,7 +6,13 @@ import numpy as np
 from scipy import stats
 from collections import defaultdict
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(title="Advanced Analytics Service", version="1.0.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(

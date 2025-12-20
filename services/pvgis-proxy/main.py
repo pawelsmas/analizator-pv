@@ -18,11 +18,17 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="PVGIS Proxy Service",
     description="Proxy for PVGIS API calls with Pxx factor calculation",
     version="1.0.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration - allow all origins for local development
 app.add_middleware(

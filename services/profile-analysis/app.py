@@ -23,11 +23,17 @@ import json
 import httpx
 from enum import Enum
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="Profile Analysis Service",
     description="Advanced PV+BESS profile analysis for optimal sizing v2.0",
     version="2.0.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

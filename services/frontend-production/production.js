@@ -2933,6 +2933,104 @@ let dailyExplorerDays = 7;
 let dailyExplorerDateRange = { min: null, max: null };
 let dailyExplorerPlayInterval = null;
 let dailyExplorerIsPlaying = false;
+let dailyExplorerHoursMode = '24h'; // '24h' or 'daylight'
+
+/**
+ * Calculate sunrise/sunset hours for a given date and latitude
+ * Uses simplified solar position calculation
+ * @param {Date} date - The date to calculate for
+ * @param {number} latitude - Latitude in degrees (default: 52° for Poland)
+ * @returns {object} { sunrise: hour, sunset: hour }
+ */
+function calculateDaylightHours(date, latitude = 52) {
+  const dayOfYear = Math.floor((date - new Date(date.getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24));
+
+  // Solar declination (simplified)
+  const declination = 23.45 * Math.sin((360 / 365) * (dayOfYear - 81) * Math.PI / 180);
+
+  // Hour angle at sunrise/sunset
+  const latRad = latitude * Math.PI / 180;
+  const declRad = declination * Math.PI / 180;
+
+  const cosHourAngle = -Math.tan(latRad) * Math.tan(declRad);
+
+  // Handle polar day/night
+  if (cosHourAngle < -1) {
+    // Polar day - sun never sets
+    return { sunrise: 0, sunset: 24 };
+  } else if (cosHourAngle > 1) {
+    // Polar night - sun never rises
+    return { sunrise: 12, sunset: 12 };
+  }
+
+  const hourAngle = Math.acos(cosHourAngle) * 180 / Math.PI;
+  const daylightHours = 2 * hourAngle / 15; // Convert to hours
+
+  const solarNoon = 12; // Simplified, ignoring longitude
+  const sunrise = solarNoon - daylightHours / 2;
+  const sunset = solarNoon + daylightHours / 2;
+
+  // Add buffer for PV production (PV starts ~30min after sunrise, ends ~30min before sunset)
+  // But also account for diffuse radiation which starts earlier
+  return {
+    sunrise: Math.max(0, Math.floor(sunrise - 0.5)),  // Round down, add 30min buffer
+    sunset: Math.min(24, Math.ceil(sunset + 0.5))     // Round up, add 30min buffer
+  };
+}
+
+/**
+ * Check if hour is within PV production window for given date
+ * @param {Date} timestamp - The timestamp to check
+ * @param {number} latitude - Latitude in degrees
+ * @returns {boolean} True if hour is during daylight/PV production
+ */
+function isDaylightHour(timestamp, latitude = 52) {
+  const hour = timestamp.getHours();
+  const { sunrise, sunset } = calculateDaylightHours(timestamp, latitude);
+  return hour >= sunrise && hour < sunset;
+}
+
+/**
+ * Update explorer hours mode and refresh chart
+ */
+function updateExplorerHoursMode() {
+  const mode24h = document.getElementById('explorerMode24h');
+  dailyExplorerHoursMode = mode24h?.checked ? '24h' : 'daylight';
+
+  // Update visual feedback
+  const label24h = document.getElementById('explorerModeLabel24h');
+  const labelDaylight = document.getElementById('explorerModeLabelDaylight');
+  const info = document.getElementById('explorerHoursModeInfo');
+
+  if (label24h && labelDaylight) {
+    if (dailyExplorerHoursMode === '24h') {
+      label24h.style.borderColor = '#3498db';
+      label24h.style.background = '#e8f4fc';
+      labelDaylight.style.borderColor = 'transparent';
+      labelDaylight.style.background = 'white';
+    } else {
+      labelDaylight.style.borderColor = '#f39c12';
+      labelDaylight.style.background = '#fef9e7';
+      label24h.style.borderColor = 'transparent';
+      label24h.style.background = 'white';
+    }
+  }
+
+  // Update info text
+  if (info) {
+    if (dailyExplorerHoursMode === '24h') {
+      info.textContent = '(wszystkie godziny doby)';
+    } else {
+      // Calculate typical daylight range for current date
+      const currentDate = dailyExplorerStartDate || new Date();
+      const { sunrise, sunset } = calculateDaylightHours(currentDate);
+      info.textContent = `(~${sunrise}:00 - ${sunset}:00 dla wybranej daty)`;
+    }
+  }
+
+  console.log(`⏰ Explorer hours mode: ${dailyExplorerHoursMode}`);
+  updateDailyExplorerChart();
+}
 
 /**
  * Initialize Daily Explorer with data range
@@ -3082,6 +3180,7 @@ function updateDailyExplorerPeriod() {
 
 /**
  * Get data for selected period
+ * Respects dailyExplorerHoursMode: '24h' or 'daylight'
  */
 function getDailyExplorerData() {
   const timestamps = consumptionData?.hourlyData?.timestamps;
@@ -3096,11 +3195,27 @@ function getDailyExplorerData() {
   const endDate = new Date(startDate);
   endDate.setDate(endDate.getDate() + dailyExplorerDays);
 
+  // Get latitude from PV config (default to Poland ~52°)
+  const latitude = pvConfig?.latitude || 52;
+
   // Build hourly data array with filtered results
   const filteredData = [];
+  let daylightHoursCount = 0;
+  let totalHoursCount = 0;
+
   for (let i = 0; i < timestamps.length; i++) {
     const ts = new Date(timestamps[i]);
     if (ts >= startDate && ts < endDate) {
+      totalHoursCount++;
+
+      // Apply daylight filter if in daylight mode
+      if (dailyExplorerHoursMode === 'daylight') {
+        if (!isDaylightHour(ts, latitude)) {
+          continue; // Skip non-daylight hours
+        }
+        daylightHoursCount++;
+      }
+
       filteredData.push({
         timestamp: timestamps[i],
         load_kw: loadValues[i] || 0,
@@ -3112,11 +3227,19 @@ function getDailyExplorerData() {
   // Sort by timestamp
   filteredData.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
+  // Log filtering stats
+  if (dailyExplorerHoursMode === 'daylight') {
+    console.log(`☀️ Daylight filter: ${filteredData.length} of ${totalHoursCount} hours (lat: ${latitude}°)`);
+  }
+
   return {
     data: filteredData,
     startDate: startDate,
     endDate: endDate,
-    days: dailyExplorerDays
+    days: dailyExplorerDays,
+    hoursMode: dailyExplorerHoursMode,
+    totalHours: totalHoursCount,
+    daylightHours: dailyExplorerHoursMode === 'daylight' ? filteredData.length : null
   };
 }
 

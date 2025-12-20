@@ -8,3 +8,4 @@ python-multipart==0.0.6
 pandas==2.1.4
 numpy==1.26.3
 httpx==0.26.0
+prometheus-fastapi-instrumentator==6.1.0

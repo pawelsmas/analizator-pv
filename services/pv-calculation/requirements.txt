@@ -25,3 +25,6 @@ pytz==2023.3
 
 # Optional: For better performance with large datasets
 # numba==0.58.1  # Uncomment if needed for JIT compilation
+
+# Monitoring
+prometheus-fastapi-instrumentator==6.1.0

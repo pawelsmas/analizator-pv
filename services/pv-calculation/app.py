@@ -49,7 +49,13 @@ except ImportError as e:
     PVLIB_VERSION = None
     print(f"✗ pvlib-python not available: {e}")
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(title="PV Calculation Service (pvlib)", version="2.1.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(

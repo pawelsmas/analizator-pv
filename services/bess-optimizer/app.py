@@ -25,11 +25,17 @@ from models import (
     SolverType
 )
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="BESS Optimizer Service",
     description="LP/MIP optimization for zero-export PV+BESS systems using PyPSA + HiGHS",
     version="1.0.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS middleware
 app.add_middleware(

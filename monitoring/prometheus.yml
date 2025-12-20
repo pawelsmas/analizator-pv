@@ -1,0 +1,45 @@
+# Prometheus Configuration for PV Optimizer Pro
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager configuration (for future use)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Rules files (for future alerting rules)
+rule_files: []
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # FastAPI Backend Services
+  - job_name: 'pv-backends'
+    static_configs:
+      - targets:
+          - 'pv-data-analysis:8001'
+          - 'pv-calculation:8002'
+          - 'pv-economics:8003'
+          - 'pv-advanced-analytics:8004'
+          - 'pv-typical-days:8005'
+          - 'pv-energy-prices:8010'
+          - 'pv-reports:8011'
+          - 'pv-projects-db:8012'
+          - 'pv-pvgis-proxy:8020'
+          - 'pv-geo-service:8021'
+          - 'pv-bess-optimizer:8030'
+          - 'pv-profile-analysis:8040'
+          - 'pv-database-api:8050'
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Loki metrics
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']

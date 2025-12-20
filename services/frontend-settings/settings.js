@@ -199,9 +199,9 @@ const DEFAULT_CONFIG = {
   dcacAdjustment: 0,  // Korekta stosowana do wszystkich wartości z tabeli
 
   // Analysis Range
-  capMin: 1000,
-  capMax: 50000,
-  capStep: 500,
+  capMin: 100,
+  capMax: 25000,
+  capStep: 50,
 
   // Autoconsumption Thresholds
   thrA: 95,

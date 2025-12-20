@@ -34,11 +34,17 @@ from european_cities import (
     STATS as EUROPEAN_STATS
 )
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="PV Optimizer Geo Service",
     description="Geocoding and elevation resolution for PV installations",
     version="1.0.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS
 app.add_middleware(
