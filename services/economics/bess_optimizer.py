@@ -31,9 +31,12 @@ class OptimizationMethod(str, Enum):
 
 class BESSOptimizationRequest(BaseModel):
     """Dane wejściowe do optymalizacji BESS"""
-    # Profil obciążenia (godzinowy, kW)
-    load_profile_kw: List[float] = Field(..., min_length=24, description="Profil obciążenia [kW], min 24h")
+    # Profil obciążenia (kW) - może być godzinowy (60 min) lub 15-minutowy
+    load_profile_kw: List[float] = Field(..., min_length=24, description="Profil obciążenia [kW], min 24 interwały")
     timestamps: Optional[List[str]] = Field(None, description="Timestampy ISO8601 (opcjonalne)")
+
+    # Rozdzielczość czasowa danych
+    interval_minutes: int = Field(default=60, ge=15, le=60, description="Interwał danych w minutach (15 lub 60)")
 
     # Parametry peak shaving
     peak_shaving_threshold_kw: float = Field(..., gt=0, description="Próg peak shaving [kW]")
@@ -67,7 +70,7 @@ class BESSBlock(BaseModel):
     end_idx: int
     start_time: Optional[str] = None
     end_time: Optional[str] = None
-    duration_hours: int
+    duration_hours: float  # Float for 15-min intervals (0.25, 0.5, 0.75, etc.)
     peak_power_kw: float
     total_energy_kwh: float
     max_excess_kw: float
@@ -112,21 +115,24 @@ class BESSOptimizationResult(BaseModel):
 def group_exceedance_blocks(
     load_profile: np.ndarray,
     threshold: float,
-    timestamps: Optional[List[str]] = None
+    timestamps: Optional[List[str]] = None,
+    interval_minutes: int = 60
 ) -> List[BESSBlock]:
     """
-    Grupuje godziny przekroczenia progu w bloki.
+    Grupuje interwały przekroczenia progu w bloki.
 
     Args:
         load_profile: Profil obciążenia [kW]
         threshold: Próg peak shaving [kW]
         timestamps: Opcjonalne timestampy
+        interval_minutes: Interwał w minutach (15 lub 60)
 
     Returns:
         Lista bloków przeciążenia
     """
     blocks = []
     current_block = None
+    hours_per_interval = interval_minutes / 60.0  # 0.25 for 15-min, 1.0 for hourly
 
     for i, power in enumerate(load_profile):
         excess = power - threshold
@@ -144,14 +150,19 @@ def group_exceedance_blocks(
         else:
             if current_block is not None:
                 # Zamknij blok
+                # Energy = sum of (excess_kW * hours_per_interval)
+                num_intervals = len(current_block['powers'])
+                total_energy = sum(current_block['excesses']) * hours_per_interval
+                duration = num_intervals * hours_per_interval
+
                 block = BESSBlock(
                     start_idx=current_block['start_idx'],
                     end_idx=i - 1,
                     start_time=timestamps[current_block['start_idx']] if timestamps else None,
                     end_time=timestamps[i - 1] if timestamps else None,
-                    duration_hours=len(current_block['powers']),
+                    duration_hours=duration,
                     peak_power_kw=max(current_block['powers']),
-                    total_energy_kwh=sum(current_block['excesses']),
+                    total_energy_kwh=total_energy,
                     max_excess_kw=max(current_block['excesses'])
                 )
                 blocks.append(block)
@@ -159,14 +170,18 @@ def group_exceedance_blocks(
 
     # Zamknij ostatni blok jeśli istnieje
     if current_block is not None:
+        num_intervals = len(current_block['powers'])
+        total_energy = sum(current_block['excesses']) * hours_per_interval
+        duration = num_intervals * hours_per_interval
+
         block = BESSBlock(
             start_idx=current_block['start_idx'],
             end_idx=len(load_profile) - 1,
             start_time=timestamps[current_block['start_idx']] if timestamps else None,
             end_time=timestamps[-1] if timestamps else None,
-            duration_hours=len(current_block['powers']),
+            duration_hours=duration,
             peak_power_kw=max(current_block['powers']),
-            total_energy_kwh=sum(current_block['excesses']),
+            total_energy_kwh=total_energy,
             max_excess_kw=max(current_block['excesses'])
         )
         blocks.append(block)
@@ -243,11 +258,16 @@ def optimize_bess_pypsa(
 
     load_profile = np.array(request.load_profile_kw)
     threshold = request.peak_shaving_threshold_kw
-    n_hours = len(load_profile)
+    n_intervals = len(load_profile)
+    hours_per_interval = request.interval_minutes / 60.0  # 0.25 for 15-min, 1.0 for hourly
 
     # Utwórz sieć PyPSA
     network = pypsa.Network()
-    network.set_snapshots(range(n_hours))
+    network.set_snapshots(range(n_intervals))
+    # Set snapshot weightings for proper energy calculations (important for 15-min intervals)
+    network.snapshot_weightings.loc[:, "objective"] = hours_per_interval
+    network.snapshot_weightings.loc[:, "generators"] = hours_per_interval
+    network.snapshot_weightings.loc[:, "stores"] = hours_per_interval
 
     # Dodaj magistralę
     network.add("Bus", "main_bus")
@@ -312,7 +332,7 @@ def optimize_bess_pypsa(
         optimal_capacity = network.stores.loc["bess", "e_nom_opt"]
 
         # Oblicz wymaganą moc z profilu rozładowania
-        store_p = network.stores_t.p.get("bess", pd.Series([0]*n_hours))
+        store_p = network.stores_t.p.get("bess", pd.Series([0]*n_intervals))
         max_discharge = store_p.max() if len(store_p) > 0 else 0
         max_charge = abs(store_p.min()) if len(store_p) > 0 else 0
         optimal_power = max(max_discharge, max_charge)
@@ -360,9 +380,10 @@ def optimize_bess(request: BESSOptimizationRequest) -> BESSOptimizationResult:
 
     load_profile = np.array(request.load_profile_kw)
     threshold = request.peak_shaving_threshold_kw
+    interval_minutes = request.interval_minutes
 
-    # Grupuj bloki przekroczenia
-    blocks = group_exceedance_blocks(load_profile, threshold, request.timestamps)
+    # Grupuj bloki przekroczenia (z uwzględnieniem rozdzielczości czasowej)
+    blocks = group_exceedance_blocks(load_profile, threshold, request.timestamps, interval_minutes)
 
     if not blocks:
         return BESSOptimizationResult(

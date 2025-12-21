@@ -8,6 +8,7 @@ let hourlyData = null;
 let masterVariant = null;
 let masterVariantKey = null;
 let systemSettings = null;
+let consumptionData = null;
 
 // Electricity Maps data cache
 let lastElectricityMapsData = null;
@@ -136,13 +137,15 @@ function handleAnalysisData(data) {
     hourlyData = data.hourlyData;
     masterVariant = data.masterVariant;
     masterVariantKey = data.masterVariantKey;
+    consumptionData = data.consumptionData;
     if (data.settings) {
       systemSettings = data.settings;
     }
     console.log('ESG: Loaded from sharedData format', {
       hasAnalysisResults: !!analysisResults,
       hasMasterVariant: !!masterVariant,
-      masterVariantKey: masterVariantKey
+      masterVariantKey: masterVariantKey,
+      hasConsumptionData: !!consumptionData
     });
   }
 
@@ -153,13 +156,15 @@ function handleAnalysisData(data) {
     hourlyData = data.sharedData.hourlyData || hourlyData;
     masterVariant = data.sharedData.masterVariant || masterVariant;
     masterVariantKey = data.sharedData.masterVariantKey || masterVariantKey;
+    consumptionData = data.sharedData.consumptionData || consumptionData;
     if (data.sharedData.settings) {
       systemSettings = data.sharedData.settings;
     }
     console.log('ESG: Loaded from nested sharedData', {
       hasAnalysisResults: !!analysisResults,
       hasMasterVariant: !!masterVariant,
-      masterVariantKey: masterVariantKey
+      masterVariantKey: masterVariantKey,
+      hasConsumptionData: !!consumptionData
     });
   }
 
@@ -192,6 +197,7 @@ function clearData() {
   hourlyData = null;
   masterVariant = null;
   masterVariantKey = null;
+  consumptionData = null;
 
   document.getElementById('noDataState').classList.add('active');
   document.getElementById('mainContent').classList.add('hidden');
@@ -240,6 +246,7 @@ function updateESGDashboard() {
   }
 
   console.log('🌱 Using variantData:', variantData);
+  console.log('🌱 variantData FULL:', JSON.stringify(variantData, null, 2));
 
   // Extract key values - handle various data structures
   const annualProductionKwh = variantData.production ||  // from key_variants
@@ -253,15 +260,20 @@ function updateESGDashboard() {
                         pvConfig?.capacity_kWp ||
                         variantData.systemCapacity_kWp || 10;
 
-  const selfConsumptionKwh = variantData.self_consumption ||  // from key_variants
+  const selfConsumptionKwh = variantData.self_consumed ||  // from comparison module (kWh)
+                              variantData.self_consumption ||  // from key_variants
                               variantData.selfConsumption_kWh ||
                               variantData.summary?.self_consumption_kWh || 0;
 
   // Calculate self consumption from autoconsumption ratio if needed
-  const autoconsumptionRatio = variantData.autoconsumption || variantData.autoconsumption_ratio || 0;
+  const autoconsumptionRatio = variantData.auto_consumption_pct ||  // from comparison module (%)
+                               variantData.autoconsumption ||
+                               variantData.autoconsumption_ratio || 0;
   const calculatedSelfConsumption = selfConsumptionKwh || (annualProductionKwh * autoconsumptionRatio / 100);
 
-  const totalConsumptionKwh = analysisResults?.totalConsumption_kWh ||
+  const totalConsumptionKwh = consumptionData?.annual_consumption_kwh ||  // from consumption module (kWh)
+                               (consumptionData?.total_consumption_gwh * 1000000) ||  // from consumption (GWh -> kWh)
+                               analysisResults?.totalConsumption_kWh ||
                                analysisResults?.total_consumption_kwh ||
                                variantData.consumption_kWh ||
                                variantData.total_consumption || 50000;
@@ -271,7 +283,13 @@ function updateESGDashboard() {
     pvCapacityKwp,
     selfConsumptionKwh: calculatedSelfConsumption,
     totalConsumptionKwh,
-    autoconsumptionRatio
+    autoconsumptionRatio,
+    // Debug: raw values from sources
+    rawSelfConsumed: variantData.self_consumed,
+    rawSelfConsumption: variantData.self_consumption,
+    rawAutoConsumptionPct: variantData.auto_consumption_pct,
+    hasConsumptionData: !!consumptionData,
+    consumptionDataAnnual: consumptionData?.annual_consumption_kwh
   });
 
   // Get ESG parameters from settings or defaults
@@ -747,22 +765,32 @@ const PV_LCA_EMISSIONS = {
 
 // ============================================
 // CARBON CLOCK - Real-time CO2 Savings Animation
+// Uses actual hourly production data from analysis
 // ============================================
 
 // Carbon Clock state
 let carbonClockInterval = null;
 let carbonClockIsRunning = false;
 let carbonClockStartTime = null;
-let carbonClockSimulatedSeconds = 0;
-let carbonClockSpeed = 'minute'; // realtime, minute, fast, ultrafast
+let carbonClockCurrentHourIndex = 0;  // Current hour in the simulation (0 to 8759)
+let carbonClockSpeed = 'fast'; // realtime, minute, fast, ultrafast, superfast, warp
 
-// CO2 savings rate per second (calculated from annual data)
-let co2PerSecond = 0; // kg CO2 per second
-let treesPerYear = 0; // number of trees equivalent
-let carKmPerYear = 0; // car km equivalent
+// Hourly data from analysis (real production values)
+let clockHourlyProduction = [];  // kWh per hour
+let clockHourlyTimestamps = [];  // ISO timestamps
+let clockTotalHours = 0;
+
+// CO2 calculation parameters
+let clockNetCo2PerKwh = 0;  // kg CO2 saved per kWh (grid EF - PV LCA)
+let clockAnnualCo2Kg = 0;   // Total annual CO2 savings in kg
+let treesPerYear = 0;
+let carKmPerYear = 0;
+
+// Cumulative counters
+let clockCumulativeCo2Kg = 0;
 
 /**
- * Initialize Carbon Clock with calculated data
+ * Initialize Carbon Clock with actual hourly data from analysis
  */
 function initCarbonClock(metrics) {
   if (!metrics || !metrics.annualProductionKwh) {
@@ -770,34 +798,140 @@ function initCarbonClock(metrics) {
     return;
   }
 
+  // Calculate CO2 per kWh
   const gridEfKgPerKwh = metrics.efGrid || 0.658;
   const pvTech = metrics.pvTechnology || 'mono-Si';
   const pvLcaGPerKwh = PV_LCA_EMISSIONS[pvTech] || PV_LCA_EMISSIONS['default'];
   const pvLcaKgPerKwh = pvLcaGPerKwh / 1000;
-  const netSavingsPerKwh = gridEfKgPerKwh - pvLcaKgPerKwh;
+  clockNetCo2PerKwh = gridEfKgPerKwh - pvLcaKgPerKwh;
 
-  // Annual CO2 savings in kg
-  const annualCo2SavingsKg = metrics.annualProductionKwh * netSavingsPerKwh;
-
-  // CO2 per second (annual / seconds in year)
-  const secondsInYear = 365.25 * 24 * 3600;
-  co2PerSecond = annualCo2SavingsKg / secondsInYear;
+  // Annual CO2 savings
+  clockAnnualCo2Kg = metrics.annualProductionKwh * clockNetCo2PerKwh;
 
   // Tree equivalent (22 kg CO2/year per tree)
-  treesPerYear = annualCo2SavingsKg / 22;
+  treesPerYear = clockAnnualCo2Kg / 22;
 
   // Car km equivalent (120 g CO2/km)
-  carKmPerYear = (annualCo2SavingsKg * 1000) / 120;
+  carKmPerYear = (clockAnnualCo2Kg * 1000) / 120;
+
+  // Try to get hourly production data from shared data
+  loadHourlyProductionData();
 
   console.log('Carbon Clock initialized:', {
-    annualCo2SavingsKg,
-    co2PerSecond,
+    clockNetCo2PerKwh,
+    clockAnnualCo2Kg,
     treesPerYear,
-    carKmPerYear
+    carKmPerYear,
+    hourlyDataPoints: clockTotalHours
   });
 
-  // Reset display
+  // Reset display with first timestamp
   resetCarbonClockDisplay();
+}
+
+/**
+ * Load hourly production data from analysis results
+ */
+function loadHourlyProductionData() {
+  console.log('🕐 Carbon Clock: Loading hourly data...');
+  console.log('  - hourlyData available:', !!hourlyData);
+  console.log('  - hourlyData.timestamps:', hourlyData?.timestamps?.length || 0);
+  console.log('  - hourlyData.values:', hourlyData?.values?.length || 0);
+  console.log('  - masterVariant:', !!masterVariant);
+  console.log('  - masterVariant.hourlyProduction:', masterVariant?.hourlyProduction?.length || 0);
+
+  // Try to get hourly data from masterVariant or analysisResults
+  let production = null;
+  let timestamps = null;
+
+  // Check masterVariant for hourly production
+  if (masterVariant?.hourlyProduction) {
+    production = masterVariant.hourlyProduction;
+    console.log('Carbon Clock: Using hourlyProduction from masterVariant');
+  }
+
+  // Check hourlyData for timestamps
+  if (hourlyData?.timestamps && hourlyData.timestamps.length > 0) {
+    timestamps = hourlyData.timestamps;
+    clockHourlyTimestamps = [...timestamps];  // Copy array
+    console.log('Carbon Clock: Loaded', timestamps.length, 'timestamps from hourlyData');
+    console.log('  First timestamp:', timestamps[0]);
+    console.log('  Last timestamp:', timestamps[timestamps.length - 1]);
+  }
+
+  // If no hourly production but we have hourlyData values, estimate production distribution
+  if (!production && hourlyData?.values && masterVariant) {
+    const annualProduction = masterVariant.production || masterVariant.totalProduction_kWh || 0;
+    const hours = hourlyData.values.length;
+
+    if (annualProduction > 0 && hours > 0) {
+      production = estimateHourlyProduction(timestamps || [], annualProduction, hours);
+      console.log('Carbon Clock: Generated estimated hourly production for', hours, 'hours');
+    }
+  }
+
+  // Store production data
+  if (production && production.length > 0) {
+    clockHourlyProduction = production;
+    clockTotalHours = production.length;
+  } else {
+    // If no production data, at least set total hours from timestamps
+    clockTotalHours = clockHourlyTimestamps.length || 8760;
+  }
+
+  // If still no timestamps, generate them starting from Jan 1 of current year
+  if (clockHourlyTimestamps.length === 0) {
+    const year = new Date().getFullYear();
+    clockHourlyTimestamps = [];
+    for (let h = 0; h < clockTotalHours; h++) {
+      const date = new Date(year, 0, 1);
+      date.setHours(h);
+      clockHourlyTimestamps.push(date.toISOString());
+    }
+    console.log('Carbon Clock: Generated', clockTotalHours, 'default timestamps for year', year);
+  }
+
+  console.log('🕐 Carbon Clock data loaded:', {
+    productionHours: clockHourlyProduction.length,
+    timestampHours: clockHourlyTimestamps.length,
+    totalHours: clockTotalHours
+  });
+}
+
+/**
+ * Estimate hourly production based on typical solar profile
+ * Fallback when no real hourly production data is available
+ */
+function estimateHourlyProduction(timestamps, annualProductionKwh, hours) {
+  const production = [];
+  let totalWeight = 0;
+
+  // Calculate weights for each hour based on typical solar profile
+  for (let h = 0; h < hours; h++) {
+    let hourOfDay = h % 24;
+    let dayOfYear = Math.floor(h / 24);
+
+    // Simple solar profile: production between 6:00-20:00, peak at 12:00
+    let weight = 0;
+    if (hourOfDay >= 6 && hourOfDay <= 20) {
+      // Bell curve centered at 13:00
+      const peakHour = 13;
+      const spread = 4;
+      weight = Math.exp(-Math.pow(hourOfDay - peakHour, 2) / (2 * spread * spread));
+
+      // Seasonal variation: more production in summer (day ~172 = June 21)
+      const summerPeak = 172;
+      const seasonalFactor = 0.5 + 0.5 * Math.cos((dayOfYear - summerPeak) * 2 * Math.PI / 365);
+      weight *= (0.5 + 0.5 * seasonalFactor);
+    }
+
+    production.push(weight);
+    totalWeight += weight;
+  }
+
+  // Normalize to match annual production
+  const factor = annualProductionKwh / totalWeight;
+  return production.map(w => w * factor);
 }
 
 /**
@@ -815,8 +949,8 @@ function toggleCarbonClock() {
  * Start Carbon Clock animation
  */
 function startCarbonClock() {
-  if (co2PerSecond <= 0) {
-    console.warn('Carbon Clock: No CO2 data to animate');
+  if (clockTotalHours === 0 && clockAnnualCo2Kg <= 0) {
+    console.warn('Carbon Clock: No data to animate');
     return;
   }
 
@@ -831,25 +965,22 @@ function startCarbonClock() {
   if (icon) icon.textContent = '⏸️';
   if (text) text.textContent = 'Pauza';
 
-  // Get speed multiplier
-  const speedMultiplier = getClockSpeedMultiplier();
-
-  // Start animation interval (update every 50ms for smooth animation)
+  // Start animation interval (update every 100ms)
   carbonClockInterval = setInterval(() => {
     const elapsedMs = Date.now() - carbonClockStartTime;
-    const elapsedSeconds = elapsedMs / 1000;
+    const speedMultiplier = getClockSpeedMultiplier();
 
-    // Apply speed multiplier
-    carbonClockSimulatedSeconds += (elapsedSeconds * speedMultiplier) - (carbonClockSimulatedSeconds % 1 === 0 ? 0 : 0);
-    carbonClockSimulatedSeconds = (Date.now() - carbonClockStartTime) / 1000 * speedMultiplier + (carbonClockSimulatedSeconds || 0);
+    // Calculate how many simulated hours have passed
+    // Speed multiplier converts real seconds to simulated seconds
+    const simulatedSeconds = (elapsedMs / 1000) * speedMultiplier;
+    const simulatedHours = simulatedSeconds / 3600;
 
-    // Recalculate based on actual elapsed time
-    const totalSimulatedSeconds = ((Date.now() - carbonClockStartTime) / 1000) * speedMultiplier;
+    // Update display with current hour index
+    const currentHourIndex = Math.floor(simulatedHours) % Math.max(clockTotalHours, 8760);
+    updateCarbonClockDisplay(currentHourIndex, simulatedSeconds);
+  }, 100);
 
-    updateCarbonClockDisplay(totalSimulatedSeconds);
-  }, 50);
-
-  console.log('Carbon Clock started with speed:', carbonClockSpeed);
+  console.log('Carbon Clock started with speed:', carbonClockSpeed, 'hours:', clockTotalHours);
 }
 
 /**
@@ -889,12 +1020,23 @@ function resetCarbonClock() {
  * Reset Carbon Clock display to initial state
  */
 function resetCarbonClockDisplay() {
+  clockCumulativeCo2Kg = 0;
+  clockCurrentHourIndex = 0;
+
   setElementValue('clockCo2Value', '0,00');
   setElementValue('clockTreeCount', '0');
   setElementValue('clockTreeFraction', ',0');
   setElementValue('clockCarKm', '0');
   setElementValue('clockYearCo2', '0,0');
-  setElementValue('clockCurrentTime', '00:00:00');
+  setElementValue('clockCurrentTime', '00:00');
+
+  // Show first date from data
+  if (clockHourlyTimestamps.length > 0) {
+    const firstDate = getCalendarDateFromHourIndex(0);
+    setElementValue('clockCurrentDate', firstDate);
+  } else {
+    setElementValue('clockCurrentDate', 'Dzień 1 z 365');
+  }
 
   // Reset progress bars
   const ringProgress = document.getElementById('clockRingProgress');
@@ -911,37 +1053,99 @@ function resetCarbonClockDisplay() {
 }
 
 /**
- * Update Carbon Clock display with simulated time
+ * Get calendar date string from hour index using actual timestamps
  */
-function updateCarbonClockDisplay(simulatedSeconds) {
-  // Calculate values based on simulated time
-  const co2SavedKg = simulatedSeconds * co2PerSecond;
-  const co2SavedToday = co2SavedKg % (co2PerSecond * 86400); // Reset daily
-  const dayOfYear = Math.floor(simulatedSeconds / 86400) + 1;
+function getCalendarDateFromHourIndex(hourIndex) {
+  // Polish month names
+  const months = [
+    'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca',
+    'lipca', 'sierpnia', 'wrzesnia', 'pazdziernika', 'listopada', 'grudnia'
+  ];
 
-  // Trees equivalent (proportional)
-  const treesWorking = (simulatedSeconds / (365.25 * 86400)) * treesPerYear;
+  let date;
+  const dayNumber = Math.floor(hourIndex / 24) + 1;  // Day 1, 2, 3...
 
-  // Car km equivalent (proportional)
-  const carKm = (simulatedSeconds / (365.25 * 86400)) * carKmPerYear;
+  // Use actual timestamp if available
+  if (clockHourlyTimestamps.length > 0 && hourIndex < clockHourlyTimestamps.length) {
+    date = new Date(clockHourlyTimestamps[hourIndex]);
+    const day = date.getDate();
+    const monthIndex = date.getMonth();
+    const year = date.getFullYear();
+    return `Dzień ${dayNumber}: ${day} ${months[monthIndex]} ${year}`;
+  } else if (clockHourlyTimestamps.length > 0) {
+    // Use first timestamp as base and add days
+    const baseDate = new Date(clockHourlyTimestamps[0]);
+    date = new Date(baseDate);
+    date.setHours(date.getHours() + hourIndex);
+    const day = date.getDate();
+    const monthIndex = date.getMonth();
+    const year = date.getFullYear();
+    return `Dzień ${dayNumber}: ${day} ${months[monthIndex]} ${year}`;
+  } else {
+    // Fallback: just show day number
+    return `Dzień ${dayNumber} z 365`;
+  }
+}
 
-  // Year CO2 in tons
-  const yearCo2Tons = co2SavedKg / 1000;
+/**
+ * Update Carbon Clock display with actual hourly data
+ * @param {number} hourIndex - Current hour index in the data (0 to totalHours-1)
+ * @param {number} simulatedSeconds - Total simulated seconds (for sub-hour animation)
+ */
+function updateCarbonClockDisplay(hourIndex, simulatedSeconds) {
+  // Get current hour of day for time display
+  const hourOfDay = hourIndex % 24;
+  const minuteOfHour = Math.floor((simulatedSeconds % 3600) / 60) % 60;
 
-  // Update main CO2 display (daily)
-  setElementValue('clockCo2Value', formatNumber(co2SavedToday, 2));
-
-  // Update time display (simulated time of day)
-  const timeOfDay = simulatedSeconds % 86400;
-  const hours = Math.floor(timeOfDay / 3600);
-  const minutes = Math.floor((timeOfDay % 3600) / 60);
-  const seconds = Math.floor(timeOfDay % 60);
+  // Update time display (HH:MM format)
   setElementValue('clockCurrentTime',
-    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    `${hourOfDay.toString().padStart(2, '0')}:${minuteOfHour.toString().padStart(2, '0')}`
   );
 
-  // Update ring progress (daily cycle)
-  const dayProgress = (timeOfDay / 86400) * 100;
+  // Update calendar date from actual timestamps
+  const dateStr = getCalendarDateFromHourIndex(hourIndex);
+
+  // Force update the date element directly (ensure it works)
+  const dateEl = document.getElementById('clockCurrentDate');
+  if (dateEl) {
+    dateEl.textContent = dateStr;
+  }
+
+  // Calculate cumulative CO2 saved up to this hour
+  let cumulativeCo2Kg = 0;
+  let todayCo2Kg = 0;
+  const startOfDayHour = Math.floor(hourIndex / 24) * 24;
+
+  if (clockHourlyProduction.length > 0) {
+    // Use actual hourly production data
+    for (let h = 0; h <= hourIndex && h < clockHourlyProduction.length; h++) {
+      const hourCo2 = clockHourlyProduction[h] * clockNetCo2PerKwh;
+      cumulativeCo2Kg += hourCo2;
+
+      if (h >= startOfDayHour) {
+        todayCo2Kg += hourCo2;
+      }
+    }
+
+    // Add partial hour (interpolation for smooth animation)
+    if (hourIndex < clockHourlyProduction.length) {
+      const fractionOfHour = (simulatedSeconds % 3600) / 3600;
+      const currentHourCo2 = clockHourlyProduction[hourIndex] * clockNetCo2PerKwh;
+      todayCo2Kg += currentHourCo2 * fractionOfHour;
+      cumulativeCo2Kg += currentHourCo2 * fractionOfHour;
+    }
+  } else {
+    // Fallback: use average rate
+    const co2PerSecond = clockAnnualCo2Kg / (365.25 * 24 * 3600);
+    cumulativeCo2Kg = simulatedSeconds * co2PerSecond;
+    todayCo2Kg = (simulatedSeconds % 86400) * co2PerSecond;
+  }
+
+  // Update main CO2 display (daily)
+  setElementValue('clockCo2Value', formatNumber(todayCo2Kg, 2));
+
+  // Update ring progress (daily cycle based on hour of day)
+  const dayProgress = (hourOfDay / 24) * 100;
   const ringProgress = document.getElementById('clockRingProgress');
   if (ringProgress) {
     const circumference = 339.292;
@@ -949,7 +1153,8 @@ function updateCarbonClockDisplay(simulatedSeconds) {
     ringProgress.style.strokeDashoffset = offset;
   }
 
-  // Update trees counter
+  // Trees equivalent (proportional to cumulative CO2)
+  const treesWorking = (cumulativeCo2Kg / clockAnnualCo2Kg) * treesPerYear;
   const treeWhole = Math.floor(treesWorking);
   const treeFraction = Math.floor((treesWorking - treeWhole) * 10);
   setElementValue('clockTreeCount', formatNumber(treeWhole, 0));
@@ -960,7 +1165,8 @@ function updateCarbonClockDisplay(simulatedSeconds) {
   const treeProgressEl = document.getElementById('clockTreeProgress');
   if (treeProgressEl) treeProgressEl.style.width = `${treeProgressPct}%`;
 
-  // Update car km counter
+  // Car km equivalent (proportional to cumulative CO2)
+  const carKm = (cumulativeCo2Kg / clockAnnualCo2Kg) * carKmPerYear;
   setElementValue('clockCarKm', formatNumber(Math.floor(carKm), 0));
 
   // Update car progress (to next 100 km milestone)
@@ -968,12 +1174,12 @@ function updateCarbonClockDisplay(simulatedSeconds) {
   const carProgressEl = document.getElementById('clockCarProgress');
   if (carProgressEl) carProgressEl.style.width = `${carProgressPct}%`;
 
-  // Update year CO2 counter
+  // Year CO2 in tons (cumulative)
+  const yearCo2Tons = cumulativeCo2Kg / 1000;
   setElementValue('clockYearCo2', formatNumber(yearCo2Tons, 1));
 
   // Update year progress (percentage of annual target)
-  const annualTarget = co2PerSecond * 365.25 * 86400 / 1000; // tons
-  const yearProgressPct = Math.min((yearCo2Tons / annualTarget) * 100, 100);
+  const yearProgressPct = Math.min((cumulativeCo2Kg / clockAnnualCo2Kg) * 100, 100);
   const yearProgressEl = document.getElementById('clockYearProgress');
   if (yearProgressEl) yearProgressEl.style.width = `${yearProgressPct}%`;
 }
@@ -982,7 +1188,7 @@ function updateCarbonClockDisplay(simulatedSeconds) {
  * Get speed multiplier based on selected mode
  */
 function getClockSpeedMultiplier() {
-  const speed = document.getElementById('clockSpeedSelect')?.value || 'minute';
+  const speed = document.getElementById('clockSpeedSelect')?.value || 'fast';
   carbonClockSpeed = speed;
 
   switch (speed) {
@@ -990,7 +1196,9 @@ function getClockSpeedMultiplier() {
     case 'minute': return 60;            // 1 second = 1 minute (1 min = 1 hour)
     case 'fast': return 1440;            // 1 second = 24 minutes (1 min = 1 day)
     case 'ultrafast': return 10080;      // 1 second = 168 minutes (1 min = 1 week)
-    default: return 60;
+    case 'superfast': return 43200;      // 1 second = 12 hours (1 min = 1 month)
+    case 'warp': return 525600;          // 1 second = 6 days (1 min = 1 year)
+    default: return 1440;
   }
 }
 

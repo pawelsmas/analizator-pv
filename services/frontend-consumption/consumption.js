@@ -36,8 +36,9 @@ function formatNumberEU(value, decimals = 2) {
 // Data storage
 let consumptionData = null;
 let peakShavingExportData = null; // Store for BESS optimization
-let currentLoadProfile = null; // Hourly load profile for BESS optimization
+let currentLoadProfile = null; // Load profile for BESS optimization (hourly or 15-min)
 let currentTimestamps = null; // Timestamps for BESS optimization
+let currentIntervalMinutes = 60; // Data interval: 15 for quarter-hourly, 60 for hourly
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -159,7 +160,25 @@ async function performAnalysis() {
     generateDailyProfileFromBackend(backendStats.daily_profile_mw);
     generateWeeklyProfileFromBackend(backendStats.weekly_profile_mwh);
     generateMonthlyProfileFromBackend(backendStats.monthly_consumption);
-    generateLoadDurationCurve(consumptionData.hourlyData.values, consumptionData.hourlyData.timestamps);
+
+    // Fetch 15-minute data for Peak Shaving analysis (more accurate for BESS sizing)
+    let peakShavingData = null;
+    try {
+      const quarterHourResponse = await fetch(`${API_URLS.dataAnalysis}/quarter-hour-data`);
+      if (quarterHourResponse.ok) {
+        peakShavingData = await quarterHourResponse.json();
+        console.log(`📊 Loaded 15-min data: ${peakShavingData.total_intervals} intervals`);
+      }
+    } catch (e) {
+      console.warn('⚠️ Could not load 15-min data, falling back to hourly:', e);
+    }
+
+    // Use 15-min data for Peak Shaving if available, otherwise fall back to hourly
+    if (peakShavingData && peakShavingData.values?.length > 0) {
+      generateLoadDurationCurve(peakShavingData.values, peakShavingData.timestamps, 15);
+    } else {
+      generateLoadDurationCurve(consumptionData.hourlyData.values, consumptionData.hourlyData.timestamps, 60);
+    }
 
     // Fetch and display seasonality analysis
     await loadSeasonalityAnalysis();
@@ -175,7 +194,7 @@ async function performAnalysis() {
     generateDailyProfile(hourlyData);
     generateWeeklyProfile(hourlyData);
     generateMonthlyProfile(hourlyData);
-    generateLoadDurationCurve(values, consumptionData.hourlyData?.timestamps);
+    generateLoadDurationCurve(values, consumptionData.hourlyData?.timestamps, 60);
   }
 }
 
@@ -241,8 +260,17 @@ function updateStatisticsFromBackend(stats) {
   document.getElementById('stdDev').textContent = `${stats.std_dev_mw.toFixed(2)} MW`;
   document.getElementById('variationCoef').textContent = `${stats.variation_coef_pct.toFixed(1)}%`;
   document.getElementById('loadFactor').textContent = `${stats.load_factor_pct.toFixed(1)}%`;
-  document.getElementById('dataPoints').textContent = stats.hours.toLocaleString('pl-PL');
+
+  // Show measurements count with resolution info
+  const measurements = stats.measurements || stats.hours;
+  const resolution = stats.data_resolution || 'hourly';
+  const resolutionLabel = resolution === '15-min' ? ' (15-min)' : '';
+  document.getElementById('dataPoints').textContent = measurements.toLocaleString('pl-PL') + resolutionLabel;
+
   document.getElementById('dataPeriod').textContent = `${stats.days} dni (${stats.date_start} - ${stats.date_end})`;
+
+  // Log data resolution for debugging
+  console.log(`📊 Statistics resolution: ${resolution}, measurements: ${measurements}`);
 }
 
 // Update data info
@@ -520,10 +548,12 @@ function generateMonthlyProfile(hourlyData) {
 }
 
 // Generate load duration curve with peak shaving analysis
-function generateLoadDurationCurve(values, timestamps = null) {
+// intervalMinutes: 15 for quarter-hourly data, 60 for hourly data
+function generateLoadDurationCurve(values, timestamps = null, intervalMinutes = 60) {
   // Store for BESS optimization API
   currentLoadProfile = values;
   currentTimestamps = timestamps;
+  currentIntervalMinutes = intervalMinutes;
 
   // Create indexed data with original positions
   const indexedData = values.map((val, idx) => ({
@@ -534,10 +564,13 @@ function generateLoadDurationCurve(values, timestamps = null) {
 
   // Sort by value descending
   const sortedData = [...indexedData].sort((a, b) => b.value - a.value);
-  const totalHours = sortedData.length;
+  const totalIntervals = sortedData.length;
+  const intervalsPerHour = 60 / intervalMinutes;  // 4 for 15-min, 1 for hourly
+  const totalHours = totalIntervals / intervalsPerHour;  // Equivalent hours for display
 
   // Calculate percentiles and peak shaving metrics with timestamps
-  const peakShavingAnalysis = calculatePeakShavingAnalysis(sortedData, timestamps);
+  // Pass interval info for proper energy/hours calculation
+  const peakShavingAnalysis = calculatePeakShavingAnalysis(sortedData, timestamps, intervalMinutes);
 
   // Store for export
   peakShavingExportData = peakShavingAnalysis;
@@ -582,7 +615,7 @@ function generateLoadDurationCurve(values, timestamps = null) {
     },
     options: {
       responsive: true,
-      maintainAspectRatio: true,
+      maintainAspectRatio: false,
       interaction: {
         mode: 'index',
         intersect: false
@@ -599,7 +632,11 @@ function generateLoadDurationCurve(values, timestamps = null) {
         },
         tooltip: {
           callbacks: {
-            title: (items) => `Godzina ${items[0].label} z ${totalHours}`,
+            title: (items) => {
+              const intervalIdx = parseInt(items[0].label);
+              const hourEquiv = intervalIdx / intervalsPerHour;
+              return `Interwał ${intervalIdx} (~${formatNumberEU(hourEquiv, 0)}h z ${formatNumberEU(totalHours, 0)}h)`;
+            },
             label: (ctx) => {
               const value = ctx.raw;
               return `${ctx.dataset.label}: ${formatNumberEU(value, 3)} MW (${formatNumberEU(value * 1000, 0)} kW)`;
@@ -614,12 +651,13 @@ function generateLoadDurationCurve(values, timestamps = null) {
           grid: { color: 'rgba(0,0,0,0.08)' }
         },
         x: {
-          title: { display: true, text: `Uporządkowane godziny (${totalHours}h w roku)`, font: { weight: 'bold' } },
+          title: { display: true, text: `Uporządkowane interwały (${formatNumberEU(totalHours, 0)}h ekw. w roku, dane ${intervalMinutes}-min)`, font: { weight: 'bold' } },
           ticks: {
             callback: function(value, index) {
-              const hour = Math.round(index * sampleRate);
-              if (hour === 0) return '0h';
-              if (hour % 1000 === 0 || index === sampled.length - 1) return `${hour}h`;
+              const interval = Math.round(index * sampleRate);
+              const hourEquiv = interval / intervalsPerHour;
+              if (interval === 0) return '0h';
+              if (hourEquiv % 1000 === 0 || index === sampled.length - 1) return `${formatNumberEU(hourEquiv, 0)}h`;
               return '';
             },
             maxRotation: 0
@@ -638,11 +676,21 @@ function generateLoadDurationCurve(values, timestamps = null) {
  * Calculate peak shaving analysis with multiple threshold levels
  * @param {Array} sortedData - Array of {value, originalIndex, timestamp} sorted by value descending
  * @param {Array} timestamps - Original timestamps array (for reference)
+ * @param {Number} intervalMinutes - Data interval in minutes (15 for quarter-hourly, 60 for hourly)
  */
-function calculatePeakShavingAnalysis(sortedData, timestamps) {
-  const totalHours = sortedData.length;
+function calculatePeakShavingAnalysis(sortedData, timestamps, intervalMinutes = 60) {
+  const totalIntervals = sortedData.length;
+  const intervalsPerHour = 60 / intervalMinutes; // 4 for 15-min, 1 for hourly
+  const totalHoursEquivalent = totalIntervals / intervalsPerHour;
   const peakPower = sortedData[0]?.value || 0;
-  const avgPower = sortedData.reduce((sum, d) => sum + d.value, 0) / totalHours;
+  const avgPower = sortedData.reduce((sum, d) => sum + d.value, 0) / totalIntervals;
+
+  // Info about data resolution
+  const resolutionInfo = intervalMinutes === 15
+    ? `Analiza 15-min (${totalIntervals} interwałów = ${formatNumberEU(totalHoursEquivalent, 0)} godz.)`
+    : `Analiza godzinowa (${totalIntervals} godz.)`;
+
+  console.log(`📊 Peak Shaving: ${resolutionInfo}`);
 
   // Define percentile thresholds for analysis
   const percentileConfigs = [
@@ -663,21 +711,24 @@ function calculatePeakShavingAnalysis(sortedData, timestamps) {
   for (const config of percentileConfigs) {
     // Calculate index for percentile (sorted descending, so P99 = top 1%)
     const exceedancePercent = 100 - config.percentile;
-    const exactHoursAbove = totalHours * exceedancePercent / 100;
-    const index = Math.min(Math.ceil(exactHoursAbove), totalHours - 1);
+    const exactIntervalsAbove = totalIntervals * exceedancePercent / 100;
+    const exactHoursAbove = exactIntervalsAbove / intervalsPerHour; // Convert to hours
+    const index = Math.min(Math.ceil(exactIntervalsAbove), totalIntervals - 1);
     const powerAtPercentile = sortedData[index]?.value || 0;
 
     // Calculate energy above threshold and collect timestamps
+    // For 15-min data: each interval = 0.25h of energy (power * 0.25)
     let energyToShave = 0;
-    let hoursToShave = 0;
+    let intervalsToShave = 0;
     const exceedanceEvents = [];
 
     for (let i = 0; i < sortedData.length; i++) {
       const d = sortedData[i];
       if (d.value > powerAtPercentile) {
         const excess = d.value - powerAtPercentile;
-        energyToShave += excess;
-        hoursToShave++;
+        // Energy = Power * Time (in hours), for 15-min interval = 0.25h
+        energyToShave += excess * (intervalMinutes / 60);
+        intervalsToShave++;
         exceedanceEvents.push({
           rank: i + 1,
           timestamp: d.timestamp,
@@ -689,6 +740,9 @@ function calculatePeakShavingAnalysis(sortedData, timestamps) {
         break; // sorted descending, so we can stop
       }
     }
+
+    // Convert intervals to hours for display
+    const hoursToShave = intervalsToShave / intervalsPerHour;
 
     // Calculate peak reduction percentage
     const peakReductionPct = peakPower > 0 ? ((peakPower - powerAtPercentile) / peakPower) * 100 : 0;
@@ -757,7 +811,7 @@ function calculatePeakShavingAnalysis(sortedData, timestamps) {
   // Calculate BESS sizing based on grouped blocks for recommended level
   let bessRecommendation = null;
   if (recommended && recommended.exceedanceEvents.length > 0) {
-    const blocks = groupConsecutiveEventsForBESS(recommended.exceedanceEvents);
+    const blocks = groupConsecutiveEventsForBESS(recommended.exceedanceEvents, intervalMinutes);
     if (blocks.length > 0) {
       // Find the largest block by energy
       const largestBlock = blocks.reduce((max, b) => b.totalExcessKWh > max.totalExcessKWh ? b : max, blocks[0]);
@@ -789,7 +843,10 @@ function calculatePeakShavingAnalysis(sortedData, timestamps) {
   return {
     peakPower,
     avgPower,
-    totalHours,
+    totalHours: totalHoursEquivalent,
+    totalIntervals,
+    intervalMinutes,
+    resolutionInfo,
     thresholds: thresholds.slice(0, 4), // Show top 4 thresholds on chart
     tableRows,
     recommended,
@@ -800,9 +857,13 @@ function calculatePeakShavingAnalysis(sortedData, timestamps) {
 
 /**
  * Group consecutive events for BESS sizing (simplified version for analysis)
+ * @param {Array} events - Array of exceedance events
+ * @param {Number} intervalMinutes - Interval in minutes (15 or 60), default 60 for backward compatibility
  */
-function groupConsecutiveEventsForBESS(events) {
+function groupConsecutiveEventsForBESS(events, intervalMinutes = 60) {
   if (!events || events.length === 0) return [];
+
+  const hoursPerInterval = intervalMinutes / 60; // 0.25 for 15-min, 1 for hourly
 
   // Sort events by original index (chronological order)
   const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
@@ -814,7 +875,8 @@ function groupConsecutiveEventsForBESS(events) {
     if (!currentGroup) {
       currentGroup = {
         events: [event],
-        totalExcessKWh: event.excessKW || 0,
+        // For 15-min data: energy = excess_kW * 0.25h
+        totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
         maxPowerKW: event.powerKW || 0
       };
     } else {
@@ -824,14 +886,15 @@ function groupConsecutiveEventsForBESS(events) {
 
       if (isConsecutive) {
         currentGroup.events.push(event);
-        currentGroup.totalExcessKWh += event.excessKW || 0;
+        currentGroup.totalExcessKWh += (event.excessKW || 0) * hoursPerInterval;
         currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
       } else {
-        currentGroup.durationHours = currentGroup.events.length;
+        // Close current group - calculate duration in hours
+        currentGroup.durationHours = currentGroup.events.length * hoursPerInterval;
         groups.push(currentGroup);
         currentGroup = {
           events: [event],
-          totalExcessKWh: event.excessKW || 0,
+          totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
           maxPowerKW: event.powerKW || 0
         };
       }
@@ -839,7 +902,7 @@ function groupConsecutiveEventsForBESS(events) {
   }
 
   if (currentGroup) {
-    currentGroup.durationHours = currentGroup.events.length;
+    currentGroup.durationHours = currentGroup.events.length * hoursPerInterval;
     groups.push(currentGroup);
   }
 
@@ -918,51 +981,51 @@ function updatePeakShavingTable(analysis) {
             i dostarczenia <strong>${formatNumberEU(rec.energyToShave, 0)} kWh</strong> z magazynu lub redukcji obciążenia.
           </p>
           ${analysis.bessRecommendation ? `
-          <div id="bessRecommendationSection" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.6); border-radius: 6px; border-left: 3px solid #3498db;">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-              <strong style="color: #2980b9; font-size: 12px;">🔋 Orientacyjny dobór BESS (heurystyka):</strong>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <select id="bessLevelSelect" style="
-                  padding: 5px 8px;
-                  border-radius: 4px;
-                  border: 1px solid #3498db;
-                  font-size: 11px;
-                  background: white;
-                  cursor: pointer;
-                  min-width: 200px;
-                ">
-                  ${analysis.tableRows.filter(r => r.ratingCode !== 'nieoplacalne').map(row =>
-                    `<option value="${row.name}" ${row.name === rec.name ? 'selected' : ''}>
-                      ${row.name} (${formatNumberEU(row.powerKW, 0)} kW) - ${row.rating}
-                    </option>`
-                  ).join('')}
-                </select>
-                <button onclick="runBESSOptimization()" id="bessOptimizeBtn" style="
-                  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
-                  color: white;
-                  border: none;
-                  padding: 6px 12px;
-                  border-radius: 4px;
-                  cursor: pointer;
-                  font-size: 11px;
-                  font-weight: 600;
-                  white-space: nowrap;
-                ">⚡ Optymalizuj (PyPSA+HiGHS)</button>
-              </div>
+          <div id="bessRecommendationSection" style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.7); border-radius: 8px; border-left: 4px solid #3498db;">
+            <div style="margin-bottom: 10px;">
+              <strong style="color: #2980b9; font-size: 13px;">🔋 Orientacyjny dobór BESS (heurystyka):</strong>
             </div>
-            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px;">
-              <div style="font-size: 12px; color: #2c3e50;">
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+              <select id="bessLevelSelect" style="
+                padding: 6px 10px;
+                border-radius: 4px;
+                border: 1px solid #3498db;
+                font-size: 12px;
+                background: white;
+                cursor: pointer;
+                min-width: 220px;
+              ">
+                ${analysis.tableRows.filter(r => r.ratingCode !== 'nieoplacalne').map(row =>
+                  `<option value="${row.name}" ${row.name === rec.name ? 'selected' : ''}>
+                    ${row.name} (${formatNumberEU(row.powerKW, 0)} kW) - ${row.rating}
+                  </option>`
+                ).join('')}
+              </select>
+              <button onclick="runBESSOptimization()" id="bessOptimizeBtn" style="
+                background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                white-space: nowrap;
+              ">⚡ Optymalizuj (PyPSA+HiGHS)</button>
+            </div>
+            <div style="display: flex; gap: 24px; margin-bottom: 8px;">
+              <div style="font-size: 13px; color: #2c3e50;">
                 <span style="color: #7f8c8d;">Pojemność:</span>
-                <strong id="bessCapacityValue">${formatNumberEU(analysis.bessRecommendation.capacityKWh, 0)} kWh</strong>
+                <strong id="bessCapacityValue" style="margin-left: 6px;">${formatNumberEU(analysis.bessRecommendation.capacityKWh, 0)} kWh</strong>
               </div>
-              <div style="font-size: 12px; color: #2c3e50;">
+              <div style="font-size: 13px; color: #2c3e50;">
                 <span style="color: #7f8c8d;">Moc:</span>
-                <strong id="bessPowerValue">${formatNumberEU(analysis.bessRecommendation.powerKW, 0)} kW</strong>
+                <strong id="bessPowerValue" style="margin-left: 6px;">${formatNumberEU(analysis.bessRecommendation.powerKW, 0)} kW</strong>
               </div>
             </div>
-            <p id="bessRationale" style="margin: 8px 0 0 0; color: #7f8c8d; font-size: 10px;">
+            <p id="bessRationale" style="margin: 0; color: #7f8c8d; font-size: 11px;">
               Na podstawie największego bloku: ${formatNumberEU(analysis.bessRecommendation.largestBlockEnergyKWh, 1)} kWh
-              przez ${analysis.bessRecommendation.largestBlockDurationH}h
+              przez ${formatNumberEU(analysis.bessRecommendation.largestBlockDurationH, 2)}h
               (${analysis.bessRecommendation.totalBlocks} bloków/rok, DOD ${analysis.bessRecommendation.dod}%, margines +${analysis.bessRecommendation.safetyMargin}%)
             </p>
             <div id="bessOptimizationDetails" style="display: none;"></div>
@@ -1031,12 +1094,17 @@ function formatDateTimeForExcel(timestamp) {
 }
 
 /**
- * Group consecutive hours into peak events (blocks)
+ * Group consecutive intervals into peak events (blocks)
  * @param {Array} events - Array of exceedance events sorted by timestamp
+ * @param {Number} intervalMinutes - Data interval in minutes (15 or 60), default 60
  * @returns {Array} Array of grouped peak events with start/end times
  */
-function groupConsecutiveEvents(events) {
+function groupConsecutiveEvents(events, intervalMinutes = 60) {
   if (!events || events.length === 0) return [];
+
+  const intervalMs = intervalMinutes * 60 * 1000;  // Interval in milliseconds
+  const hoursPerInterval = intervalMinutes / 60;   // 0.25 for 15-min, 1.0 for hourly
+  const toleranceMs = intervalMs * 1.5;            // 1.5x interval tolerance for gaps
 
   // Sort events by original index (chronological order)
   const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
@@ -1051,25 +1119,25 @@ function groupConsecutiveEvents(events) {
       // Start new group
       currentGroup = {
         startTime: eventTime,
-        endTime: eventTime ? new Date(eventTime.getTime() + 3600000) : null, // +1h
+        endTime: eventTime ? new Date(eventTime.getTime() + intervalMs) : null,
         events: [event],
-        totalExcessKWh: event.excessKW || 0,
+        totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,  // Energy = power * time
         maxPowerKW: event.powerKW || 0,
         avgPowerKW: event.powerKW || 0
       };
     } else {
-      // Check if this event is consecutive (within 1.5 hours of last event end)
+      // Check if this event is consecutive (within tolerance of last event)
       const lastEvent = currentGroup.events[currentGroup.events.length - 1];
       const lastEventTime = lastEvent.timestamp ? new Date(lastEvent.timestamp) : null;
 
       const isConsecutive = eventTime && lastEventTime &&
-        (eventTime.getTime() - lastEventTime.getTime()) <= 3600000 * 1.5; // 1.5h tolerance
+        (eventTime.getTime() - lastEventTime.getTime()) <= toleranceMs;
 
       if (isConsecutive) {
         // Add to current group
         currentGroup.events.push(event);
-        currentGroup.endTime = new Date(eventTime.getTime() + 3600000);
-        currentGroup.totalExcessKWh += event.excessKW || 0;
+        currentGroup.endTime = new Date(eventTime.getTime() + intervalMs);
+        currentGroup.totalExcessKWh += (event.excessKW || 0) * hoursPerInterval;
         currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
         currentGroup.avgPowerKW = currentGroup.events.reduce((sum, e) => sum + (e.powerKW || 0), 0) / currentGroup.events.length;
       } else {
@@ -1077,9 +1145,9 @@ function groupConsecutiveEvents(events) {
         groups.push(currentGroup);
         currentGroup = {
           startTime: eventTime,
-          endTime: eventTime ? new Date(eventTime.getTime() + 3600000) : null,
+          endTime: eventTime ? new Date(eventTime.getTime() + intervalMs) : null,
           events: [event],
-          totalExcessKWh: event.excessKW || 0,
+          totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
           maxPowerKW: event.powerKW || 0,
           avgPowerKW: event.powerKW || 0
         };
@@ -1092,9 +1160,9 @@ function groupConsecutiveEvents(events) {
     groups.push(currentGroup);
   }
 
-  // Add duration to each group
+  // Add duration to each group (in hours)
   for (const group of groups) {
-    group.durationHours = group.events.length;
+    group.durationHours = group.events.length * hoursPerInterval;  // e.g., 4 intervals * 0.25h = 1h
     if (group.startTime && group.endTime) {
       group.durationMs = group.endTime.getTime() - group.startTime.getTime();
     }
@@ -1148,20 +1216,22 @@ function exportPeakShavingAnalysis() {
     XLSX.utils.book_append_sheet(wb, ws1, 'Podsumowanie');
 
     // ========== SHEET 2: ZGRUPOWANE ZDARZENIA (główna tabela) ==========
+    const intervalMin = analysis.intervalMinutes || 60;  // Get interval from analysis
+    const intervalLabel = intervalMin === 15 ? '15-min' : 'godz.';
     const groupedData = [
       ['ZDARZENIA PEAK SHAVING - ZGRUPOWANE W BLOKI'],
       [''],
-      ['Bloki czasowe przekroczeń - kolejne godziny połączone w jedno zdarzenie'],
+      [`Bloki czasowe przekroczeń - kolejne interwały (${intervalMin} min) połączone w jedno zdarzenie`],
       [''],
       ['Poziom', 'Nr bloku', 'Start (data)', 'Start (godz.)', 'Stop (data)', 'Stop (godz.)',
-       'Czas trwania [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Próg [kW]', 'Suma nadwyżki [kWh]', 'Liczba godzin']
+       'Czas trwania [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Próg [kW]', 'Suma nadwyżki [kWh]', `Liczba int. (${intervalLabel})`]
     ];
 
     let globalBlockNum = 0;
     for (const level of analysis.exportableLevels || []) {
       if (level.exceedanceEvents.length === 0) continue;
 
-      const groups = groupConsecutiveEvents(level.exceedanceEvents);
+      const groups = groupConsecutiveEvents(level.exceedanceEvents, intervalMin);
       let blockNum = 0;
 
       for (const group of groups) {
@@ -1201,7 +1271,7 @@ function exportPeakShavingAnalysis() {
       if (level.exceedanceEvents.length === 0) continue;
 
       const sheetName = level.name.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 28);
-      const groups = groupConsecutiveEvents(level.exceedanceEvents);
+      const groups = groupConsecutiveEvents(level.exceedanceEvents, intervalMin);
 
       const detailData = [
         [`ZDARZENIA: ${level.name}`],
@@ -1322,7 +1392,7 @@ function exportPeakShavingAnalysis() {
       const safetyMargin = 1.2;
 
       // Group events into blocks for BESS simulation
-      const groups = groupConsecutiveEvents(bessLevel.exceedanceEvents);
+      const groups = groupConsecutiveEvents(bessLevel.exceedanceEvents, intervalMin);
 
       // Find largest block to size BESS
       let maxBlockEnergy = 0;
@@ -1794,6 +1864,7 @@ async function runBESSOptimization() {
     const requestBody = {
       load_profile_kw: currentLoadProfile,
       timestamps: currentTimestamps,
+      interval_minutes: currentIntervalMinutes,  // 15 for quarter-hourly, 60 for hourly
       peak_shaving_threshold_kw: threshold,
       bess_capex_per_kwh: 1500,
       bess_capex_per_kw: 300,
@@ -1804,7 +1875,8 @@ async function runBESSOptimization() {
     };
 
     console.log('🔋 Calling BESS optimization API:', {
-      hours: currentLoadProfile.length,
+      intervals: currentLoadProfile.length,
+      intervalMinutes: currentIntervalMinutes,
       level: selectedLevelName,
       threshold: threshold,
       rating: selectedLevel.rating,
@@ -1829,8 +1901,9 @@ async function runBESSOptimization() {
     powerEl.innerHTML = `${formatNumberEU(result.optimal_power_kw, 0)} kW`;
 
     // Update rationale with optimization details
+    const resolutionLabel = currentIntervalMinutes === 15 ? '15-min' : 'godzinowa';
     rationaleEl.innerHTML = `
-      <strong style="color: #27ae60;">✓ Zoptymalizowano dla ${selectedLevelName} (${result.method_used.toUpperCase()})</strong><br>
+      <strong style="color: #27ae60;">✓ Zoptymalizowano dla ${selectedLevelName} (${result.method_used.toUpperCase()}, ${resolutionLabel})</strong><br>
       ${result.sizing_rationale}<br>
       <span style="font-size: 9px;">
         C-rate: ${formatNumberEU(result.c_rate_actual, 2)} |
@@ -1862,7 +1935,7 @@ async function runBESSOptimization() {
         <div style="margin-top: 8px;">
           <span style="color: #7f8c8d;">Największy blok:</span>
           ${formatNumberEU(result.largest_block?.total_energy_kwh || 0, 1)} kWh
-          przez ${result.largest_block?.duration_hours || 0}h
+          przez ${formatNumberEU(result.largest_block?.duration_hours || 0, 2)}h
           (${result.blocks_analyzed} bloków/rok)
         </div>
         ${result.warnings?.length > 0 ? `

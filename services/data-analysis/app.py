@@ -36,6 +36,9 @@ class DataStatistics(BaseModel):
     days: int
     hours: int
     avg_daily_mwh: float
+    # Data resolution info
+    measurements: int = 0  # Total number of measurements (15-min intervals or hours)
+    data_resolution: str = "hourly"  # "15-min" or "hourly"
     # Calculated metrics
     std_dev_mw: float
     variation_coef_pct: float
@@ -127,6 +130,9 @@ class DataStore:
         self.hourly_data = []
         self.year_hours = []
         self.raw_dataframe = None
+        # 15-minute resolution data for peak shaving analysis
+        self.quarter_hour_data = []  # Power values in kW
+        self.quarter_hour_timestamps = []  # ISO timestamps
         # Analytical year metadata
         self.analytical_year: Optional[AnalyticalYear] = None
         self.start_date: Optional[datetime] = None
@@ -774,7 +780,19 @@ def process_uploaded_data(df: pd.DataFrame):
     year_hours = pd.date_range(start=start, end=end, freq='H', inclusive='left')
     hourly_data = np.zeros(len(year_hours))
 
-    # Aggregate to hourly
+    # Also create 15-minute resolution data for peak shaving analysis
+    quarter_start = first_timestamp.replace(second=0, microsecond=0)
+    # Round to nearest 15 minutes
+    quarter_start = quarter_start - pd.Timedelta(minutes=quarter_start.minute % 15)
+    quarter_end = last_timestamp.replace(second=0, microsecond=0) + pd.Timedelta(minutes=15)
+
+    quarter_hours = pd.date_range(start=quarter_start, end=quarter_end, freq='15min', inclusive='left')
+    quarter_data = np.zeros(len(quarter_hours))
+
+    print(f"📅 15-min data range: {quarter_start} to {quarter_end}")
+    print(f"📅 Total 15-min intervals: {len(quarter_hours)}")
+
+    # Aggregate to hourly AND 15-minute intervals
     for i in range(1, len(df)):
         t0 = df.iloc[i-1]['parsed_time']
         t1 = df.iloc[i]['parsed_time']
@@ -786,6 +804,7 @@ def process_uploaded_data(df: pd.DataFrame):
         kw = df.iloc[i-1]['kw']
         current_time = t0
 
+        # Aggregate to hourly
         while current_time < t1:
             hour_end = current_time.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
             segment_end = min(hour_end, t1)
@@ -794,6 +813,21 @@ def process_uploaded_data(df: pd.DataFrame):
             hour_index = int((current_time - start).total_seconds() // 3600)
             if 0 <= hour_index < len(hourly_data):
                 hourly_data[hour_index] += kw * (segment_duration / 3600)
+
+            current_time = segment_end
+
+        # Aggregate to 15-minute intervals (simpler - just assign power to each 15-min slot)
+        current_time = t0
+        while current_time < t1:
+            quarter_end_time = current_time.replace(second=0, microsecond=0)
+            quarter_end_time = quarter_end_time - pd.Timedelta(minutes=quarter_end_time.minute % 15) + pd.Timedelta(minutes=15)
+            segment_end = min(quarter_end_time, t1)
+            segment_duration = (segment_end - current_time).total_seconds()
+
+            quarter_index = int((current_time - quarter_start).total_seconds() // 900)  # 900 sec = 15 min
+            if 0 <= quarter_index < len(quarter_data):
+                # For power: take max or weighted average? Using weighted average for energy consistency
+                quarter_data[quarter_index] += kw * (segment_duration / 900)
 
             current_time = segment_end
 
@@ -808,15 +842,24 @@ def process_uploaded_data(df: pd.DataFrame):
         start_dt
     )
 
-    # Store truncated data in global data store
+    # Store analytical year metadata first (needed for 15-min truncation)
+    data_store.start_date = start_dt
+    data_store.end_date = end_dt
+    data_store.analytical_year = calculate_analytical_year(start_dt, end_dt)
+
+    # Store truncated hourly data in global data store
     data_store.hourly_data = truncated_data.tolist()
     data_store.year_hours = [t.isoformat() for t in truncated_hours]
     data_store.raw_dataframe = df
 
-    # Store analytical year metadata
-    data_store.start_date = start_dt
-    data_store.end_date = end_dt
-    data_store.analytical_year = calculate_analytical_year(start_dt, end_dt)
+    # Store 15-minute data (truncate to same analytical year period)
+    max_quarter_intervals = data_store.analytical_year.total_days * 96 if data_store.analytical_year else len(quarter_data)
+    truncated_quarter_data = quarter_data[:max_quarter_intervals]
+    truncated_quarter_hours = quarter_hours[:max_quarter_intervals]
+    data_store.quarter_hour_data = truncated_quarter_data.tolist()
+    data_store.quarter_hour_timestamps = [t.isoformat() for t in truncated_quarter_hours]
+
+    print(f"📊 15-min data: {len(data_store.quarter_hour_data)} intervals ({len(data_store.quarter_hour_data) // 4} hours equivalent)")
 
     print(f"📊 Rok analityczny: {data_store.analytical_year.start_date} do {data_store.analytical_year.end_date}")
     print(f"📊 Dni: {data_store.analytical_year.total_days}, Godziny: {data_store.analytical_year.total_hours}")
@@ -994,24 +1037,43 @@ async def upload_excel(file: UploadFile = File(...)):
 
 @app.get("/statistics", response_model=DataStatistics)
 async def get_statistics():
-    """Get comprehensive consumption statistics - all calculations done server-side"""
+    """Get comprehensive consumption statistics - all calculations done server-side
+
+    IMPORTANT: Peak power (Moc Szczytowa) is calculated from 15-minute data
+    for accurate P15 billing alignment with Polish OSD (Enea, Tauron, PGE).
+    Energy totals use hourly data for accurate kWh calculation.
+    """
     if not data_store.hourly_data:
         raise HTTPException(status_code=400, detail="No data loaded")
 
     hourly_data = np.array(data_store.hourly_data)
     timestamps = data_store.year_hours
 
-    # Basic statistics
+    # Use 15-minute data for peak/min/avg power (more accurate for P15 billing)
+    # Fall back to hourly data if 15-min not available
+    if data_store.quarter_hour_data:
+        power_data = np.array(data_store.quarter_hour_data)
+        peak_kw = power_data.max()  # P15 peak - accurate for OSD billing
+        min_kw = power_data.min()
+        avg_kw = power_data.mean()
+        std_dev_kw = np.std(power_data)
+        num_measurements = len(power_data)
+        print(f"📊 Statistics using 15-min data: peak={peak_kw:.1f} kW from {num_measurements} intervals")
+    else:
+        peak_kw = hourly_data.max()
+        min_kw = hourly_data.min()
+        avg_kw = hourly_data.mean()
+        std_dev_kw = np.std(hourly_data)
+        num_measurements = len(hourly_data)
+        print(f"📊 Statistics using hourly data: peak={peak_kw:.1f} kW from {num_measurements} hours")
+
+    # Energy totals from hourly data (sum of kW * 1h = kWh)
     total_kwh = hourly_data.sum()
-    peak_kw = hourly_data.max()
-    min_kw = hourly_data.min()
-    avg_kw = hourly_data.mean()
     hours = len(hourly_data)
     days = hours / 24
     avg_daily = total_kwh / days if days > 0 else 0
 
-    # Standard deviation and variation coefficient
-    std_dev_kw = np.std(hourly_data)
+    # Variation coefficient based on power data resolution
     variation_coef = (std_dev_kw / avg_kw * 100) if avg_kw > 0 else 0
 
     # Load factor
@@ -1073,6 +1135,9 @@ async def get_statistics():
         where=daily_counts > 0
     ) / 1000  # kWh -> MWh
 
+    # Determine data resolution for statistics
+    data_resolution = "15-min" if data_store.quarter_hour_data else "hourly"
+
     return DataStatistics(
         total_consumption_gwh=total_kwh / 1e6,
         peak_power_mw=peak_kw / 1000,
@@ -1081,6 +1146,8 @@ async def get_statistics():
         days=int(days),
         hours=hours,
         avg_daily_mwh=avg_daily / 1000,
+        measurements=num_measurements,
+        data_resolution=data_resolution,
         std_dev_mw=std_dev_kw / 1000,
         variation_coef_pct=float(variation_coef),
         load_factor_pct=float(load_factor),
@@ -1112,10 +1179,50 @@ async def get_hourly_data(month: int = 0):
                 filtered_times.append(timestamp)
                 filtered_values.append(data_store.hourly_data[i])
 
+
+@app.get("/quarter-hour-data")
+async def get_quarter_hour_data(month: int = 0):
+    """
+    Get 15-minute (quarter-hourly) consumption data for peak shaving analysis.
+
+    This data has 4x higher resolution than hourly data, providing more accurate
+    peak detection for BESS sizing and OSD power billing (which uses 15-min peaks).
+
+    Args:
+        month: Filter by month (1-12), or 0 for all data
+
+    Returns:
+        timestamps: ISO timestamps at 15-min intervals
+        values: Power values in kW (average power during each 15-min interval)
+        interval_minutes: Always 15
+        total_intervals: Number of data points
+    """
+    if not data_store.quarter_hour_data:
+        raise HTTPException(status_code=400, detail="No 15-minute data loaded. Please re-upload your consumption file.")
+
+    if month == 0:
+        return {
+            "timestamps": data_store.quarter_hour_timestamps,
+            "values": data_store.quarter_hour_data,
+            "interval_minutes": 15,
+            "total_intervals": len(data_store.quarter_hour_data)
+        }
+    else:
+        filtered_times = []
+        filtered_values = []
+
+        for i, timestamp in enumerate(data_store.quarter_hour_timestamps):
+            if pd.to_datetime(timestamp).month == month:
+                filtered_times.append(timestamp)
+                filtered_values.append(data_store.quarter_hour_data[i])
+
         return {
             "timestamps": filtered_times,
-            "values": filtered_values
+            "values": filtered_values,
+            "interval_minutes": 15,
+            "total_intervals": len(filtered_values)
         }
+
 
 @app.get("/daily-consumption")
 async def get_daily_consumption(month: int = 0):

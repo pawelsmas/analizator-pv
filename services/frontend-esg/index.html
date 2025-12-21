@@ -190,6 +190,9 @@
           <div class="clock-time-display">
             <span id="clockCurrentTime">--:--:--</span>
           </div>
+          <div class="clock-date-display">
+            <span id="clockCurrentDate">Dzień 0</span>
+          </div>
         </div>
 
         <!-- Animated Counters -->
@@ -251,9 +254,11 @@
           <label>Symulacja:</label>
           <select id="clockSpeedSelect" onchange="updateClockSpeed()">
             <option value="realtime">Czas rzeczywisty</option>
-            <option value="minute" selected>1 min = 1 h</option>
-            <option value="fast">1 min = 1 dzien</option>
+            <option value="minute">1 min = 1 h</option>
+            <option value="fast" selected>1 min = 1 dzien</option>
             <option value="ultrafast">1 min = 1 tydzien</option>
+            <option value="superfast">1 min = 1 miesiac</option>
+            <option value="warp">1 min = 1 rok</option>
           </select>
         </div>
         <button class="clock-btn clock-btn-secondary" onclick="resetCarbonClock()">
