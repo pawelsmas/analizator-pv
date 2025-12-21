@@ -526,6 +526,26 @@ services:
       retries: 3
       start_period: 30s
 
+  # BESS Dispatch Service (Time-based dispatch + STACKED mode + Degradation)
+  bess-dispatch:
+    build:
+      context: ./services/bess-dispatch
+      dockerfile: Dockerfile
+    container_name: pv-bess-dispatch
+    ports:
+      - "8031:8031"
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8031/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   # Profile Analysis Frontend Module
   frontend-profile:
     build:

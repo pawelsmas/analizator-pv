@@ -1224,3 +1224,254 @@ body {
     justify-content: center;
   }
 }
+
+/* ==========================================
+   NEW v3.3: SIZING VARIANTS (S/M/L) SECTION
+   ========================================== */
+
+.sizing-variants-section {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.sizing-variants-section h2 {
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.sizing-variants-section .chart-info {
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 20px;
+}
+
+.sizing-variants-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.sizing-variant-card {
+  background: rgba(255,255,255,0.05);
+  border-radius: 12px;
+  padding: 20px;
+  border: 2px solid transparent;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.sizing-variant-card:hover {
+  background: rgba(255,255,255,0.08);
+  transform: translateY(-2px);
+}
+
+.sizing-variant-card.recommended {
+  border-color: #4caf50;
+  box-shadow: 0 4px 20px rgba(76, 175, 80, 0.3);
+}
+
+.sizing-variant-card.recommended::before {
+  content: '⭐ REKOMENDOWANY';
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #4caf50 0%, #43a047 100%);
+  color: white;
+  padding: 4px 16px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.variant-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.variant-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: #64b5f6;
+}
+
+.variant-duration {
+  background: rgba(100, 181, 246, 0.2);
+  color: #64b5f6;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.variant-specs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.variant-spec {
+  text-align: center;
+  padding: 10px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 8px;
+}
+
+.variant-spec-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.variant-spec-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.variant-economics {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: rgba(76, 175, 80, 0.1);
+  border-radius: 8px;
+}
+
+.variant-econ-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.variant-econ-row:last-child {
+  margin-bottom: 0;
+}
+
+.variant-econ-label {
+  color: rgba(255,255,255,0.7);
+}
+
+.variant-econ-value {
+  color: #81c784;
+  font-weight: 600;
+}
+
+.variant-econ-value.negative {
+  color: #e57373;
+}
+
+.variant-degradation {
+  padding: 12px;
+  background: rgba(156, 39, 176, 0.1);
+  border-radius: 8px;
+}
+
+.variant-degradation-title {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.variant-deg-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.variant-deg-label {
+  color: rgba(255,255,255,0.7);
+}
+
+.variant-deg-value {
+  color: #ce93d8;
+  font-weight: 600;
+}
+
+.variant-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.variant-status.ok {
+  background: rgba(76, 175, 80, 0.2);
+  color: #81c784;
+}
+
+.variant-status.warning {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ffb74d;
+}
+
+.variant-status.exceeded {
+  background: rgba(244, 67, 54, 0.2);
+  color: #e57373;
+}
+
+/* ==========================================
+   DEGRADATION BUDGET SECTION
+   ========================================== */
+
+.degradation-budget-section .stat-card.bess-budget-ok {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.2) 0%, rgba(76, 175, 80, 0.1) 100%);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.degradation-budget-section .stat-card.bess-budget-warning {
+  background: linear-gradient(135deg, rgba(255, 152, 0, 0.2) 0%, rgba(255, 152, 0, 0.1) 100%);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+}
+
+.degradation-budget-section .stat-card.bess-budget-exceeded {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.2) 0%, rgba(244, 67, 54, 0.1) 100%);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+/* ==========================================
+   STACKED MODE INFO BANNER
+   ========================================== */
+
+.stacked-mode-info {
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.15) 0%, rgba(103, 58, 183, 0.15) 100%);
+  border: 1px solid rgba(156, 39, 176, 0.3);
+}
+
+.stacked-mode-info .banner-icon {
+  font-size: 24px;
+}
+
+.stacked-mode-info .banner-text span {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 2px 8px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sizing-variants-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-specs {
+    grid-template-columns: 1fr 1fr;
+  }
+}

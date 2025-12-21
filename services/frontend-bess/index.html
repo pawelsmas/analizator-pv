@@ -574,6 +574,68 @@
       </div>
     </div>
 
+    <!-- NEW v3.3: BESS Sizing Variants (S/M/L) -->
+    <div class="stats-section full-width sizing-variants-section" id="sizingVariantsSection" style="display:none;">
+      <h2>📊 Warianty Doboru BESS (S/M/L)</h2>
+      <div class="chart-info">
+        Porównanie wariantów pojemności z metrykami degradacji i budżetem cykli
+      </div>
+      <div class="sizing-variants-grid" id="sizingVariantsGrid">
+        <!-- Dynamically filled by JS -->
+      </div>
+    </div>
+
+    <!-- NEW v3.3: Degradation Budget Status -->
+    <div class="stats-section full-width degradation-budget-section" id="degradationBudgetSection" style="display:none;">
+      <h2>📉 Budżet Degradacji</h2>
+      <div class="stats-cards">
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">🔄</div>
+          <div class="stat-content">
+            <div class="stat-label">Throughput Roczny</div>
+            <div class="stat-value" id="budgetThroughput">0</div>
+            <div class="stat-unit">MWh/rok</div>
+            <div class="stat-detail" id="budgetThroughputLimit">Limit: - MWh</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">♻️</div>
+          <div class="stat-content">
+            <div class="stat-label">EFC (Cykle Ekwiwalentne)</div>
+            <div class="stat-value" id="budgetEFC">0</div>
+            <div class="stat-unit">/rok</div>
+            <div class="stat-detail" id="budgetEFCLimit">Limit: - cykli</div>
+          </div>
+        </div>
+        <div class="stat-card" id="budgetStatusCard">
+          <div class="stat-icon" id="budgetStatusIcon">✅</div>
+          <div class="stat-content">
+            <div class="stat-label">Status Budżetu</div>
+            <div class="stat-value" id="budgetStatus">OK</div>
+            <div class="stat-detail" id="budgetUtilization">Wykorzystanie: 0%</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Rozbicie Throughput</div>
+            <div class="stat-value" id="budgetBreakdown">-</div>
+            <div class="stat-detail" id="budgetBreakdownDetail">PV: - | Peak: -</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEW v3.3: STACKED Mode Info (if active) -->
+    <div class="info-banner full-width stacked-mode-info" id="stackedModeInfo" style="display:none;">
+      <div class="banner-icon">🔋⚡</div>
+      <div class="banner-text">
+        <strong>Tryb STACKED:</strong> Bateria świadczy dwie usługi - Peak Shaving (priorytet 1) i PV Shifting (priorytet 2).
+        <span id="stackedReserveInfo">Rezerwa SOC: 30% dla peak shaving.</span>
+        <span id="stackedPeakLimit">Limit importu: - kW.</span>
+      </div>
+    </div>
+
     <!-- Technical Parameters -->
     <div class="details-section full-width">
       <h2>Parametry Techniczne BESS</h2>
