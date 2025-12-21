@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY app.py .
+COPY bess_optimizer.py .
 COPY scoring/ ./scoring/
 
 # Expose port

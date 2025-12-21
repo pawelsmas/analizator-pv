@@ -3,16 +3,41 @@ const USE_PROXY = true;
 
 // Backend API URLs
 const API_URLS = USE_PROXY ? {
-  dataAnalysis: '/api/data'
+  dataAnalysis: '/api/data',
+  economics: '/api/economics'
 } : {
-  dataAnalysis: 'http://localhost:8001'
+  dataAnalysis: 'http://localhost:8001',
+  economics: 'http://localhost:8003'
 };
 
 // Chart.js instances
 let dailyChart, weeklyChart, monthlyChart, loadDurationChart, seasonalityChart;
 
+/**
+ * Format number in European style
+ * - Decimal separator: comma (,)
+ * - Thousands separator: non-breaking space
+ */
+function formatNumberEU(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) {
+    return '-';
+  }
+  const fixed = Number(value).toFixed(decimals);
+  const parts = fixed.split('.');
+  let integerPart = parts[0];
+  const decimalPart = parts[1];
+  integerPart = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00A0');
+  if (decimals > 0 && decimalPart) {
+    return integerPart + ',' + decimalPart;
+  }
+  return integerPart;
+}
+
 // Data storage
 let consumptionData = null;
+let peakShavingExportData = null; // Store for BESS optimization
+let currentLoadProfile = null; // Hourly load profile for BESS optimization
+let currentTimestamps = null; // Timestamps for BESS optimization
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -134,7 +159,7 @@ async function performAnalysis() {
     generateDailyProfileFromBackend(backendStats.daily_profile_mw);
     generateWeeklyProfileFromBackend(backendStats.weekly_profile_mwh);
     generateMonthlyProfileFromBackend(backendStats.monthly_consumption);
-    generateLoadDurationCurve(consumptionData.hourlyData.values);
+    generateLoadDurationCurve(consumptionData.hourlyData.values, consumptionData.hourlyData.timestamps);
 
     // Fetch and display seasonality analysis
     await loadSeasonalityAnalysis();
@@ -150,7 +175,7 @@ async function performAnalysis() {
     generateDailyProfile(hourlyData);
     generateWeeklyProfile(hourlyData);
     generateMonthlyProfile(hourlyData);
-    generateLoadDurationCurve(values);
+    generateLoadDurationCurve(values, consumptionData.hourlyData?.timestamps);
   }
 }
 
@@ -494,51 +519,910 @@ function generateMonthlyProfile(hourlyData) {
   });
 }
 
-// Generate load duration curve
-function generateLoadDurationCurve(values) {
-  // Sort values descending
-  const sorted = [...values].sort((a, b) => b - a);
+// Generate load duration curve with peak shaving analysis
+function generateLoadDurationCurve(values, timestamps = null) {
+  // Store for BESS optimization API
+  currentLoadProfile = values;
+  currentTimestamps = timestamps;
 
-  // Convert to MW and sample every 100th point for performance
-  const sampleRate = Math.max(1, Math.floor(sorted.length / 500));
-  const sampled = sorted.filter((_, i) => i % sampleRate === 0).map(v => (v / 1000).toFixed(2));
+  // Create indexed data with original positions
+  const indexedData = values.map((val, idx) => ({
+    value: val,
+    originalIndex: idx,
+    timestamp: timestamps ? timestamps[idx] : null
+  }));
+
+  // Sort by value descending
+  const sortedData = [...indexedData].sort((a, b) => b.value - a.value);
+  const totalHours = sortedData.length;
+
+  // Calculate percentiles and peak shaving metrics with timestamps
+  const peakShavingAnalysis = calculatePeakShavingAnalysis(sortedData, timestamps);
+
+  // Store for export
+  peakShavingExportData = peakShavingAnalysis;
+
+  // Convert to MW and sample for chart performance
+  const sampleRate = Math.max(1, Math.floor(sortedData.length / 500));
+  const sampled = sortedData.filter((_, i) => i % sampleRate === 0);
+  const sampledMW = sampled.map(d => d.value / 1000);
 
   const ctx = document.getElementById('loadDurationCurve').getContext('2d');
 
   if (loadDurationChart) loadDurationChart.destroy();
 
+  // Prepare threshold lines for visualization
+  const thresholdDatasets = peakShavingAnalysis.thresholds.map(t => ({
+    label: t.label,
+    data: Array(sampled.length).fill(t.powerKW / 1000),
+    borderColor: t.color,
+    borderWidth: 2,
+    borderDash: [5, 5],
+    pointRadius: 0,
+    fill: false
+  }));
+
   loadDurationChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: Array.from({ length: sampled.length }, (_, i) => i),
-      datasets: [{
-        label: 'Moc [MW]',
-        data: sampled,
-        borderColor: '#e74c3c',
-        backgroundColor: 'rgba(231, 76, 60, 0.1)',
-        borderWidth: 2,
-        fill: true,
-        pointRadius: 0
-      }]
+      labels: sampled.map((_, i) => Math.round(i * sampleRate)),
+      datasets: [
+        {
+          label: 'Moc obciążenia [MW]',
+          data: sampledMW,
+          borderColor: '#e74c3c',
+          backgroundColor: 'rgba(231, 76, 60, 0.15)',
+          borderWidth: 2.5,
+          fill: true,
+          pointRadius: 0,
+          order: 1
+        },
+        ...thresholdDatasets.map((ds, i) => ({ ...ds, order: i + 2 }))
+      ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: true,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
       plugins: {
-        legend: { display: true }
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: {
+            usePointStyle: true,
+            padding: 15,
+            font: { size: 11 }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => `Godzina ${items[0].label} z ${totalHours}`,
+            label: (ctx) => {
+              const value = ctx.raw;
+              return `${ctx.dataset.label}: ${formatNumberEU(value, 3)} MW (${formatNumberEU(value * 1000, 0)} kW)`;
+            }
+          }
+        }
       },
       scales: {
         y: {
           beginAtZero: true,
-          title: { display: true, text: 'Moc [MW]' }
+          title: { display: true, text: 'Moc [MW]', font: { weight: 'bold' } },
+          grid: { color: 'rgba(0,0,0,0.08)' }
         },
         x: {
-          title: { display: true, text: 'Uporządkowane godziny' },
-          ticks: { display: false }
+          title: { display: true, text: `Uporządkowane godziny (${totalHours}h w roku)`, font: { weight: 'bold' } },
+          ticks: {
+            callback: function(value, index) {
+              const hour = Math.round(index * sampleRate);
+              if (hour === 0) return '0h';
+              if (hour % 1000 === 0 || index === sampled.length - 1) return `${hour}h`;
+              return '';
+            },
+            maxRotation: 0
+          },
+          grid: { display: false }
         }
       }
     }
   });
+
+  // Update peak shaving table
+  updatePeakShavingTable(peakShavingAnalysis);
+}
+
+/**
+ * Calculate peak shaving analysis with multiple threshold levels
+ * @param {Array} sortedData - Array of {value, originalIndex, timestamp} sorted by value descending
+ * @param {Array} timestamps - Original timestamps array (for reference)
+ */
+function calculatePeakShavingAnalysis(sortedData, timestamps) {
+  const totalHours = sortedData.length;
+  const peakPower = sortedData[0]?.value || 0;
+  const avgPower = sortedData.reduce((sum, d) => sum + d.value, 0) / totalHours;
+
+  // Define percentile thresholds for analysis
+  const percentileConfigs = [
+    { name: 'P100 (Szczyt)', percentile: 100, color: '#e74c3c' },
+    { name: 'P99.5', percentile: 99.5, color: '#c0392b' },
+    { name: 'P99', percentile: 99, color: '#e67e22' },
+    { name: 'P98', percentile: 98, color: '#f39c12' },
+    { name: 'P97', percentile: 97, color: '#f1c40f' },
+    { name: 'P95', percentile: 95, color: '#27ae60' },
+    { name: 'P90', percentile: 90, color: '#2ecc71' },
+    { name: 'P85', percentile: 85, color: '#1abc9c' },
+    { name: 'P80', percentile: 80, color: '#3498db' }
+  ];
+
+  const thresholds = [];
+  const tableRows = [];
+
+  for (const config of percentileConfigs) {
+    // Calculate index for percentile (sorted descending, so P99 = top 1%)
+    const exceedancePercent = 100 - config.percentile;
+    const exactHoursAbove = totalHours * exceedancePercent / 100;
+    const index = Math.min(Math.ceil(exactHoursAbove), totalHours - 1);
+    const powerAtPercentile = sortedData[index]?.value || 0;
+
+    // Calculate energy above threshold and collect timestamps
+    let energyToShave = 0;
+    let hoursToShave = 0;
+    const exceedanceEvents = [];
+
+    for (let i = 0; i < sortedData.length; i++) {
+      const d = sortedData[i];
+      if (d.value > powerAtPercentile) {
+        const excess = d.value - powerAtPercentile;
+        energyToShave += excess;
+        hoursToShave++;
+        exceedanceEvents.push({
+          rank: i + 1,
+          timestamp: d.timestamp,
+          powerKW: d.value,
+          excessKW: excess,
+          originalIndex: d.originalIndex
+        });
+      } else {
+        break; // sorted descending, so we can stop
+      }
+    }
+
+    // Calculate peak reduction percentage
+    const peakReductionPct = peakPower > 0 ? ((peakPower - powerAtPercentile) / peakPower) * 100 : 0;
+
+    // Determine feasibility rating and code
+    let rating, ratingColor, ratingBg, ratingCode;
+    if (hoursToShave <= 50 && peakReductionPct >= 5) {
+      rating = '🟢 Bardzo opłacalne';
+      ratingCode = 'bardzo_oplacalne';
+      ratingColor = '#27ae60';
+      ratingBg = '#d5f4e6';
+    } else if (hoursToShave <= 200 && peakReductionPct >= 3) {
+      rating = '🟡 Opłacalne';
+      ratingCode = 'oplacalne';
+      ratingColor = '#f39c12';
+      ratingBg = '#fef9e7';
+    } else if (hoursToShave <= 500) {
+      rating = '🟠 Możliwe';
+      ratingCode = 'mozliwe';
+      ratingColor = '#e67e22';
+      ratingBg = '#fdebd0';
+    } else {
+      rating = '🔴 Nieopłacalne';
+      ratingCode = 'nieoplacalne';
+      ratingColor = '#e74c3c';
+      ratingBg = '#fadbd8';
+    }
+
+    // Skip P100 from threshold lines but include in table
+    if (config.percentile < 100) {
+      thresholds.push({
+        label: `${config.name} (${formatNumberEU(powerAtPercentile, 0)} kW)`,
+        powerKW: powerAtPercentile,
+        color: config.color
+      });
+    }
+
+    tableRows.push({
+      name: config.name,
+      percentile: config.percentile,
+      powerKW: powerAtPercentile,
+      hoursAbove: hoursToShave,
+      exactHours: exactHoursAbove,
+      energyToShave: energyToShave,
+      peakReductionPct: peakReductionPct,
+      rating: rating,
+      ratingCode: ratingCode,
+      ratingColor: ratingColor,
+      ratingBg: ratingBg,
+      color: config.color,
+      exceedanceEvents: exceedanceEvents
+    });
+  }
+
+  // Find best recommendation (first "opłacalne" or "bardzo opłacalne")
+  const recommended = tableRows.find(r => r.ratingCode === 'bardzo_oplacalne')
+    || tableRows.find(r => r.ratingCode === 'oplacalne');
+
+  // Find cutoff level for export (include up to "możliwe")
+  const exportableLevels = tableRows.filter(r =>
+    r.ratingCode === 'bardzo_oplacalne' ||
+    r.ratingCode === 'oplacalne' ||
+    r.ratingCode === 'mozliwe'
+  );
+
+  // Calculate BESS sizing based on grouped blocks for recommended level
+  let bessRecommendation = null;
+  if (recommended && recommended.exceedanceEvents.length > 0) {
+    const blocks = groupConsecutiveEventsForBESS(recommended.exceedanceEvents);
+    if (blocks.length > 0) {
+      // Find the largest block by energy
+      const largestBlock = blocks.reduce((max, b) => b.totalExcessKWh > max.totalExcessKWh ? b : max, blocks[0]);
+      // Find max power deficit (for C-rate)
+      const maxPowerDeficit = recommended.exceedanceEvents.reduce((max, e) => Math.max(max, e.excessKW || 0), 0);
+
+      // BESS sizing:
+      // - Capacity based on largest single block energy need (with DOD margin)
+      // - Power based on max instantaneous deficit
+      const DOD = 0.8; // 80% usable depth of discharge
+      const safetyMargin = 1.2; // 20% safety margin
+
+      const requiredCapacityKWh = (largestBlock.totalExcessKWh / DOD) * safetyMargin;
+      const requiredPowerKW = maxPowerDeficit * safetyMargin;
+
+      bessRecommendation = {
+        capacityKWh: requiredCapacityKWh,
+        powerKW: requiredPowerKW,
+        largestBlockEnergyKWh: largestBlock.totalExcessKWh,
+        largestBlockDurationH: largestBlock.durationHours,
+        maxPowerDeficitKW: maxPowerDeficit,
+        totalBlocks: blocks.length,
+        dod: DOD * 100,
+        safetyMargin: (safetyMargin - 1) * 100
+      };
+    }
+  }
+
+  return {
+    peakPower,
+    avgPower,
+    totalHours,
+    thresholds: thresholds.slice(0, 4), // Show top 4 thresholds on chart
+    tableRows,
+    recommended,
+    exportableLevels,
+    bessRecommendation
+  };
+}
+
+/**
+ * Group consecutive events for BESS sizing (simplified version for analysis)
+ */
+function groupConsecutiveEventsForBESS(events) {
+  if (!events || events.length === 0) return [];
+
+  // Sort events by original index (chronological order)
+  const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
+
+  const groups = [];
+  let currentGroup = null;
+
+  for (const event of sortedByTime) {
+    if (!currentGroup) {
+      currentGroup = {
+        events: [event],
+        totalExcessKWh: event.excessKW || 0,
+        maxPowerKW: event.powerKW || 0
+      };
+    } else {
+      const lastEvent = currentGroup.events[currentGroup.events.length - 1];
+      // Check if consecutive (indices differ by 1)
+      const isConsecutive = (event.originalIndex - lastEvent.originalIndex) <= 1;
+
+      if (isConsecutive) {
+        currentGroup.events.push(event);
+        currentGroup.totalExcessKWh += event.excessKW || 0;
+        currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
+      } else {
+        currentGroup.durationHours = currentGroup.events.length;
+        groups.push(currentGroup);
+        currentGroup = {
+          events: [event],
+          totalExcessKWh: event.excessKW || 0,
+          maxPowerKW: event.powerKW || 0
+        };
+      }
+    }
+  }
+
+  if (currentGroup) {
+    currentGroup.durationHours = currentGroup.events.length;
+    groups.push(currentGroup);
+  }
+
+  return groups;
+}
+
+/**
+ * Update peak shaving analysis table
+ */
+function updatePeakShavingTable(analysis) {
+  const tbody = document.getElementById('peakShavingTableBody');
+  if (!tbody) return;
+
+  const rows = analysis.tableRows.map(row => {
+    const rowStyle = row.percentile === 100
+      ? 'background: #f8f9fa; font-weight: 600;'
+      : '';
+
+    // Format hours - show decimal for partial hours
+    const formatHours = (exact, actual) => {
+      if (actual === 0) return '-';
+      if (exact === actual) return formatNumberEU(actual, 0);
+      return `${formatNumberEU(actual, 0)} <span style="color:#95a5a6;font-size:10px;">(~${formatNumberEU(exact, 1)})</span>`;
+    };
+
+    return `
+      <tr style="${rowStyle}">
+        <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">
+          <span style="display: inline-block; width: 12px; height: 12px; background: ${row.color}; border-radius: 3px; margin-right: 8px;"></span>
+          ${row.name}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee; font-weight: 500;">
+          ${formatNumberEU(row.powerKW, 0)}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee;">
+          ${formatHours(row.exactHours, row.hoursAbove)}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee;">
+          ${row.energyToShave > 0 ? formatNumberEU(row.energyToShave, 0) : '-'}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee; font-weight: 500; color: ${row.peakReductionPct > 0 ? '#27ae60' : '#95a5a6'};">
+          ${row.peakReductionPct > 0 ? `-${formatNumberEU(row.peakReductionPct, 1)}%` : '-'}
+        </td>
+        <td style="padding: 10px 8px; text-align: center; border-bottom: 1px solid #eee;">
+          <span style="padding: 4px 8px; border-radius: 4px; font-size: 11px; background: ${row.ratingBg}; color: ${row.ratingColor};">
+            ${row.rating}
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.innerHTML = rows;
+
+  // Update recommendation with export button
+  const recDiv = document.getElementById('peakShavingRecommendation');
+  if (recDiv && analysis.recommended) {
+    const rec = analysis.recommended;
+    const exportLevelsCount = analysis.exportableLevels?.length || 0;
+    const totalEvents = analysis.exportableLevels?.reduce((sum, l) => sum + l.exceedanceEvents.length, 0) || 0;
+
+    recDiv.style.display = 'block';
+    recDiv.style.background = 'linear-gradient(135deg, #d5f4e6 0%, #c3f0db 100%)';
+    recDiv.style.border = '2px solid #27ae60';
+    recDiv.innerHTML = `
+      <div style="display: flex; align-items: flex-start; gap: 12px;">
+        <span style="font-size: 24px;">💡</span>
+        <div style="flex: 1;">
+          <strong style="color: #1e8449; font-size: 14px;">Rekomendacja Peak Shaving:</strong>
+          <p style="margin: 8px 0 0 0; color: #2c3e50; font-size: 13px;">
+            Ścięcie szczytów do poziomu <strong>${rec.name}</strong> (${formatNumberEU(rec.powerKW, 0)} kW)
+            pozwoli obniżyć moc szczytową o <strong>${formatNumberEU(rec.peakReductionPct, 1)}%</strong>.
+          </p>
+          <p style="margin: 6px 0 0 0; color: #495057; font-size: 12px;">
+            Wymaga pokrycia <strong>${formatNumberEU(rec.hoursAbove, 0)} godzin/rok</strong>
+            i dostarczenia <strong>${formatNumberEU(rec.energyToShave, 0)} kWh</strong> z magazynu lub redukcji obciążenia.
+          </p>
+          ${analysis.bessRecommendation ? `
+          <div id="bessRecommendationSection" style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.6); border-radius: 6px; border-left: 3px solid #3498db;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+              <strong style="color: #2980b9; font-size: 12px;">🔋 Orientacyjny dobór BESS (heurystyka):</strong>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select id="bessLevelSelect" style="
+                  padding: 5px 8px;
+                  border-radius: 4px;
+                  border: 1px solid #3498db;
+                  font-size: 11px;
+                  background: white;
+                  cursor: pointer;
+                  min-width: 200px;
+                ">
+                  ${analysis.tableRows.filter(r => r.ratingCode !== 'nieoplacalne').map(row =>
+                    `<option value="${row.name}" ${row.name === rec.name ? 'selected' : ''}>
+                      ${row.name} (${formatNumberEU(row.powerKW, 0)} kW) - ${row.rating}
+                    </option>`
+                  ).join('')}
+                </select>
+                <button onclick="runBESSOptimization()" id="bessOptimizeBtn" style="
+                  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+                  color: white;
+                  border: none;
+                  padding: 6px 12px;
+                  border-radius: 4px;
+                  cursor: pointer;
+                  font-size: 11px;
+                  font-weight: 600;
+                  white-space: nowrap;
+                ">⚡ Optymalizuj (PyPSA+HiGHS)</button>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px;">
+              <div style="font-size: 12px; color: #2c3e50;">
+                <span style="color: #7f8c8d;">Pojemność:</span>
+                <strong id="bessCapacityValue">${formatNumberEU(analysis.bessRecommendation.capacityKWh, 0)} kWh</strong>
+              </div>
+              <div style="font-size: 12px; color: #2c3e50;">
+                <span style="color: #7f8c8d;">Moc:</span>
+                <strong id="bessPowerValue">${formatNumberEU(analysis.bessRecommendation.powerKW, 0)} kW</strong>
+              </div>
+            </div>
+            <p id="bessRationale" style="margin: 8px 0 0 0; color: #7f8c8d; font-size: 10px;">
+              Na podstawie największego bloku: ${formatNumberEU(analysis.bessRecommendation.largestBlockEnergyKWh, 1)} kWh
+              przez ${analysis.bessRecommendation.largestBlockDurationH}h
+              (${analysis.bessRecommendation.totalBlocks} bloków/rok, DOD ${analysis.bessRecommendation.dod}%, margines +${analysis.bessRecommendation.safetyMargin}%)
+            </p>
+            <div id="bessOptimizationDetails" style="display: none;"></div>
+          </div>
+          ` : `
+          <p style="margin: 8px 0 0 0; color: #7f8c8d; font-size: 11px; font-style: italic;">
+            Brak danych do wyliczenia rozmiaru BESS
+          </p>
+          `}
+        </div>
+      </div>
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(39, 174, 96, 0.3);">
+        <button onclick="exportPeakShavingAnalysis()" style="
+          background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-weight: 600;
+          font-size: 13px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+        ">
+          📥 Eksportuj szczegóły Peak Shaving (${exportLevelsCount} poziomów, ${totalEvents} zdarzeń)
+        </button>
+        <span style="display: block; margin-top: 8px; font-size: 11px; color: #7f8c8d;">
+          Excel z timestampami wszystkich przekroczeń dla poziomów: Bardzo opłacalne, Opłacalne, Możliwe
+        </span>
+      </div>
+    `;
+  } else if (recDiv) {
+    recDiv.style.display = 'none';
+  }
+}
+
+/**
+ * Format number for Excel with European locale (comma as decimal separator)
+ * Returns number for Excel to handle properly
+ */
+function formatNumericForExcel(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) return null;
+  return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
+}
+
+/**
+ * Format date/time for Excel as proper Date object
+ */
+function formatDateTimeForExcel(timestamp) {
+  if (!timestamp) return { date: null, time: null, dateTime: null };
+  try {
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return { date: null, time: null, dateTime: null };
+    return {
+      date: d,  // Excel will format as date
+      time: d,  // Excel will format as time
+      dateTime: d,
+      dateStr: d.toLocaleDateString('pl-PL'),
+      timeStr: d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+    };
+  } catch (e) {
+    return { date: null, time: null, dateTime: null };
+  }
+}
+
+/**
+ * Group consecutive hours into peak events (blocks)
+ * @param {Array} events - Array of exceedance events sorted by timestamp
+ * @returns {Array} Array of grouped peak events with start/end times
+ */
+function groupConsecutiveEvents(events) {
+  if (!events || events.length === 0) return [];
+
+  // Sort events by original index (chronological order)
+  const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
+
+  const groups = [];
+  let currentGroup = null;
+
+  for (const event of sortedByTime) {
+    const eventTime = event.timestamp ? new Date(event.timestamp) : null;
+
+    if (!currentGroup) {
+      // Start new group
+      currentGroup = {
+        startTime: eventTime,
+        endTime: eventTime ? new Date(eventTime.getTime() + 3600000) : null, // +1h
+        events: [event],
+        totalExcessKWh: event.excessKW || 0,
+        maxPowerKW: event.powerKW || 0,
+        avgPowerKW: event.powerKW || 0
+      };
+    } else {
+      // Check if this event is consecutive (within 1.5 hours of last event end)
+      const lastEvent = currentGroup.events[currentGroup.events.length - 1];
+      const lastEventTime = lastEvent.timestamp ? new Date(lastEvent.timestamp) : null;
+
+      const isConsecutive = eventTime && lastEventTime &&
+        (eventTime.getTime() - lastEventTime.getTime()) <= 3600000 * 1.5; // 1.5h tolerance
+
+      if (isConsecutive) {
+        // Add to current group
+        currentGroup.events.push(event);
+        currentGroup.endTime = new Date(eventTime.getTime() + 3600000);
+        currentGroup.totalExcessKWh += event.excessKW || 0;
+        currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
+        currentGroup.avgPowerKW = currentGroup.events.reduce((sum, e) => sum + (e.powerKW || 0), 0) / currentGroup.events.length;
+      } else {
+        // Save current group and start new one
+        groups.push(currentGroup);
+        currentGroup = {
+          startTime: eventTime,
+          endTime: eventTime ? new Date(eventTime.getTime() + 3600000) : null,
+          events: [event],
+          totalExcessKWh: event.excessKW || 0,
+          maxPowerKW: event.powerKW || 0,
+          avgPowerKW: event.powerKW || 0
+        };
+      }
+    }
+  }
+
+  // Don't forget the last group
+  if (currentGroup) {
+    groups.push(currentGroup);
+  }
+
+  // Add duration to each group
+  for (const group of groups) {
+    group.durationHours = group.events.length;
+    if (group.startTime && group.endTime) {
+      group.durationMs = group.endTime.getTime() - group.startTime.getTime();
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * Export Peak Shaving analysis to Excel with timestamps
+ */
+function exportPeakShavingAnalysis() {
+  if (!peakShavingExportData) {
+    alert('Brak danych do eksportu. Odśwież analizę.');
+    return;
+  }
+
+  console.log('📥 Eksport Peak Shaving do Excel...');
+
+  try {
+    const wb = XLSX.utils.book_new();
+    const analysis = peakShavingExportData;
+
+    // ========== SHEET 1: PODSUMOWANIE PERCENTYLI ==========
+    const summaryData = [
+      ['ANALIZA PEAK SHAVING - PODSUMOWANIE'],
+      [''],
+      ['Data eksportu:', new Date().toLocaleString('pl-PL')],
+      ['Całkowita liczba godzin:', analysis.totalHours],
+      ['Moc szczytowa [kW]:', formatNumericForExcel(analysis.peakPower, 1)],
+      ['Moc średnia [kW]:', formatNumericForExcel(analysis.avgPower, 1)],
+      [''],
+      ['PERCENTYLE MOCY'],
+      ['Próg', 'Moc [kW]', 'Godz. teoretycznych', 'Godz. rzeczywistych', 'Energia [kWh]', '% redukcji Pmax', 'Ocena']
+    ];
+
+    for (const row of analysis.tableRows) {
+      summaryData.push([
+        row.name,
+        formatNumericForExcel(row.powerKW, 1),
+        formatNumericForExcel(row.exactHours, 2),
+        row.hoursAbove,
+        formatNumericForExcel(row.energyToShave, 1),
+        row.peakReductionPct > 0 ? formatNumericForExcel(-row.peakReductionPct, 2) : null,
+        row.rating.replace(/[🟢🟡🟠🔴]/g, '').trim()
+      ]);
+    }
+
+    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+    ws1['!cols'] = [{ wch: 15 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Podsumowanie');
+
+    // ========== SHEET 2: ZGRUPOWANE ZDARZENIA (główna tabela) ==========
+    const groupedData = [
+      ['ZDARZENIA PEAK SHAVING - ZGRUPOWANE W BLOKI'],
+      [''],
+      ['Bloki czasowe przekroczeń - kolejne godziny połączone w jedno zdarzenie'],
+      [''],
+      ['Poziom', 'Nr bloku', 'Start (data)', 'Start (godz.)', 'Stop (data)', 'Stop (godz.)',
+       'Czas trwania [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Próg [kW]', 'Suma nadwyżki [kWh]', 'Liczba godzin']
+    ];
+
+    let globalBlockNum = 0;
+    for (const level of analysis.exportableLevels || []) {
+      if (level.exceedanceEvents.length === 0) continue;
+
+      const groups = groupConsecutiveEvents(level.exceedanceEvents);
+      let blockNum = 0;
+
+      for (const group of groups) {
+        blockNum++;
+        globalBlockNum++;
+
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        groupedData.push([
+          level.name,
+          globalBlockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(group.maxPowerKW, 1),
+          formatNumericForExcel(group.avgPowerKW, 1),
+          formatNumericForExcel(level.powerKW, 1),
+          formatNumericForExcel(group.totalExcessKWh, 2),
+          group.events.length
+        ]);
+      }
+    }
+
+    const wsGrouped = XLSX.utils.aoa_to_sheet(groupedData);
+    wsGrouped['!cols'] = [
+      { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 12 }
+    ];
+    // Format date columns
+    XLSX.utils.book_append_sheet(wb, wsGrouped, 'Bloki czasowe');
+
+    // ========== SHEET 3+: SZCZEGÓŁY DLA KAŻDEGO POZIOMU ==========
+    for (const level of analysis.exportableLevels || []) {
+      if (level.exceedanceEvents.length === 0) continue;
+
+      const sheetName = level.name.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 28);
+      const groups = groupConsecutiveEvents(level.exceedanceEvents);
+
+      const detailData = [
+        [`ZDARZENIA: ${level.name}`],
+        [''],
+        ['Próg mocy [kW]:', formatNumericForExcel(level.powerKW, 1)],
+        ['Liczba bloków:', groups.length],
+        ['Łączna liczba godzin:', level.exceedanceEvents.length],
+        ['Energia do ścięcia [kWh]:', formatNumericForExcel(level.energyToShave, 1)],
+        ['Redukcja Pmax [%]:', formatNumericForExcel(-level.peakReductionPct, 2)],
+        ['Ocena:', level.rating.replace(/[🟢🟡🟠🔴]/g, '').trim()],
+        [''],
+        ['BLOKI CZASOWE'],
+        ['Nr bloku', 'Start (data)', 'Start (godz.)', 'Stop (data)', 'Stop (godz.)',
+         'Czas [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Suma [kWh]']
+      ];
+
+      let blockNum = 0;
+      for (const group of groups) {
+        blockNum++;
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        detailData.push([
+          blockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(group.maxPowerKW, 1),
+          formatNumericForExcel(group.avgPowerKW, 1),
+          formatNumericForExcel(group.totalExcessKWh, 2)
+        ]);
+      }
+
+      // Add detailed hourly breakdown
+      detailData.push(['']);
+      detailData.push(['SZCZEGÓŁY GODZINOWE']);
+      detailData.push(['Nr', 'Data', 'Godzina', 'Moc [kW]', 'Nadwyżka [kW]']);
+
+      // Sort by time for detailed view
+      const sortedEvents = [...level.exceedanceEvents].sort((a, b) => a.originalIndex - b.originalIndex);
+      let eventNum = 0;
+      for (const event of sortedEvents) {
+        eventNum++;
+        const dt = formatDateTimeForExcel(event.timestamp);
+        detailData.push([
+          eventNum,
+          dt.date,
+          dt.timeStr || '-',
+          formatNumericForExcel(event.powerKW, 1),
+          formatNumericForExcel(event.excessKW, 2)
+        ]);
+      }
+
+      const wsDetail = XLSX.utils.aoa_to_sheet(detailData);
+      wsDetail['!cols'] = [
+        { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+        { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+      ];
+      XLSX.utils.book_append_sheet(wb, wsDetail, sheetName);
+    }
+
+    // ========== SHEET: WSZYSTKIE GODZINY (surowe dane) ==========
+    const allHoursData = [
+      ['WSZYSTKIE GODZINY PRZEKROCZENIA (surowe dane)'],
+      [''],
+      ['Poziom', 'Nr', 'Data', 'Godzina', 'Moc [kW]', 'Próg [kW]', 'Nadwyżka [kW]']
+    ];
+
+    for (const level of analysis.exportableLevels || []) {
+      const sortedEvents = [...level.exceedanceEvents].sort((a, b) => a.originalIndex - b.originalIndex);
+      let eventNum = 0;
+      for (const event of sortedEvents) {
+        eventNum++;
+        const dt = formatDateTimeForExcel(event.timestamp);
+        allHoursData.push([
+          level.name,
+          eventNum,
+          dt.date,
+          dt.timeStr || '-',
+          formatNumericForExcel(event.powerKW, 1),
+          formatNumericForExcel(level.powerKW, 1),
+          formatNumericForExcel(event.excessKW, 2)
+        ]);
+      }
+    }
+
+    const wsAll = XLSX.utils.aoa_to_sheet(allHoursData);
+    wsAll['!cols'] = [
+      { wch: 12 }, { wch: 6 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }
+    ];
+    XLSX.utils.book_append_sheet(wb, wsAll, 'Wszystkie godziny');
+
+    // ========== SHEET: HARMONOGRAM BESS ==========
+    // Get recommended level or first available
+    const bessLevel = analysis.recommended || analysis.tableRows.find(r => r.ratingCode !== 'nieoplacalne');
+
+    if (bessLevel && bessLevel.exceedanceEvents?.length > 0) {
+      const bessData = [
+        ['HARMONOGRAM PRACY MAGAZYNU BESS'],
+        [''],
+        ['Poziom peak shaving:', bessLevel.name],
+        ['Próg mocy [kW]:', formatNumericForExcel(bessLevel.powerKW, 1)],
+        [''],
+        ['Założenia BESS:'],
+        ['DOD (głębokość rozładowania):', '80%'],
+        ['Sprawność cyklu (round-trip):', '90%'],
+        ['Margines bezpieczeństwa:', '20%'],
+        [''],
+        ['KIEDY BESS SIĘ ZAŁĄCZA (rozładowanie):'],
+        ['']
+      ];
+
+      // Calculate BESS parameters based on recommendation
+      const dod = 0.8;
+      const efficiency = 0.9;
+      const safetyMargin = 1.2;
+
+      // Group events into blocks for BESS simulation
+      const groups = groupConsecutiveEvents(bessLevel.exceedanceEvents);
+
+      // Find largest block to size BESS
+      let maxBlockEnergy = 0;
+      let maxBlockPower = 0;
+      for (const group of groups) {
+        if (group.totalExcessKWh > maxBlockEnergy) {
+          maxBlockEnergy = group.totalExcessKWh;
+          maxBlockPower = group.maxPowerKW - bessLevel.powerKW; // Excess above threshold
+        }
+      }
+
+      // BESS sizing
+      const bessCapacity = (maxBlockEnergy / dod) * safetyMargin;
+      const bessPower = maxBlockPower * safetyMargin;
+
+      bessData.push(['REKOMENDOWANY ROZMIAR BESS:']);
+      bessData.push(['Pojemność [kWh]:', formatNumericForExcel(bessCapacity, 0)]);
+      bessData.push(['Moc [kW]:', formatNumericForExcel(bessPower, 0)]);
+      bessData.push(['']);
+
+      // Header for schedule
+      bessData.push([
+        'Nr bloku', 'Data start', 'Godz. start', 'Data stop', 'Godz. stop',
+        'Czas pracy [h]', 'Moc max rozład. [kW]', 'Moc śr. rozład. [kW]',
+        'Energia rozład. [kWh]', 'SOC przed [%]', 'SOC po [%]', 'Uwagi'
+      ]);
+
+      let blockNum = 0;
+      let annualCycles = 0;
+
+      for (const group of groups) {
+        blockNum++;
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        // Calculate discharge power (excess above threshold)
+        const dischargePowerMax = group.maxPowerKW - bessLevel.powerKW;
+        const dischargePowerAvg = group.avgPowerKW - bessLevel.powerKW;
+        const dischargeEnergy = group.totalExcessKWh;
+
+        // SOC calculation (assuming starts at 100%)
+        const socBefore = 100;
+        const socAfter = Math.max(0, socBefore - (dischargeEnergy / bessCapacity * 100));
+
+        // Cycle counting
+        annualCycles += dischargeEnergy / bessCapacity;
+
+        // Notes
+        let notes = '';
+        if (dischargeEnergy > bessCapacity * dod) {
+          notes = '⚠️ Przekracza DOD!';
+        } else if (group.durationHours >= 4) {
+          notes = 'Długi blok';
+        }
+
+        bessData.push([
+          blockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(dischargePowerMax, 1),
+          formatNumericForExcel(dischargePowerAvg, 1),
+          formatNumericForExcel(dischargeEnergy, 2),
+          formatNumericForExcel(socBefore, 0),
+          formatNumericForExcel(socAfter, 0),
+          notes
+        ]);
+      }
+
+      // Summary
+      bessData.push(['']);
+      bessData.push(['PODSUMOWANIE ROCZNE:']);
+      bessData.push(['Liczba cykli rozładowania:', blockNum]);
+      bessData.push(['Ekwiwalent pełnych cykli:', formatNumericForExcel(annualCycles, 1)]);
+      bessData.push(['Szacowana żywotność [lat]:', formatNumericForExcel(Math.min(15, 6000 / annualCycles), 1)]);
+      bessData.push(['']);
+      bessData.push(['KIEDY ŁADOWAĆ BESS:']);
+      bessData.push(['Zalecenie:', 'Ładować w godzinach niskiej taryfy (np. 22:00-06:00) lub z nadwyżki PV']);
+      bessData.push(['Min. czas ładowania [h]:', formatNumericForExcel(bessCapacity / bessPower, 1)]);
+
+      const wsBess = XLSX.utils.aoa_to_sheet(bessData);
+      wsBess['!cols'] = [
+        { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+        { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 16 },
+        { wch: 12 }, { wch: 10 }, { wch: 20 }
+      ];
+      XLSX.utils.book_append_sheet(wb, wsBess, 'Harmonogram BESS');
+    }
+
+    // Save file
+    const fileName = `peak_shaving_analysis_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    console.log(`✅ Eksport zakończony: ${fileName}`);
+
+  } catch (error) {
+    console.error('Błąd eksportu:', error);
+    alert('Błąd podczas eksportu: ' + error.message);
+  }
 }
 
 // Export analysis to Excel
@@ -870,6 +1754,143 @@ async function exportAnalysis() {
   } catch (error) {
     console.error('Błąd eksportu:', error);
     alert('Błąd podczas eksportu: ' + error.message);
+  }
+}
+
+/**
+ * Run BESS optimization using PyPSA+HiGHS backend
+ * Calls /api/economics/bess/optimize endpoint
+ */
+async function runBESSOptimization() {
+  const btn = document.getElementById('bessOptimizeBtn');
+  const detailsDiv = document.getElementById('bessOptimizationDetails');
+  const capacityEl = document.getElementById('bessCapacityValue');
+  const powerEl = document.getElementById('bessPowerValue');
+  const rationaleEl = document.getElementById('bessRationale');
+  const levelSelect = document.getElementById('bessLevelSelect');
+
+  if (!currentLoadProfile || !peakShavingExportData?.tableRows) {
+    alert('Brak danych do optymalizacji BESS');
+    return;
+  }
+
+  // Get selected level from dropdown
+  const selectedLevelName = levelSelect?.value || peakShavingExportData.recommended?.name;
+  const selectedLevel = peakShavingExportData.tableRows.find(r => r.name === selectedLevelName);
+
+  if (!selectedLevel) {
+    alert('Nie wybrano poziomu peak shaving');
+    return;
+  }
+
+  // Update button state
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Optymalizuję...';
+  btn.style.background = '#95a5a6';
+
+  try {
+    const threshold = selectedLevel.powerKW;
+
+    const requestBody = {
+      load_profile_kw: currentLoadProfile,
+      timestamps: currentTimestamps,
+      peak_shaving_threshold_kw: threshold,
+      bess_capex_per_kwh: 1500,
+      bess_capex_per_kw: 300,
+      depth_of_discharge: 0.8,
+      round_trip_efficiency: 0.9,
+      max_c_rate: 1.0,
+      method: 'lp_relaxed'  // Use PyPSA+HiGHS LP optimization
+    };
+
+    console.log('🔋 Calling BESS optimization API:', {
+      hours: currentLoadProfile.length,
+      level: selectedLevelName,
+      threshold: threshold,
+      rating: selectedLevel.rating,
+      method: 'lp_relaxed'
+    });
+
+    const response = await fetch(`${API_URLS.economics}/bess/optimize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('🔋 BESS optimization result:', result);
+
+    // Update UI with optimization results
+    capacityEl.innerHTML = `${formatNumberEU(result.optimal_capacity_kwh, 0)} kWh`;
+    powerEl.innerHTML = `${formatNumberEU(result.optimal_power_kw, 0)} kW`;
+
+    // Update rationale with optimization details
+    rationaleEl.innerHTML = `
+      <strong style="color: #27ae60;">✓ Zoptymalizowano dla ${selectedLevelName} (${result.method_used.toUpperCase()})</strong><br>
+      ${result.sizing_rationale}<br>
+      <span style="font-size: 9px;">
+        C-rate: ${formatNumberEU(result.c_rate_actual, 2)} |
+        Cykle/rok: ${formatNumberEU(result.total_annual_cycles, 0)} |
+        Żywotność: ${formatNumberEU(result.expected_lifetime_years, 1)} lat |
+        Czas: ${formatNumberEU(result.optimization_time_ms, 0)}ms
+      </span>
+    `;
+
+    // Show detailed breakdown
+    detailsDiv.style.display = 'block';
+    detailsDiv.innerHTML = `
+      <div style="margin-top: 10px; padding: 8px; background: rgba(39, 174, 96, 0.1); border-radius: 4px; font-size: 11px;">
+        <strong>📊 Szczegóły optymalizacji (PyPSA+HiGHS):</strong>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 6px;">
+          <div>
+            <span style="color: #7f8c8d;">CAPEX:</span><br>
+            <strong>${formatNumberEU(result.capex_total_pln, 0)} PLN</strong>
+          </div>
+          <div>
+            <span style="color: #7f8c8d;">Koszt efektywny:</span><br>
+            <strong>${formatNumberEU(result.capex_per_kwh_effective, 0)} PLN/kWh</strong>
+          </div>
+          <div>
+            <span style="color: #7f8c8d;">OPEX roczny:</span><br>
+            <strong>${formatNumberEU(result.annual_opex_pln, 0)} PLN/rok</strong>
+          </div>
+        </div>
+        <div style="margin-top: 8px;">
+          <span style="color: #7f8c8d;">Największy blok:</span>
+          ${formatNumberEU(result.largest_block?.total_energy_kwh || 0, 1)} kWh
+          przez ${result.largest_block?.duration_hours || 0}h
+          (${result.blocks_analyzed} bloków/rok)
+        </div>
+        ${result.warnings?.length > 0 ? `
+        <div style="margin-top: 6px; color: #e67e22;">
+          ⚠️ ${result.warnings.join(' | ')}
+        </div>
+        ` : ''}
+      </div>
+    `;
+
+    // Update button
+    btn.innerHTML = '✓ Zoptymalizowano';
+    btn.style.background = 'linear-gradient(135deg, #27ae60 0%, #2ecc71 100%)';
+    btn.disabled = false;
+
+  } catch (error) {
+    console.error('BESS optimization error:', error);
+    btn.innerHTML = '❌ Błąd';
+    btn.style.background = '#e74c3c';
+
+    rationaleEl.innerHTML += `<br><span style="color: #e74c3c;">Błąd: ${error.message}</span>`;
+
+    // Re-enable after delay
+    setTimeout(() => {
+      btn.innerHTML = '⚡ Optymalizuj (PyPSA+HiGHS)';
+      btn.style.background = 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)';
+      btn.disabled = false;
+    }, 3000);
   }
 }
 

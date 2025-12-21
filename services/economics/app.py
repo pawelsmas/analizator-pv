@@ -1046,6 +1046,102 @@ async def get_default_thresholds():
     }
 
 
+# ============== BESS OPTIMIZER ENDPOINTS ==============
+
+from bess_optimizer import (
+    BESSOptimizationRequest,
+    BESSOptimizationResult,
+    OptimizationMethod,
+    optimize_bess,
+)
+
+
+@app.post("/bess/optimize", response_model=BESSOptimizationResult)
+async def optimize_bess_sizing(request: BESSOptimizationRequest):
+    """
+    Optymalny dobór magazynu energii (BESS) do peak shavingu.
+
+    Wykorzystuje PyPSA + HiGHS do rozwiązania problemu LP/MIP.
+
+    Metody optymalizacji:
+    - heuristic: Szybka heurystyka (największy blok / DOD * margines)
+    - lp_relaxed: Optymalizacja LP przez PyPSA+HiGHS (zalecana)
+    - mip_full: Pełna optymalizacja MIP (dokładniejsza, wolniejsza)
+
+    Biblioteki:
+    - PyPSA: Python for Power System Analysis - modelowanie systemów energetycznych
+    - HiGHS: High-performance LP/MIP solver (open source, szybki, MIT license)
+
+    Parametry wejściowe:
+    - load_profile_kw: Profil obciążenia godzinowy [kW]
+    - peak_shaving_threshold_kw: Próg peak shaving [kW]
+    - bess_capex_per_kwh: Koszt pojemności [PLN/kWh]
+    - bess_capex_per_kw: Koszt mocy [PLN/kW]
+    - depth_of_discharge: DOD (0.5-1.0)
+    - round_trip_efficiency: Sprawność cyklu (0.7-1.0)
+    - max_c_rate: Max C-rate (moc/pojemność)
+
+    Wynik:
+    - optimal_capacity_kwh: Optymalna pojemność [kWh]
+    - optimal_power_kw: Optymalna moc [kW]
+    - capex_total_pln: Całkowity CAPEX
+    - sizing_rationale: Uzasadnienie doboru
+    """
+    try:
+        return optimize_bess(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/bess/methods")
+async def get_bess_optimization_methods():
+    """
+    Dostępne metody optymalizacji BESS.
+
+    Returns:
+        Słownik z opisami metod
+    """
+    return {
+        "heuristic": {
+            "name": "Heurystyka",
+            "description": "Szybka metoda bazująca na największym bloku przeciążenia",
+            "pros": ["Bardzo szybka (<1ms)", "Nie wymaga solvera"],
+            "cons": ["Może dawać przewymiarowane wyniki"],
+            "recommended_for": "Szybkie oszacowanie, prototypowanie"
+        },
+        "lp_relaxed": {
+            "name": "LP (PyPSA+HiGHS)",
+            "description": "Optymalizacja liniowa z PyPSA i solverem HiGHS",
+            "pros": ["Optymalne rozwiązanie", "Szybka (10-100ms)", "Dokładna"],
+            "cons": ["Wymaga PyPSA i HiGHS"],
+            "recommended_for": "Produkcyjne dobory BESS"
+        },
+        "mip_full": {
+            "name": "MIP (PyPSA+HiGHS)",
+            "description": "Pełna optymalizacja mieszana całkowitoliczbowa",
+            "pros": ["Najbardziej dokładna", "Uwzględnia dyskretyzację"],
+            "cons": ["Wolniejsza (100ms-1s)", "Może nie zbiec dla dużych problemów"],
+            "recommended_for": "Finalne projekty wymagające precyzji"
+        },
+        "libraries": {
+            "pypsa": {
+                "name": "PyPSA",
+                "version": "0.27.1",
+                "description": "Python for Power System Analysis",
+                "url": "https://pypsa.org",
+                "license": "MIT"
+            },
+            "highs": {
+                "name": "HiGHS",
+                "version": "1.7.1",
+                "description": "High-performance LP/MIP solver",
+                "url": "https://highs.dev",
+                "license": "MIT"
+            }
+        }
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8003)

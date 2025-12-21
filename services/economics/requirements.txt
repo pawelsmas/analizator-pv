@@ -4,3 +4,7 @@ numpy==1.26.2
 pydantic==2.5.0
 prometheus-fastapi-instrumentator==6.1.0
 pytest==7.4.3
+# Optimization libraries for BESS sizing
+pypsa==0.27.1
+highspy==1.7.1
+pandas==2.1.3

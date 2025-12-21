@@ -181,13 +181,46 @@
       <div id="seasonalityMessage" class="seasonality-message"></div>
     </div>
 
-    <!-- Analiza rozkładu mocy -->
+    <!-- Analiza rozkładu mocy z Peak Shaving -->
     <div class="chart-section">
-      <h2>Krzywa Uporządkowana Mocy</h2>
+      <h2>📊 Krzywa Uporządkowana Mocy (Load Duration Curve)</h2>
       <div class="chart-info">
-        Rozkład mocy od największej do najmniejszej
+        Rozkład mocy od największej do najmniejszej - analiza potencjału peak shaving
       </div>
       <canvas id="loadDurationCurve"></canvas>
+
+      <!-- Peak Shaving Analysis Table -->
+      <div id="peakShavingAnalysis" style="margin-top: 20px;">
+        <h3 style="margin: 0 0 12px 0; color: #2c3e50; font-size: 16px;">
+          ⚡ Analiza Peak Shaving - Percentyle Mocy
+        </h3>
+        <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 12px; border-radius: 8px; margin-bottom: 15px;">
+          <p style="margin: 0; font-size: 13px; color: #495057;">
+            <strong>💡 Jak interpretować:</strong> Percentyl P99 oznacza moc przekraczaną tylko przez 1% czasu (~88h/rok).
+            Ścięcie szczytów powyżej P99 pozwala znacząco obniżyć moc zamówioną przy minimalnej potrzebie magazynowania.
+          </p>
+        </div>
+
+        <table id="peakShavingTable" style="width: 100%; border-collapse: collapse; font-size: 13px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+          <thead>
+            <tr style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white;">
+              <th style="padding: 12px 8px; text-align: left; font-weight: 600;">Próg</th>
+              <th style="padding: 12px 8px; text-align: right; font-weight: 600;">Moc [kW]</th>
+              <th style="padding: 12px 8px; text-align: right; font-weight: 600;">Godzin/rok</th>
+              <th style="padding: 12px 8px; text-align: right; font-weight: 600;">Energia do ścięcia [kWh]</th>
+              <th style="padding: 12px 8px; text-align: right; font-weight: 600;">% redukcji Pmax</th>
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600;">Ocena</th>
+            </tr>
+          </thead>
+          <tbody id="peakShavingTableBody">
+            <tr><td colspan="6" style="padding: 20px; text-align: center; color: #7f8c8d;">Ładowanie danych...</td></tr>
+          </tbody>
+        </table>
+
+        <!-- Rekomendacja -->
+        <div id="peakShavingRecommendation" style="margin-top: 15px; padding: 15px; border-radius: 8px; display: none;">
+        </div>
+      </div>
     </div>
 
     <!-- Statystyki szczegółowe -->
