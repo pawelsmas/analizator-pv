@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.2.2 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.3.0 - timestamp:', new Date().toISOString());
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -342,6 +342,9 @@ function updateDisplay() {
   updateTechnicalParams(variant);
   generateDegradationTable(variant);
   updateDataInfo(variant);
+
+  // NEW v3.3: Try to fetch sizing variants from bess-dispatch service
+  tryFetchSizingVariants(variant);
 }
 
 function updateVariantDescriptions() {
@@ -1413,3 +1416,361 @@ window.selectVariant = function(v) {
 };
 
 console.log('📦 bess.js fully loaded with animation support');
+
+// ============================================
+// NEW v3.3: SIZING VARIANTS (S/M/L) DISPLAY
+// ============================================
+
+/**
+ * Display sizing variants (S/M/L) from bess-dispatch service
+ * @param {Object} sizingResult - Result from /sizing endpoint
+ */
+function displaySizingVariants(sizingResult) {
+  const section = document.getElementById('sizingVariantsSection');
+  const grid = document.getElementById('sizingVariantsGrid');
+
+  if (!section || !grid) {
+    console.log('⚠️ Sizing variants section not found in DOM');
+    return;
+  }
+
+  if (!sizingResult || !sizingResult.variants || sizingResult.variants.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Show section
+  section.style.display = 'block';
+
+  // Build HTML for variants
+  let html = '';
+
+  for (const v of sizingResult.variants) {
+    const isRecommended = v.is_recommended;
+    const statusClass = getStatusClass(v.degradation_status);
+    const statusIcon = getStatusIcon(v.degradation_status);
+    const statusLabel = getStatusLabel(v.degradation_status);
+
+    html += `
+      <div class="sizing-variant-card ${isRecommended ? 'recommended' : ''}">
+        <div class="variant-header">
+          <span class="variant-name">${v.variant_label}</span>
+          <span class="variant-duration">${v.duration_h}h</span>
+        </div>
+
+        <div class="variant-specs">
+          <div class="variant-spec">
+            <div class="variant-spec-value">${formatNumberEU(v.power_kw, 0)}</div>
+            <div class="variant-spec-label">kW</div>
+          </div>
+          <div class="variant-spec">
+            <div class="variant-spec-value">${formatNumberEU(v.energy_kwh, 0)}</div>
+            <div class="variant-spec-label">kWh</div>
+          </div>
+        </div>
+
+        <div class="variant-economics">
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">CAPEX:</span>
+            <span class="variant-econ-value">${formatNumberEU(v.capex_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">Oszczędności/rok:</span>
+            <span class="variant-econ-value">${formatNumberEU(v.annual_savings_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">NPV:</span>
+            <span class="variant-econ-value ${v.npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(v.npv_pln / 1000, 0)} tys. PLN</span>
+          </div>
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">Payback:</span>
+            <span class="variant-econ-value">${v.simple_payback_years < 100 ? formatNumberEU(v.simple_payback_years, 1) + ' lat' : '> 25 lat'}</span>
+          </div>
+        </div>
+
+        <div class="variant-degradation">
+          <div class="variant-degradation-title">Metryki degradacji</div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">Throughput:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.throughput_total_mwh || 0, 1)} MWh/rok</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">EFC:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_total || 0, 0)} cykli/rok</span>
+          </div>
+          ${v.degradation?.efc_pv > 0 || v.degradation?.efc_peak > 0 ? `
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">EFC PV / Peak:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_pv || 0, 0)} / ${formatNumberEU(v.degradation?.efc_peak || 0, 0)}</span>
+          </div>
+          ` : ''}
+        </div>
+
+        <div class="variant-status ${statusClass}">
+          ${statusIcon} ${statusLabel}
+        </div>
+      </div>
+    `;
+  }
+
+  grid.innerHTML = html;
+  console.log('✅ Sizing variants displayed:', sizingResult.variants.length);
+}
+
+/**
+ * Display degradation budget status
+ * @param {Object} degradation - Degradation metrics from dispatch result
+ * @param {Object} budget - Budget limits (optional)
+ */
+function displayDegradationBudget(degradation, budget) {
+  const section = document.getElementById('degradationBudgetSection');
+
+  if (!section) {
+    console.log('⚠️ Degradation budget section not found');
+    return;
+  }
+
+  if (!degradation) {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Show section
+  section.style.display = 'block';
+
+  // Update values
+  setElementText('budgetThroughput', formatNumberEU(degradation.throughput_total_mwh || 0, 1));
+  setElementText('budgetEFC', formatNumberEU(degradation.efc_total || 0, 0));
+
+  // Budget limits
+  if (budget) {
+    setElementText('budgetThroughputLimit', budget.max_throughput_mwh_per_year
+      ? `Limit: ${formatNumberEU(budget.max_throughput_mwh_per_year, 0)} MWh`
+      : 'Limit: brak');
+    setElementText('budgetEFCLimit', budget.max_efc_per_year
+      ? `Limit: ${formatNumberEU(budget.max_efc_per_year, 0)} cykli`
+      : 'Limit: brak');
+  }
+
+  // Status
+  const status = degradation.budget_status || 'ok';
+  const statusCard = document.getElementById('budgetStatusCard');
+
+  setElementText('budgetStatusIcon', getStatusIcon(status));
+  setElementText('budgetStatus', getStatusLabel(status));
+  setElementText('budgetUtilization', `Wykorzystanie: ${formatNumberEU(degradation.budget_utilization_pct || 0, 0)}%`);
+
+  // Update card class
+  if (statusCard) {
+    statusCard.className = 'stat-card bess-budget-' + status;
+  }
+
+  // Breakdown (for STACKED mode)
+  if (degradation.throughput_pv_mwh > 0 || degradation.throughput_peak_mwh > 0) {
+    setElementText('budgetBreakdown', 'STACKED');
+    setElementText('budgetBreakdownDetail',
+      `PV: ${formatNumberEU(degradation.throughput_pv_mwh, 1)} MWh | Peak: ${formatNumberEU(degradation.throughput_peak_mwh, 1)} MWh`);
+  } else {
+    setElementText('budgetBreakdown', 'PV Surplus');
+    setElementText('budgetBreakdownDetail', `Total: ${formatNumberEU(degradation.throughput_total_mwh, 1)} MWh`);
+  }
+}
+
+/**
+ * Display STACKED mode info banner
+ * @param {Object} stackedInfo - Stacked mode parameters
+ */
+function displayStackedModeInfo(stackedInfo) {
+  const banner = document.getElementById('stackedModeInfo');
+
+  if (!banner) return;
+
+  if (!stackedInfo || !stackedInfo.peak_limit_kw) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  banner.style.display = 'block';
+  setElementText('stackedReserveInfo', `Rezerwa SOC: ${(stackedInfo.reserve_fraction * 100).toFixed(0)}% dla peak shaving.`);
+  setElementText('stackedPeakLimit', `Limit importu: ${formatNumberEU(stackedInfo.peak_limit_kw, 0)} kW.`);
+}
+
+// Helper functions
+function getStatusClass(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return 'ok';
+    case 'warning': return 'warning';
+    case 'exceeded': return 'exceeded';
+    default: return 'ok';
+  }
+}
+
+function getStatusIcon(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return '✅';
+    case 'warning': return '⚠️';
+    case 'exceeded': return '🚫';
+    default: return '✅';
+  }
+}
+
+function getStatusLabel(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return 'OK - w budżecie';
+    case 'warning': return 'Uwaga - zbliża się do limitu';
+    case 'exceeded': return 'Przekroczono budżet!';
+    default: return 'OK';
+  }
+}
+
+function setElementText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/**
+ * Fetch sizing variants from bess-dispatch service
+ * Called when BESS data is loaded
+ */
+async function fetchSizingVariants(pvData, loadData, bessConfig) {
+  // Skip if no data or BESS disabled
+  if (!pvData || !loadData || !bessConfig || !bessConfig.enabled) {
+    console.log('⚠️ Cannot fetch sizing variants - missing data or BESS disabled');
+    return;
+  }
+
+  const bessDispatchUrl = 'http://localhost:8031';
+
+  try {
+    console.log('🔄 Fetching sizing variants from bess-dispatch...');
+
+    const requestBody = {
+      pv_generation_kw: pvData,
+      load_kw: loadData,
+      interval_minutes: 60,
+      mode: bessConfig.stacked_mode ? 'stacked' : 'pv_surplus',
+      peak_limit_kw: bessConfig.peak_limit_kw || null,
+      reserve_fraction: bessConfig.reserve_fraction || 0.3,
+      durations_h: [1.0, 2.0, 4.0],
+      roundtrip_efficiency: bessConfig.roundtrip_efficiency || 0.90,
+      soc_min: bessConfig.soc_min || 0.10,
+      soc_max: bessConfig.soc_max || 0.90,
+      capex_per_kwh: bessConfig.capex_per_kwh || 1500,
+      capex_per_kw: bessConfig.capex_per_kw || 300,
+      import_price_pln_mwh: 800,
+      max_efc_per_year: bessConfig.max_efc_per_year || null,
+      max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
+    };
+
+    const response = await fetch(`${bessDispatchUrl}/sizing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log('✅ Sizing variants received:', result);
+
+    // Display results
+    displaySizingVariants(result);
+
+    // Display degradation for recommended variant
+    if (result.variants && result.variants.length > 0) {
+      const recommended = result.variants.find(v => v.is_recommended) || result.variants[0];
+      if (recommended.degradation) {
+        displayDegradationBudget(recommended.degradation, {
+          max_efc_per_year: bessConfig.max_efc_per_year,
+          max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year,
+        });
+      }
+    }
+
+    // Display STACKED mode info if active
+    if (bessConfig.stacked_mode && bessConfig.peak_limit_kw) {
+      displayStackedModeInfo({
+        peak_limit_kw: bessConfig.peak_limit_kw,
+        reserve_fraction: bessConfig.reserve_fraction || 0.3,
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error fetching sizing variants:', error);
+    // Hide sections on error
+    const section = document.getElementById('sizingVariantsSection');
+    if (section) section.style.display = 'none';
+  }
+}
+
+/**
+ * Try to fetch sizing variants using existing variant data
+ * Generates simulated hourly profile from variant statistics
+ */
+async function tryFetchSizingVariants(variant) {
+  // Check if bess-dispatch service is needed (when BESS is enabled)
+  if (!variant || !variant.bess_power_kw || variant.bess_power_kw <= 0) {
+    console.log('⚠️ BESS not enabled, skipping sizing variants fetch');
+    return;
+  }
+
+  // Get settings for BESS config
+  const settings = systemSettings || {};
+
+  // Generate simulated hourly data from variant statistics
+  // This creates a representative annual profile for dispatch simulation
+  const hours = 8760;
+  const pvData = [];
+  const loadData = [];
+
+  const totalProduction = variant.production || 0; // kWh/year
+  const totalLoad = variant.consumption || variant.load || totalProduction * 1.2;
+  const avgPvPerHour = totalProduction / hours;
+  const avgLoadPerHour = totalLoad / hours;
+
+  for (let h = 0; h < hours; h++) {
+    const hourOfDay = h % 24;
+    const dayOfYear = Math.floor(h / 24);
+
+    // PV: daytime production with seasonal variation
+    const solarFactor = Math.max(0, Math.sin((hourOfDay - 6) * Math.PI / 12));
+    const seasonFactor = 0.5 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
+    const pvPower = avgPvPerHour * 3 * solarFactor * (0.7 + 0.6 * seasonFactor);
+
+    // Load: base + daily variation
+    const loadFactor = 0.6 + 0.4 * Math.sin((hourOfDay - 14) * Math.PI / 12);
+    const loadPower = avgLoadPerHour * (0.8 + 0.4 * loadFactor);
+
+    pvData.push(Math.max(0, pvPower));
+    loadData.push(Math.max(10, loadPower));
+  }
+
+  // BESS configuration from settings
+  const bessConfig = {
+    enabled: true,
+    stacked_mode: settings.bessStackedMode || false,
+    peak_limit_kw: settings.bessPeakLimitKw || null,
+    reserve_fraction: settings.bessReserveFraction || 0.3,
+    roundtrip_efficiency: (settings.bessRoundtripEfficiency || 90) / 100,
+    soc_min: (settings.bessSocMin || 10) / 100,
+    soc_max: (settings.bessSocMax || 90) / 100,
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    max_efc_per_year: settings.bessMaxEfcPerYear || null,
+    max_throughput_mwh_per_year: settings.bessMaxThroughputMwhPerYear || null,
+  };
+
+  // Call fetchSizingVariants
+  await fetchSizingVariants(pvData, loadData, bessConfig);
+}
+
+// Export new functions
+window.displaySizingVariants = displaySizingVariants;
+window.displayDegradationBudget = displayDegradationBudget;
+window.displayStackedModeInfo = displayStackedModeInfo;
+window.fetchSizingVariants = fetchSizingVariants;
+window.tryFetchSizingVariants = tryFetchSizingVariants;
+
+console.log('📦 bess.js v3.3 - sizing variants support added');
