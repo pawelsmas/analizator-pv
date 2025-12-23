@@ -190,31 +190,64 @@ def find_optimal_power_for_duration(
     --------
     Tuple of (optimal_power_kw, optimal_energy_kwh, best_result, best_npv)
     """
-    # Determine power search range based on load/PV
+    # Calculate surplus statistics for proper sizing
+    surplus = np.maximum(pv_kw - load_kw, 0)
+    daily_surplus_kwh = np.zeros(365)
+    n_hours = len(pv_kw)
+    hours_per_day = int(n_hours / 365) if n_hours >= 8760 else 24
+
+    # Calculate daily surplus energy
+    for day in range(min(365, n_hours // hours_per_day)):
+        start_h = day * hours_per_day
+        end_h = min(start_h + hours_per_day, n_hours)
+        daily_surplus_kwh[day] = np.sum(surplus[start_h:end_h]) * dt_hours
+
+    # Determine power search range based on realistic sizing criteria
     if mode == DispatchMode.PV_SURPLUS:
-        # For PV surplus: use 75th percentile of surplus as max
-        surplus = np.maximum(pv_kw - load_kw, 0)
-        p_max_candidate = np.percentile(surplus, 75) if len(surplus) > 0 else 100
+        # For PV surplus: size based on DAILY shiftable energy and duration
+        # Use P75 of daily surplus / duration to get reasonable power
+        p75_daily_surplus = np.percentile(daily_surplus_kwh[daily_surplus_kwh > 0], 75) if np.any(daily_surplus_kwh > 0) else 100
+        # Power = Energy / Duration, with safety margin
+        p_max_candidate = p75_daily_surplus / duration_h
+
+        # Also consider: power should be able to charge battery in ~4-6 peak sun hours
+        max_surplus_kw = np.percentile(surplus[surplus > 0], 90) if np.any(surplus > 0) else 100
+        # Use the larger of the two estimates
+        p_max_candidate = max(p_max_candidate, max_surplus_kw * 0.8)
+
     elif mode in [DispatchMode.PEAK_SHAVING, DispatchMode.STACKED]:
         # For peak shaving: use max excess over threshold
         if request.peak_limit_kw:
-            excess = np.maximum(load_kw - pv_kw - request.peak_limit_kw, 0)
-            p_max_candidate = np.max(excess) if len(excess) > 0 else 100
+            net_load = load_kw - pv_kw
+            excess = np.maximum(net_load - request.peak_limit_kw, 0)
+            p_max_candidate = np.percentile(excess[excess > 0], 95) if np.any(excess > 0) else 100
         elif request.stacked_params:
-            excess = np.maximum(load_kw - pv_kw - request.stacked_params.peak_limit_kw, 0)
-            p_max_candidate = np.max(excess) if len(excess) > 0 else 100
+            net_load = load_kw - pv_kw
+            excess = np.maximum(net_load - request.stacked_params.peak_limit_kw, 0)
+            p_max_candidate = np.percentile(excess[excess > 0], 95) if np.any(excess > 0) else 100
         else:
             p_max_candidate = np.percentile(load_kw, 95)
+
+        # For STACKED mode, also consider PV surplus sizing
+        if mode == DispatchMode.STACKED:
+            pv_power_candidate = np.percentile(surplus[surplus > 0], 90) if np.any(surplus > 0) else 100
+            p_max_candidate = max(p_max_candidate, pv_power_candidate * 0.8)
     else:
         p_max_candidate = 100
 
-    # Clamp to request limits
-    p_min = max(request.min_power_kw, p_max_candidate * 0.1)
-    p_max = min(request.max_power_kw, p_max_candidate * 1.5)
+    # Ensure minimum sensible power based on system size
+    pv_peak = np.max(pv_kw) if len(pv_kw) > 0 else 100
+    min_sensible_power = pv_peak * 0.05  # At least 5% of PV peak
+    p_max_candidate = max(p_max_candidate, min_sensible_power)
 
+    # Clamp to request limits with wider search range
+    p_min = max(request.min_power_kw, p_max_candidate * 0.2)
+    p_max = min(request.max_power_kw, p_max_candidate * 2.0)
+
+    # Ensure we have a valid range
     if p_min >= p_max:
         p_min = request.min_power_kw
-        p_max = max(p_min * 10, request.max_power_kw)
+        p_max = max(p_min * 10, request.max_power_kw, pv_peak * 0.5)
 
     # Generate power steps
     power_steps = np.linspace(p_min, p_max, request.power_steps)

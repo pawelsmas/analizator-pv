@@ -49,13 +49,39 @@ body {
   opacity: 0.9;
 }
 
-/* Variant Selector */
+/* Variant Selector - Sticky on scroll */
 .variant-selector {
   background: white;
   padding: 16px 20px;
   border-radius: 12px;
   margin-bottom: 20px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  transition: all 0.3s ease;
+}
+
+.variant-selector.scrolled {
+  padding: 10px 16px;
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.variant-selector.scrolled .selector-label {
+  display: none;
+}
+
+.variant-selector.scrolled .variant-btn {
+  padding: 8px 16px;
+}
+
+.variant-selector.scrolled .variant-name {
+  font-size: 13px;
+}
+
+.variant-selector.scrolled .variant-desc {
+  font-size: 10px;
 }
 
 .selector-label {
@@ -714,12 +740,12 @@ body {
 /* Flow Diagram */
 .bess-flow-diagram {
   flex: 2;
-  min-width: 400px;
+  min-width: 500px;
   position: relative;
-  height: 350px;
+  height: 480px;
   background: rgba(255,255,255,0.05);
   border-radius: 16px;
-  padding: 20px;
+  padding: 24px;
 }
 
 /* Flow Nodes */
@@ -768,14 +794,14 @@ body {
 }
 
 .load-node {
-  top: 50%;
-  right: 30px;
+  top: 38%;
+  right: 50px;
   transform: translateY(-50%);
 }
 
 .grid-node {
   bottom: 20px;
-  right: 30px;
+  right: 50px;
 }
 
 .curtailment-node {
@@ -964,10 +990,22 @@ body {
 }
 
 .arrow-grid-load {
-  bottom: 80px;
-  right: 80px;
+  bottom: 110px;
+  right: 95px;
   width: 60px;
   transform: rotate(-90deg);
+}
+
+/* Position value label for vertical grid arrow - on the left side */
+.arrow-grid-load .arrow-value {
+  top: 50%;
+  left: -28px;
+  right: auto;
+  transform: translateY(-50%) rotate(90deg);
+  font-size: 10px;
+  font-weight: 600;
+  color: #ef5350;
+  white-space: nowrap;
 }
 
 .arrow-curtailment {

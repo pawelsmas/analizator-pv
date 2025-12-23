@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.3.0 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.10.0 - timestamp:', new Date().toISOString());
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -39,6 +39,9 @@ document.addEventListener('DOMContentLoaded', () => {
   requestSharedData();
   requestSettingsFromShell();
 
+  // Setup sticky variant selector
+  setupStickyVariantSelector();
+
   // Fallback: try localStorage
   setTimeout(() => {
     if (!analysisResults || Object.keys(variants).length === 0) {
@@ -47,6 +50,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 500);
 });
+
+// Setup sticky variant selector with scroll animation
+function setupStickyVariantSelector() {
+  const variantSelector = document.querySelector('.variant-selector');
+  if (!variantSelector) return;
+
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 50) {
+      variantSelector.classList.add('scrolled');
+    } else {
+      variantSelector.classList.remove('scrolled');
+    }
+  });
+}
 
 // Listen for messages from parent shell
 window.addEventListener('message', (event) => {
@@ -66,10 +83,29 @@ window.addEventListener('message', (event) => {
     updateDisplay();
   }
 
+  // Handle variant changes from other modules (via shell broadcast)
+  if (type === 'MASTER_VARIANT_CHANGED') {
+    console.log('📥 Received MASTER_VARIANT_CHANGED:', data);
+    if (data && data.variantKey && data.variantKey !== currentVariant) {
+      // Update local state without re-broadcasting to shell
+      currentVariant = data.variantKey;
+      // Update button states
+      document.querySelectorAll('.variant-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.variant === data.variantKey);
+      });
+      updateDisplay();
+    }
+  }
+
+  // Legacy support for VARIANT_CHANGED
   if (type === 'VARIANT_CHANGED') {
     console.log('📥 Received VARIANT_CHANGED:', data);
-    if (data && data.variant) {
-      selectVariant(data.variant);
+    if (data && data.variant && data.variant !== currentVariant) {
+      currentVariant = data.variant;
+      document.querySelectorAll('.variant-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.variant === data.variant);
+      });
+      updateDisplay();
     }
   }
 
@@ -123,6 +159,11 @@ function handleSharedData(data) {
     currentVariant = data.masterVariant;
     console.log('📌 Using masterVariant:', currentVariant);
   }
+
+  // Update button states to match current variant
+  document.querySelectorAll('.variant-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.variant === currentVariant);
+  });
 
   updateDisplay();
 }
@@ -268,18 +309,24 @@ function selectVariant(variantKey) {
   }
 
   currentVariant = variantKey;
+  console.log('🔄 Variant selected:', variantKey);
 
   // Update button states
   document.querySelectorAll('.variant-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.variant === variantKey);
   });
 
-  // Notify parent shell
+  // Notify parent shell - use MASTER_VARIANT_SELECTED for shell compatibility
   if (window.parent !== window) {
     window.parent.postMessage({
-      type: 'VARIANT_CHANGED',
-      data: { variant: variantKey, source: 'bess' }
+      type: 'MASTER_VARIANT_SELECTED',
+      data: {
+        variantKey: variantKey,
+        variantData: variants[variantKey],
+        source: 'bess'
+      }
     }, '*');
+    console.log('📤 Sent MASTER_VARIANT_SELECTED to shell:', variantKey);
   }
 
   updateDisplay();
@@ -981,6 +1028,26 @@ function refreshData() {
   requestSettingsFromShell();
 }
 
+// DEBUG: Show current variant data
+function debugVariantData() {
+  const variant = variants[currentVariant];
+  console.log('🔍 DEBUG - Current variant:', currentVariant);
+  console.log('🔍 DEBUG - All variants:', Object.keys(variants));
+  console.log('🔍 DEBUG - Variant data:', variant);
+  console.log('🔍 DEBUG - BESS fields:', {
+    bess_power_kw: variant?.bess_power_kw,
+    bess_energy_kwh: variant?.bess_energy_kwh,
+    bess_charged_kwh: variant?.bess_charged_kwh,
+    bess_discharged_kwh: variant?.bess_discharged_kwh,
+    production: variant?.production,
+    consumption: variant?.consumption
+  });
+  console.log('🔍 DEBUG - System settings:', systemSettings);
+
+  alert(`Wariant: ${currentVariant}\nBESS Power: ${variant?.bess_power_kw || 0} kW\nBESS Energy: ${variant?.bess_energy_kwh || 0} kWh\nProduction: ${variant?.production || 0} kWh`);
+}
+window.debugVariantData = debugVariantData;
+
 function exportBessData() {
   const variant = variants[currentVariant];
   if (!variant) {
@@ -1495,14 +1562,44 @@ function displaySizingVariants(sizingResult) {
             <span class="variant-deg-value">${formatNumberEU(v.degradation?.throughput_total_mwh || 0, 1)} MWh/rok</span>
           </div>
           <div class="variant-deg-row">
-            <span class="variant-deg-label">EFC:</span>
+            <span class="variant-deg-label">EFC łącznie:</span>
             <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_total || 0, 0)} cykli/rok</span>
           </div>
           ${v.degradation?.efc_pv > 0 || v.degradation?.efc_peak > 0 ? `
           <div class="variant-deg-row">
-            <span class="variant-deg-label">EFC PV / Peak:</span>
-            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_pv || 0, 0)} / ${formatNumberEU(v.degradation?.efc_peak || 0, 0)}</span>
+            <span class="variant-deg-label">↳ EFC PV surplus:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_pv || 0, 0)} cykli</span>
           </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ EFC Peak Shaving:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_peak || 0, 0)} cykli</span>
+          </div>
+          ` : ''}
+          ${v.degradation?.peak_events_count > 0 ? `
+          <div class="variant-deg-row peak-shaving-info">
+            <span class="variant-deg-label">Peak Shaving zdarzenia:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.peak_events_count || 0, 0)} h/rok</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ Energia Peak:</span>
+            <span class="variant-deg-value">${formatNumberEU((v.degradation?.peak_events_energy_kwh || 0) / 1000, 1)} MWh</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ Max moc Peak:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.peak_max_discharge_kw || 0, 0)} kW</span>
+          </div>
+          ` : ''}
+          ${v.degradation?.charge_from_pv_kwh > 0 || v.degradation?.charge_from_grid_kwh > 0 ? `
+          <div class="variant-deg-row charge-source-info">
+            <span class="variant-deg-label">Ładowanie z PV:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.charge_pv_pct || 0, 0)}% (${formatNumberEU((v.degradation?.charge_from_pv_kwh || 0) / 1000, 1)} MWh)</span>
+          </div>
+          ${v.degradation?.charge_from_grid_kwh > 0 ? `
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">Ładowanie z sieci:</span>
+            <span class="variant-deg-value">${formatNumberEU((v.degradation?.charge_from_grid_kwh || 0) / 1000, 1)} MWh</span>
+          </div>
+          ` : ''}
           ` : ''}
         </div>
 
@@ -1710,60 +1807,143 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
  * Generates simulated hourly profile from variant statistics
  */
 async function tryFetchSizingVariants(variant) {
+  console.log('🔄 tryFetchSizingVariants called with variant:', variant?.key);
+
   // Check if bess-dispatch service is needed (when BESS is enabled)
   if (!variant || !variant.bess_power_kw || variant.bess_power_kw <= 0) {
     console.log('⚠️ BESS not enabled, skipping sizing variants fetch');
+    // Hide sections when BESS disabled
+    const section = document.getElementById('sizingVariantsSection');
+    if (section) section.style.display = 'none';
+    const budgetSection = document.getElementById('degradationBudgetSection');
+    if (budgetSection) budgetSection.style.display = 'none';
     return;
   }
 
   // Get settings for BESS config
   const settings = systemSettings || {};
+  console.log('📊 Using settings for sizing:', {
+    bessCapexPerKwh: settings.bessCapexPerKwh,
+    production: variant.production,
+    consumption: variant.consumption
+  });
 
-  // Generate simulated hourly data from variant statistics
-  // This creates a representative annual profile for dispatch simulation
+  // Generate full 8760 hourly profile from variant statistics
+  // This is needed for proper BESS sizing
   const hours = 8760;
   const pvData = [];
   const loadData = [];
 
-  const totalProduction = variant.production || 0; // kWh/year
+  const totalProduction = variant.production || 500000; // kWh/year
   const totalLoad = variant.consumption || variant.load || totalProduction * 1.2;
-  const avgPvPerHour = totalProduction / hours;
-  const avgLoadPerHour = totalLoad / hours;
+
+  // Scale factors to match annual totals
+  const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+  const loadScaleFactor = totalLoad / 8760 / 50; // Base load ~50 kW avg
+
+  console.log('📊 Generating 8760h profile:', { totalProduction, totalLoad, pvScaleFactor, loadScaleFactor });
 
   for (let h = 0; h < hours; h++) {
     const hourOfDay = h % 24;
     const dayOfYear = Math.floor(h / 24);
 
-    // PV: daytime production with seasonal variation
-    const solarFactor = Math.max(0, Math.sin((hourOfDay - 6) * Math.PI / 12));
-    const seasonFactor = 0.5 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
-    const pvPower = avgPvPerHour * 3 * solarFactor * (0.7 + 0.6 * seasonFactor);
+    // PV: realistic profile with daytime production and seasonal variation
+    let pvPower = 0;
+    if (hourOfDay >= 6 && hourOfDay <= 18) {
+      const solarFactor = Math.sin((hourOfDay - 6) * Math.PI / 12);
+      // Seasonal: peak in June (day 172), min in December
+      const seasonFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos((dayOfYear - 172) * 2 * Math.PI / 365));
+      // Peak power for 1 MWp ~800-1000 kW
+      pvPower = 900 * solarFactor * seasonFactor * pvScaleFactor;
+    }
 
-    // Load: base + daily variation
-    const loadFactor = 0.6 + 0.4 * Math.sin((hourOfDay - 14) * Math.PI / 12);
-    const loadPower = avgLoadPerHour * (0.8 + 0.4 * loadFactor);
+    // Load: industrial profile with evening peak (for peak shaving scenarios)
+    // Base load during night
+    let loadPower = 30 * loadScaleFactor;
+
+    if (hourOfDay >= 6 && hourOfDay <= 22) {
+      // Working hours - higher load
+      loadPower = (60 + 20 * Math.sin((hourOfDay - 6) * Math.PI / 16)) * loadScaleFactor;
+    }
+
+    // Evening peak (17:00-21:00) - when PV is low but consumption high
+    // This is when peak shaving is most valuable
+    if (hourOfDay >= 17 && hourOfDay <= 21) {
+      const peakHourFactor = 1 - Math.abs(hourOfDay - 19) / 3; // Peak at 19:00
+      loadPower = (80 + 40 * peakHourFactor) * loadScaleFactor;
+    }
 
     pvData.push(Math.max(0, pvPower));
     loadData.push(Math.max(10, loadPower));
   }
 
+  // Log sample data
+  const sumPv = pvData.reduce((a, b) => a + b, 0);
+  const sumLoad = loadData.reduce((a, b) => a + b, 0);
+  const maxPv = Math.max(...pvData);
+  const maxLoad = Math.max(...loadData);
+
+  // Calculate net load for peak shaving analysis
+  const netLoad = loadData.map((load, i) => load - pvData[i]);
+  const maxNetLoad = Math.max(...netLoad);
+  const hoursAboveThreshold = (threshold) => netLoad.filter(n => n > threshold).length;
+
+  console.log('📊 Generated profile stats:', {
+    sumPv_MWh: (sumPv/1000).toFixed(0),
+    sumLoad_MWh: (sumLoad/1000).toFixed(0),
+    maxPv_kW: maxPv.toFixed(0),
+    maxLoad_kW: maxLoad.toFixed(0),
+    maxNetLoad_kW: maxNetLoad.toFixed(0),
+    hoursNetLoad_gt_80pct: hoursAboveThreshold(maxNetLoad * 0.8),
+    hoursNetLoad_gt_90pct: hoursAboveThreshold(maxNetLoad * 0.9)
+  });
+
   // BESS configuration from settings
+  // Determine peak limit for STACKED mode
+  let peakLimitKw = null;
+  if (settings.bessPeakShavingEnabled) {
+    if (settings.bessPeakShavingMode === 'manual' && settings.bessPeakShavingTargetKw > 0) {
+      peakLimitKw = settings.bessPeakShavingTargetKw;
+    } else if (settings.bessPeakShavingMode === 'percentage' || settings.bessPeakShavingMode === 'auto') {
+      // Calculate peak limit from load profile (P95 or percentage reduction)
+      const maxLoad = Math.max(...loadData);
+      const reductionPct = settings.bessPeakShavingPctReduction || 15;
+      peakLimitKw = maxLoad * (1 - reductionPct / 100);
+    }
+  }
+
+  // Settings already store efficiency/SOC as fractions (0.9, 0.1, 0.9), not percentages
+  // Only divide by 100 if value > 1 (backwards compat for old format)
+  const parseEfficiency = (val, defaultVal) => {
+    if (val === undefined || val === null) return defaultVal;
+    return val > 1 ? val / 100 : val;
+  };
+
   const bessConfig = {
     enabled: true,
-    stacked_mode: settings.bessStackedMode || false,
-    peak_limit_kw: settings.bessPeakLimitKw || null,
-    reserve_fraction: settings.bessReserveFraction || 0.3,
-    roundtrip_efficiency: (settings.bessRoundtripEfficiency || 90) / 100,
-    soc_min: (settings.bessSocMin || 10) / 100,
-    soc_max: (settings.bessSocMax || 90) / 100,
+    stacked_mode: settings.bessPeakShavingEnabled || false, // Enable STACKED mode when peak shaving enabled
+    peak_limit_kw: peakLimitKw,
+    reserve_fraction: 0.3, // SOC reserve for peak shaving
+    roundtrip_efficiency: parseEfficiency(settings.bessRoundtripEfficiency, 0.9),
+    soc_min: parseEfficiency(settings.bessSocMin, 0.1),
+    soc_max: parseEfficiency(settings.bessSocMax, 0.9),
     capex_per_kwh: settings.bessCapexPerKwh || 1500,
     capex_per_kw: settings.bessCapexPerKw || 300,
     max_efc_per_year: settings.bessMaxEfcPerYear || null,
     max_throughput_mwh_per_year: settings.bessMaxThroughputMwhPerYear || null,
   };
 
+  console.log('📊 Calling fetchSizingVariants with config:', bessConfig);
+  console.log('📊 Peak Shaving:', settings.bessPeakShavingEnabled ?
+    `ENABLED (mode: ${settings.bessPeakShavingMode}, limit: ${peakLimitKw?.toFixed(0)} kW)` :
+    'DISABLED (pure autokonsumpcja mode)');
+
   // Call fetchSizingVariants
-  await fetchSizingVariants(pvData, loadData, bessConfig);
+  try {
+    await fetchSizingVariants(pvData, loadData, bessConfig);
+  } catch (error) {
+    console.error('❌ Error in tryFetchSizingVariants:', error);
+  }
 }
 
 // Export new functions
@@ -1773,4 +1953,4 @@ window.displayStackedModeInfo = displayStackedModeInfo;
 window.fetchSizingVariants = fetchSizingVariants;
 window.tryFetchSizingVariants = tryFetchSizingVariants;
 
-console.log('📦 bess.js v3.3 - sizing variants support added');
+console.log('📦 bess.js v3.10 - fixed load profile with evening peak for peak shaving');

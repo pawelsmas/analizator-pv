@@ -222,6 +222,16 @@ class DegradationMetrics(BaseModel):
     efc_pv: float = Field(0.0, description="EFC for PV shifting")
     efc_peak: float = Field(0.0, description="EFC for peak shaving")
 
+    # Peak shaving event statistics
+    peak_events_count: int = Field(0, description="Number of hours with peak shaving discharge")
+    peak_events_energy_kwh: float = Field(0.0, description="Total energy discharged for peak shaving [kWh]")
+    peak_max_discharge_kw: float = Field(0.0, description="Maximum discharge power for peak shaving [kW]")
+
+    # Charge source breakdown
+    charge_from_pv_kwh: float = Field(0.0, description="Energy charged from PV surplus [kWh]")
+    charge_from_grid_kwh: float = Field(0.0, description="Energy charged from grid [kWh]")
+    charge_pv_pct: float = Field(0.0, description="Percentage of charge from PV [%]")
+
     # Budget status
     budget_status: DegradationStatus = Field(DegradationStatus.OK)
     budget_utilization_pct: float = Field(0.0, description="Budget utilization [%]")

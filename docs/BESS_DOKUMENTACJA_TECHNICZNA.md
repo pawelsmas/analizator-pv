@@ -1,8 +1,8 @@
 # Dokumentacja Techniczna Modułu BESS
 ## Battery Energy Storage System - Magazyn Energii
 
-**Wersja:** 3.2
-**Data:** 2025-12-21
+**Wersja:** 3.4
+**Data:** 2025-12-23
 **Autor:** Analizator PV
 
 ---
@@ -17,6 +17,8 @@
 6. [Parametry Techniczne](#6-parametry-techniczne)
 7. [API i Endpointy](#7-api-i-endpointy)
 8. [Przykłady Obliczeń](#8-przykłady-obliczeń)
+9. [Do Rozwoju - Strategie Rozładowywania](#9-do-rozwoju---strategie-rozładowywania-bess)
+10. [Szczegółowy Opis Algorytmów](#10-szczegółowy-opis-algorytmów)
 
 ---
 
@@ -659,4 +661,710 @@ pandas>=2.1.3          # Obsługa danych
 
 ---
 
-*Dokument wygenerowany automatycznie przez Analizator PV*
+## 9. Do Rozwoju - Strategie Rozładowywania BESS
+
+### 9.1 Obecna Strategia (Reaktywna)
+
+Aktualnie system używa **strategii reaktywnej (greedy)**:
+
+```
+1. Ładuj magazyn gdy jest nadwyżka PV (surplus = PV - Load > 0)
+2. Rozładuj magazyn gdy jest deficyt (deficit = Load - PV > 0)
+3. Rozładowanie następuje natychmiast po wykryciu deficytu
+4. Nie ma "czekania" na osiągnięcie SOC 90% przed rozładowaniem
+```
+
+**Zalety:**
+- Prosta implementacja
+- Natychmiastowa reakcja na deficyt
+- Maksymalizacja autokonsumpcji w danym momencie
+
+**Wady:**
+- Brak optymalizacji globalnej (dziennej/tygodniowej)
+- Może rozładować magazyn przed wieczornym szczytem
+- Nie uwzględnia predykcji profilu dnia
+
+### 9.2 Strategia Predykcyjna (Predictive Dispatch)
+
+**Koncepcja:** Znając profil PV i zużycia z góry (lub prognozę), optymalizujemy rozładowanie na cały dzień.
+
+```python
+def predictive_dispatch(pv_forecast, load_forecast, battery):
+    """
+    Optymalizacja rozładowania z wyprzedzeniem.
+
+    1. Oblicz całkowity deficyt na dzień: total_deficit = Σ max(0, load - pv)
+    2. Oblicz dostępną energię BESS: available_energy = (soc_max - soc_min) × capacity
+    3. Ustal równomierny poziom rozładowania lub skup na godzinach szczytowych
+    """
+    daily_deficit_hours = get_deficit_hours(pv_forecast, load_forecast)
+    energy_per_hour = min(
+        available_energy / len(daily_deficit_hours),
+        battery.power_kw
+    )
+
+    discharge_schedule = {}
+    for hour in daily_deficit_hours:
+        discharge_schedule[hour] = energy_per_hour
+
+    return discharge_schedule
+```
+
+**Wymagania:**
+- Prognoza PV (może być z danych historycznych PVGIS)
+- Prognoza zużycia (profil typowego dnia)
+- Solver optymalizacyjny lub heurystyka
+
+**Zastosowanie:**
+- Systemy z dostępem do prognoz pogodowych
+- Instalacje przemysłowe ze stabilnym profilem zużycia
+
+### 9.3 Wyższy Próg Rozładowania (Threshold-Based Discharge)
+
+**Koncepcja:** Nie rozładowuj magazynu przy małych deficytach - zachowaj energię na większe szczyty.
+
+```python
+def threshold_dispatch(pv, load, battery, min_deficit_threshold_kw=10):
+    """
+    Rozładowanie tylko gdy deficyt przekracza próg.
+
+    Parametry:
+    - min_deficit_threshold_kw: minimalny deficyt do rozładowania
+
+    Efekt:
+    - Małe deficyty pokrywane z sieci (tani import)
+    - Duże deficyty pokrywane z magazynu
+    """
+    deficit = load - pv
+
+    if deficit > min_deficit_threshold_kw:
+        # Rozładuj do pokrycia deficytu
+        discharge = min(deficit, battery.power_kw, available_soc)
+    else:
+        # Mały deficyt - import z sieci
+        discharge = 0
+        grid_import = deficit
+
+    return discharge, grid_import
+```
+
+**Parametry do konfiguracji:**
+- `min_deficit_threshold_kw` - próg minimalnego deficytu (np. 10 kW)
+- `priority_hours` - godziny priorytetowe do rozładowania (np. 17:00-21:00)
+
+**Zastosowanie:**
+- Systemy z opłatą mocową (peak shaving)
+- Sytuacje gdy mały import z sieci jest tańszy niż zużycie cykli BESS
+
+### 9.4 Równomierne Rozłożenie Discharge (Even Distribution)
+
+**Koncepcja:** Rozładowuj magazyn równomiernie przez wszystkie godziny deficytowe, zamiast reaktywnie.
+
+```python
+def even_distribution_dispatch(pv_day, load_day, battery):
+    """
+    Rozłóż rozładowanie równomiernie przez dzień.
+
+    Krok 1: Zidentyfikuj godziny deficytowe (load > pv)
+    Krok 2: Oblicz sumę deficytów
+    Krok 3: Ustal stałą moc rozładowania = min(total_deficit, capacity) / deficit_hours
+    """
+    deficit_hours = []
+    total_deficit = 0
+
+    for h in range(24):
+        if load_day[h] > pv_day[h]:
+            deficit_hours.append(h)
+            total_deficit += load_day[h] - pv_day[h]
+
+    # Energia do dystrybucji
+    available_energy = (battery.soc_max - battery.soc_min) * battery.energy_kwh
+    energy_to_distribute = min(total_deficit, available_energy)
+
+    # Równomierna moc na godzinę
+    if len(deficit_hours) > 0:
+        power_per_hour = energy_to_distribute / len(deficit_hours)
+        power_per_hour = min(power_per_hour, battery.power_kw)
+    else:
+        power_per_hour = 0
+
+    # Schedule
+    discharge_schedule = {h: power_per_hour for h in deficit_hours}
+    return discharge_schedule
+```
+
+**Zalety:**
+- Przewidywalne zachowanie magazynu
+- Lepsza ochrona przed głębokim rozładowaniem
+- Możliwość rezerwacji energii na wieczorne szczyty
+
+**Wady:**
+- Wymaga znajomości profilu całego dnia z góry
+- Może nie w pełni wykorzystać pojemności
+
+### 9.5 Priorytetyzacja Godzin Wieczornych (Evening Priority)
+
+**Koncepcja:** Zachowaj większość energii na godziny wieczorne (17:00-21:00), gdy PV nie produkuje.
+
+```python
+def evening_priority_dispatch(pv, load, hour, battery, soc_current):
+    """
+    Priorytet rozładowania na godziny wieczorne.
+
+    Zasady:
+    - Przed 17:00: rozładuj tylko 30% dostępnej energii
+    - 17:00-21:00: rozładuj bez ograniczeń
+    - Po 21:00: normalne rozładowanie
+    """
+    deficit = load - pv
+    if deficit <= 0:
+        return 0
+
+    if hour < 17:
+        # Przed wieczorem - ograniczone rozładowanie
+        max_discharge_pct = 0.30
+        reserved_soc = battery.soc_max * 0.7  # Rezerwuj 70% na wieczór
+        available = max(0, soc_current - reserved_soc)
+    elif 17 <= hour <= 21:
+        # Godziny wieczorne - pełne rozładowanie
+        max_discharge_pct = 1.0
+        available = soc_current - battery.soc_min
+    else:
+        # Po wieczorze - normalne rozładowanie
+        max_discharge_pct = 1.0
+        available = soc_current - battery.soc_min
+
+    discharge = min(deficit, battery.power_kw, available * max_discharge_pct)
+    return discharge
+```
+
+**Parametry:**
+- `evening_start_hour` - początek okna wieczornego (np. 17)
+- `evening_end_hour` - koniec okna wieczornego (np. 21)
+- `reserve_fraction` - frakcja pojemności do rezerwacji (np. 0.7)
+
+### 9.6 Strategia Oparta o Ceny (Price-Based Dispatch)
+
+**Koncepcja:** Rozładowuj gdy cena energii jest wysoka, ładuj gdy niska.
+
+```python
+def price_based_dispatch(pv, load, price, battery, soc):
+    """
+    Dispatch oparty o ceny energii (TOU - Time of Use).
+
+    Progi cenowe:
+    - price < low_threshold: ładuj z sieci (jeśli tani import)
+    - price > high_threshold: rozładuj maksymalnie
+    - pomiędzy: normalna autokonsumpcja
+    """
+    LOW_PRICE_THRESHOLD = 300   # PLN/MWh
+    HIGH_PRICE_THRESHOLD = 800  # PLN/MWh
+
+    surplus = pv - load
+    deficit = load - pv
+
+    if price < LOW_PRICE_THRESHOLD and surplus <= 0:
+        # Tania energia - ładuj z sieci
+        charge = min(battery.power_kw, (battery.soc_max - soc) * battery.energy_kwh)
+        grid_import = deficit + charge
+        return 0, charge, grid_import
+
+    elif price > HIGH_PRICE_THRESHOLD and deficit > 0:
+        # Droga energia - rozładuj maksymalnie
+        discharge = min(deficit, battery.power_kw, (soc - battery.soc_min) * battery.energy_kwh)
+        return discharge, 0, deficit - discharge
+
+    else:
+        # Normalna autokonsumpcja
+        # ... standardowa logika greedy
+        pass
+```
+
+**Zastosowanie:**
+- Rynki z dynamicznymi cenami energii (RDN, TGE)
+- Prosumenci z taryfą dynamiczną
+
+### 9.7 Strategia Hybrydowa (STACKED z Rezerwą)
+
+**Obecna implementacja w `dispatch_stacked()`:**
+
+```python
+def dispatch_stacked(pv, load, battery, params):
+    """
+    Tryb STACKED: PV surplus + Peak Shaving z rezerwą SOC.
+
+    Zasady:
+    1. Rezerwuj część pojemności (reserve_fraction) na peak shaving
+    2. Reszta dostępna dla PV surplus
+    3. Przy przekroczeniu peak_limit - użyj rezerwę
+    """
+    reserve_soc = battery.soc_min + (battery.soc_max - battery.soc_min) * params.reserve_fraction
+
+    # Dla PV surplus: rozładuj tylko do reserve_soc
+    # Dla Peak Shaving: rozładuj do soc_min
+```
+
+### 9.8 Porównanie Strategii
+
+| Strategia | Złożoność | Wymagania | Najlepsze dla |
+|-----------|-----------|-----------|---------------|
+| Reaktywna (Greedy) | Niska | Brak | Proste instalacje |
+| Predykcyjna | Wysoka | Prognozy PV/Load | Przemysł |
+| Próg rozładowania | Niska | Parametr progu | Peak shaving |
+| Równomierne | Średnia | Profil dnia | Stabilne zużycie |
+| Priorytet wieczorny | Średnia | Okno czasowe | Domy, biura |
+| Oparta o ceny | Średnia | Dane cenowe | Arbitraż |
+| STACKED | Średnia | Próg peak + rezerwa | Kombinacja usług |
+
+### 9.9 Plan Implementacji
+
+**Faza 1: Parametryzacja strategii**
+```python
+class DispatchStrategy(Enum):
+    GREEDY = "greedy"           # Obecna
+    PREDICTIVE = "predictive"   # Przyszła
+    THRESHOLD = "threshold"     # Przyszła
+    EVENING = "evening"         # Przyszła
+    PRICE_BASED = "price"       # Przyszła
+    STACKED = "stacked"         # Obecna
+```
+
+**Faza 2: Interfejs wyboru strategii**
+- Dropdown w ustawieniach BESS
+- Parametry dla każdej strategii
+
+**Faza 3: Wizualizacja porównawcza**
+- Wykres porównujący różne strategie
+- Metryki: autokonsumpcja, curtailment, cykle, NPV
+
+---
+
+## 10. Szczegółowy Opis Algorytmów
+
+### 10.1 Źródła Danych Wejściowych
+
+#### Profil produkcji PV
+```
+Źródło: PVGIS API (Photovoltaic Geographical Information System)
+URL: https://re.jrc.ec.europa.eu/api/v5_2/
+Parametry: lokalizacja (lat/lon), kąt nachylenia, azymut, technologia modułów
+Dane: Typowy Rok Meteorologiczny (TMY) - 8760 wartości godzinowych [kWh]
+```
+
+#### Profil zużycia energii
+```
+Źródło: Użytkownik (upload CSV/Excel) lub profil standardowy
+Format: 8760 wartości godzinowych [kWh] lub 35040 wartości 15-minutowych
+Walidacja: suma roczna, min/max, brak wartości ujemnych
+```
+
+#### Ceny energii
+```
+Źródła:
+- TGE (Towarowa Giełda Energii) - ceny RDN/RDB
+- Taryfy dystrybucyjne (G11, G12, C11, C21, B21)
+- Ceny umowne użytkownika
+Format: stała cena [PLN/MWh] lub profil godzinowy
+```
+
+### 10.2 Algorytm Grid Search (Iteracyjna Optymalizacja NPV)
+
+**Lokalizacja:** `services/bess-optimizer/app.py` → `run_pypsa_optimization()`
+
+#### Schemat działania
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GRID SEARCH OPTIMIZER                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  DANE WEJŚCIOWE:                                                │
+│  ├── pv_generation_kwh[8760]  ← Profil produkcji PV            │
+│  ├── load_kwh[8760]           ← Profil zużycia                 │
+│  ├── min/max_power_kw         ← Ograniczenia mocy              │
+│  ├── min/max_energy_kwh       ← Ograniczenia pojemności        │
+│  ├── duration_min/max_h       ← Ograniczenia E/P ratio         │
+│  ├── capex_per_kw/kwh         ← Koszty inwestycyjne            │
+│  ├── energy_price_plnmwh      ← Cena energii                   │
+│  └── discount_rate            ← Stopa dyskontowa               │
+│                                                                 │
+│  OBLICZENIA WSTĘPNE:                                            │
+│  ├── net_load = load - pv     ← Bilans energetyczny            │
+│  ├── surplus = max(-net, 0)   ← Nadwyżka PV do ładowania       │
+│  └── deficit = max(net, 0)    ← Deficyt do rozładowania        │
+│                                                                 │
+│  SIATKA PRZESZUKIWANIA:                                         │
+│  ├── power_range = linspace(min_power, max_power, 15)          │
+│  └── duration_options = [min_h, (min+max)/2, max_h]            │
+│                                                                 │
+│  DLA KAŻDEJ KOMBINACJI (power, duration):                       │
+│  │   energy = power × duration                                  │
+│  │   IF energy w zakresie [min_energy, max_energy]:             │
+│  │   │                                                          │
+│  │   │   SYMULACJA DISPATCH (8760 kroków):                     │
+│  │   │   └── dispatch = simulate_bess_dispatch(...)            │
+│  │   │                                                          │
+│  │   │   OBLICZENIE EKONOMICZNE:                                │
+│  │   │   ├── annual_savings = discharge × price                │
+│  │   │   ├── capex = power×cost_kw + energy×cost_kwh           │
+│  │   │   ├── annual_opex = capex × opex_pct                    │
+│  │   │   └── npv = NPV(capex, savings-opex, rate, years)       │
+│  │   │                                                          │
+│  │   │   IF npv > best_npv:                                     │
+│  │   │       best_config = (power, energy, dispatch)            │
+│  │                                                              │
+│  WYNIK:                                                         │
+│  ├── optimal_power_kw                                           │
+│  ├── optimal_energy_kwh                                         │
+│  ├── npv_bess_pln                                               │
+│  ├── payback_years                                              │
+│  ├── annual_cycles                                              │
+│  └── hourly_soc[8760]                                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Zmienne decyzyjne
+
+| Zmienna | Jednostka | Opis | Zakres typowy |
+|---------|-----------|------|---------------|
+| `power_kw` | kW | Moc nominalna BESS (ładowanie/rozładowanie) | 50 - 10 000 |
+| `energy_kwh` | kWh | Pojemność nominalna BESS | 100 - 50 000 |
+| `duration_h` | h | Stosunek E/P (czas pełnego rozładowania) | 1 - 4 |
+
+#### Ograniczenia
+
+```python
+# Ograniczenia mocy i pojemności
+min_power_kw <= power_kw <= max_power_kw
+min_energy_kwh <= energy_kwh <= max_energy_kwh
+
+# Ograniczenie duration (E/P ratio)
+duration_min_h <= energy_kwh / power_kw <= duration_max_h
+
+# Ograniczenia SOC w każdym kroku czasowym
+soc_min × energy_kwh <= soc[t] <= soc_max × energy_kwh
+
+# Ograniczenie mocy ładowania/rozładowania
+charge[t] <= power_kw
+discharge[t] <= power_kw
+```
+
+### 10.3 Algorytm Dispatch (Symulacja Sterowania)
+
+**Lokalizacja:** `services/bess-dispatch/dispatch_engine.py`
+
+#### 10.3.1 Algorytm PV-Surplus (Autokonsumpcja)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              DISPATCH PV-SURPLUS (GREEDY)                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  DLA KAŻDEGO KROKU CZASOWEGO t = 0..8759:                       │
+│                                                                 │
+│  ┌─ KROK 1: Bezpośrednia autokonsumpcja ─────────────────────┐ │
+│  │  direct_pv[t] = min(pv[t], load[t])                       │ │
+│  │  surplus = pv[t] - direct_pv[t]                           │ │
+│  │  deficit = load[t] - direct_pv[t]                         │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌─ KROK 2: Obsługa nadwyżki PV (ładowanie) ─────────────────┐ │
+│  │  IF surplus > 0:                                          │ │
+│  │    charge_limit = min(surplus, P_max)                     │ │
+│  │    space_available = SOC_max - SOC[t]                     │ │
+│  │    charge_energy = min(charge_limit × η_ch × Δt, space)   │ │
+│  │    charge[t] = charge_energy / (η_ch × Δt)                │ │
+│  │    SOC[t+1] = SOC[t] + charge_energy                      │ │
+│  │    curtailment[t] = surplus - charge[t]                   │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌─ KROK 3: Obsługa deficytu (rozładowanie) ─────────────────┐ │
+│  │  IF deficit > 0:                                          │ │
+│  │    discharge_limit = min(deficit, P_max)                  │ │
+│  │    energy_available = SOC[t] - SOC_min                    │ │
+│  │    max_from_soc = discharge_limit / η_dis × Δt            │ │
+│  │                                                           │ │
+│  │    IF max_from_soc > energy_available:                    │ │
+│  │      actual_from_soc = energy_available                   │ │
+│  │      discharge[t] = actual_from_soc × η_dis / Δt          │ │
+│  │    ELSE:                                                  │ │
+│  │      discharge[t] = discharge_limit                       │ │
+│  │      actual_from_soc = max_from_soc                       │ │
+│  │                                                           │ │
+│  │    SOC[t+1] = SOC[t] - actual_from_soc                    │ │
+│  │    grid_import[t] = deficit - discharge[t]                │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 10.3.2 Algorytm Peak Shaving
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  DISPATCH PEAK SHAVING                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  PARAMETR: peak_limit_kw ← Próg mocy szczytowej                │
+│                                                                 │
+│  DLA KAŻDEGO KROKU CZASOWEGO t:                                 │
+│                                                                 │
+│    net_load[t] = load[t] - pv[t]                               │
+│                                                                 │
+│    ┌─ PRZYPADEK 1: Przekroczenie progu ────────────────────┐   │
+│    │  IF net_load[t] > peak_limit_kw:                      │   │
+│    │    required_discharge = net_load[t] - peak_limit_kw   │   │
+│    │    discharge[t] = min(required, P_max, available_soc) │   │
+│    │    grid_import[t] = net_load[t] - discharge[t]        │   │
+│    │    new_peak = max(new_peak, grid_import[t])           │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│    ┌─ PRZYPADEK 2: Poniżej progu, ładowanie ───────────────┐   │
+│    │  IF 0 < net_load[t] <= peak_limit_kw:                 │   │
+│    │    headroom = peak_limit_kw - net_load[t]             │   │
+│    │    IF headroom > 0 AND SOC < SOC_max:                 │   │
+│    │      charge[t] = min(headroom, P_max, space)          │   │
+│    │      grid_import[t] = net_load[t] + charge[t]         │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│    ┌─ PRZYPADEK 3: Nadwyżka PV ────────────────────────────┐   │
+│    │  IF net_load[t] <= 0:                                 │   │
+│    │    surplus = -net_load[t]                             │   │
+│    │    curtailment[t] = surplus  (model 0-export)         │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  WYNIKI:                                                        │
+│  ├── original_peak_kw = max(net_load > 0)                      │
+│  ├── new_peak_kw = max(grid_import)                            │
+│  └── peak_reduction_pct = (original - new) / original × 100    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 10.3.3 Algorytm STACKED (Hybrydowy)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              DISPATCH STACKED (PV + PEAK SHAVING)               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  PARAMETRY:                                                     │
+│  ├── peak_limit_kw     ← Próg peak shaving                     │
+│  └── reserve_fraction  ← Frakcja SOC rezerwowana dla peak      │
+│                                                                 │
+│  OBLICZENIE SOC REZERWY:                                        │
+│  reserve_soc = energy_kwh × reserve_fraction                    │
+│  pv_soc_min = max(soc_min × energy, reserve_soc)               │
+│                                                                 │
+│  DLA KAŻDEGO KROKU CZASOWEGO t:                                 │
+│                                                                 │
+│    ┌─ PRIORYTET 1: Peak Shaving ───────────────────────────┐   │
+│    │  IF net_load[t] > peak_limit_kw:                      │   │
+│    │    // Użyj PEŁNY SOC (włącznie z rezerwą)            │   │
+│    │    energy_available = SOC[t] - soc_min × energy       │   │
+│    │    discharge_peak[t] = min(required, P_max, avail)    │   │
+│    │    SOC[t+1] = SOC[t] - discharge_peak[t] / η          │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│    ┌─ PRIORYTET 2: PV Shifting (nadwyżka) ─────────────────┐   │
+│    │  ELIF surplus > 0:                                    │   │
+│    │    // Ładuj do SOC_max                                │   │
+│    │    charge_from_pv[t] = min(surplus, P_max, space)     │   │
+│    │    SOC[t+1] = SOC[t] + charge × η                     │   │
+│    │    curtailment[t] = surplus - charge                  │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│    ┌─ PRIORYTET 3: PV Shifting (deficyt) ──────────────────┐   │
+│    │  ELIF deficit > 0:                                    │   │
+│    │    // Użyj tylko SOC PONAD rezerwę                    │   │
+│    │    energy_above_reserve = SOC[t] - pv_soc_min         │   │
+│    │    IF energy_above_reserve > 0:                       │   │
+│    │      discharge_pv[t] = min(deficit, available)        │   │
+│    │    grid_import[t] = deficit - discharge_pv[t]         │   │
+│    └────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  METRYKI DEGRADACJI:                                            │
+│  ├── throughput_peak_mwh  ← Energia dla peak shaving           │
+│  ├── throughput_pv_mwh    ← Energia dla PV shifting            │
+│  ├── efc_peak             ← Cykle dla peak shaving             │
+│  ├── efc_pv               ← Cykle dla PV shifting              │
+│  ├── peak_events_count    ← Liczba zdarzeń peak shaving        │
+│  └── charge_pv_pct        ← % ładowania z PV vs sieć           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 Wzory Matematyczne
+
+#### 10.4.1 Bilans energetyczny
+
+```
+net_load(t) = load(t) - pv(t)
+
+gdzie:
+  net_load(t) > 0  →  deficyt (potrzeba energii z BESS/sieci)
+  net_load(t) < 0  →  nadwyżka PV (można ładować BESS)
+  net_load(t) = 0  →  bilans zerowy
+```
+
+#### 10.4.2 Sprawność ładowania/rozładowania
+
+```
+Sprawność roundtrip:     η_rt = η_charge × η_discharge
+
+Typowo dla Li-ion:       η_rt = 0.90 (90%)
+                         η_charge = √0.90 ≈ 0.9487 (94.87%)
+                         η_discharge = √0.90 ≈ 0.9487 (94.87%)
+
+Energia zmagazynowana:   E_stored = E_input × η_charge
+Energia wydana:          E_output = E_stored × η_discharge
+Straty roundtrip:        E_loss = E_input × (1 - η_rt)
+```
+
+#### 10.4.3 Stan naładowania (SOC)
+
+```
+Ładowanie:
+  SOC(t+1) = SOC(t) + P_charge(t) × η_charge × Δt
+
+Rozładowanie:
+  SOC(t+1) = SOC(t) - P_discharge(t) / η_discharge × Δt
+
+Ograniczenia:
+  SOC_min × E_nom ≤ SOC(t) ≤ SOC_max × E_nom
+
+Pojemność użytkowa:
+  E_usable = E_nom × (SOC_max - SOC_min)
+  E_usable = E_nom × (0.90 - 0.10) = 0.80 × E_nom
+```
+
+#### 10.4.4 Cykle ekwiwalentne (EFC)
+
+```
+EFC = Σ discharge(t) / E_usable
+
+Przykład:
+  E_nom = 200 kWh
+  E_usable = 200 × 0.80 = 160 kWh
+  Roczne rozładowanie = 40 000 kWh
+  EFC = 40 000 / 160 = 250 cykli/rok
+```
+
+#### 10.4.5 NPV (Net Present Value)
+
+```
+NPV = Σ(t=1..n) [CF(t) / (1+r)^t] - CAPEX
+
+gdzie:
+  CF(t) = annual_savings - annual_opex
+  annual_savings = annual_discharge × energy_price
+  annual_opex = CAPEX × opex_pct
+  r = discount_rate (np. 0.07 = 7%)
+  n = analysis_period (np. 25 lat)
+
+Alternatywnie z PV factor:
+  PV_factor = (1 - (1+r)^(-n)) / r
+  NPV = CF × PV_factor - CAPEX
+```
+
+#### 10.4.6 Payback Period
+
+```
+Simple Payback = CAPEX / annual_net_savings
+
+gdzie:
+  annual_net_savings = annual_savings × (1 - opex_pct)
+
+Przykład:
+  CAPEX = 330 000 PLN
+  annual_savings = 50 000 PLN
+  opex_pct = 1.5%
+  annual_net_savings = 50 000 × 0.985 = 49 250 PLN
+  Payback = 330 000 / 49 250 = 6.7 lat
+```
+
+### 10.5 Parametry Wejściowe i Ich Wpływ
+
+| Parametr | Symbol | Wpływ na wynik |
+|----------|--------|----------------|
+| Moc BESS | P_max | ↑ moc → ↑ szybkość ładowania/rozładowania, ↑ koszt |
+| Pojemność | E_nom | ↑ pojemność → ↑ magazynowanie energii, ↑ koszt |
+| Duration (E/P) | D | ↑ duration → dłuższe rozładowanie, mniej cykli/dzień |
+| SOC min/max | SOC_min, SOC_max | Węższy zakres → dłuższa żywotność, mniej energii użytkowej |
+| Sprawność | η_rt | ↑ sprawność → mniej strat, wyższe oszczędności |
+| CAPEX/kWh | c_e | ↑ koszt → dłuższy payback, niższe NPV |
+| CAPEX/kW | c_p | ↑ koszt → dłuższy payback, niższe NPV |
+| Cena energii | p_e | ↑ cena → wyższe oszczędności, lepsze NPV |
+| Stopa dyskontowa | r | ↑ stopa → niższe NPV, krótszy optymalny horyzont |
+
+### 10.6 Diagram Przepływu Danych
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         PRZEPŁYW DANYCH BESS                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  UŻYTKOWNIK                                                              │
+│      │                                                                   │
+│      ├─► Lokalizacja (lat/lon) ─────────────────────────────────────┐    │
+│      │                                                              │    │
+│      ├─► Profil zużycia (CSV) ──────────────────────────────────┐   │    │
+│      │                                                          │   │    │
+│      └─► Parametry BESS ────────────────────────────────────┐   │   │    │
+│          (moc, pojemność, sprawność, ceny)                  │   │   │    │
+│                                                             │   │   │    │
+│                                                             ▼   ▼   ▼    │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐  │
+│  │   PVGIS     │    │   CSV/XLS   │    │      FRONTEND-BESS          │  │
+│  │   API       │    │   Parser    │    │   (parametry użytkownika)   │  │
+│  └──────┬──────┘    └──────┬──────┘    └──────────────┬──────────────┘  │
+│         │                  │                          │                  │
+│         ▼                  ▼                          ▼                  │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     PV-CALCULATION SERVICE                        │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  Generowanie profilu produkcji PV (8760h)                  │  │   │
+│  │  │  pv_generation[t] = pvlib.simulate(irradiance, temp, ...)  │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  └───────────────────────────────┬──────────────────────────────────┘   │
+│                                  │                                       │
+│                                  ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     BESS-OPTIMIZER SERVICE                        │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  Grid Search: testuj kombinacje (power, energy)            │  │   │
+│  │  │  Dla każdej: symuluj dispatch → oblicz NPV                 │  │   │
+│  │  │  Wybierz konfigurację z najwyższym NPV                     │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  └───────────────────────────────┬──────────────────────────────────┘   │
+│                                  │                                       │
+│                                  ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     BESS-DISPATCH SERVICE                         │   │
+│  │  ┌────────────────────────────────────────────────────────────┐  │   │
+│  │  │  Symulacja godzinowa (8760 kroków):                        │  │   │
+│  │  │  - PV-Surplus: autokonsumpcja                              │  │   │
+│  │  │  - Peak Shaving: redukcja szczytów                         │  │   │
+│  │  │  - STACKED: kombinacja usług                               │  │   │
+│  │  └────────────────────────────────────────────────────────────┘  │   │
+│  └───────────────────────────────┬──────────────────────────────────┘   │
+│                                  │                                       │
+│                                  ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                        WYNIKI                                     │   │
+│  │  ├── Optymalna moc: 100 kW                                       │   │
+│  │  ├── Optymalna pojemność: 200 kWh                                │   │
+│  │  ├── CAPEX: 330 000 PLN                                          │   │
+│  │  ├── NPV (25 lat): 450 000 PLN                                   │   │
+│  │  ├── Payback: 6.7 lat                                            │   │
+│  │  ├── Roczne cykle: 250                                           │   │
+│  │  ├── Autokonsumpcja: 85% → 95%                                   │   │
+│  │  └── Profil SOC[8760], charge[8760], discharge[8760]             │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+

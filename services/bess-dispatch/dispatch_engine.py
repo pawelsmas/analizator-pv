@@ -470,6 +470,8 @@ def dispatch_stacked(
     # Initialize arrays
     direct_pv = np.zeros(n)
     charge = np.zeros(n)
+    charge_from_pv = np.zeros(n)   # Track charge source: PV
+    charge_from_grid = np.zeros(n) # Track charge source: grid
     discharge = np.zeros(n)
     discharge_peak = np.zeros(n)  # For peak shaving service
     discharge_pv = np.zeros(n)    # For PV shifting service
@@ -551,6 +553,7 @@ def dispatch_stacked(
                 actual_charge_energy = max_charge_energy
 
             charge[t] = charge_power
+            charge_from_pv[t] = charge_power  # All charge from PV surplus
             current_soc += actual_charge_energy
 
             # Curtail excess
@@ -590,12 +593,18 @@ def dispatch_stacked(
     total_load = float(np.sum(load_kw) * dt_hours)
     total_direct = float(np.sum(direct_pv) * dt_hours)
     total_charge = float(np.sum(charge) * dt_hours)
+    total_charge_pv = float(np.sum(charge_from_pv) * dt_hours)
+    total_charge_grid = float(np.sum(charge_from_grid) * dt_hours)
     total_discharge = float(np.sum(discharge) * dt_hours)
     total_discharge_peak = float(np.sum(discharge_peak) * dt_hours)
     total_discharge_pv = float(np.sum(discharge_pv) * dt_hours)
     total_import = float(np.sum(grid_import) * dt_hours)
     total_export = float(np.sum(grid_export) * dt_hours)
     total_curtail = float(np.sum(curtailment) * dt_hours)
+
+    # Peak shaving event statistics
+    peak_events_count = int(np.sum(discharge_peak > 0))
+    peak_max_discharge = float(np.max(discharge_peak)) if peak_events_count > 0 else 0.0
 
     self_consumption = total_direct + total_discharge
     self_consumption_pct = (self_consumption / total_pv * 100) if total_pv > 0 else 0
@@ -604,7 +613,7 @@ def dispatch_stacked(
     peak_reduction = original_peak - new_peak
     peak_reduction_pct = (peak_reduction / original_peak * 100) if original_peak > 0 else 0
 
-    # Degradation with per-service breakdown
+    # Degradation with per-service breakdown (now with extra metrics)
     degradation = calculate_degradation_metrics_stacked(
         total_charge=total_charge,
         total_discharge=total_discharge,
@@ -612,6 +621,10 @@ def dispatch_stacked(
         discharge_pv=total_discharge_pv,
         battery=battery,
         total_hours=n * dt_hours,
+        peak_events_count=peak_events_count,
+        peak_max_discharge_kw=peak_max_discharge,
+        charge_from_pv_kwh=total_charge_pv,
+        charge_from_grid_kwh=total_charge_grid,
     )
 
     # Economics
@@ -706,12 +719,22 @@ def calculate_degradation_metrics_stacked(
     discharge_pv: float,
     battery: BatteryParams,
     total_hours: float,
+    peak_events_count: int = 0,
+    peak_max_discharge_kw: float = 0.0,
+    charge_from_pv_kwh: float = 0.0,
+    charge_from_grid_kwh: float = 0.0,
 ) -> DegradationMetrics:
     """
     Calculate degradation metrics for STACKED (dual-service) dispatch.
 
     Approximation for charge split:
     - Assume charge is proportional to discharge per service
+
+    New metrics:
+    - peak_events_count: number of hours with peak shaving discharge
+    - peak_max_discharge_kw: maximum discharge power for peak shaving
+    - charge_from_pv_kwh: energy charged from PV surplus
+    - charge_from_grid_kwh: energy charged from grid
     """
     usable_capacity = battery.usable_capacity_kwh
     if usable_capacity <= 0:
@@ -738,6 +761,9 @@ def calculate_degradation_metrics_stacked(
     efc_peak = discharge_peak / usable_capacity
     efc_pv = discharge_pv / usable_capacity
 
+    # Charge source percentage
+    charge_pv_pct = (charge_from_pv_kwh / total_charge * 100) if total_charge > 0 else 0.0
+
     return DegradationMetrics(
         throughput_charge_kwh=total_charge,
         throughput_discharge_kwh=total_discharge,
@@ -747,6 +773,12 @@ def calculate_degradation_metrics_stacked(
         throughput_peak_mwh=throughput_peak,
         efc_pv=efc_pv,
         efc_peak=efc_peak,
+        peak_events_count=peak_events_count,
+        peak_events_energy_kwh=discharge_peak,
+        peak_max_discharge_kw=peak_max_discharge_kw,
+        charge_from_pv_kwh=charge_from_pv_kwh,
+        charge_from_grid_kwh=charge_from_grid_kwh,
+        charge_pv_pct=charge_pv_pct,
         budget_status=DegradationStatus.OK,
         budget_utilization_pct=0.0,
         budget_warnings=[],
