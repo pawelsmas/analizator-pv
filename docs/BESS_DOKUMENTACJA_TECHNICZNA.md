@@ -1,10 +1,11 @@
 # Dokumentacja Techniczna Modułu BESS
 ## Battery Energy Storage System - Magazyn Energii
 
-**Wersja:** 3.6
+**Wersja:** 3.7
 **Data:** 2025-12-23
 **Autor:** Analizator PV
 **Engine Version:** 1.2.0
+**Service Version:** 1.1.0
 
 ---
 
@@ -20,6 +21,7 @@
 8. [Przykłady Obliczeń](#8-przykłady-obliczeń)
 9. [Do Rozwoju - Strategie Rozładowywania](#9-do-rozwoju---strategie-rozładowywania-bess)
 10. [Szczegółowy Opis Algorytmów](#10-szczegółowy-opis-algorytmów)
+11. [Nowe Funkcjonalności v3.7](#11-nowe-funkcjonalności-v37)
 
 ---
 
@@ -1490,6 +1492,230 @@ Próg 80%:  INFO      - Wczesne ostrzeżenie informacyjne
 Próg 90%:  WARNING   - Zbliżanie się do limitu budżetowego
 Próg 100%: EXCEEDED  - Przekroczenie budżetu degradacji
 ```
+
+---
+
+## 11. Nowe Funkcjonalności (v3.7)
+
+### 11.1 Analiza Wrażliwości (Tornado Chart)
+
+#### 11.1.1 Przegląd
+
+Moduł analizy wrażliwości pozwala na ocenę ryzyka inwestycyjnego poprzez badanie wpływu zmian poszczególnych parametrów na NPV. Wyniki prezentowane są w formie wykresu "tornado".
+
+**Endpoint:** `POST /sensitivity`
+
+**Parametry analizowane:**
+| Parametr | Zakres domyślny | Wpływ |
+|----------|-----------------|-------|
+| Cena energii | ±20% | Bezpośredni na oszczędności |
+| CAPEX/kWh | ±20% | Bezpośredni na CAPEX |
+| CAPEX/kW | ±20% | Bezpośredni na CAPEX |
+| Stopa dyskontowa | ±20% | Wpływ na PV factor |
+| Sprawność roundtrip | ±20% | Wpływ na dispatch |
+| OPEX %/rok | ±20% | Wpływ na roczne koszty |
+
+#### 11.1.2 Algorytm
+
+```
+DLA KAŻDEGO PARAMETRU:
+    1. Oblicz wartość bazową (base_value)
+    2. Oblicz NPV dla wartości niskiej (base × 0.8)
+    3. Oblicz NPV dla wartości wysokiej (base × 1.2)
+    4. Oblicz swing = |NPV_high - NPV_low|
+
+POSORTUJ PARAMETRY wg swing (malejąco)
+
+WYKRES TORNADO:
+- Oś Y: parametry (posortowane)
+- Oś X: zmiana NPV względem bazowego
+- Słupek czerwony: spadek NPV (wartość niska/wysoka parametru)
+- Słupek zielony: wzrost NPV
+```
+
+#### 11.1.3 Interpretacja Wyników
+
+- **Najbardziej wrażliwy parametr**: wymaga szczególnej uwagi przy planowaniu
+- **Najmniej wrażliwy parametr**: stabilny wpływ, mniejsze ryzyko
+- **Scenariusze breakeven**: pokazują przy jakich odchyleniach NPV staje się ujemne
+
+### 11.2 Topologia LOAD_ONLY (Stand-alone BESS)
+
+#### 11.2.1 Przegląd
+
+Nowa topologia `LOAD_ONLY` umożliwia modelowanie systemów BESS bez instalacji PV. Przypadki użycia:
+
+- Zakłady przemysłowe z opłatami mocowymi
+- Arbitraż cenowy z taryf time-of-use
+- Rezerwowe zasilanie z możliwością peak shaving
+
+#### 11.2.2 Topologie Systemów
+
+```python
+class TopologyType(str, Enum):
+    PV_LOAD = "pv_load"      # Standard: PV + Load + BESS
+    LOAD_ONLY = "load_only"  # No PV: Load + BESS only
+```
+
+#### 11.2.3 Algorytm dispatch_load_only
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DISPATCH LOAD_ONLY                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  PARAMETR: peak_limit_kw ← Próg mocy szczytowej                │
+│                                                                 │
+│  DLA KAŻDEGO KROKU CZASOWEGO t:                                 │
+│                                                                 │
+│    IF load[t] > peak_limit_kw:                                 │
+│      // Rozładuj do redukcji szczytu                           │
+│      discharge[t] = min(load[t] - peak_limit, P_max, SOC_avail)│
+│      grid_import[t] = load[t] - discharge[t]                   │
+│                                                                 │
+│    ELSE:                                                       │
+│      // Ładuj z sieci (headroom charging)                      │
+│      headroom = peak_limit_kw - load[t]                        │
+│      charge[t] = min(headroom, P_max, SOC_space)               │
+│      grid_import[t] = load[t] + charge[t]                      │
+│                                                                 │
+│  EKONOMIKA:                                                     │
+│  baseline_cost = total_load × price      (bez BESS)            │
+│  project_cost = grid_import × price      (z BESS - mniej!)     │
+│  savings = baseline_cost - project_cost                         │
+│                                                                 │
+│  METRYKI:                                                       │
+│  - charge_from_grid = 100%  (brak PV)                          │
+│  - peak_reduction_pct                                           │
+│  - EFC (wszystko przypisane do peak shaving)                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 11.2.4 Użycie API
+
+```json
+POST /dispatch
+{
+  "topology": "load_only",
+  "mode": "load_only",
+  "load_kw": [100, 150, 200, ...],
+  "pv_generation_kw": [],
+  "peak_limit_kw": 180,
+  "battery_power_kw": 50,
+  "battery_energy_kwh": 100,
+  ...
+}
+```
+
+### 11.3 Multi-Objective Optimization (Cele i Ograniczenia)
+
+#### 11.3.1 Przegląd
+
+System pozwala na wybór różnych celów optymalizacji i definiowanie ograniczeń (twardych lub miękkich).
+
+#### 11.3.2 Dostępne Cele Optymalizacji
+
+```python
+class OptimizationObjective(str, Enum):
+    NPV = "npv"                        # Maksymalizuj NPV (domyślne)
+    PAYBACK = "payback"                # Minimalizuj payback
+    SELF_CONSUMPTION = "self_consumption"  # Maksymalizuj autokonsumpcję
+    PEAK_REDUCTION = "peak_reduction"  # Maksymalizuj redukcję szczytów
+    EFC_UTILIZATION = "efc_utilization"   # Maksymalizuj wykorzystanie cykli
+```
+
+#### 11.3.3 Dostępne Ograniczenia
+
+```python
+class ConstraintType(str, Enum):
+    MAX_CAPEX = "max_capex"                  # Limit budżetu [PLN]
+    MAX_PAYBACK = "max_payback"              # Max payback [lata]
+    MIN_NPV = "min_npv"                      # Min NPV [PLN]
+    MAX_EFC = "max_efc"                      # Max cykli/rok
+    MIN_SELF_CONSUMPTION = "min_self_consumption"  # Min autokonsumpcja [%]
+```
+
+#### 11.3.4 Ograniczenia Twarde vs Miękkie
+
+| Typ | Zachowanie | Przykład |
+|-----|------------|----------|
+| **Hard** | Odrzuca konfiguracje naruszające | "Budżet max 500k PLN" |
+| **Soft** | Penalizuje w funkcji celu | "Preferuj payback < 7 lat" |
+
+#### 11.3.5 Przykład Konfiguracji
+
+```json
+POST /sizing
+{
+  "optimization": {
+    "objective": "npv",
+    "constraints": [
+      {
+        "constraint_type": "max_capex",
+        "value": 500000,
+        "hard": true
+      },
+      {
+        "constraint_type": "max_payback",
+        "value": 7.0,
+        "hard": false
+      },
+      {
+        "constraint_type": "min_self_consumption",
+        "value": 80.0,
+        "hard": false
+      }
+    ],
+    "constraint_penalty_weight": 0.3
+  },
+  ...
+}
+```
+
+#### 11.3.6 Algorytm Ewaluacji
+
+```python
+def evaluate_configuration(config, request):
+    # 1. Symuluj dispatch
+    result = run_dispatch(config)
+
+    # 2. Oblicz metryki ekonomiczne
+    capex, npv, payback = calculate_economics(result)
+
+    # 3. Sprawdź ograniczenia twarde
+    for constraint in hard_constraints:
+        if violated(constraint):
+            return REJECT  # Pomiń konfigurację
+
+    # 4. Oblicz score dla celu
+    score = calculate_objective_score(objective, result, npv, payback)
+
+    # 5. Penalizuj za naruszenie ograniczeń miękkich
+    for constraint in soft_constraints:
+        if violated(constraint):
+            penalty = violation_amount / constraint.value
+            score -= score * penalty * penalty_weight
+
+    return score
+```
+
+### 11.4 Podsumowanie Nowych Endpointów
+
+| Endpoint | Metoda | Opis |
+|----------|--------|------|
+| `/sensitivity` | POST | Analiza wrażliwości (tornado chart) |
+| `/dispatch` | POST | Dispatch z nową topologią LOAD_ONLY |
+| `/sizing` | POST | Sizing z multi-objective optimization |
+
+### 11.5 Wersjonowanie
+
+| Komponent | Wersja |
+|-----------|--------|
+| Dokumentacja | 3.7 |
+| Engine | 1.2.0 |
+| Service | 1.1.0 |
+| Frontend BESS | 3.11 |
 
 ---
 
