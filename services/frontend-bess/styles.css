@@ -1503,8 +1503,364 @@ body {
   font-size: 13px;
 }
 
+/* ==========================================
+   SENSITIVITY ANALYSIS (TORNADO CHART) v3.11
+   ========================================== */
+
+.sensitivity-section {
+  background: white;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.sensitivity-section h2 {
+  font-size: 18px;
+  margin-bottom: 16px;
+  color: #2c3e50;
+}
+
+/* Base Case Summary Box */
+.sensitivity-base-case {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 20px;
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.08) 0%, rgba(123, 31, 162, 0.05) 100%);
+  border-radius: 12px;
+  border: 1px solid rgba(156, 39, 176, 0.2);
+}
+
+.base-case-item {
+  text-align: center;
+}
+
+.base-case-label {
+  display: block;
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.base-case-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  color: #7b1fa2;
+}
+
+.base-case-value.positive {
+  color: #27ae60;
+}
+
+.base-case-value.negative {
+  color: #e74c3c;
+}
+
+/* Tornado Chart Container */
+.tornado-chart-container {
+  position: relative;
+  height: 320px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 12px;
+}
+
+.tornado-chart-container canvas {
+  max-height: 100%;
+}
+
+/* Sensitivity Legend */
+.sensitivity-legend {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  margin-bottom: 24px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #555;
+}
+
+.legend-color {
+  width: 20px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.legend-color.negative {
+  background: linear-gradient(90deg, #ef5350, #e53935);
+}
+
+.legend-color.positive {
+  background: linear-gradient(90deg, #66bb6a, #43a047);
+}
+
+/* Sensitivity Table */
+.sensitivity-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  margin-bottom: 20px;
+}
+
+.sensitivity-table th,
+.sensitivity-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.sensitivity-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #555;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.sensitivity-table th:first-child {
+  border-radius: 8px 0 0 0;
+}
+
+.sensitivity-table th:last-child {
+  border-radius: 0 8px 0 0;
+}
+
+.sensitivity-table tbody tr:hover {
+  background: rgba(156, 39, 176, 0.04);
+}
+
+.sensitivity-table .param-name {
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.sensitivity-table .value-low {
+  color: #e74c3c;
+}
+
+.sensitivity-table .value-high {
+  color: #27ae60;
+}
+
+.sensitivity-table .swing-value {
+  font-weight: 700;
+  color: #7b1fa2;
+}
+
+.sensitivity-table .base-value {
+  color: #888;
+  font-size: 12px;
+}
+
+/* Most/Least Sensitive Highlight */
+.sensitivity-table tbody tr:first-child {
+  background: rgba(156, 39, 176, 0.08);
+}
+
+.sensitivity-table tbody tr:first-child .param-name::before {
+  content: '⚠️ ';
+}
+
+/* Breakeven Scenarios */
+.breakeven-scenarios {
+  margin-top: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(255, 152, 0, 0.1) 0%, rgba(255, 152, 0, 0.05) 100%);
+  border-radius: 10px;
+  border-left: 4px solid #ff9800;
+}
+
+.breakeven-scenarios h4 {
+  font-size: 14px;
+  color: #e65100;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.breakeven-scenarios h4::before {
+  content: '⚡';
+}
+
+.breakeven-scenarios ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.breakeven-scenarios li {
+  font-size: 13px;
+  color: #bf360c;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 152, 0, 0.2);
+}
+
+.breakeven-scenarios li:last-child {
+  border-bottom: none;
+}
+
+/* Sensitivity Summary Cards */
+.sensitivity-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.sensitivity-summary-card {
+  padding: 16px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.sensitivity-summary-card.most-sensitive {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.1) 0%, rgba(244, 67, 54, 0.05) 100%);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.sensitivity-summary-card.least-sensitive {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.1) 0%, rgba(76, 175, 80, 0.05) 100%);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.sensitivity-summary-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.most-sensitive .sensitivity-summary-label {
+  color: #c62828;
+}
+
+.least-sensitive .sensitivity-summary-label {
+  color: #2e7d32;
+}
+
+.sensitivity-summary-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.most-sensitive .sensitivity-summary-value {
+  color: #e53935;
+}
+
+.least-sensitive .sensitivity-summary-value {
+  color: #43a047;
+}
+
+/* Run Sensitivity Button */
+.sensitivity-section .btn-sensitivity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 24px;
+  margin-top: 16px;
+  background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+}
+
+.sensitivity-section .btn-sensitivity:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 152, 0, 0.4);
+}
+
+.sensitivity-section .btn-sensitivity:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.sensitivity-section .btn-sensitivity.loading {
+  position: relative;
+  color: transparent;
+}
+
+.sensitivity-section .btn-sensitivity.loading::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* No Variant Selected Message */
+.sensitivity-no-variant {
+  text-align: center;
+  padding: 40px 20px;
+  color: #888;
+}
+
+.sensitivity-no-variant .icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.sensitivity-no-variant p {
+  font-size: 14px;
+}
+
 /* Responsive */
+@media (max-width: 1200px) {
+  .sensitivity-base-case {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 @media (max-width: 768px) {
+  .sensitivity-base-case {
+    grid-template-columns: 1fr;
+  }
+
+  .sensitivity-legend {
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .sensitivity-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .tornado-chart-container {
+    height: 250px;
+  }
+
   .sizing-variants-grid {
     grid-template-columns: 1fr;
   }

@@ -691,6 +691,71 @@
       </div>
     </div>
 
+    <!-- NEW v3.4: Sensitivity Analysis (Tornado Chart) -->
+    <div class="chart-section full-width sensitivity-section" id="sensitivitySection" style="display:none;">
+      <h2>📊 Analiza Wrażliwości (Tornado Chart)</h2>
+      <div class="chart-info">
+        Wpływ zmian parametrów (±20%) na NPV inwestycji BESS. Posortowane od najbardziej wrażliwego.
+      </div>
+
+      <!-- Base Case Summary -->
+      <div class="sensitivity-base-case" id="sensitivityBaseCase">
+        <div class="base-case-item">
+          <span class="base-label">NPV bazowe:</span>
+          <span class="base-value" id="sensBaseNpv">-</span>
+        </div>
+        <div class="base-case-item">
+          <span class="base-label">Payback:</span>
+          <span class="base-value" id="sensBasePayback">-</span>
+        </div>
+        <div class="base-case-item">
+          <span class="base-label">CAPEX:</span>
+          <span class="base-value" id="sensBaseCapex">-</span>
+        </div>
+      </div>
+
+      <!-- Tornado Chart -->
+      <div class="tornado-chart-container">
+        <canvas id="tornadoChart"></canvas>
+      </div>
+
+      <!-- Sensitivity Table -->
+      <div class="table-wrapper" style="margin-top: 20px;">
+        <table class="sensitivity-table" id="sensitivityTable">
+          <thead>
+            <tr>
+              <th>Parametr</th>
+              <th>Wartość bazowa</th>
+              <th>-20%</th>
+              <th>NPV (-20%)</th>
+              <th>+20%</th>
+              <th>NPV (+20%)</th>
+              <th>Swing NPV</th>
+            </tr>
+          </thead>
+          <tbody id="sensitivityTableBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Breakeven Warnings -->
+      <div class="breakeven-warnings" id="breakevenWarnings" style="display:none;">
+        <div class="warning-icon">⚠️</div>
+        <div class="warning-text" id="breakevenText">
+          <!-- Dynamically filled -->
+        </div>
+      </div>
+
+      <!-- Run Sensitivity Button -->
+      <div class="sensitivity-actions">
+        <button class="btn btn-primary" onclick="runSensitivityAnalysis()" id="runSensitivityBtn">
+          🔄 Uruchom analizę wrażliwości
+        </button>
+        <span class="sensitivity-status" id="sensitivityStatus"></span>
+      </div>
+    </div>
+
     <!-- Footer Info -->
     <div class="info-banner full-width">
       <div class="banner-icon">ℹ️</div>

@@ -1953,4 +1953,242 @@ window.displayStackedModeInfo = displayStackedModeInfo;
 window.fetchSizingVariants = fetchSizingVariants;
 window.tryFetchSizingVariants = tryFetchSizingVariants;
 
-console.log('📦 bess.js v3.10 - fixed load profile with evening peak for peak shaving');
+// ============================================
+// SENSITIVITY ANALYSIS (TORNADO CHART)
+// ============================================
+
+let tornadoChart = null;
+let sensitivityData = null;
+
+/**
+ * Run sensitivity analysis for current BESS configuration
+ */
+async function runSensitivityAnalysis() {
+  console.log('📊 Running sensitivity analysis...');
+
+  const statusEl = document.getElementById('sensitivityStatus');
+  const btnEl = document.getElementById('runSensitivityBtn');
+
+  if (statusEl) statusEl.textContent = 'Obliczanie...';
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    // Get current variant data
+    const variantData = variants[currentVariant];
+    if (!variantData || !variantData.bess) {
+      throw new Error('Brak danych BESS dla bieżącego wariantu');
+    }
+
+    const bess = variantData.bess;
+    const settings = systemSettings || {};
+
+    // Get hourly profiles
+    const pvData = variantData.hourlyPV || variantData.hourly_pv || [];
+    const loadData = variantData.hourlyLoad || variantData.hourly_load || [];
+
+    if (pvData.length === 0 || loadData.length === 0) {
+      throw new Error('Brak danych godzinowych PV/Load');
+    }
+
+    // Build request
+    const request = {
+      pv_generation_kw: pvData,
+      load_kw: loadData,
+      interval_minutes: 60,
+      battery_power_kw: bess.powerKw || bess.power_kw || 100,
+      battery_energy_kwh: bess.energyKwh || bess.energy_kwh || 200,
+      roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
+      soc_min: settings.bessSocMin || 0.1,
+      soc_max: settings.bessSocMax || 0.9,
+      mode: settings.bessPeakShavingEnabled ? 'stacked' : 'pv_surplus',
+      capex_per_kwh: settings.bessCapexPerKwh || 1500,
+      capex_per_kw: settings.bessCapexPerKw || 300,
+      opex_pct_per_year: 0.015,
+      discount_rate: 0.07,
+      analysis_years: settings.bessLifetimeYears || 15,
+      import_price_pln_mwh: settings.energyPurchasePrice || 800,
+    };
+
+    // Call API
+    const response = await fetch('http://localhost:8031/sensitivity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API error: ${response.status} - ${err}`);
+    }
+
+    sensitivityData = await response.json();
+    console.log('📊 Sensitivity result:', sensitivityData);
+
+    // Display results
+    displaySensitivityResults(sensitivityData);
+
+    if (statusEl) statusEl.textContent = '✅ Gotowe';
+
+  } catch (error) {
+    console.error('❌ Sensitivity analysis error:', error);
+    if (statusEl) statusEl.textContent = '❌ Błąd: ' + error.message;
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+/**
+ * Display sensitivity analysis results
+ */
+function displaySensitivityResults(data) {
+  const section = document.getElementById('sensitivitySection');
+  if (section) section.style.display = 'block';
+
+  // Base case summary
+  document.getElementById('sensBaseNpv').textContent =
+    formatNumberEU(data.base_npv_pln / 1000, 0) + ' tys. PLN';
+  document.getElementById('sensBasePayback').textContent =
+    data.base_payback_years < 100 ? formatNumberEU(data.base_payback_years, 1) + ' lat' : '> 25 lat';
+  document.getElementById('sensBaseCapex').textContent =
+    formatNumberEU(data.base_capex_pln / 1000, 0) + ' tys. PLN';
+
+  // Build table
+  const tbody = document.getElementById('sensitivityTableBody');
+  if (tbody) {
+    let html = '';
+    for (const p of data.parameters) {
+      html += `
+        <tr>
+          <td><strong>${p.parameter_label}</strong></td>
+          <td>${formatNumberEU(p.base_value, 1)} ${p.unit}</td>
+          <td>${formatNumberEU(p.low_value, 1)}</td>
+          <td class="${p.low_npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(p.low_npv_pln / 1000, 0)} tys.</td>
+          <td>${formatNumberEU(p.high_value, 1)}</td>
+          <td class="${p.high_npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(p.high_npv_pln / 1000, 0)} tys.</td>
+          <td><strong>${formatNumberEU(p.npv_swing_pct, 0)}%</strong></td>
+        </tr>
+      `;
+    }
+    tbody.innerHTML = html;
+  }
+
+  // Breakeven warnings
+  const warningsDiv = document.getElementById('breakevenWarnings');
+  const warningsText = document.getElementById('breakevenText');
+  if (data.breakeven_scenarios && data.breakeven_scenarios.length > 0) {
+    warningsDiv.style.display = 'flex';
+    warningsText.innerHTML = data.breakeven_scenarios.join('<br>');
+  } else {
+    warningsDiv.style.display = 'none';
+  }
+
+  // Draw tornado chart
+  drawTornadoChart(data);
+}
+
+/**
+ * Draw tornado chart using Chart.js
+ */
+function drawTornadoChart(data) {
+  const canvas = document.getElementById('tornadoChart');
+  if (!canvas) return;
+
+  // Destroy existing chart
+  if (tornadoChart) {
+    tornadoChart.destroy();
+    tornadoChart = null;
+  }
+
+  const ctx = canvas.getContext('2d');
+
+  // Prepare data - sorted by swing (already sorted from API)
+  const labels = data.parameters.map(p => p.parameter_label);
+  const baseNpv = data.base_npv_pln / 1000;
+
+  // For each parameter: negative side (low NPV - base) and positive side (high NPV - base)
+  const lowDeltas = data.parameters.map(p => (p.low_npv_pln - data.base_npv_pln) / 1000);
+  const highDeltas = data.parameters.map(p => (p.high_npv_pln - data.base_npv_pln) / 1000);
+
+  tornadoChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '-20%',
+          data: lowDeltas,
+          backgroundColor: lowDeltas.map(d => d < 0 ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)'),
+          borderColor: lowDeltas.map(d => d < 0 ? 'rgb(239, 68, 68)' : 'rgb(34, 197, 94)'),
+          borderWidth: 1
+        },
+        {
+          label: '+20%',
+          data: highDeltas,
+          backgroundColor: highDeltas.map(d => d < 0 ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)'),
+          borderColor: highDeltas.map(d => d < 0 ? 'rgb(239, 68, 68)' : 'rgb(34, 197, 94)'),
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        title: {
+          display: true,
+          text: `Wpływ na NPV (baza: ${formatNumberEU(baseNpv, 0)} tys. PLN)`,
+          font: { size: 14 }
+        },
+        legend: {
+          display: true,
+          position: 'top'
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const value = context.raw;
+              return `${context.dataset.label}: ${value > 0 ? '+' : ''}${formatNumberEU(value, 0)} tys. PLN`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: 'Zmiana NPV [tys. PLN]'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        y: {
+          grid: {
+            display: false
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Show sensitivity section if BESS data is available
+ */
+function showSensitivitySectionIfAvailable() {
+  const section = document.getElementById('sensitivitySection');
+  const variantData = variants[currentVariant];
+
+  if (section && variantData && variantData.bess && variantData.bess.enabled) {
+    section.style.display = 'block';
+  }
+}
+
+// Export sensitivity functions
+window.runSensitivityAnalysis = runSensitivityAnalysis;
+window.displaySensitivityResults = displaySensitivityResults;
+window.drawTornadoChart = drawTornadoChart;
+window.showSensitivitySectionIfAvailable = showSensitivitySectionIfAvailable;
+
+console.log('📦 bess.js v3.11 - added sensitivity analysis (tornado chart)');
