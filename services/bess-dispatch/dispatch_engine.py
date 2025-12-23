@@ -30,6 +30,10 @@ from models import (
     StackedModeParams,
     DegradationBudget,
     PriceConfig,
+    ProfileUnit,
+    ResamplingMethod,
+    AuditMetadata,
+    ENGINE_VERSION,
 )
 
 
@@ -47,6 +51,7 @@ def dispatch_pv_surplus(
     dt_hours: float,
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
+    audit_metadata: Optional[AuditMetadata] = None,
 ) -> DispatchResult:
     """
     PV-Surplus (Autokonsumpcja) Dispatch Algorithm
@@ -200,6 +205,15 @@ def dispatch_pv_surplus(
     project_cost = total_import * import_price - total_export * export_price
     annual_savings = baseline_cost - project_cost
 
+    # Build audit info
+    audit = audit_metadata or AuditMetadata(
+        engine_version=ENGINE_VERSION,
+        interval_minutes=int(dt_hours * 60),
+    )
+    info_dict = {
+        "audit": audit.dict(),
+    }
+
     # Build result
     result = DispatchResult(
         mode=DispatchMode.PV_SURPLUS,
@@ -223,6 +237,7 @@ def dispatch_pv_surplus(
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
         warnings=[],
+        info=info_dict,
     )
 
     if return_hourly:
@@ -243,6 +258,7 @@ def dispatch_peak_shaving(
     peak_limit_kw: float,
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
+    audit_metadata: Optional[AuditMetadata] = None,
 ) -> DispatchResult:
     """
     Peak Shaving Dispatch Algorithm
@@ -379,6 +395,16 @@ def dispatch_peak_shaving(
     project_cost = total_import * import_price
     annual_savings = baseline_cost - project_cost
 
+    # Build audit info
+    audit = audit_metadata or AuditMetadata(
+        engine_version=ENGINE_VERSION,
+        interval_minutes=int(dt_hours * 60),
+    )
+    info_dict = {
+        "audit": audit.dict(),
+        "peak_limit_kw": peak_limit_kw,
+    }
+
     result = DispatchResult(
         mode=DispatchMode.PEAK_SHAVING,
         battery_power_kw=battery.power_kw,
@@ -405,6 +431,7 @@ def dispatch_peak_shaving(
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
         warnings=[],
+        info=info_dict,
     )
 
     if return_hourly:
@@ -425,6 +452,7 @@ def dispatch_stacked(
     stacked_params: StackedModeParams,
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
+    audit_metadata: Optional[AuditMetadata] = None,
 ) -> DispatchResult:
     """
     STACKED Dispatch Algorithm (PV Shifting + Peak Shaving)
@@ -634,6 +662,20 @@ def dispatch_stacked(
     project_cost = total_import * import_price
     annual_savings = baseline_cost - project_cost
 
+    # Build audit info
+    audit = audit_metadata or AuditMetadata(
+        engine_version=ENGINE_VERSION,
+        interval_minutes=int(dt_hours * 60),
+    )
+    info_dict = {
+        "audit": audit.dict(),
+        "reserve_soc_kwh": reserve_soc_kwh,
+        "reserve_fraction": reserve_frac,
+        "peak_limit_kw": peak_limit,
+        "discharge_peak_kwh": total_discharge_peak,
+        "discharge_pv_kwh": total_discharge_pv,
+    }
+
     result = DispatchResult(
         mode=DispatchMode.STACKED,
         battery_power_kw=battery.power_kw,
@@ -660,13 +702,7 @@ def dispatch_stacked(
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
         warnings=warnings,
-        info={
-            "reserve_soc_kwh": reserve_soc_kwh,
-            "reserve_fraction": reserve_frac,
-            "peak_limit_kw": peak_limit,
-            "discharge_peak_kwh": total_discharge_peak,
-            "discharge_pv_kwh": total_discharge_pv,
-        }
+        info=info_dict,
     )
 
     if return_hourly:
@@ -791,6 +827,14 @@ def check_degradation_budget(
 ) -> DegradationMetrics:
     """
     Check degradation metrics against budget and update status.
+
+    Warning Thresholds:
+    - 80%: Early warning (OK status, informational)
+    - 90%: Warning status (approaching limit)
+    - 100%: Exceeded status (over budget)
+
+    This allows operators to monitor degradation trajectory and adjust
+    dispatch strategy before warranty limits are breached.
     """
     if not budget or not budget.has_limits():
         return metrics
@@ -799,26 +843,51 @@ def check_degradation_budget(
     utilization = 0.0
     status = DegradationStatus.OK
 
+    # Check EFC budget
     if budget.max_efc_per_year is not None:
         efc_util = (metrics.efc_total / budget.max_efc_per_year) * 100
         utilization = max(utilization, efc_util)
+
         if efc_util > 100:
             status = DegradationStatus.EXCEEDED
-            warnings.append(f"EFC {metrics.efc_total:.0f} przekracza budżet {budget.max_efc_per_year:.0f}")
-        elif efc_util > 80:
+            warnings.append(
+                f"EFC EXCEEDED: {metrics.efc_total:.0f} cycles "
+                f"(budget: {budget.max_efc_per_year:.0f}, utilization: {efc_util:.0f}%)"
+            )
+        elif efc_util > 90:
             status = DegradationStatus.WARNING
-            warnings.append(f"EFC {metrics.efc_total:.0f} zbliża się do budżetu {budget.max_efc_per_year:.0f}")
+            warnings.append(
+                f"EFC WARNING: {metrics.efc_total:.0f} cycles at {efc_util:.0f}% of budget "
+                f"({budget.max_efc_per_year:.0f})"
+            )
+        elif efc_util > 80:
+            # Informational warning, doesn't change status
+            warnings.append(
+                f"EFC INFO: {metrics.efc_total:.0f} cycles at {efc_util:.0f}% of budget "
+                f"({budget.max_efc_per_year:.0f})"
+            )
 
+    # Check throughput budget
     if budget.max_throughput_mwh_per_year is not None:
         tp_util = (metrics.throughput_total_mwh / budget.max_throughput_mwh_per_year) * 100
         utilization = max(utilization, tp_util)
+
         if tp_util > 100:
             status = DegradationStatus.EXCEEDED
-            warnings.append(f"Throughput {metrics.throughput_total_mwh:.1f} MWh przekracza budżet")
-        elif tp_util > 80:
+            warnings.append(
+                f"THROUGHPUT EXCEEDED: {metrics.throughput_total_mwh:.1f} MWh "
+                f"(budget: {budget.max_throughput_mwh_per_year:.1f} MWh, utilization: {tp_util:.0f}%)"
+            )
+        elif tp_util > 90:
             if status != DegradationStatus.EXCEEDED:
                 status = DegradationStatus.WARNING
-            warnings.append(f"Throughput zbliża się do budżetu")
+            warnings.append(
+                f"THROUGHPUT WARNING: {metrics.throughput_total_mwh:.1f} MWh at {tp_util:.0f}% of budget"
+            )
+        elif tp_util > 80:
+            warnings.append(
+                f"THROUGHPUT INFO: {metrics.throughput_total_mwh:.1f} MWh at {tp_util:.0f}% of budget"
+            )
 
     metrics.budget_status = status
     metrics.budget_utilization_pct = min(utilization, 999)

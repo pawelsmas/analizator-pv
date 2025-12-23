@@ -10,17 +10,35 @@ Supports:
 - STACKED mode (PV + Peak with SOC reserve)
 - Degradation metrics (throughput, EFC, budget)
 - Time-varying prices (future-ready)
+- Audit metadata for reproducibility
+
+Version: 1.2.0
 """
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, validator
 
+# Engine version for audit trail
+ENGINE_VERSION = "1.2.0"
+
 
 class TimeResolution(str, Enum):
     """Supported time resolutions"""
     HOURLY = "hourly"           # 60-min intervals
     QUARTER_HOURLY = "15min"    # 15-min intervals
+
+
+class ProfileUnit(str, Enum):
+    """
+    Units for input power profiles.
+
+    All profiles should be in kW_avg (average power over interval).
+    This enum enables explicit declaration and validation.
+    """
+    KW_AVG = "kW_avg"           # Average power over interval (standard)
+    KW_PEAK = "kW_peak"         # Peak power in interval (requires conversion)
+    KWH = "kWh"                 # Energy per interval (requires conversion based on dt)
 
 
 class DispatchMode(str, Enum):
@@ -150,9 +168,15 @@ class DispatchRequest(BaseModel):
 
     # Time series data [kW average per interval]
     pv_generation_kw: List[float] = Field(..., min_items=24,
-                                           description="PV generation [kW]")
+                                           description="PV generation [kW_avg]")
     load_kw: List[float] = Field(..., min_items=24,
-                                  description="Load consumption [kW]")
+                                  description="Load consumption [kW_avg]")
+
+    # Profile unit declaration for audit trail
+    profile_unit: ProfileUnit = Field(
+        ProfileUnit.KW_AVG,
+        description="Unit of input profiles (must be kW_avg for dispatch)"
+    )
 
     # Time configuration
     interval_minutes: int = Field(60, description="Interval duration (15 or 60)")
@@ -183,6 +207,15 @@ class DispatchRequest(BaseModel):
     def validate_lengths(cls, v, values):
         if 'pv_generation_kw' in values and len(v) != len(values['pv_generation_kw']):
             raise ValueError("pv_generation_kw and load_kw must have same length")
+        return v
+
+    @validator('profile_unit')
+    def validate_profile_unit(cls, v):
+        if v != ProfileUnit.KW_AVG:
+            raise ValueError(
+                f"Dispatch requires kW_avg profiles. Got {v}. "
+                "Use convert_profile_to_kw_avg() to convert."
+            )
         return v
 
     @property
@@ -330,10 +363,16 @@ class SizingVariant(str, Enum):
 class SizingRequest(BaseModel):
     """Request for BESS sizing optimization"""
 
-    # Time series data
+    # Time series data [kW_avg]
     pv_generation_kw: List[float]
     load_kw: List[float]
     interval_minutes: int = 60
+
+    # Profile unit declaration for audit trail
+    profile_unit: ProfileUnit = Field(
+        ProfileUnit.KW_AVG,
+        description="Unit of input profiles (must be kW_avg for sizing)"
+    )
 
     # Dispatch mode
     mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
@@ -422,3 +461,190 @@ class SizingResult(BaseModel):
 
     # Warnings
     warnings: List[str] = Field(default_factory=list)
+
+
+# =============================================================================
+# Unit Conversion Utilities
+# =============================================================================
+
+def convert_profile_to_kw_avg(
+    values: List[float],
+    source_unit: ProfileUnit,
+    interval_minutes: int,
+) -> List[float]:
+    """
+    Convert power/energy profile to kW_avg (average power over interval).
+
+    Parameters:
+    -----------
+    values : List[float]
+        Input values in source_unit
+    source_unit : ProfileUnit
+        Unit of input values
+    interval_minutes : int
+        Interval duration (15 or 60)
+
+    Returns:
+    --------
+    List[float] : Values converted to kW_avg
+
+    Examples:
+    ---------
+    # 100 kWh over 1 hour = 100 kW_avg
+    convert_profile_to_kw_avg([100], ProfileUnit.KWH, 60)  # -> [100.0]
+
+    # 25 kWh over 15 min = 100 kW_avg
+    convert_profile_to_kw_avg([25], ProfileUnit.KWH, 15)   # -> [100.0]
+    """
+    if source_unit == ProfileUnit.KW_AVG:
+        return values  # No conversion needed
+
+    dt_hours = interval_minutes / 60.0
+
+    if source_unit == ProfileUnit.KWH:
+        # Energy to average power: P_avg = E / dt
+        return [v / dt_hours for v in values]
+
+    if source_unit == ProfileUnit.KW_PEAK:
+        # Peak power to average power
+        # Without sub-interval data, assume avg = 0.8 * peak (typical for PV)
+        # This is a rough approximation - better to use actual kW_avg data
+        return [v * 0.8 for v in values]
+
+    return values
+
+
+class ResamplingMethod(str, Enum):
+    """Methods for resampling time series data"""
+    NONE = "none"                       # No resampling applied
+    INTERPOLATE_LINEAR = "linear"       # Linear interpolation (for upsampling)
+    REPEAT = "repeat"                   # Repeat values (for upsampling)
+    AGGREGATE_SUM = "sum"               # Sum values (for downsampling energy)
+    AGGREGATE_MEAN = "mean"             # Average values (for downsampling power)
+
+
+def resample_hourly_to_15min(
+    hourly_data: List[float],
+    method: ResamplingMethod = ResamplingMethod.REPEAT,
+) -> List[float]:
+    """
+    Resample hourly (60-min) data to 15-min intervals.
+
+    Energy Conservation Property:
+    - For power profiles (kW_avg): sum remains the same (repeat preserves avg)
+    - Hourly energy = sum(hourly_kw) * 1h
+    - 15min energy = sum(15min_kw) * 0.25h = sum(hourly_kw) * 4 * 0.25h = same
+
+    Parameters:
+    -----------
+    hourly_data : List[float]
+        Input data with 60-min resolution (length N, typically 8760)
+    method : ResamplingMethod
+        REPEAT: Each hourly value repeated 4 times (default, energy-conserving)
+        INTERPOLATE_LINEAR: Linear interpolation between hours
+
+    Returns:
+    --------
+    List[float] : Data with 15-min resolution (length 4*N, typically 35040)
+
+    Examples:
+    ---------
+    # 8760 hourly -> 35040 quarter-hourly
+    data_15min = resample_hourly_to_15min(data_1h)
+    assert len(data_15min) == 4 * len(data_1h)
+
+    # Energy conservation check
+    energy_1h = sum(data_1h) * 1.0  # kWh
+    energy_15min = sum(data_15min) * 0.25  # kWh
+    assert abs(energy_1h - energy_15min) < 0.001
+    """
+    n = len(hourly_data)
+
+    if method == ResamplingMethod.REPEAT:
+        # Repeat each value 4 times - preserves average power
+        result = []
+        for v in hourly_data:
+            result.extend([v, v, v, v])
+        return result
+
+    elif method == ResamplingMethod.INTERPOLATE_LINEAR:
+        # Linear interpolation between hourly midpoints
+        # Hour boundaries are at 0, 1, 2, ... h
+        # 15-min points at 0, 0.25, 0.5, 0.75, 1.0, ...
+        result = []
+        for i in range(n):
+            v_curr = hourly_data[i]
+            v_next = hourly_data[i + 1] if i < n - 1 else hourly_data[i]
+
+            # 4 quarter-hourly values within this hour
+            for j in range(4):
+                t = j / 4  # 0, 0.25, 0.5, 0.75
+                result.append(v_curr * (1 - t) + v_next * t)
+
+        return result
+
+    else:
+        # Default to repeat
+        return resample_hourly_to_15min(hourly_data, ResamplingMethod.REPEAT)
+
+
+def resample_15min_to_hourly(
+    data_15min: List[float],
+    method: ResamplingMethod = ResamplingMethod.AGGREGATE_MEAN,
+) -> List[float]:
+    """
+    Resample 15-min data to hourly (60-min) intervals.
+
+    Parameters:
+    -----------
+    data_15min : List[float]
+        Input data with 15-min resolution (length 4*N)
+    method : ResamplingMethod
+        AGGREGATE_MEAN: Average of 4 values (for power, preserves energy)
+        AGGREGATE_SUM: Sum of 4 values (for counts/events)
+
+    Returns:
+    --------
+    List[float] : Data with 60-min resolution (length N)
+
+    Energy Conservation:
+    - For kW_avg profiles, use AGGREGATE_MEAN
+    - Energy_1h = hourly_avg * 1.0h = mean(4 values) * 1.0h
+    - Energy_15min = sum(4 values) * 0.25h = mean(4 values) * 1.0h
+    """
+    n = len(data_15min)
+    if n % 4 != 0:
+        raise ValueError(f"15-min data length must be divisible by 4, got {n}")
+
+    n_hours = n // 4
+    result = []
+
+    for h in range(n_hours):
+        chunk = data_15min[h * 4 : (h + 1) * 4]
+        if method == ResamplingMethod.AGGREGATE_MEAN:
+            result.append(sum(chunk) / 4)
+        elif method == ResamplingMethod.AGGREGATE_SUM:
+            result.append(sum(chunk))
+        else:
+            result.append(sum(chunk) / 4)  # Default to mean
+
+    return result
+
+
+class AuditMetadata(BaseModel):
+    """
+    Audit metadata for reproducibility.
+
+    Included in DispatchResult.info to enable external verification.
+    """
+    engine_version: str = Field(ENGINE_VERSION, description="Dispatch engine version")
+    profile_unit: ProfileUnit = Field(ProfileUnit.KW_AVG, description="Input profile unit")
+    interval_minutes: int = Field(60, description="Time interval [min]")
+    resampling_method: ResamplingMethod = Field(
+        ResamplingMethod.NONE,
+        description="Resampling method applied to input data"
+    )
+    source_interval_minutes: Optional[int] = Field(
+        None,
+        description="Original interval before resampling (if resampled)"
+    )

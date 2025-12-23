@@ -1,10 +1,13 @@
 """
 BESS Optimizer Service
-LP/MIP optimization using PyPSA + HiGHS for zero-export PV+BESS systems
+Grid Search optimization for zero-export PV+BESS systems
 
 This service optimizes BESS sizing (power and energy) for a given PV+load profile
-using linear programming. The objective is to maximize NPV while respecting
-zero-export constraints.
+using iterative grid search with greedy dispatch simulation.
+The objective is to maximize NPV while respecting zero-export constraints.
+
+Note: PyPSA/HiGHS imports preserved for future LP/MIP optimization but currently
+      using grid search approach for robustness and interpretability.
 """
 
 import time
@@ -14,7 +17,13 @@ from typing import Tuple, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-import pypsa
+# PyPSA import preserved for future LP/MIP optimization
+# Currently using grid search approach
+try:
+    import pypsa
+    PYPSA_AVAILABLE = True
+except ImportError:
+    PYPSA_AVAILABLE = False
 
 from models import (
     BessOptimizationRequest,
@@ -30,8 +39,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(
     title="BESS Optimizer Service",
-    description="LP/MIP optimization for zero-export PV+BESS systems using PyPSA + HiGHS",
-    version="1.0.0"
+    description="Grid search optimization for zero-export PV+BESS systems with greedy dispatch simulation",
+    version="1.1.0"
 )
 
 # Initialize Prometheus metrics
@@ -107,8 +116,8 @@ async def optimize_bess(request: BessOptimizationRequest):
         surplus = np.maximum(-net_load, 0)  # PV surplus (available for charging)
         deficit = np.maximum(net_load, 0)   # Load deficit (can be covered by discharge)
 
-        # Run optimization
-        result = run_pypsa_optimization(
+        # Run optimization using grid search approach
+        result = run_grid_search_optimization(
             surplus=surplus,
             deficit=deficit,
             pv_gen=pv_gen,
@@ -126,7 +135,7 @@ async def optimize_bess(request: BessOptimizationRequest):
         raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
 
 
-def run_pypsa_optimization(
+def run_grid_search_optimization(
     surplus: np.ndarray,
     deficit: np.ndarray,
     pv_gen: np.ndarray,
@@ -137,8 +146,20 @@ def run_pypsa_optimization(
     """
     Find optimal BESS sizing using iterative NPV grid search.
 
-    Tests multiple BESS sizes with greedy dispatch simulation
-    and selects the configuration with best NPV.
+    Algorithm:
+    1. Define search grid over power levels and duration variants
+    2. For each (power, duration) combination:
+       - Run greedy dispatch simulation
+       - Calculate annual savings, CAPEX, OPEX
+       - Compute NPV
+    3. Select configuration with highest NPV
+
+    This approach is preferred over LP/MIP for:
+    - Robustness (no solver failures)
+    - Interpretability (simple to audit)
+    - Speed (sufficient for typical search spaces)
+
+    Note: PyPSA/LP approach may be added in future for larger problems.
     """
     n_timesteps = len(surplus)
 
@@ -161,7 +182,7 @@ def run_pypsa_optimization(
     best_energy = request.min_energy_kwh
     best_dispatch = None
 
-    print(f"🔍 BESS PRO: Testing {len(power_range)} power levels x {len(duration_options)} durations")
+    print(f"🔍 BESS Grid Search: Testing {len(power_range)} power levels x {len(duration_options)} durations")
 
     for power_kw in power_range:
         for duration_h in duration_options:
@@ -211,11 +232,11 @@ def run_pypsa_optimization(
                 best_energy = energy_kwh
                 best_dispatch = dispatch
 
-    print(f"✅ BESS PRO: Best NPV = {best_npv/1e6:.2f} M PLN @ {best_power:.0f} kW / {best_energy:.0f} kWh")
+    print(f"✅ BESS Grid Search: Best NPV = {best_npv/1e6:.2f} M PLN @ {best_power:.0f} kW / {best_energy:.0f} kWh")
 
     # If no positive NPV found, check if minimal battery is worth it
     if best_npv <= 0:
-        print(f"⚠️ BESS PRO: No positive NPV found, using minimum size")
+        print(f"⚠️ BESS Grid Search: No positive NPV found, using minimum size")
         best_power = request.min_power_kw
         best_energy = request.min_energy_kwh
         best_dispatch = simulate_bess_dispatch(
