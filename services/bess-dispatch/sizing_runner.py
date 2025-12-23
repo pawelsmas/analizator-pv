@@ -27,6 +27,10 @@ from models import (
     DegradationBudget,
     PriceConfig,
     StackedModeParams,
+    OptimizationObjective,
+    OptimizationConfig,
+    ConstraintType,
+    SizingConstraint,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -112,6 +116,110 @@ def calculate_irr(
     return irr * 100 if abs(npv) < 1 else None
 
 
+def calculate_objective_score(
+    objective: OptimizationObjective,
+    result: DispatchResult,
+    capex: float,
+    npv: float,
+    payback: float,
+    max_efc_budget: Optional[float] = None,
+) -> float:
+    """
+    Calculate objective score based on optimization goal.
+
+    Returns a score where HIGHER is always better (even for payback).
+    """
+    if objective == OptimizationObjective.NPV:
+        return npv
+
+    elif objective == OptimizationObjective.PAYBACK:
+        # Invert payback so higher is better (max 100 years)
+        if payback == float('inf') or payback > 100:
+            return -1000000
+        return -payback  # Negative because we want to minimize
+
+    elif objective == OptimizationObjective.SELF_CONSUMPTION:
+        return result.self_consumption_pct
+
+    elif objective == OptimizationObjective.PEAK_REDUCTION:
+        return result.peak_reduction_pct
+
+    elif objective == OptimizationObjective.EFC_UTILIZATION:
+        # Maximize EFC utilization within budget (higher is better up to budget)
+        if max_efc_budget and max_efc_budget > 0:
+            utilization = min(result.degradation.efc_total / max_efc_budget, 1.0)
+            return utilization * 100  # 0-100 scale
+        return result.degradation.efc_total
+
+    return npv  # Default to NPV
+
+
+def check_constraints(
+    optimization: Optional[OptimizationConfig],
+    capex: float,
+    npv: float,
+    payback: float,
+    result: DispatchResult,
+) -> Tuple[bool, float, List[str]]:
+    """
+    Check if constraints are satisfied.
+
+    Returns:
+    --------
+    Tuple of (passes_hard, penalty, violations)
+    - passes_hard: True if all hard constraints are satisfied
+    - penalty: Penalty score for soft constraint violations (0-1)
+    - violations: List of constraint violation messages
+    """
+    if not optimization or not optimization.constraints:
+        return True, 0.0, []
+
+    passes_hard = True
+    penalty = 0.0
+    violations = []
+
+    for constraint in optimization.constraints:
+        violated = False
+        violation_msg = ""
+
+        if constraint.constraint_type == ConstraintType.MAX_CAPEX:
+            if capex > constraint.value:
+                violated = True
+                violation_msg = f"CAPEX {capex:.0f} PLN > max {constraint.value:.0f} PLN"
+                penalty += (capex - constraint.value) / constraint.value
+
+        elif constraint.constraint_type == ConstraintType.MAX_PAYBACK:
+            if payback > constraint.value:
+                violated = True
+                violation_msg = f"Payback {payback:.1f}y > max {constraint.value:.1f}y"
+                penalty += (payback - constraint.value) / constraint.value
+
+        elif constraint.constraint_type == ConstraintType.MIN_NPV:
+            if npv < constraint.value:
+                violated = True
+                violation_msg = f"NPV {npv:.0f} PLN < min {constraint.value:.0f} PLN"
+                penalty += abs(npv - constraint.value) / max(abs(constraint.value), 1)
+
+        elif constraint.constraint_type == ConstraintType.MAX_EFC:
+            if result.degradation.efc_total > constraint.value:
+                violated = True
+                violation_msg = f"EFC {result.degradation.efc_total:.0f} > max {constraint.value:.0f}"
+                penalty += (result.degradation.efc_total - constraint.value) / constraint.value
+
+        elif constraint.constraint_type == ConstraintType.MIN_SELF_CONSUMPTION:
+            if result.self_consumption_pct < constraint.value:
+                violated = True
+                violation_msg = f"Self-consumption {result.self_consumption_pct:.1f}% < min {constraint.value:.1f}%"
+                penalty += (constraint.value - result.self_consumption_pct) / constraint.value
+
+        if violated:
+            violations.append(violation_msg)
+            if constraint.hard:
+                passes_hard = False
+
+    return passes_hard, min(penalty, 1.0), violations
+
+
 def run_sizing_for_variant(
     pv_kw: np.ndarray,
     load_kw: np.ndarray,
@@ -182,13 +290,15 @@ def find_optimal_power_for_duration(
     mode: DispatchMode,
     duration_h: float,
     request: SizingRequest,
-) -> Tuple[float, float, DispatchResult, float]:
+) -> Tuple[float, float, DispatchResult, float, List[str]]:
     """
     Find optimal power for a given duration using grid search.
 
+    Supports multi-objective optimization via request.optimization config.
+
     Returns:
     --------
-    Tuple of (optimal_power_kw, optimal_energy_kwh, best_result, best_npv)
+    Tuple of (optimal_power_kw, optimal_energy_kwh, best_result, best_score, constraint_violations)
     """
     # Calculate surplus statistics for proper sizing
     surplus = np.maximum(pv_kw - load_kw, 0)
@@ -252,25 +362,67 @@ def find_optimal_power_for_duration(
     # Generate power steps
     power_steps = np.linspace(p_min, p_max, request.power_steps)
 
-    best_npv = float('-inf')
+    # Get optimization config (use defaults if not specified)
+    opt_config = request.optimization or OptimizationConfig()
+    objective = opt_config.objective
+
+    # Get EFC budget for EFC_UTILIZATION objective
+    max_efc = None
+    if request.degradation_budget and request.degradation_budget.max_efc_per_year:
+        max_efc = request.degradation_budget.max_efc_per_year
+
+    best_score = float('-inf')
     best_power = power_steps[0]
     best_result = None
+    best_violations = []
 
     for power in power_steps:
         result, capex, npv = run_sizing_for_variant(
             pv_kw, load_kw, dt_hours, mode, duration_h, power, request
         )
 
-        # Apply degradation penalty if budget exceeded
-        if result.degradation.budget_status == DegradationStatus.EXCEEDED:
-            npv -= capex * 0.3  # 30% penalty for exceeded budget
+        payback = calculate_simple_payback(result.annual_savings_pln, capex)
 
-        if npv > best_npv:
-            best_npv = npv
+        # Check constraints
+        passes_hard, penalty, violations = check_constraints(
+            opt_config, capex, npv, payback, result
+        )
+
+        # Skip if hard constraints violated
+        if not passes_hard:
+            continue
+
+        # Calculate objective score
+        score = calculate_objective_score(
+            objective, result, capex, npv, payback, max_efc
+        )
+
+        # Apply penalty for soft constraint violations
+        if penalty > 0:
+            penalty_weight = opt_config.constraint_penalty_weight
+            score -= abs(score) * penalty * penalty_weight
+
+        # Apply degradation penalty if budget exceeded (legacy behavior)
+        if result.degradation.budget_status == DegradationStatus.EXCEEDED:
+            score -= abs(score) * 0.3  # 30% penalty
+
+        if score > best_score:
+            best_score = score
             best_power = power
             best_result = result
+            best_violations = violations
 
-    return best_power, best_power * duration_h, best_result, best_npv
+    # If no valid configuration found, return first with constraint violations noted
+    if best_result is None:
+        power = power_steps[0]
+        result, capex, npv = run_sizing_for_variant(
+            pv_kw, load_kw, dt_hours, mode, duration_h, power, request
+        )
+        payback = calculate_simple_payback(result.annual_savings_pln, capex)
+        _, _, violations = check_constraints(opt_config, capex, npv, payback, result)
+        return power, power * duration_h, result, float('-inf'), violations
+
+    return best_power, best_power * duration_h, best_result, best_score, best_violations
 
 
 def run_sizing(request: SizingRequest) -> SizingResult:
@@ -308,7 +460,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     for duration_h in request.durations_h:
         # Find optimal power for this duration
-        power_kw, energy_kwh, dispatch_result, npv = find_optimal_power_for_duration(
+        power_kw, energy_kwh, dispatch_result, score, constraint_violations = find_optimal_power_for_duration(
             pv_kw, load_kw, dt_hours, request.mode, duration_h, request
         )
 
@@ -323,13 +475,18 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         capex = energy_kwh * request.capex_per_kwh + power_kw * request.capex_per_kw
         annual_opex = capex * request.opex_pct_per_year
         payback = calculate_simple_payback(dispatch_result.annual_savings_pln, capex)
+        npv = calculate_npv(
+            dispatch_result.annual_savings_pln, capex,
+            request.opex_pct_per_year, request.discount_rate, request.analysis_years
+        )
         irr = calculate_irr(
             dispatch_result.annual_savings_pln, capex,
             request.opex_pct_per_year, request.analysis_years
         )
 
-        # Calculate score (0-100) based on NPV and degradation
-        base_score = min(100, max(0, (npv / capex + 0.5) * 50)) if capex > 0 else 0
+        # Calculate score (0-100) based on objective score and degradation
+        # Normalize score for comparison across variants
+        base_score = min(100, max(0, (score / max(abs(capex), 1) + 0.5) * 50)) if capex > 0 else score
         if dispatch_result.degradation.budget_status == DegradationStatus.EXCEEDED:
             base_score *= 0.5
         elif dispatch_result.degradation.budget_status == DegradationStatus.WARNING:
@@ -369,6 +526,18 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     for v in variants:
         if v.degradation_status == DegradationStatus.EXCEEDED:
             warnings.append(f"{v.variant_label}: Przekroczony budżet degradacji")
+
+    # Add constraint violation warnings from optimization
+    for v_idx, v in enumerate(variants):
+        # Re-check constraints for final warnings
+        capex_v = v.energy_kwh * request.capex_per_kwh + v.power_kw * request.capex_per_kw
+        opt_config = request.optimization
+        if opt_config:
+            _, _, violations = check_constraints(
+                opt_config, capex_v, v.npv_pln, v.simple_payback_years, v.dispatch_summary
+            )
+            for violation in violations:
+                warnings.append(f"{v.variant_label}: {violation}")
 
     return SizingResult(
         mode=request.mode,

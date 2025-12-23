@@ -462,6 +462,13 @@ class SizingRequest(BaseModel):
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
 
+    # Optimization configuration (optional)
+    # Note: OptimizationConfig is defined later in file, using forward reference
+    optimization: Optional["OptimizationConfig"] = Field(
+        None,
+        description="Optimization objective and constraints configuration"
+    )
+
 
 class SizingVariantResult(BaseModel):
     """Result for a single sizing variant"""
@@ -708,6 +715,74 @@ class AuditMetadata(BaseModel):
 
 
 # =============================================================================
+# Optimization Objectives and Constraints
+# =============================================================================
+
+class OptimizationObjective(str, Enum):
+    """
+    Optimization objectives for BESS sizing.
+
+    Determines which metric is maximized/minimized during grid search.
+    """
+    NPV = "npv"                             # Maximize Net Present Value (default)
+    PAYBACK = "payback"                     # Minimize Simple Payback Period
+    SELF_CONSUMPTION = "self_consumption"   # Maximize self-consumption %
+    PEAK_REDUCTION = "peak_reduction"       # Maximize peak reduction %
+    EFC_UTILIZATION = "efc_utilization"     # Maximize EFC utilization within budget
+
+
+class ConstraintType(str, Enum):
+    """Types of constraints for BESS sizing"""
+    MAX_CAPEX = "max_capex"                 # Maximum CAPEX [PLN]
+    MAX_PAYBACK = "max_payback"             # Maximum payback [years]
+    MIN_NPV = "min_npv"                     # Minimum NPV [PLN]
+    MAX_EFC = "max_efc"                     # Maximum EFC per year
+    MIN_SELF_CONSUMPTION = "min_self_consumption"  # Minimum self-consumption [%]
+
+
+class SizingConstraint(BaseModel):
+    """Single constraint for BESS sizing optimization"""
+    constraint_type: ConstraintType
+    value: float = Field(..., description="Constraint value")
+    hard: bool = Field(True, description="Hard constraint (reject) vs soft (penalty)")
+
+
+class OptimizationConfig(BaseModel):
+    """
+    Configuration for multi-objective optimization.
+
+    Allows users to specify:
+    - Primary objective to optimize
+    - Hard/soft constraints to satisfy
+    """
+    objective: OptimizationObjective = Field(
+        OptimizationObjective.NPV,
+        description="Primary optimization objective"
+    )
+    constraints: List[SizingConstraint] = Field(
+        default_factory=list,
+        description="List of sizing constraints"
+    )
+    constraint_penalty_weight: float = Field(
+        0.3,
+        ge=0.0,
+        le=1.0,
+        description="Weight for soft constraint penalties (0-1)"
+    )
+
+    def has_constraint(self, constraint_type: ConstraintType) -> bool:
+        """Check if a specific constraint type is defined"""
+        return any(c.constraint_type == constraint_type for c in self.constraints)
+
+    def get_constraint(self, constraint_type: ConstraintType) -> Optional[SizingConstraint]:
+        """Get constraint by type"""
+        for c in self.constraints:
+            if c.constraint_type == constraint_type:
+                return c
+        return None
+
+
+# =============================================================================
 # Sensitivity Analysis (Tornado Chart)
 # =============================================================================
 
@@ -829,3 +904,7 @@ class SensitivityResult(BaseModel):
     most_sensitive_parameter: str
     least_sensitive_parameter: str
     breakeven_scenarios: List[str]  # Parameters where NPV crosses zero
+
+
+# Update forward references for Pydantic
+SizingRequest.update_forward_refs()
