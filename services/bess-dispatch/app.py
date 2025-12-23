@@ -33,6 +33,7 @@ from models import (
     DegradationBudget,
     PriceConfig,
     TimeResolution,
+    TopologyType,
     SensitivityRequest,
     SensitivityResult,
     SensitivityParameter,
@@ -107,7 +108,7 @@ async def service_info():
     """Service information and capabilities"""
     return ServiceInfo(
         name="BESS Dispatch Service",
-        version="1.0.0",
+        version="1.1.0",
         description="Time-based dispatch simulation with degradation tracking",
         dispatch_modes=[m.value for m in DispatchMode],
         supported_intervals=[15, 60],
@@ -116,6 +117,8 @@ async def service_info():
             "PV-surplus (autokonsumpcja) dispatch",
             "Peak shaving dispatch",
             "STACKED mode (PV + Peak with SOC reserve)",
+            "LOAD_ONLY mode (stand-alone BESS without PV)",
+            "Topology support (pv_load, load_only)",
             "Throughput and EFC tracking",
             "Per-service degradation breakdown",
             "Degradation budget monitoring",
@@ -133,9 +136,18 @@ async def service_info():
 
 class DispatchRequestAPI(BaseModel):
     """API request for dispatch simulation"""
-    pv_generation_kw: List[float] = Field(..., description="PV generation [kW]")
+    pv_generation_kw: Optional[List[float]] = Field(
+        None,
+        description="PV generation [kW]. Can be omitted for LOAD_ONLY topology."
+    )
     load_kw: List[float] = Field(..., description="Load consumption [kW]")
     interval_minutes: int = Field(60, description="Interval duration (15 or 60)")
+
+    # Topology - determines system configuration
+    topology: TopologyType = Field(
+        TopologyType.PV_LOAD,
+        description="System topology: pv_load (standard) or load_only (no PV)"
+    )
 
     # Battery
     battery_power_kw: float = Field(..., gt=0)
@@ -148,7 +160,7 @@ class DispatchRequestAPI(BaseModel):
     # Mode
     mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
 
-    # Peak shaving / STACKED params
+    # Peak shaving / STACKED / LOAD_ONLY params
     peak_limit_kw: Optional[float] = None
     reserve_fraction: float = Field(0.3, ge=0.0, le=0.8)
 
@@ -173,12 +185,28 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
     - pv_surplus: Maximize self-consumption from PV
     - peak_shaving: Reduce grid import peaks
     - stacked: Dual-service with SOC reserve for peak shaving
+    - load_only: Stand-alone BESS without PV (peak shaving from grid)
+
+    Topologies:
+    - pv_load: Standard system with PV + Load + BESS
+    - load_only: No PV, only Load + BESS (for peak shaving/arbitrage)
 
     Returns detailed energy flows, degradation metrics, and economics.
     """
     start_time = time.time()
 
     try:
+        # Validate topology/mode compatibility
+        if request.topology == TopologyType.LOAD_ONLY:
+            if request.mode in [DispatchMode.PV_SURPLUS, DispatchMode.STACKED]:
+                raise HTTPException(
+                    400,
+                    f"Mode {request.mode} requires PV. Use LOAD_ONLY or PEAK_SHAVING mode "
+                    f"with LOAD_ONLY topology."
+                )
+            if request.mode == DispatchMode.LOAD_ONLY and not request.peak_limit_kw:
+                raise HTTPException(400, "peak_limit_kw required for LOAD_ONLY mode")
+
         # Build internal request
         battery = BatteryParams.from_roundtrip(
             power_kw=request.battery_power_kw,
@@ -210,10 +238,14 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
             export_price_pln_mwh=request.export_price_pln_mwh,
         )
 
+        # Handle PV generation - empty list for LOAD_ONLY topology
+        pv_generation = request.pv_generation_kw or []
+
         internal_request = DispatchRequest(
-            pv_generation_kw=request.pv_generation_kw,
+            pv_generation_kw=pv_generation,
             load_kw=request.load_kw,
             interval_minutes=request.interval_minutes,
+            topology=request.topology,
             battery=battery,
             mode=request.mode,
             stacked_params=stacked_params,

@@ -33,6 +33,7 @@ from models import (
     ProfileUnit,
     ResamplingMethod,
     AuditMetadata,
+    TopologyType,
     ENGINE_VERSION,
 )
 
@@ -896,11 +897,225 @@ def check_degradation_budget(
     return metrics
 
 
+def dispatch_load_only(
+    load_kw: np.ndarray,
+    battery: BatteryParams,
+    dt_hours: float,
+    peak_limit_kw: float,
+    prices: Optional[PriceConfig] = None,
+    return_hourly: bool = True,
+    audit_metadata: Optional[AuditMetadata] = None,
+) -> DispatchResult:
+    """
+    Load-Only (Stand-alone BESS) Dispatch Algorithm
+    ================================================
+
+    For systems without PV - BESS charges from grid during off-peak
+    and discharges to shave peaks. This is a pure peak-shaving mode.
+
+    Algorithm:
+    1. Discharge when load exceeds peak_limit_kw
+    2. Charge from grid when load is below peak_limit_kw (headroom charging)
+    3. All charging is from grid (no PV)
+
+    Use case:
+    - Industrial sites without PV but with demand charges
+    - Grid arbitrage with time-of-use tariffs (future)
+
+    Parameters:
+    -----------
+    load_kw : np.ndarray
+        Load consumption power [kW] per timestep
+    battery : BatteryParams
+        Battery parameters
+    dt_hours : float
+        Timestep duration in hours
+    peak_limit_kw : float
+        Maximum grid import power [kW] - target peak to maintain
+    prices : PriceConfig
+        Energy prices for economic calculation
+    return_hourly : bool
+        Include hourly arrays in result
+
+    Returns:
+    --------
+    DispatchResult with peak reduction metrics
+    """
+    n = len(load_kw)
+    prices = prices or PriceConfig()
+
+    # No PV in this mode
+    pv_kw = np.zeros(n)
+
+    # Initialize arrays
+    charge = np.zeros(n)
+    discharge = np.zeros(n)
+    grid_import = np.zeros(n)
+    soc = np.zeros(n + 1)
+
+    soc[0] = battery.energy_kwh * battery.soc_initial
+    soc_min_kwh = battery.energy_kwh * battery.soc_min
+    soc_max_kwh = battery.energy_kwh * battery.soc_max
+    p_max = battery.power_kw
+    eta_ch = battery.eta_charge
+    eta_dis = battery.eta_discharge
+
+    original_peak = 0.0
+    new_peak = 0.0
+    charge_from_grid_kwh = 0.0
+
+    for t in range(n):
+        load_t = load_kw[t]
+        current_soc = soc[t]
+
+        # Track original peak (without battery)
+        original_peak = max(original_peak, load_t)
+
+        if load_t > peak_limit_kw:
+            # Need to discharge to shave peak
+            required_discharge = load_t - peak_limit_kw
+            discharge_power_limit = min(required_discharge, p_max)
+            energy_available = current_soc - soc_min_kwh
+            max_discharge_from_soc = discharge_power_limit / eta_dis * dt_hours
+
+            if max_discharge_from_soc > energy_available:
+                actual_discharge_from_soc = energy_available
+                discharge_power = actual_discharge_from_soc * eta_dis / dt_hours
+            else:
+                discharge_power = discharge_power_limit
+                actual_discharge_from_soc = max_discharge_from_soc
+
+            discharge[t] = discharge_power
+            current_soc -= actual_discharge_from_soc
+
+            # Actual grid import after battery
+            actual_load = load_t - discharge_power
+            grid_import[t] = max(0, actual_load)
+            new_peak = max(new_peak, grid_import[t])
+
+        else:
+            # Below limit, import from grid
+            grid_import[t] = load_t
+            new_peak = max(new_peak, load_t)
+
+            # Charge if capacity available (headroom charging)
+            headroom = peak_limit_kw - load_t
+            if headroom > 0 and current_soc < soc_max_kwh:
+                charge_power = min(headroom, p_max)
+                space_available = soc_max_kwh - current_soc
+                max_charge_energy = charge_power * eta_ch * dt_hours
+
+                if max_charge_energy > space_available:
+                    actual_charge_energy = space_available
+                    charge_power = actual_charge_energy / (eta_ch * dt_hours)
+                else:
+                    actual_charge_energy = max_charge_energy
+
+                charge[t] = charge_power
+                current_soc += actual_charge_energy
+                grid_import[t] += charge_power  # Charging adds to grid import
+                charge_from_grid_kwh += charge_power * dt_hours
+
+        soc[t + 1] = current_soc
+
+    # Calculate totals
+    total_pv = 0.0  # No PV
+    total_load = float(np.sum(load_kw) * dt_hours)
+    total_direct = 0.0  # No direct PV consumption
+    total_charge = float(np.sum(charge) * dt_hours)
+    total_discharge = float(np.sum(discharge) * dt_hours)
+    total_import = float(np.sum(grid_import) * dt_hours)
+    total_export = 0.0  # No export
+    total_curtail = 0.0  # No curtailment
+
+    # Self-consumption metrics (N/A for load-only)
+    self_consumption = total_discharge  # Battery discharge is the "self-consumption"
+    self_consumption_pct = 0.0  # No PV to reference
+    grid_independence = (total_discharge / total_load * 100) if total_load > 0 else 0
+
+    peak_reduction = original_peak - new_peak
+    peak_reduction_pct = (peak_reduction / original_peak * 100) if original_peak > 0 else 0
+
+    # Degradation metrics with grid charge tracking
+    degradation = calculate_degradation_metrics_stacked(
+        total_charge=total_charge,
+        total_discharge=total_discharge,
+        discharge_peak=total_discharge,  # All discharge is for peak shaving
+        discharge_pv=0.0,  # No PV shifting
+        battery=battery,
+        total_hours=n * dt_hours,
+        peak_events_count=int(np.sum(discharge > 0)),
+        peak_max_discharge_kw=float(np.max(discharge)) if np.any(discharge > 0) else 0.0,
+        charge_from_pv_kwh=0.0,  # No PV
+        charge_from_grid_kwh=total_charge,  # All charge from grid
+    )
+
+    # Economics
+    import_price = prices.import_price_pln_mwh / 1000
+    baseline_import_kwh = total_load  # Without battery, all load is from grid
+    baseline_cost = baseline_import_kwh * import_price
+    project_cost = total_import * import_price
+    annual_savings = baseline_cost - project_cost
+
+    # Build audit info
+    audit = audit_metadata or AuditMetadata(
+        engine_version=ENGINE_VERSION,
+        interval_minutes=int(dt_hours * 60),
+    )
+    info_dict = {
+        "audit": audit.dict(),
+        "topology": "load_only",
+        "peak_limit_kw": peak_limit_kw,
+        "charge_source": "grid",
+    }
+
+    result = DispatchResult(
+        mode=DispatchMode.LOAD_ONLY,
+        battery_power_kw=battery.power_kw,
+        battery_energy_kwh=battery.energy_kwh,
+        interval_minutes=int(dt_hours * 60),
+        n_timesteps=n,
+        total_pv_kwh=total_pv,
+        total_load_kwh=total_load,
+        total_direct_pv_kwh=total_direct,
+        total_charge_kwh=total_charge,
+        total_discharge_kwh=total_discharge,
+        total_grid_import_kwh=total_import,
+        total_grid_export_kwh=total_export,
+        total_curtailment_kwh=total_curtail,
+        self_consumption_kwh=self_consumption,
+        self_consumption_pct=self_consumption_pct,
+        grid_independence_pct=grid_independence,
+        original_peak_kw=original_peak,
+        new_peak_kw=new_peak,
+        peak_reduction_kw=peak_reduction,
+        peak_reduction_pct=peak_reduction_pct,
+        degradation=degradation,
+        baseline_cost_pln=baseline_cost,
+        project_cost_pln=project_cost,
+        annual_savings_pln=annual_savings,
+        warnings=[],
+        info=info_dict,
+    )
+
+    if return_hourly:
+        result.hourly_charge_kw = charge.tolist()
+        result.hourly_discharge_kw = discharge.tolist()
+        result.hourly_soc_pct = (soc[:-1] / battery.energy_kwh * 100).tolist()
+        result.hourly_grid_import_kw = grid_import.tolist()
+        result.hourly_grid_export_kw = [0.0] * n
+
+    return result
+
+
 def run_dispatch(request: DispatchRequest) -> DispatchResult:
     """
     Main dispatch entry point - routes to appropriate algorithm.
+
+    Supports both PV+Load and Load-only topologies.
     """
-    pv = np.array(request.pv_generation_kw)
+    # Use effective_pv_kw which handles LOAD_ONLY topology (returns zeros)
+    pv = np.array(request.effective_pv_kw)
     load = np.array(request.load_kw)
     dt_hours = request.dt_hours
 
@@ -923,6 +1138,14 @@ def run_dispatch(request: DispatchRequest) -> DispatchResult:
         result = dispatch_stacked(
             pv, load, request.battery, dt_hours,
             request.stacked_params, request.prices
+        )
+
+    elif request.mode == DispatchMode.LOAD_ONLY:
+        if request.peak_limit_kw is None:
+            raise ValueError("peak_limit_kw required for LOAD_ONLY mode")
+        result = dispatch_load_only(
+            load, request.battery, dt_hours,
+            request.peak_limit_kw, request.prices
         )
 
     else:

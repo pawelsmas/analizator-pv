@@ -46,7 +46,18 @@ class DispatchMode(str, Enum):
     PV_SURPLUS = "pv_surplus"           # Autokonsumpcja only
     PEAK_SHAVING = "peak_shaving"       # Peak shaving only
     STACKED = "stacked"                 # PV + Peak (dual-service)
-    ARBITRAGE = "arbitrage"             # Price arbitrage only
+    ARBITRAGE = "arbitrage"             # Price arbitrage only (requires time-varying prices)
+    LOAD_ONLY = "load_only"             # Stand-alone BESS without PV (peak shaving focus)
+
+
+class TopologyType(str, Enum):
+    """
+    System topology - defines which components are present.
+
+    Used to validate input profiles and select appropriate algorithms.
+    """
+    PV_LOAD = "pv_load"                 # Standard: PV + Load + BESS
+    LOAD_ONLY = "load_only"             # No PV: Load + BESS only (grid arbitrage/peak shaving)
 
 
 class DegradationStatus(str, Enum):
@@ -167,8 +178,8 @@ class DispatchRequest(BaseModel):
     """Request for BESS dispatch simulation"""
 
     # Time series data [kW average per interval]
-    pv_generation_kw: List[float] = Field(..., min_items=24,
-                                           description="PV generation [kW_avg]")
+    pv_generation_kw: List[float] = Field(default_factory=list,
+                                           description="PV generation [kW_avg]. Can be empty for LOAD_ONLY topology.")
     load_kw: List[float] = Field(..., min_items=24,
                                   description="Load consumption [kW_avg]")
 
@@ -176,6 +187,12 @@ class DispatchRequest(BaseModel):
     profile_unit: ProfileUnit = Field(
         ProfileUnit.KW_AVG,
         description="Unit of input profiles (must be kW_avg for dispatch)"
+    )
+
+    # Topology - determines which components are present
+    topology: TopologyType = Field(
+        TopologyType.PV_LOAD,
+        description="System topology (pv_load or load_only)"
     )
 
     # Time configuration
@@ -189,7 +206,7 @@ class DispatchRequest(BaseModel):
 
     # Mode-specific parameters
     stacked_params: Optional[StackedModeParams] = None
-    peak_limit_kw: Optional[float] = None  # For PEAK_SHAVING mode
+    peak_limit_kw: Optional[float] = None  # For PEAK_SHAVING / LOAD_ONLY mode
 
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
@@ -203,10 +220,43 @@ class DispatchRequest(BaseModel):
             raise ValueError("interval_minutes must be 15 or 60")
         return v
 
+    @validator('pv_generation_kw', pre=True, always=True)
+    def validate_pv_generation(cls, v, values):
+        """Allow empty PV array for LOAD_ONLY topology"""
+        if v is None:
+            return []
+        return v
+
     @validator('load_kw')
     def validate_lengths(cls, v, values):
-        if 'pv_generation_kw' in values and len(v) != len(values['pv_generation_kw']):
-            raise ValueError("pv_generation_kw and load_kw must have same length")
+        """Validate load vs PV lengths, accounting for topology"""
+        pv = values.get('pv_generation_kw', [])
+        topology = values.get('topology', TopologyType.PV_LOAD)
+
+        if topology == TopologyType.LOAD_ONLY:
+            # LOAD_ONLY: PV can be empty or all zeros
+            if len(pv) > 0 and len(v) != len(pv):
+                raise ValueError("If pv_generation_kw is provided, it must match load_kw length")
+        else:
+            # PV_LOAD: PV is required and must match load length
+            if len(pv) == 0:
+                raise ValueError("pv_generation_kw is required for PV_LOAD topology")
+            if len(v) != len(pv):
+                raise ValueError("pv_generation_kw and load_kw must have same length")
+        return v
+
+    @validator('mode')
+    def validate_mode_topology(cls, v, values):
+        """Validate mode is compatible with topology"""
+        topology = values.get('topology', TopologyType.PV_LOAD)
+
+        if topology == TopologyType.LOAD_ONLY:
+            # LOAD_ONLY topology: only LOAD_ONLY or PEAK_SHAVING modes make sense
+            if v in [DispatchMode.PV_SURPLUS, DispatchMode.STACKED]:
+                raise ValueError(
+                    f"Mode {v} requires PV generation. Use LOAD_ONLY or PEAK_SHAVING mode "
+                    f"with LOAD_ONLY topology, or switch to PV_LOAD topology."
+                )
         return v
 
     @validator('profile_unit')
@@ -226,12 +276,19 @@ class DispatchRequest(BaseModel):
     @property
     def n_timesteps(self) -> int:
         """Number of timesteps"""
-        return len(self.pv_generation_kw)
+        return len(self.load_kw)
 
     @property
     def total_hours(self) -> float:
         """Total simulation duration in hours"""
         return self.n_timesteps * self.dt_hours
+
+    @property
+    def effective_pv_kw(self) -> List[float]:
+        """Get PV array, creating zeros if empty (for LOAD_ONLY topology)"""
+        if len(self.pv_generation_kw) == 0:
+            return [0.0] * len(self.load_kw)
+        return self.pv_generation_kw
 
 
 # =============================================================================
