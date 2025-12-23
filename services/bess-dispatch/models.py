@@ -648,3 +648,127 @@ class AuditMetadata(BaseModel):
         None,
         description="Original interval before resampling (if resampled)"
     )
+
+
+# =============================================================================
+# Sensitivity Analysis (Tornado Chart)
+# =============================================================================
+
+class SensitivityParameter(str, Enum):
+    """Parameters available for sensitivity analysis"""
+    ENERGY_PRICE = "energy_price"           # PLN/MWh
+    CAPEX_PER_KWH = "capex_per_kwh"         # PLN/kWh
+    CAPEX_PER_KW = "capex_per_kw"           # PLN/kW
+    DISCOUNT_RATE = "discount_rate"          # %
+    ROUNDTRIP_EFFICIENCY = "efficiency"      # %
+    OPEX_PCT = "opex_pct"                    # %/year
+
+
+class SensitivityRange(BaseModel):
+    """Range for a single sensitivity parameter"""
+    parameter: SensitivityParameter
+    low_pct: float = Field(-20.0, description="Low deviation from base (%)")
+    high_pct: float = Field(20.0, description="High deviation from base (%)")
+    base_value: Optional[float] = Field(None, description="Base value (from request if None)")
+
+
+class SensitivityRequest(BaseModel):
+    """Request for sensitivity analysis with fixed BESS size"""
+
+    # Time series (required for dispatch)
+    pv_generation_kw: List[float] = Field(..., min_items=24)
+    load_kw: List[float] = Field(..., min_items=24)
+    interval_minutes: int = Field(60)
+
+    # Fixed BESS size (from previous sizing result)
+    battery_power_kw: float = Field(..., gt=0, description="Fixed BESS power [kW]")
+    battery_energy_kwh: float = Field(..., gt=0, description="Fixed BESS capacity [kWh]")
+
+    # Battery parameters
+    roundtrip_efficiency: float = Field(0.90, ge=0.7, le=1.0)
+    soc_min: float = Field(0.10, ge=0.0, le=0.5)
+    soc_max: float = Field(0.90, ge=0.5, le=1.0)
+
+    # Mode
+    mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
+    peak_limit_kw: Optional[float] = None
+    reserve_fraction: float = Field(0.3, ge=0.0, le=0.8)
+
+    # Economic parameters (base values)
+    capex_per_kwh: float = Field(1500.0, ge=0)
+    capex_per_kw: float = Field(300.0, ge=0)
+    opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
+    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    analysis_years: int = Field(15, ge=1, le=30)
+    import_price_pln_mwh: float = Field(800.0, ge=0)
+
+    # Sensitivity configuration
+    parameters: List[SensitivityRange] = Field(
+        default_factory=lambda: [
+            SensitivityRange(parameter=SensitivityParameter.ENERGY_PRICE),
+            SensitivityRange(parameter=SensitivityParameter.CAPEX_PER_KWH),
+            SensitivityRange(parameter=SensitivityParameter.DISCOUNT_RATE),
+            SensitivityRange(parameter=SensitivityParameter.ROUNDTRIP_EFFICIENCY),
+        ],
+        description="Parameters to analyze (default: price, capex, discount, efficiency)"
+    )
+
+
+class SensitivityPoint(BaseModel):
+    """Result for a single sensitivity point"""
+    parameter: SensitivityParameter
+    parameter_label: str
+    deviation_pct: float           # e.g., -20, 0, +20
+    parameter_value: float         # Actual parameter value used
+    npv_pln: float
+    npv_delta_pln: float           # Difference from base NPV
+    npv_delta_pct: float           # Percentage change from base NPV
+    payback_years: float
+
+
+class SensitivityParameterResult(BaseModel):
+    """Result for one parameter's sensitivity range"""
+    parameter: SensitivityParameter
+    parameter_label: str
+    base_value: float
+    unit: str
+
+    # Low point
+    low_value: float
+    low_npv_pln: float
+    low_npv_delta_pct: float
+
+    # High point
+    high_value: float
+    high_npv_pln: float
+    high_npv_delta_pct: float
+
+    # Swing (for sorting tornado bars)
+    npv_swing_pln: float           # |high_npv - low_npv|
+    npv_swing_pct: float           # swing as % of base NPV
+
+
+class SensitivityResult(BaseModel):
+    """Complete sensitivity analysis result"""
+
+    # Fixed BESS configuration
+    battery_power_kw: float
+    battery_energy_kwh: float
+    duration_h: float
+
+    # Base case economics
+    base_npv_pln: float
+    base_payback_years: float
+    base_annual_savings_pln: float
+    base_capex_pln: float
+
+    # Parameter results (sorted by swing for tornado chart)
+    parameters: List[SensitivityParameterResult]
+
+    # All points for detailed charts
+    all_points: List[SensitivityPoint]
+
+    # Summary
+    most_sensitive_parameter: str
+    least_sensitive_parameter: str
+    breakeven_scenarios: List[str]  # Parameters where NPV crosses zero

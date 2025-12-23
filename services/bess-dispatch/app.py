@@ -14,7 +14,7 @@ Port: 8031
 """
 
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -33,9 +33,14 @@ from models import (
     DegradationBudget,
     PriceConfig,
     TimeResolution,
+    SensitivityRequest,
+    SensitivityResult,
+    SensitivityParameter,
+    SensitivityRange,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
+from sensitivity_runner import run_sensitivity_analysis
 
 
 # =============================================================================
@@ -116,6 +121,7 @@ async def service_info():
             "Degradation budget monitoring",
             "S/M/L sizing variants",
             "NPV-based optimization",
+            "Sensitivity analysis (tornado chart)",
             "Future-ready for time-varying prices",
         ]
     )
@@ -412,6 +418,113 @@ async def quick_sizing(request: QuickSizingRequest):
 
     except Exception as e:
         raise HTTPException(500, f"Quick sizing error: {str(e)}")
+
+
+# =============================================================================
+# Sensitivity Analysis Endpoint
+# =============================================================================
+
+class SensitivityRequestAPI(BaseModel):
+    """API request for tornado sensitivity analysis"""
+    pv_generation_kw: List[float] = Field(..., description="PV generation [kW]")
+    load_kw: List[float] = Field(..., description="Load consumption [kW]")
+    interval_minutes: int = Field(60)
+
+    # Fixed BESS configuration
+    battery_power_kw: float = Field(..., gt=0, description="Fixed BESS power [kW]")
+    battery_energy_kwh: float = Field(..., gt=0, description="Fixed BESS capacity [kWh]")
+
+    # Battery parameters
+    roundtrip_efficiency: float = Field(0.90, ge=0.7, le=1.0)
+    soc_min: float = Field(0.10, ge=0.0, le=0.5)
+    soc_max: float = Field(0.90, ge=0.5, le=1.0)
+
+    # Mode
+    mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
+    peak_limit_kw: Optional[float] = None
+    reserve_fraction: float = Field(0.3, ge=0.0, le=0.8)
+
+    # Economic parameters (base values)
+    capex_per_kwh: float = Field(1500.0, ge=0)
+    capex_per_kw: float = Field(300.0, ge=0)
+    opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
+    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    analysis_years: int = Field(15, ge=1, le=30)
+    import_price_pln_mwh: float = Field(800.0, ge=0)
+
+    # Sensitivity parameters (optional, defaults to standard set)
+    parameters: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Custom sensitivity parameters. If None, uses defaults."
+    )
+
+
+@app.post("/sensitivity", response_model=SensitivityResult)
+async def run_sensitivity(request: SensitivityRequestAPI):
+    """
+    Run tornado-style sensitivity analysis for a fixed BESS configuration.
+
+    Varies each parameter independently (default ±20%) and measures
+    impact on NPV. Results are sorted by sensitivity for tornado chart.
+
+    Default parameters analyzed:
+    - energy_price: Cena energii [PLN/MWh]
+    - capex_per_kwh: CAPEX/kWh [PLN/kWh]
+    - discount_rate: Stopa dyskontowa [%]
+    - efficiency: Sprawność [%]
+
+    Returns sensitivity results sorted by NPV swing (most sensitive first).
+    """
+    start_time = time.time()
+
+    try:
+        # Build internal request
+        sens_params = []
+        if request.parameters:
+            for p in request.parameters:
+                sens_params.append(SensitivityRange(
+                    parameter=SensitivityParameter(p.get("parameter", "energy_price")),
+                    low_pct=p.get("low_pct", -20.0),
+                    high_pct=p.get("high_pct", 20.0),
+                ))
+        else:
+            # Default parameters
+            sens_params = [
+                SensitivityRange(parameter=SensitivityParameter.ENERGY_PRICE),
+                SensitivityRange(parameter=SensitivityParameter.CAPEX_PER_KWH),
+                SensitivityRange(parameter=SensitivityParameter.DISCOUNT_RATE),
+                SensitivityRange(parameter=SensitivityParameter.ROUNDTRIP_EFFICIENCY),
+            ]
+
+        internal_request = SensitivityRequest(
+            pv_generation_kw=request.pv_generation_kw,
+            load_kw=request.load_kw,
+            interval_minutes=request.interval_minutes,
+            battery_power_kw=request.battery_power_kw,
+            battery_energy_kwh=request.battery_energy_kwh,
+            roundtrip_efficiency=request.roundtrip_efficiency,
+            soc_min=request.soc_min,
+            soc_max=request.soc_max,
+            mode=request.mode,
+            peak_limit_kw=request.peak_limit_kw,
+            reserve_fraction=request.reserve_fraction,
+            capex_per_kwh=request.capex_per_kwh,
+            capex_per_kw=request.capex_per_kw,
+            opex_pct_per_year=request.opex_pct_per_year,
+            discount_rate=request.discount_rate,
+            analysis_years=request.analysis_years,
+            import_price_pln_mwh=request.import_price_pln_mwh,
+            parameters=sens_params,
+        )
+
+        result = run_sensitivity_analysis(internal_request)
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Sensitivity analysis error: {str(e)}")
 
 
 # =============================================================================
