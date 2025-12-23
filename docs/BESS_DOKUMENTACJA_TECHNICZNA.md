@@ -1,9 +1,10 @@
 # Dokumentacja Techniczna Modułu BESS
 ## Battery Energy Storage System - Magazyn Energii
 
-**Wersja:** 3.4
+**Wersja:** 3.6
 **Data:** 2025-12-23
 **Autor:** Analizator PV
+**Engine Version:** 1.2.0
 
 ---
 
@@ -74,8 +75,13 @@ power_steps = linspace(p_max_candidate * 0.1, p_max_candidate, 10)
 
 for each power in power_steps:
     energy = power * duration_hours
-    annual_discharge = simulate_quick_dispatch(power, energy)
-    annual_savings = annual_discharge * energy_price
+    dispatch = simulate_quick_dispatch(power, energy)
+
+    # Poprawny wzór: baseline vs project
+    baseline_cost = sum(max(0, load - pv) * dt) * price  # bez BESS
+    project_cost = dispatch.grid_import_kwh * price       # z BESS
+    annual_savings = baseline_cost - project_cost
+
     capex = power * capex_per_kw + energy * capex_per_kwh
     annual_cost = capex * annuity_factor
     npv = (annual_savings - annual_cost) / annuity_factor
@@ -186,15 +192,17 @@ elif cena > sell_threshold AND soc > soc_min:
 **Wzór NPV:**
 
 ```
-annuity_factor = (r × (1+r)^n) / ((1+r)^n - 1)
+Poprawny wzór (baseline vs project):
+  annual_savings = baseline_cost - project_cost
+  gdzie:
+    baseline_cost = Σ max(0, load - pv) × Δt × price  (bez BESS)
+    project_cost = Σ grid_import × Δt × price        (z BESS)
 
-gdzie:
-  r = stopa dyskontowa (np. 7%)
-  n = okres analizy (np. 15 lat)
+Uproszczenie (przybliżone):
+  annual_savings ≈ annual_discharge × energy_price
+  (niedokładne - ignoruje straty sprawności i interakcje PV/Load)
 
-annual_savings = annual_discharge × energy_price
-annual_cost = CAPEX × annuity_factor
-NPV = (annual_savings - annual_cost) / annuity_factor
+NPV = Σ(t=1..n) [(savings - opex) / (1+r)^t] - CAPEX
 ```
 
 ### 3.2 Metoda PyPSA+HiGHS (PRO)
@@ -337,12 +345,35 @@ Przykład:
 ### 5.3 NPV (Wartość Bieżąca Netto)
 
 ```
-NPV = Σ(t=1 to n) [(savings_t - opex_t) / (1+r)^t] - CAPEX
+NPV = Σ(t=1..n) [(savings_t - opex_t) / (1+r)^t] - CAPEX
 
 gdzie:
-  savings_t = annual_discharge × energy_price × degradation_factor(t)
+  savings_t = baseline_cost_t - project_cost_t
+
+  baseline_cost_t = Σ(h) max(0, load[h] - pv[h]) × Δt × energy_price
+                  (koszt zakupu energii BEZ magazynu)
+
+  project_cost_t = Σ(h) grid_import[h] × Δt × energy_price
+                 (koszt zakupu energii Z magazynem)
+
   r = stopa dyskontowa
   n = okres analizy
+
+UWAGA: Uproszczenie "savings = discharge × price" jest niedokładne!
+       Poprawny wzór porównuje koszty baseline vs project.
+```
+
+**Kod źródłowy (dispatch_engine.py):**
+```python
+# Baseline: bez magazynu
+baseline_import = np.maximum(load_kw - pv_kw, 0)
+baseline_cost = np.sum(baseline_import * dt_hours) * import_price
+
+# Project: z magazynem
+project_cost = total_grid_import_kwh * import_price
+
+# Oszczędności
+annual_savings = baseline_cost - project_cost
 ```
 
 ### 5.4 Prosty Okres Zwrotu (Payback)
@@ -531,16 +562,35 @@ Przykłady:
 2. Zakres testowy: 15 kW - 150 kW (10 kroków)
 3. Duration: 2h → Energy = Power × 2
 
-Dla Power = 75 kW, Energy = 150 kWh:
+Dla Power = 75 kW, Energy = 150 kWh (η_rt = 90%):
+
+  Scenariusz baseline (bez BESS):
+  - Import z sieci: 400 MWh (= zużycie 1000 - autokonsumpcja 600)
+  - baseline_cost = 400 MWh × 800 PLN/MWh = 320 000 PLN
+
+  Scenariusz project (z BESS):
   - Roczne rozładowanie: ~180 MWh
-  - Roczne oszczędności: 180 × 0.8 = 144 000 PLN
+  - Straty roundtrip: 180 × (1 - 0.9) = 18 MWh
+  - Dodatkowa autokonsumpcja: 180 - 18 = 162 MWh
+  - Import z sieci: 400 - 162 = 238 MWh
+  - project_cost = 238 MWh × 800 PLN/MWh = 190 400 PLN
+
+  Roczne oszczędności (poprawny wzór):
+  - annual_savings = baseline_cost - project_cost
+  - annual_savings = 320 000 - 190 400 = 129 600 PLN
+
+  Ekonomika:
   - CAPEX: 150 × 1500 + 75 × 300 = 247 500 PLN
   - Annuity factor (7%, 15 lat): 0.1098
   - Roczny koszt: 247 500 × 0.1098 = 27 175 PLN
-  - NPV: (144 000 - 27 175) / 0.1098 = 1 064 000 PLN
+  - NPV: (129 600 - 27 175) / 0.1098 = 933 000 PLN
+  - EFC/rok: 180 MWh / (150 kWh × 0.8) = 1500 cykli/rok
 
 Optymalny dobór: 75 kW / 150 kWh
 ```
+
+> **Uwaga:** Uproszczony wzór `180 × 0.8 = 144 000 PLN` zawyża oszczędności,
+> ponieważ ignoruje straty sprawności (10%) i interakcje profili PV/load.
 
 ### 8.2 Przykład: Peak Shaving
 
@@ -969,7 +1019,11 @@ Format: stała cena [PLN/MWh] lub profil godzinowy
 
 ### 10.2 Algorytm Grid Search (Iteracyjna Optymalizacja NPV)
 
-**Lokalizacja:** `services/bess-optimizer/app.py` → `run_pypsa_optimization()`
+**Lokalizacja:** `services/bess-optimizer/app.py` → `run_grid_search_optimization()`
+
+> **Uwaga:** Nazwa funkcji była wcześniej `run_pypsa_optimization()` - zmieniona
+> w wersji 1.2.0 dla lepszego odzwierciedlenia faktycznie używanego algorytmu
+> (grid search z greedy dispatch, nie LP/MIP z PyPSA).
 
 #### Schemat działania
 
@@ -1005,7 +1059,9 @@ Format: stała cena [PLN/MWh] lub profil godzinowy
 │  │   │   └── dispatch = simulate_bess_dispatch(...)            │
 │  │   │                                                          │
 │  │   │   OBLICZENIE EKONOMICZNE:                                │
-│  │   │   ├── annual_savings = discharge × price                │
+│  │   │   ├── baseline_cost = Σ max(0, load-pv) × price         │
+│  │   │   ├── project_cost = Σ grid_import × price              │
+│  │   │   ├── annual_savings = baseline_cost - project_cost     │
 │  │   │   ├── capex = power×cost_kw + energy×cost_kwh           │
 │  │   │   ├── annual_opex = capex × opex_pct                    │
 │  │   │   └── npv = NPV(capex, savings-opex, rate, years)       │
@@ -1258,7 +1314,16 @@ NPV = Σ(t=1..n) [CF(t) / (1+r)^t] - CAPEX
 
 gdzie:
   CF(t) = annual_savings - annual_opex
-  annual_savings = annual_discharge × energy_price
+
+  POPRAWNY WZÓR (baseline vs project):
+  annual_savings = baseline_cost - project_cost
+  baseline_cost  = Σ max(0, load[t] - pv[t]) × Δt × price  (bez BESS)
+  project_cost   = Σ grid_import[t] × Δt × price           (z BESS)
+
+  UPROSZCZENIE (przybliżone, niedokładne):
+  annual_savings ≈ annual_discharge × energy_price
+  (ignoruje straty sprawności i interakcje PV/load)
+
   annual_opex = CAPEX × opex_pct
   r = discount_rate (np. 0.07 = 7%)
   n = analysis_period (np. 25 lat)
@@ -1364,6 +1429,66 @@ Przykład:
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.7 Audytowalność i Reprodukowalność
+
+#### 10.7.1 Audit Metadata
+
+Od wersji 1.2.0, każdy wynik dispatch zawiera metadane audytowe w polu `info.audit`:
+
+```python
+class AuditMetadata:
+    engine_version: str       # np. "1.2.0"
+    profile_unit: ProfileUnit # np. "kW_avg"
+    interval_minutes: int     # np. 60
+    resampling_method: str    # np. "none", "repeat", "linear"
+    source_interval_minutes: Optional[int]  # jeśli resampling zastosowany
+```
+
+#### 10.7.2 Jednostki Profili (ProfileUnit)
+
+Wszystkie profile wejściowe muszą być w `kW_avg` (średnia moc w interwale).
+
+```python
+class ProfileUnit(str, Enum):
+    KW_AVG = "kW_avg"    # Standard - średnia moc [kW]
+    KW_PEAK = "kW_peak"  # Moc szczytowa (wymaga konwersji)
+    KWH = "kWh"          # Energia (wymaga konwersji: kW = kWh / dt_hours)
+```
+
+**Konwersja:**
+```python
+from models import convert_profile_to_kw_avg, ProfileUnit
+
+# Przykład: dane w kWh na interwał 15-min
+data_kwh = [25, 30, 28, ...]  # kWh per 15-min
+data_kw_avg = convert_profile_to_kw_avg(data_kwh, ProfileUnit.KWH, 15)
+# Wynik: [100, 120, 112, ...] kW_avg
+```
+
+#### 10.7.3 Resampling (Zmiana Rozdzielczości)
+
+Funkcje do zmiany rozdzielczości czasowej z zachowaniem energii:
+
+```python
+from models import resample_hourly_to_15min, resample_15min_to_hourly
+
+# 8760 hourly → 35040 quarter-hourly
+data_15min = resample_hourly_to_15min(data_1h, method="repeat")
+
+# Weryfikacja zachowania energii:
+energy_1h = sum(data_1h) * 1.0        # kWh
+energy_15min = sum(data_15min) * 0.25  # kWh
+assert abs(energy_1h - energy_15min) < 0.001  # Energia zachowana
+```
+
+#### 10.7.4 Progi Ostrzeżeń Degradacji
+
+```
+Próg 80%:  INFO      - Wczesne ostrzeżenie informacyjne
+Próg 90%:  WARNING   - Zbliżanie się do limitu budżetowego
+Próg 100%: EXCEEDED  - Przekroczenie budżetu degradacji
 ```
 
 ---
