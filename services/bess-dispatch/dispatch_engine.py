@@ -1050,12 +1050,23 @@ def dispatch_load_only(
         charge_from_grid_kwh=total_charge,  # All charge from grid
     )
 
-    # Economics
+    # Economics - Energy cost (note: in LOAD_ONLY mode, battery increases energy import due to losses)
     import_price = prices.import_price_pln_mwh / 1000
     baseline_import_kwh = total_load  # Without battery, all load is from grid
-    baseline_cost = baseline_import_kwh * import_price
-    project_cost = total_import * import_price
-    annual_savings = baseline_cost - project_cost
+    baseline_energy_cost = baseline_import_kwh * import_price
+    project_energy_cost = total_import * import_price
+    energy_savings = baseline_energy_cost - project_energy_cost  # Usually negative (losses)
+
+    # Demand charge savings (this is the main value driver for peak shaving)
+    demand_charge_per_kw = prices.annual_demand_charge_pln_kw
+    baseline_demand_cost = original_peak * demand_charge_per_kw
+    project_demand_cost = new_peak * demand_charge_per_kw
+    demand_savings = baseline_demand_cost - project_demand_cost  # Savings from peak reduction
+
+    # Total costs and savings
+    baseline_cost = baseline_energy_cost + baseline_demand_cost
+    project_cost = project_energy_cost + project_demand_cost
+    annual_savings = energy_savings + demand_savings  # Energy (negative) + Demand (positive)
 
     # Build audit info
     audit = audit_metadata or AuditMetadata(

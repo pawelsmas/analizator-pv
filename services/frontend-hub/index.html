@@ -144,6 +144,52 @@
                 </div>
             </section>
 
+            <!-- BESS Analysis Hub -->
+            <section class="section">
+                <h2>Analiza magazynu energii (BESS)</h2>
+                <p class="section-description">Dwa komplementarne moduły do kompleksowej analizy BESS</p>
+                <div class="bess-modules-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px;">
+                    <!-- BESS Module Card -->
+                    <div class="bess-module-card" onclick="navigateToModule('bess')" style="background:linear-gradient(135deg,#fff3e0 0%,#ffe0b2 100%);border-radius:12px;padding:20px;cursor:pointer;border:2px solid #ffcc80;transition:all 0.3s;">
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                            <span style="font-size:32px;">&#128267;</span>
+                            <div>
+                                <h3 style="margin:0;color:#e65100;">Moduł BESS</h3>
+                                <span style="font-size:12px;color:#f57c00;">Wizualizacja i monitoring</span>
+                            </div>
+                        </div>
+                        <ul style="font-size:13px;color:#795548;margin:0;padding-left:20px;line-height:1.8;">
+                            <li>Animacja przepływu energii w czasie rzeczywistym</li>
+                            <li>Tabela degradacji baterii (15 lat)</li>
+                            <li>Analiza wrażliwości (Tornado Chart)</li>
+                            <li>Wykres SOC (State of Charge)</li>
+                            <li>Bilans miesięczny BESS</li>
+                        </ul>
+                    </div>
+                    <!-- Profile Analysis Card -->
+                    <div class="bess-module-card" onclick="navigateToModule('profile')" style="background:linear-gradient(135deg,#e3f2fd 0%,#bbdefb 100%);border-radius:12px;padding:20px;cursor:pointer;border:2px solid #90caf9;transition:all 0.3s;">
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                            <span style="font-size:32px;">&#128202;</span>
+                            <div>
+                                <h3 style="margin:0;color:#1565c0;">Analiza Profilu PyPSA</h3>
+                                <span style="font-size:12px;color:#1976d2;">Optymalizacja i dobór</span>
+                            </div>
+                        </div>
+                        <ul style="font-size:13px;color:#37474f;margin:0;padding-left:20px;line-height:1.8;">
+                            <li>Optymalizacja PyPSA + HiGHS</li>
+                            <li>Pareto Front (NPV vs Cykle)</li>
+                            <li>Peak Shaving (redukcja szczytów)</li>
+                            <li>Arbitraż cenowy RDN</li>
+                            <li>Heatmapa godzinowa zużycia</li>
+                        </ul>
+                    </div>
+                </div>
+                <div style="margin-top:16px;padding:12px;background:#f5f5f5;border-radius:8px;font-size:12px;color:#666;">
+                    <strong>Tip:</strong> Moduły współdzielą konfigurację BESS. Zacznij od Analizy Profilu (dobór optymalnego rozmiaru),
+                    następnie przejdź do Modułu BESS (szczegółowa wizualizacja wybranego wariantu).
+                </div>
+            </section>
+
             <!-- Quick Links -->
             <section class="section">
                 <h2>Szybkie akcje</h2>
@@ -160,17 +206,17 @@
                         <span class="quick-icon">&#9881;</span>
                         <span>Konfiguracja PV</span>
                     </a>
-                    <a href="#" onclick="navigateToModule('profile'); return false;" class="quick-link">
-                        <span class="quick-icon">&#128202;</span>
-                        <span>Analiza PV+BESS</span>
-                    </a>
                     <a href="#" onclick="navigateToModule('economics'); return false;" class="quick-link">
                         <span class="quick-icon">&#128176;</span>
-                        <span>Ekonomika inwestycji</span>
+                        <span>Ekonomika + Monte Carlo</span>
                     </a>
                     <a href="#" onclick="navigateToModule('reports'); return false;" class="quick-link">
                         <span class="quick-icon">&#128196;</span>
                         <span>Generuj raport PDF</span>
+                    </a>
+                    <a href="#" onclick="navigateToModule('estimator'); return false;" class="quick-link">
+                        <span class="quick-icon">&#129518;</span>
+                        <span>Szybka wycena</span>
                     </a>
                 </div>
             </section>

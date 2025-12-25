@@ -38,6 +38,10 @@ from models import (
     SensitivityResult,
     SensitivityParameter,
     SensitivityRange,
+    OptimizationConfig,
+    OptimizationObjective,
+    SizingConstraint,
+    ConstraintType,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -171,6 +175,8 @@ class DispatchRequestAPI(BaseModel):
     # Prices
     import_price_pln_mwh: float = Field(800.0, ge=0)
     export_price_pln_mwh: float = Field(0.0, ge=0)
+    demand_charge_pln_kw_month: float = Field(0.0, ge=0, description="Monthly demand charge [PLN/kW/month]")
+    demand_charge_pln_kw_year: float = Field(0.0, ge=0, description="Annual demand charge [PLN/kW/year]")
 
     # Options
     return_hourly: bool = Field(True, description="Include hourly arrays")
@@ -236,6 +242,8 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
         prices = PriceConfig(
             import_price_pln_mwh=request.import_price_pln_mwh,
             export_price_pln_mwh=request.export_price_pln_mwh,
+            demand_charge_pln_kw_month=request.demand_charge_pln_kw_month,
+            demand_charge_pln_kw_year=request.demand_charge_pln_kw_year,
         )
 
         # Handle PV generation - empty list for LOAD_ONLY topology
@@ -316,10 +324,18 @@ class SizingRequestAPI(BaseModel):
     # Prices
     import_price_pln_mwh: float = Field(800.0, ge=0)
     export_price_pln_mwh: float = Field(0.0, ge=0)
+    demand_charge_pln_kw_month: float = Field(0.0, ge=0, description="Monthly demand charge [PLN/kW/month]")
+    demand_charge_pln_kw_year: float = Field(0.0, ge=0, description="Annual demand charge [PLN/kW/year]")
 
     # Degradation budget
     max_efc_per_year: Optional[float] = None
     max_throughput_mwh_per_year: Optional[float] = None
+
+    # Optimization configuration (objective + constraints)
+    optimization: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optimization config: {objective, constraints, constraint_penalty_weight}"
+    )
 
 
 @app.post("/sizing", response_model=SizingResult)
@@ -357,7 +373,27 @@ async def run_sizing_optimization(request: SizingRequestAPI):
         prices = PriceConfig(
             import_price_pln_mwh=request.import_price_pln_mwh,
             export_price_pln_mwh=request.export_price_pln_mwh,
+            demand_charge_pln_kw_month=request.demand_charge_pln_kw_month,
+            demand_charge_pln_kw_year=request.demand_charge_pln_kw_year,
         )
+
+        # Parse optimization config from frontend
+        optimization_config = None
+        if request.optimization:
+            opt_dict = request.optimization
+            constraints_list = []
+            if opt_dict.get("constraints"):
+                for c in opt_dict["constraints"]:
+                    constraints_list.append(SizingConstraint(
+                        constraint_type=ConstraintType(c.get("constraint_type", "max_capex")),
+                        value=c.get("value", 0),
+                        hard=c.get("hard", True),
+                    ))
+            optimization_config = OptimizationConfig(
+                objective=OptimizationObjective(opt_dict.get("objective", "npv")),
+                constraints=constraints_list,
+                constraint_penalty_weight=opt_dict.get("constraint_penalty_weight", 0.3),
+            )
 
         internal_request = SizingRequest(
             pv_generation_kw=request.pv_generation_kw,
@@ -380,6 +416,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             analysis_years=request.analysis_years,
             prices=prices,
             degradation_budget=budget,
+            optimization=optimization_config,
         )
 
         result = run_sizing(internal_request)

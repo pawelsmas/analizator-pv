@@ -150,6 +150,12 @@ class PriceConfig(BaseModel):
     export_price_pln_mwh: float = Field(0.0, ge=0,
                                          description="Export price [PLN/MWh] (0 for 0-export)")
 
+    # Demand charge (opłata mocowa) - essential for peak shaving economics
+    demand_charge_pln_kw_month: float = Field(0.0, ge=0,
+                                               description="Monthly demand charge [PLN/kW/month] based on peak import")
+    demand_charge_pln_kw_year: float = Field(0.0, ge=0,
+                                              description="Annual demand charge [PLN/kW/year] based on peak import")
+
     # TODO: Future support for time-varying prices
     # import_prices_pln_mwh: Optional[List[float]] = None  # Per-timestep import prices
     # export_prices_pln_mwh: Optional[List[float]] = None  # Per-timestep export prices
@@ -158,6 +164,11 @@ class PriceConfig(BaseModel):
     def is_time_varying(self) -> bool:
         """Check if prices are time-varying (future feature)"""
         return False  # TODO: implement when arrays added
+
+    @property
+    def annual_demand_charge_pln_kw(self) -> float:
+        """Get annual demand charge per kW peak (sum of monthly or annual rate)"""
+        return self.demand_charge_pln_kw_month * 12 + self.demand_charge_pln_kw_year
 
     def get_import_price(self, timestep: int = 0) -> float:
         """Get import price for timestep (constant for now)"""
@@ -177,6 +188,12 @@ class PriceConfig(BaseModel):
 class DispatchRequest(BaseModel):
     """Request for BESS dispatch simulation"""
 
+    # Topology - determines which components are present (must be first for validation order)
+    topology: TopologyType = Field(
+        TopologyType.PV_LOAD,
+        description="System topology (pv_load or load_only)"
+    )
+
     # Time series data [kW average per interval]
     pv_generation_kw: List[float] = Field(default_factory=list,
                                            description="PV generation [kW_avg]. Can be empty for LOAD_ONLY topology.")
@@ -187,12 +204,6 @@ class DispatchRequest(BaseModel):
     profile_unit: ProfileUnit = Field(
         ProfileUnit.KW_AVG,
         description="Unit of input profiles (must be kW_avg for dispatch)"
-    )
-
-    # Topology - determines which components are present
-    topology: TopologyType = Field(
-        TopologyType.PV_LOAD,
-        description="System topology (pv_load or load_only)"
     )
 
     # Time configuration
@@ -468,6 +479,13 @@ class SizingRequest(BaseModel):
         None,
         description="Optimization objective and constraints configuration"
     )
+
+    @property
+    def effective_pv_kw(self) -> List[float]:
+        """Get PV array, creating zeros if empty (for LOAD_ONLY mode)"""
+        if not self.pv_generation_kw or len(self.pv_generation_kw) == 0:
+            return [0.0] * len(self.load_kw)
+        return self.pv_generation_kw
 
 
 class SizingVariantResult(BaseModel):

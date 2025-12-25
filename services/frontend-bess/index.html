@@ -18,6 +18,25 @@
     </div>
   </div>
 
+  <!-- Cross-Module Navigation -->
+  <div class="cross-module-nav" style="background:linear-gradient(135deg,#e8f5e9 0%,#c8e6c9 100%);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;border:1px solid #a5d6a7;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button onclick="navigateToModule('hub')" class="cross-link-btn" style="background:#ff5722;color:white;border:none;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:4px;transition:all 0.2s;">
+        <span>🎯</span> HUB
+      </button>
+      <span style="color:#a5d6a7;">|</span>
+      <button onclick="navigateToModule('profile')" class="cross-link-btn" style="background:#00897b;color:white;border:none;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s;">
+        <span>📊</span> Analiza Profilu PyPSA
+      </button>
+      <button onclick="navigateToModule('economics')" class="cross-link-btn" style="background:#1565c0;color:white;border:none;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s;">
+        <span>💰</span> Ekonomia
+      </button>
+    </div>
+    <div style="font-size:11px;color:#558b2f;">
+      <span id="sharedBessConfig" style="background:#fff;padding:4px 10px;border-radius:4px;font-weight:500;">BESS: - kW / - kWh</span>
+    </div>
+  </div>
+
   <!-- Variant Selector -->
   <div class="variant-selector">
     <div class="selector-label">Wybierz wariant instalacji:</div>
@@ -691,8 +710,180 @@
       </div>
     </div>
 
+    <!-- NEW v3.5: Advanced Configuration Section -->
+    <div class="config-section full-width advanced-config-section" id="advancedConfigSection">
+      <h2>⚙️ Konfiguracja Zaawansowana BESS</h2>
+      <div class="chart-info">
+        Wybierz topologię systemu, cel optymalizacji i ograniczenia dla analizy BESS
+      </div>
+
+      <div class="advanced-config-grid">
+        <!-- Topology Selector -->
+        <div class="config-card">
+          <h3>🔌 Topologia Systemu</h3>
+          <div class="config-description">
+            Określa jakie komponenty są obecne w systemie
+          </div>
+          <div class="topology-selector">
+            <label class="topology-option">
+              <input type="radio" name="topology" value="pv_load" checked onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">☀️🔋🏭</span>
+                <span class="topology-name">PV + BESS + Load</span>
+                <span class="topology-desc">Standardowa konfiguracja z PV</span>
+              </div>
+            </label>
+            <label class="topology-option">
+              <input type="radio" name="topology" value="load_only" onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">🔋🏭⚡</span>
+                <span class="topology-name">BESS + Load (bez PV)</span>
+                <span class="topology-desc">Peak shaving / arbitraż bez PV</span>
+              </div>
+            </label>
+            <label class="topology-option">
+              <input type="radio" name="topology" value="pv_only" onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">☀️🏭</span>
+                <span class="topology-name">Tylko PV (bez BESS)</span>
+                <span class="topology-desc">Scenariusz bazowy - tylko PV</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Optimization Objective -->
+        <div class="config-card">
+          <h3>🎯 Cel Optymalizacji</h3>
+          <div class="config-description">
+            Metryka do optymalizacji przy doborze BESS
+          </div>
+          <div class="objective-selector">
+            <select id="optimizationObjective" onchange="updateOptimizationObjective(this.value)">
+              <option value="npv" selected>📈 Maksymalizuj NPV</option>
+              <option value="payback">⏱️ Minimalizuj Payback</option>
+              <option value="self_consumption">🔋 Maksymalizuj Autokonsumpcję</option>
+              <option value="peak_reduction">⚡ Maksymalizuj Redukcję Szczytów</option>
+              <option value="efc_utilization">🔄 Optymalizuj Wykorzystanie Cykli</option>
+            </select>
+          </div>
+          <div class="objective-info" id="objectiveInfo">
+            <span class="info-icon">ℹ️</span>
+            <span>NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji</span>
+          </div>
+        </div>
+
+        <!-- Constraints -->
+        <div class="config-card constraints-card">
+          <h3>🚧 Ograniczenia (Constraints)</h3>
+          <div class="config-description">
+            Definiuj twarde/miękkie limity dla optymalizacji
+          </div>
+          <div class="constraints-list" id="constraintsList">
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintCapex" onchange="toggleConstraint('max_capex')">
+              <label for="constraintCapex">💰 Max CAPEX</label>
+              <input type="number" id="constraintCapexValue" placeholder="np. 500000" disabled>
+              <span class="constraint-unit">PLN</span>
+              <select id="constraintCapexType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintPayback" onchange="toggleConstraint('max_payback')">
+              <label for="constraintPayback">⏱️ Max Payback</label>
+              <input type="number" id="constraintPaybackValue" placeholder="np. 8" disabled>
+              <span class="constraint-unit">lat</span>
+              <select id="constraintPaybackType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintNpv" onchange="toggleConstraint('min_npv')">
+              <label for="constraintNpv">📈 Min NPV</label>
+              <input type="number" id="constraintNpvValue" placeholder="np. 100000" disabled>
+              <span class="constraint-unit">PLN</span>
+              <select id="constraintNpvType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintEfc" onchange="toggleConstraint('max_efc')">
+              <label for="constraintEfc">🔄 Max EFC/rok</label>
+              <input type="number" id="constraintEfcValue" placeholder="np. 300" disabled>
+              <span class="constraint-unit">cykli</span>
+              <select id="constraintEfcType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintSelfConsumption" onchange="toggleConstraint('min_self_consumption')">
+              <label for="constraintSelfConsumption">🔋 Min Autokonsumpcja</label>
+              <input type="number" id="constraintSelfConsumptionValue" placeholder="np. 80" disabled>
+              <span class="constraint-unit">%</span>
+              <select id="constraintSelfConsumptionType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Apply Configuration Button -->
+      <div class="config-actions">
+        <button class="btn btn-primary" onclick="applyAdvancedConfig()" id="applyConfigBtn">
+          ✅ Zastosuj konfigurację i przelicz
+        </button>
+        <button class="btn btn-secondary" onclick="resetAdvancedConfig()">
+          🔄 Resetuj do domyślnych
+        </button>
+        <span class="config-status" id="configStatus"></span>
+      </div>
+
+      <!-- NEW v3.13: Quick Results Summary Panel -->
+      <div class="config-results-summary" id="configResultsSummary" style="display: none;">
+        <h4>📊 Wyniki Optymalizacji</h4>
+        <div class="results-summary-grid">
+          <div class="summary-item recommended">
+            <span class="summary-label">Rekomendowany wariant</span>
+            <span class="summary-value" id="summaryRecommended">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Moc / Pojemność</span>
+            <span class="summary-value" id="summaryPowerEnergy">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">NPV</span>
+            <span class="summary-value" id="summaryNpv">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Payback</span>
+            <span class="summary-value" id="summaryPayback">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">CAPEX</span>
+            <span class="summary-value" id="summaryCapex">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">EFC/rok</span>
+            <span class="summary-value" id="summaryEfc">-</span>
+          </div>
+        </div>
+        <!-- Constraint Warnings -->
+        <div class="constraint-warnings" id="constraintWarnings" style="display: none;">
+          <div class="warnings-header">⚠️ Naruszenia Ograniczeń</div>
+          <ul class="warnings-list" id="warningsList"></ul>
+        </div>
+      </div>
+    </div>
+
     <!-- NEW v3.4: Sensitivity Analysis (Tornado Chart) -->
-    <div class="chart-section full-width sensitivity-section" id="sensitivitySection" style="display:none;">
+    <div class="chart-section full-width sensitivity-section" id="sensitivitySection">
       <h2>📊 Analiza Wrażliwości (Tornado Chart)</h2>
       <div class="chart-info">
         Wpływ zmian parametrów (±20%) na NPV inwestycji BESS. Posortowane od najbardziej wrażliwego.
@@ -782,6 +973,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="bess.js?v=3.3.1"></script>
+<script src="bess.js?v=3.15"></script>
 </body>
 </html>

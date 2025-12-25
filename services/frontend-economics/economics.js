@@ -954,16 +954,17 @@ function getEconomicParameters() {
   };
 }
 
-// Calculate total energy price (PLN/MWh)
+// Calculate total energy price (PLN/MWh) - BEZ opłaty mocowej (ta jest dodawana w calculateCapacityFeeForConsumption)
 function calculateTotalEnergyPrice(params) {
-  // Suma wszystkich składowych ceny energii (włącznie z opłatą mocową)
+  // Suma składowych ceny energii BEZ opłaty mocowej (capacity_fee)
+  // Opłata mocowa jest dodawana osobno przez calculateCapacityFeeForConsumption()
   return params.energy_active + params.distribution + params.quality_fee +
-         params.oze_fee + params.cogeneration_fee + params.capacity_fee + params.excise_tax;
+         params.oze_fee + params.cogeneration_fee + params.excise_tax;
 }
 
-// Calculate capacity fee
+// Calculate capacity fee - returns capacity fee to add to base energy price
 function calculateCapacityFeeForConsumption(consumptionData, params) {
-  // Pełna opłata mocowa - ujednolicona z Settings module
+  // Pełna opłata mocowa - dodawana do bazowej ceny energii
   return params.capacity_fee;
 }
 

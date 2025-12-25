@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY models.py .
 COPY dispatch_engine.py .
 COPY sizing_runner.py .
+COPY sensitivity_runner.py .
 COPY app.py .
 
 # Expose port

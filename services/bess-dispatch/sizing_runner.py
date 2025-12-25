@@ -36,6 +36,7 @@ from dispatch_engine import (
     dispatch_pv_surplus,
     dispatch_peak_shaving,
     dispatch_stacked,
+    dispatch_load_only,
     check_degradation_budget,
 )
 
@@ -66,9 +67,11 @@ def calculate_simple_payback(
     annual_savings: float,
     capex: float,
 ) -> float:
-    """Calculate simple payback period in years."""
+    """Calculate simple payback period in years.
+    Returns 999.0 (instead of inf) when annual_savings <= 0 for JSON compatibility.
+    """
     if annual_savings <= 0:
-        return float('inf')
+        return 999.0  # Use large number instead of inf (JSON-compatible)
     return capex / annual_savings
 
 
@@ -261,6 +264,12 @@ def run_sizing_for_variant(
             pv_kw, load_kw, battery, dt_hours,
             request.stacked_params, request.prices, return_hourly=False
         )
+    elif mode == DispatchMode.LOAD_ONLY:
+        # LOAD_ONLY mode: peak shaving without PV
+        peak_limit = request.peak_limit_kw or (np.max(load_kw) * 0.7)
+        result = dispatch_load_only(
+            load_kw, battery, dt_hours, peak_limit, request.prices, return_hourly=False
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -342,12 +351,73 @@ def find_optimal_power_for_duration(
         if mode == DispatchMode.STACKED:
             pv_power_candidate = np.percentile(surplus[surplus > 0], 90) if np.any(surplus > 0) else 100
             p_max_candidate = max(p_max_candidate, pv_power_candidate * 0.8)
+
+    elif mode == DispatchMode.LOAD_ONLY:
+        # LOAD_ONLY: peak shaving without PV - analyze actual load peaks
+        # Use peak_limit_kw if provided, otherwise calculate threshold from load
+        # NOTE: Must match the threshold used in run_sizing_for_variant() dispatch
+        if request.peak_limit_kw:
+            peak_threshold = request.peak_limit_kw
+        else:
+            # Default: use 70% of max load (consistent with dispatch_load_only default)
+            peak_threshold = np.max(load_kw) * 0.7
+
+        # Calculate excess over threshold (this is what BESS needs to shave)
+        excess = np.maximum(load_kw - peak_threshold, 0)
+
+        if np.any(excess > 0):
+            # Power: P95 of excess determines required discharge power
+            p_max_candidate = np.percentile(excess[excess > 0], 95)
+
+            # Also analyze peak events for proper sizing:
+            # Find peak events (consecutive hours above threshold)
+            max_single_peak_power = np.max(excess)
+            max_peak_event_energy = 0.0
+            current_event_energy = 0.0
+
+            for i in range(len(excess)):
+                if excess[i] > 0:
+                    current_event_energy += excess[i] * dt_hours
+                else:
+                    if current_event_energy > max_peak_event_energy:
+                        max_peak_event_energy = current_event_energy
+                    current_event_energy = 0
+
+            # Don't forget last event if it ends at array end
+            if current_event_energy > max_peak_event_energy:
+                max_peak_event_energy = current_event_energy
+
+            # Ensure power is sufficient for the largest peak
+            p_max_candidate = max(p_max_candidate, max_single_peak_power * 0.9)
+
+            # Log for debugging
+            import logging
+            logging.info(f"LOAD_ONLY sizing: threshold={peak_threshold:.0f}kW, "
+                        f"max_excess={max_single_peak_power:.0f}kW, "
+                        f"max_event_energy={max_peak_event_energy:.1f}kWh, "
+                        f"p_max_candidate={p_max_candidate:.0f}kW")
+        else:
+            # No peaks above threshold - use a percentage of max load
+            p_max_candidate = np.max(load_kw) * 0.2
+
+        # Ensure minimum sensible power for LOAD_ONLY based on load profile
+        load_peak = np.max(load_kw)
+        min_load_only_power = load_peak * 0.05  # At least 5% of peak load
+        p_max_candidate = max(p_max_candidate, min_load_only_power)
+
     else:
-        p_max_candidate = 100
+        # Fallback for unknown modes - use load profile
+        p_max_candidate = np.percentile(load_kw, 90) if len(load_kw) > 0 else 100
 
     # Ensure minimum sensible power based on system size
-    pv_peak = np.max(pv_kw) if len(pv_kw) > 0 else 100
-    min_sensible_power = pv_peak * 0.05  # At least 5% of PV peak
+    # For LOAD_ONLY mode, use load peak instead of PV peak
+    pv_peak = np.max(pv_kw) if len(pv_kw) > 0 and np.max(pv_kw) > 0 else 0
+    load_peak_for_sizing = np.max(load_kw) if len(load_kw) > 0 else 100
+
+    if mode == DispatchMode.LOAD_ONLY or pv_peak == 0:
+        min_sensible_power = load_peak_for_sizing * 0.05  # At least 5% of load peak
+    else:
+        min_sensible_power = pv_peak * 0.05  # At least 5% of PV peak
     p_max_candidate = max(p_max_candidate, min_sensible_power)
 
     # Clamp to request limits with wider search range
@@ -355,9 +425,10 @@ def find_optimal_power_for_duration(
     p_max = min(request.max_power_kw, p_max_candidate * 2.0)
 
     # Ensure we have a valid range
+    reference_peak = pv_peak if pv_peak > 0 else load_peak_for_sizing
     if p_min >= p_max:
         p_min = request.min_power_kw
-        p_max = max(p_min * 10, request.max_power_kw, pv_peak * 0.5)
+        p_max = max(p_min * 10, request.max_power_kw, reference_peak * 0.5)
 
     # Generate power steps
     power_steps = np.linspace(p_min, p_max, request.power_steps)
@@ -388,9 +459,12 @@ def find_optimal_power_for_duration(
             opt_config, capex, npv, payback, result
         )
 
-        # Skip if hard constraints violated
+        # NOTE: We no longer skip on hard constraint violations
+        # Instead, we apply a severe penalty and show warnings
+        # This ensures variants are always shown with their constraint status
+        hard_constraint_penalty = 0.0
         if not passes_hard:
-            continue
+            hard_constraint_penalty = 10.0  # Severe penalty for hard violations
 
         # Calculate objective score
         score = calculate_objective_score(
@@ -401,6 +475,10 @@ def find_optimal_power_for_duration(
         if penalty > 0:
             penalty_weight = opt_config.constraint_penalty_weight
             score -= abs(score) * penalty * penalty_weight
+
+        # Apply severe penalty for hard constraint violations
+        if hard_constraint_penalty > 0:
+            score -= abs(score) * hard_constraint_penalty
 
         # Apply degradation penalty if budget exceeded (legacy behavior)
         if result.degradation.budget_status == DegradationStatus.EXCEEDED:
@@ -440,10 +518,11 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     --------
     SizingResult with all variant details and recommendation
     """
-    pv_kw = np.array(request.pv_generation_kw)
+    # Use effective_pv_kw which returns zeros for LOAD_ONLY topology
+    pv_kw = np.array(request.effective_pv_kw)
     load_kw = np.array(request.load_kw)
     dt_hours = request.interval_minutes / 60.0
-    n = len(pv_kw)
+    n = len(load_kw)  # Use load length as reference (more reliable)
 
     # Annual totals
     total_pv_mwh = float(np.sum(pv_kw) * dt_hours / 1000)
@@ -532,12 +611,41 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # Re-check constraints for final warnings
         capex_v = v.energy_kwh * request.capex_per_kwh + v.power_kw * request.capex_per_kw
         opt_config = request.optimization
-        if opt_config:
-            _, _, violations = check_constraints(
-                opt_config, capex_v, v.npv_pln, v.simple_payback_years, v.dispatch_summary
-            )
-            for violation in violations:
-                warnings.append(f"{v.variant_label}: {violation}")
+        if opt_config and opt_config.constraints:
+            for constraint in opt_config.constraints:
+                violated = False
+                violation_msg = ""
+                hard_or_soft = "[TWARDE]" if constraint.hard else "[MIĘKKIE]"
+
+                if constraint.constraint_type == ConstraintType.MAX_CAPEX:
+                    if capex_v > constraint.value:
+                        violated = True
+                        violation_msg = f"CAPEX {capex_v:.0f} PLN > max {constraint.value:.0f} PLN"
+
+                elif constraint.constraint_type == ConstraintType.MAX_PAYBACK:
+                    if v.simple_payback_years > constraint.value:
+                        violated = True
+                        violation_msg = f"Payback {v.simple_payback_years:.1f}y > max {constraint.value:.1f}y"
+
+                elif constraint.constraint_type == ConstraintType.MIN_NPV:
+                    if v.npv_pln < constraint.value:
+                        violated = True
+                        violation_msg = f"NPV {v.npv_pln:.0f} PLN < min {constraint.value:.0f} PLN"
+
+                elif constraint.constraint_type == ConstraintType.MAX_EFC:
+                    efc = v.dispatch_summary.degradation.efc_total
+                    if efc > constraint.value:
+                        violated = True
+                        violation_msg = f"EFC {efc:.0f} cykli > max {constraint.value:.0f} cykli"
+
+                elif constraint.constraint_type == ConstraintType.MIN_SELF_CONSUMPTION:
+                    sc = v.dispatch_summary.self_consumption_pct
+                    if sc < constraint.value:
+                        violated = True
+                        violation_msg = f"Autokonsumpcja {sc:.1f}% < min {constraint.value:.1f}%"
+
+                if violated:
+                    warnings.append(f"{v.variant_label}: {hard_or_soft} {violation_msg}")
 
     return SizingResult(
         mode=request.mode,

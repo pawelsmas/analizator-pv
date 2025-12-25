@@ -343,6 +343,39 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================================
 
 /**
+ * Set BESS topology (pv_bess vs bess_only) and update UI
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ */
+function setBessTopology(topology) {
+  // Update hidden input
+  const topologyInput = document.getElementById('bessTopology');
+  if (topologyInput) topologyInput.value = topology;
+
+  // Update UI indicators
+  const pvBessBtn = document.getElementById('topologyPvBess');
+  const bessOnlyBtn = document.getElementById('topologyBessOnly');
+  const bessOnlyInfo = document.getElementById('bessOnlyInfo');
+
+  if (pvBessBtn) {
+    pvBessBtn.style.border = topology === 'pv_bess' ? '2px solid #4caf50' : '2px solid transparent';
+    pvBessBtn.style.opacity = topology === 'pv_bess' ? '1' : '0.6';
+  }
+
+  if (bessOnlyBtn) {
+    bessOnlyBtn.style.border = topology === 'bess_only' ? '2px solid #ff9800' : '2px solid transparent';
+    bessOnlyBtn.style.opacity = topology === 'bess_only' ? '1' : '0.6';
+  }
+
+  // Show/hide BESS-only info box
+  if (bessOnlyInfo) {
+    bessOnlyInfo.style.display = topology === 'bess_only' ? 'block' : 'none';
+  }
+
+  console.log(`🔋 BESS topology set to: ${topology}`);
+  markUnsaved();
+}
+
+/**
  * Set BESS mode (off/light/pro) and update UI accordingly
  * @param {string} mode - 'off' | 'light' | 'pro'
  */
@@ -583,6 +616,14 @@ function applySettingsToUI(config) {
     useInflationEl.checked = config.useInflation || config.irrMode === 'nominal' || false;
   }
 
+  // BESS topology (pv_bess vs bess_only)
+  const bessTopologyEl = document.getElementById('bessTopology');
+  if (bessTopologyEl) {
+    bessTopologyEl.value = config.bessTopology || 'pv_bess';
+    // Update UI for topology selection
+    setBessTopology(config.bessTopology || 'pv_bess');
+  }
+
   // BESS mode (3-way: off/light/pro)
   const bessModeEl = document.getElementById('bessMode');
   if (bessModeEl) {
@@ -809,6 +850,7 @@ function getCurrentSettings() {
     thrD: parseFloat(document.getElementById('thrD')?.value || DEFAULT_CONFIG.thrD),
 
     // BESS - Battery Energy Storage System
+    bessTopology: document.getElementById('bessTopology')?.value || 'pv_bess',  // pv_bess or bess_only
     bessMode: document.getElementById('bessMode')?.value || DEFAULT_CONFIG.bessMode,
     bessEnabled: document.getElementById('bessMode')?.value !== 'off',  // Legacy compatibility
     bessDuration: document.getElementById('bessDuration')?.value || DEFAULT_CONFIG.bessDuration,

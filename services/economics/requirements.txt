@@ -8,3 +8,5 @@ pytest==7.4.3
 pypsa==0.27.1
 highspy==1.7.1
 pandas==2.1.3
+# Monte Carlo simulation
+scipy==1.11.4

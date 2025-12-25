@@ -1,4 +1,74 @@
-console.log('🔋 bess.js LOADED v=3.10.0 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.16 - timestamp:', new Date().toISOString());
+
+// ============================================
+// CROSS-MODULE NAVIGATION
+// ============================================
+
+/**
+ * Navigate to another module via parent shell
+ * @param {string} moduleName - module name (profile, economics, config, etc.)
+ */
+function navigateToModule(moduleName) {
+  console.log(`🔗 Navigating to module: ${moduleName}`);
+
+  // Save current BESS config to localStorage for sharing
+  saveBessConfigToSharedStorage();
+
+  // Send navigation request to parent shell
+  window.parent.postMessage({
+    type: 'NAVIGATE_TO_MODULE',
+    module: moduleName
+  }, '*');
+}
+
+/**
+ * Save current BESS configuration to shared localStorage
+ * This allows Profile Analysis and Economics modules to access BESS params
+ */
+function saveBessConfigToSharedStorage() {
+  const currentData = variants[currentVariant];
+  if (!currentData) return;
+
+  const settings = systemSettings || {};
+  const bessSettings = settings[`variant${currentVariant}`]?.bess || {};
+
+  const sharedBessConfig = {
+    power_kw: bessSettings.power || currentData.bess?.power_kw || 0,
+    energy_kwh: bessSettings.energy || currentData.bess?.energy_kwh || 0,
+    enabled: bessSettings.enabled || false,
+    variant: currentVariant,
+    pv_capacity_kwp: currentData.capacity || 0,
+    annual_production_kwh: currentData.production || 0,
+    self_consumed_kwh: currentData.self_consumed || 0,
+    updated_at: new Date().toISOString()
+  };
+
+  localStorage.setItem('pv_shared_bess_config', JSON.stringify(sharedBessConfig));
+  console.log('💾 Saved shared BESS config:', sharedBessConfig);
+}
+
+/**
+ * Update the shared BESS config display in cross-module nav bar
+ */
+function updateSharedBessConfigDisplay() {
+  const el = document.getElementById('sharedBessConfig');
+  if (!el) return;
+
+  const currentData = variants[currentVariant];
+  const settings = systemSettings || {};
+  const bessSettings = settings[`variant${currentVariant}`]?.bess || {};
+
+  const power = bessSettings.power || currentData?.bess?.power_kw || 0;
+  const energy = bessSettings.energy || currentData?.bess?.energy_kwh || 0;
+
+  if (power > 0 && energy > 0) {
+    el.textContent = `BESS: ${power} kW / ${energy} kWh`;
+    el.style.color = '#2e7d32';
+  } else {
+    el.textContent = 'BESS: nie skonfigurowany';
+    el.style.color = '#999';
+  }
+}
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -216,7 +286,22 @@ function parseKeyVariants(keyVariants) {
 
 function loadFromLocalStorage() {
   try {
-    // Load analysis results - try different localStorage keys
+    // Check for BESS-only results first (from KONFIGURACJA with bess_only topology)
+    const bessOnlyResultsStr = localStorage.getItem('bessOnlyResults');
+    if (bessOnlyResultsStr) {
+      try {
+        const bessOnlyResults = JSON.parse(bessOnlyResultsStr);
+        if (bessOnlyResults.topology === 'bess_only' && bessOnlyResults.variants) {
+          console.log('🔋 Loading BESS-only results from localStorage');
+          loadBessOnlyResults(bessOnlyResults);
+          return;
+        }
+      } catch (e) {
+        console.warn('Failed to parse bessOnlyResults:', e);
+      }
+    }
+
+    // Load PV analysis results - try different localStorage keys
     const storedResults = localStorage.getItem('pv_analysis_results') || localStorage.getItem('analysisResults');
     if (storedResults) {
       analysisResults = JSON.parse(storedResults);
@@ -227,6 +312,22 @@ function loadFromLocalStorage() {
         parseKeyVariants(analysisResults.key_variants);
       } else if (analysisResults?.scenarios) {
         parseVariants(analysisResults.scenarios);
+      }
+    }
+
+    // Also check pvAnalysisVariants for BESS-only data
+    const pvVariantsStr = localStorage.getItem('pvAnalysisVariants');
+    if (pvVariantsStr && Object.keys(variants).length === 0) {
+      try {
+        const pvVariants = JSON.parse(pvVariantsStr);
+        // Check if this is BESS-only data
+        if (pvVariants.A?.topology === 'bess_only') {
+          console.log('🔋 Loading BESS-only variants from pvAnalysisVariants');
+          variants = pvVariants;
+          currentVariant = 'A';
+        }
+      } catch (e) {
+        console.warn('Failed to parse pvAnalysisVariants:', e);
       }
     }
 
@@ -341,6 +442,9 @@ function updateDisplay() {
 
   // Update variant buttons descriptions
   updateVariantDescriptions();
+
+  // Update shared BESS config display for cross-module navigation
+  updateSharedBessConfigDisplay();
 
   const variant = variants[currentVariant];
 
@@ -1016,6 +1120,141 @@ function showBessDisabled() {
   document.getElementById('bessDisabledBanner').style.display = 'flex';
   document.getElementById('bessContent').style.display = 'none';
   document.getElementById('noDataMessage').style.display = 'none';
+}
+
+/**
+ * Load BESS-only results from KONFIGURACJA module (bess_only topology)
+ * These results are pre-calculated - just display them
+ */
+function loadBessOnlyResults(bessOnlyResults) {
+  console.log('🔋 Loading BESS-only results:', bessOnlyResults);
+
+  // Load settings
+  const storedSettings = localStorage.getItem('systemSettings');
+  if (storedSettings) {
+    systemSettings = JSON.parse(storedSettings);
+    window.systemSettings = systemSettings;
+  }
+
+  // Hide variant selector (not applicable for BESS-only)
+  const variantSelector = document.querySelector('.variant-selector');
+  if (variantSelector) {
+    variantSelector.style.display = 'none';
+  }
+
+  // Hide no-data message and disabled banner
+  document.getElementById('noDataMessage').style.display = 'none';
+  document.getElementById('bessDisabledBanner').style.display = 'none';
+
+  // Show main content
+  document.getElementById('bessContent').style.display = 'grid';
+
+  // Update header info
+  const dataInfo = document.getElementById('dataInfo');
+  if (dataInfo) {
+    const totalMWh = (bessOnlyResults.totalLoadMwh || 0).toFixed(1);
+    dataInfo.textContent = `🔋 BESS-only: ${totalMWh} MWh/rok | ${bessOnlyResults.variants?.length || 0} wariantów`;
+  }
+
+  // Display sizing variants directly
+  const sizingResult = {
+    variants: bessOnlyResults.variants,
+    recommended_variant: bessOnlyResults.recommendedVariant,
+    warnings: bessOnlyResults.warnings
+  };
+
+  displaySizingVariants(sizingResult);
+  updateConfigResultsSummary(sizingResult);
+
+  // Show sizing variants section prominently
+  const sizingSection = document.getElementById('sizingVariantsSection');
+  if (sizingSection) {
+    sizingSection.style.display = 'block';
+    setTimeout(() => {
+      sizingSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 200);
+  }
+
+  // Update status
+  const statusEl = document.getElementById('advancedConfigStatus');
+  if (statusEl) {
+    statusEl.textContent = '✅ Wyniki analizy BESS (bez PV) załadowane z KONFIGURACJI';
+    statusEl.className = 'config-status success';
+  }
+
+  console.log('✅ BESS-only results displayed');
+}
+
+/**
+ * Show LOAD_ONLY mode interface when consumption data is available but no PV variants
+ * This allows BESS sizing analysis without requiring PV configuration
+ */
+function showLoadOnlyMode(consumptionData) {
+  console.log('🔋 Entering LOAD_ONLY mode with consumption data:', consumptionData);
+
+  // Load settings first
+  const storedSettings = localStorage.getItem('systemSettings');
+  if (storedSettings) {
+    systemSettings = JSON.parse(storedSettings);
+    window.systemSettings = systemSettings;
+  }
+
+  // Hide variant selector (not needed for LOAD_ONLY)
+  const variantSelector = document.querySelector('.variant-selector');
+  if (variantSelector) {
+    variantSelector.style.display = 'none';
+  }
+
+  // Hide no-data message
+  document.getElementById('noDataMessage').style.display = 'none';
+  document.getElementById('bessDisabledBanner').style.display = 'none';
+
+  // Show main content
+  document.getElementById('bessContent').style.display = 'grid';
+
+  // Update header info
+  const dataInfo = document.getElementById('dataInfo');
+  if (dataInfo) {
+    const totalMWh = ((consumptionData.totalConsumption || consumptionData.sum || 0) / 1000).toFixed(1);
+    const dataPoints = consumptionData.dataPoints || consumptionData.hourlyData?.values?.length || 0;
+    const interval = dataPoints > 8760 ? '15-min' : '1h';
+    dataInfo.textContent = `LOAD_ONLY: ${totalMWh} MWh/rok (${dataPoints} punktów, ${interval})`;
+  }
+
+  // Set topology to load_only
+  advancedConfig.topology = 'load_only';
+  const loadOnlyRadio = document.querySelector('input[name="topology"][value="load_only"]');
+  if (loadOnlyRadio) {
+    loadOnlyRadio.checked = true;
+  }
+
+  // Store consumption data for later use
+  window.loadOnlyConsumptionData = consumptionData;
+
+  // Show advanced config section prominently
+  const advSection = document.getElementById('advancedConfigSection');
+  if (advSection) {
+    advSection.style.display = 'block';
+    // Scroll to it
+    setTimeout(() => {
+      advSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 200);
+  }
+
+  // Update status
+  const statusEl = document.getElementById('advancedConfigStatus');
+  if (statusEl) {
+    statusEl.textContent = '🔋 Tryb LOAD_ONLY - uruchamiam analizę doboru BESS...';
+    statusEl.className = 'config-status info';
+  }
+
+  console.log('✅ LOAD_ONLY mode UI ready - auto-running sizing analysis');
+
+  // AUTO-RUN: Automatically trigger BESS sizing analysis
+  setTimeout(() => {
+    console.log('🚀 Auto-triggering applyAdvancedConfig for LOAD_ONLY mode');
+    applyAdvancedConfig();
+  }, 500); // Short delay to ensure UI is fully rendered
 }
 
 // ============================================
@@ -1736,7 +1975,8 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
     return;
   }
 
-  const bessDispatchUrl = 'http://localhost:8031';
+  // Use relative URL to go through nginx proxy (configured in shell nginx.conf)
+  const bessDispatchUrl = '/api/bess-dispatch';
 
   try {
     console.log('🔄 Fetching sizing variants from bess-dispatch...');
@@ -1975,28 +2215,65 @@ async function runSensitivityAnalysis() {
   try {
     // Get current variant data
     const variantData = variants[currentVariant];
-    if (!variantData || !variantData.bess) {
-      throw new Error('Brak danych BESS dla bieżącego wariantu');
+    if (!variantData) {
+      throw new Error('Brak danych dla bieżącego wariantu');
     }
 
-    const bess = variantData.bess;
+    // Check for BESS data (flat properties, not nested object)
+    const bessPowerKw = variantData.bess_power_kw || 0;
+    const bessEnergyKwh = variantData.bess_energy_kwh || 0;
+
+    if (bessPowerKw <= 0 || bessEnergyKwh <= 0) {
+      throw new Error('Brak konfiguracji BESS - najpierw wybierz wariant z BESS');
+    }
+
     const settings = systemSettings || {};
 
-    // Get hourly profiles
-    const pvData = variantData.hourlyPV || variantData.hourly_pv || [];
-    const loadData = variantData.hourlyLoad || variantData.hourly_load || [];
+    // Generate 8760 hourly profiles from variant statistics (same as buildSizingRequest)
+    const hours = 8760;
+    const pvData = [];
+    const loadData = [];
 
-    if (pvData.length === 0 || loadData.length === 0) {
-      throw new Error('Brak danych godzinowych PV/Load');
+    const totalProduction = variantData.production || 500000; // kWh/year
+    const totalLoad = variantData.consumption || variantData.load || totalProduction * 1.2;
+
+    // Scale factors to match annual totals
+    const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+    const loadScaleFactor = totalLoad / 8760 / 50; // Base load ~50 kW avg
+
+    for (let h = 0; h < hours; h++) {
+      const dayOfYear = Math.floor(h / 24);
+      const hourOfDay = h % 24;
+
+      // PV profile: bell curve during daylight, seasonal variation
+      const seasonFactor = 1 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
+      let pvHour = 0;
+      if (hourOfDay >= 6 && hourOfDay <= 20) {
+        const solarAngle = (hourOfDay - 6) / 14 * Math.PI;
+        pvHour = Math.sin(solarAngle) * seasonFactor * 1000 * pvScaleFactor;
+      }
+      pvData.push(Math.max(0, pvHour));
+
+      // Load profile: base load + daily pattern + some randomness
+      const workdayFactor = (dayOfYear % 7 < 5) ? 1.2 : 0.6;
+      let loadHour = 30 * loadScaleFactor; // base load
+      if (hourOfDay >= 8 && hourOfDay <= 18) {
+        loadHour += 40 * loadScaleFactor * workdayFactor;
+      } else if (hourOfDay >= 6 && hourOfDay <= 22) {
+        loadHour += 15 * loadScaleFactor;
+      }
+      loadData.push(Math.max(10, loadHour));
     }
+
+    console.log('📊 Sensitivity: Generated profiles - PV sum:', pvData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh, Load sum:', loadData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh');
 
     // Build request
     const request = {
       pv_generation_kw: pvData,
       load_kw: loadData,
       interval_minutes: 60,
-      battery_power_kw: bess.powerKw || bess.power_kw || 100,
-      battery_energy_kwh: bess.energyKwh || bess.energy_kwh || 200,
+      battery_power_kw: bessPowerKw,
+      battery_energy_kwh: bessEnergyKwh,
       roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
       soc_min: settings.bessSocMin || 0.1,
       soc_max: settings.bessSocMax || 0.9,
@@ -2009,8 +2286,8 @@ async function runSensitivityAnalysis() {
       import_price_pln_mwh: settings.energyPurchasePrice || 800,
     };
 
-    // Call API
-    const response = await fetch('http://localhost:8031/sensitivity', {
+    // Call API via nginx proxy
+    const response = await fetch('/api/bess-dispatch/sensitivity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request)
@@ -2191,4 +2468,644 @@ window.displaySensitivityResults = displaySensitivityResults;
 window.drawTornadoChart = drawTornadoChart;
 window.showSensitivitySectionIfAvailable = showSensitivitySectionIfAvailable;
 
-console.log('📦 bess.js v3.11 - added sensitivity analysis (tornado chart)');
+// ============================================
+// ADVANCED CONFIGURATION (Topology, Objective, Constraints)
+// v3.12 - Multi-topology and Multi-objective support
+// ============================================
+
+// Current configuration state
+let advancedConfig = {
+  topology: 'pv_load',           // 'pv_load', 'load_only', 'pv_only'
+  objective: 'npv',              // 'npv', 'payback', 'self_consumption', 'peak_reduction', 'efc_utilization'
+  constraints: []                // Array of {type, value, hard}
+};
+
+// Objective descriptions for info display
+const objectiveDescriptions = {
+  npv: 'NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji',
+  payback: 'Minimalizuj okres zwrotu - szybszy zwrot inwestycji',
+  self_consumption: 'Maksymalizuj wykorzystanie własnej energii z PV',
+  peak_reduction: 'Maksymalizuj redukcję szczytów mocy z sieci',
+  efc_utilization: 'Optymalizuj wykorzystanie cykli baterii w budżecie degradacji'
+};
+
+/**
+ * Update topology selection
+ */
+function updateTopology(value) {
+  console.log('🔌 Topology changed to:', value);
+  advancedConfig.topology = value;
+
+  // Update UI based on topology
+  const pvSections = document.querySelectorAll('.pv-dependent');
+  const bessSections = document.querySelectorAll('.bess-dependent');
+
+  if (value === 'pv_only') {
+    // PV only - hide BESS sections, show warning
+    document.getElementById('configStatus').textContent = '⚠️ Tryb PV-only - BESS wyłączony';
+    document.getElementById('configStatus').className = 'config-status warning';
+  } else if (value === 'load_only') {
+    // BESS only - adjust available modes
+    document.getElementById('configStatus').textContent = 'ℹ️ Tryb BESS bez PV - peak shaving/arbitraż';
+    document.getElementById('configStatus').className = 'config-status';
+  } else {
+    document.getElementById('configStatus').textContent = '';
+  }
+
+  // Store in localStorage for persistence
+  localStorage.setItem('bessTopology', value);
+}
+
+/**
+ * Update optimization objective
+ */
+function updateOptimizationObjective(value) {
+  console.log('🎯 Objective changed to:', value);
+  advancedConfig.objective = value;
+
+  // Update info text
+  const infoEl = document.getElementById('objectiveInfo');
+  if (infoEl && objectiveDescriptions[value]) {
+    infoEl.innerHTML = `<span class="info-icon">ℹ️</span><span>${objectiveDescriptions[value]}</span>`;
+  }
+
+  // Store in localStorage
+  localStorage.setItem('bessObjective', value);
+}
+
+/**
+ * Toggle constraint enabled/disabled
+ */
+function toggleConstraint(constraintType) {
+  const checkboxMap = {
+    'max_capex': 'constraintCapex',
+    'max_payback': 'constraintPayback',
+    'min_npv': 'constraintNpv',
+    'max_efc': 'constraintEfc',
+    'min_self_consumption': 'constraintSelfConsumption'
+  };
+
+  const checkboxId = checkboxMap[constraintType];
+  if (!checkboxId) return;
+
+  const checkbox = document.getElementById(checkboxId);
+  const valueInput = document.getElementById(checkboxId + 'Value');
+  const typeSelect = document.getElementById(checkboxId + 'Type');
+
+  if (checkbox && valueInput && typeSelect) {
+    const isChecked = checkbox.checked;
+    valueInput.disabled = !isChecked;
+    typeSelect.disabled = !isChecked;
+
+    if (isChecked) {
+      valueInput.focus();
+    }
+  }
+
+  console.log(`🚧 Constraint ${constraintType} toggled:`, checkbox?.checked);
+}
+
+/**
+ * Collect all active constraints from UI
+ */
+function collectConstraints() {
+  const constraints = [];
+
+  const constraintConfigs = [
+    { id: 'constraintCapex', type: 'max_capex' },
+    { id: 'constraintPayback', type: 'max_payback' },
+    { id: 'constraintNpv', type: 'min_npv' },
+    { id: 'constraintEfc', type: 'max_efc' },
+    { id: 'constraintSelfConsumption', type: 'min_self_consumption' }
+  ];
+
+  for (const cfg of constraintConfigs) {
+    const checkbox = document.getElementById(cfg.id);
+    const valueInput = document.getElementById(cfg.id + 'Value');
+    const typeSelect = document.getElementById(cfg.id + 'Type');
+
+    if (checkbox?.checked && valueInput?.value) {
+      constraints.push({
+        constraint_type: cfg.type,
+        value: parseFloat(valueInput.value),
+        hard: typeSelect?.value === 'hard'
+      });
+    }
+  }
+
+  return constraints;
+}
+
+/**
+ * Apply advanced configuration and re-run analysis
+ */
+async function applyAdvancedConfig() {
+  console.log('✅ Applying advanced configuration...');
+
+  const statusEl = document.getElementById('configStatus');
+  const btnEl = document.getElementById('applyConfigBtn');
+
+  if (statusEl) statusEl.textContent = 'Przetwarzanie...';
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    // Collect current config
+    advancedConfig.constraints = collectConstraints();
+
+    console.log('📊 Advanced config:', advancedConfig);
+
+    // Get current variant data - for load_only we can work without PV variant
+    let variantData = variants[currentVariant];
+
+    // For LOAD_ONLY topology, we don't require PV variant data
+    if (!variantData && advancedConfig.topology === 'load_only') {
+      // First try window.loadOnlyConsumptionData (set by showLoadOnlyMode)
+      let consumptionData = window.loadOnlyConsumptionData;
+
+      // Fallback: try to load consumption data from localStorage
+      if (!consumptionData) {
+        const consumptionDataStr = localStorage.getItem('consumptionData');
+        if (consumptionDataStr) {
+          try {
+            consumptionData = JSON.parse(consumptionDataStr);
+          } catch (e) {
+            console.warn('Failed to parse consumptionData:', e);
+          }
+        }
+      }
+
+      if (consumptionData) {
+        // Create a minimal variant-like object with just consumption data
+        variantData = {
+          consumption: consumptionData.totalConsumption || consumptionData.sum || 500000,
+          production: 0, // No PV production in load_only mode
+          hourlyLoad: consumptionData.hourlyData?.values || null
+        };
+        console.log('📊 LOAD_ONLY mode: Using consumption data:', variantData.consumption, 'kWh/year, hourly points:', variantData.hourlyLoad?.length || 0);
+      }
+
+      // If still no data, use defaults for demonstration
+      if (!variantData) {
+        variantData = {
+          consumption: 500000, // Default 500 MWh/year
+          production: 0,
+          hourlyLoad: null
+        };
+        console.log('📊 LOAD_ONLY mode: Using default consumption (500 MWh/year)');
+      }
+    } else if (!variantData) {
+      throw new Error('Brak danych dla bieżącego wariantu. Dla trybu LOAD_ONLY wybierz topologię "BESS + Load (bez PV)".');
+    }
+
+    // Handle different topologies
+    if (advancedConfig.topology === 'pv_only') {
+      // PV-only mode - no BESS analysis needed
+      if (statusEl) {
+        statusEl.textContent = '✅ Tryb PV-only aktywny';
+        statusEl.className = 'config-status success';
+      }
+      // Hide BESS-specific sections
+      hideBessSpecificSections();
+      return;
+    }
+
+    // For pv_load and load_only, call the sizing/dispatch API
+    const request = buildSizingRequest(variantData);
+
+    if (!request) {
+      throw new Error('Nie można zbudować żądania - brak danych');
+    }
+
+    // Call bess-dispatch service via nginx proxy
+    const response = await fetch('/api/bess-dispatch/sizing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API error: ${response.status} - ${err}`);
+    }
+
+    const result = await response.json();
+    console.log('📊 Sizing result with new config:', result);
+
+    // Update display with new results
+    updateDisplayWithSizingResult(result);
+
+    if (statusEl) {
+      statusEl.textContent = '✅ Konfiguracja zastosowana';
+      statusEl.className = 'config-status success';
+    }
+
+    // Auto-scroll to results summary panel
+    setTimeout(() => {
+      const summaryPanel = document.getElementById('configResultsSummary');
+      if (summaryPanel && summaryPanel.style.display !== 'none') {
+        summaryPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 100);
+
+  } catch (error) {
+    console.error('❌ Config apply error:', error);
+    if (statusEl) {
+      statusEl.textContent = '❌ Błąd: ' + error.message;
+      statusEl.className = 'config-status error';
+    }
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+/**
+ * Build sizing request with current config
+ */
+function buildSizingRequest(variantData) {
+  const settings = systemSettings || {};
+
+  // Generate 8760 hourly profile from variant statistics (same as tryFetchSizingVariants)
+  const hours = 8760;
+  let pvData = [];
+  let loadData = [];
+
+  const totalProduction = variantData.production || 0; // For LOAD_ONLY, production is 0
+  const totalLoad = variantData.consumption || variantData.load || 500000; // Default 500 MWh
+
+  // Check if we have real hourly load data (from consumption module)
+  if (variantData.hourlyLoad && Array.isArray(variantData.hourlyLoad) && variantData.hourlyLoad.length > 0) {
+    const rawData = variantData.hourlyLoad;
+
+    if (rawData.length >= 35040) {
+      // 15-min data (35040 points/year) - aggregate to hourly by summing groups of 4
+      // For power data: take average of 4 readings (average power over the hour)
+      console.log('📊 buildSizingRequest - Converting 15-min data to hourly:', rawData.length, 'points');
+      loadData = [];
+      for (let h = 0; h < 8760; h++) {
+        const startIdx = h * 4;
+        const endIdx = Math.min(startIdx + 4, rawData.length);
+        let sum = 0;
+        let count = 0;
+        for (let i = startIdx; i < endIdx; i++) {
+          sum += rawData[i] || 0;
+          count++;
+        }
+        // For 15-min power readings, hourly power = average power (kW)
+        // Energy in kWh = average power * 1 hour
+        loadData.push(count > 0 ? sum / count : 0);
+      }
+      console.log('📊 buildSizingRequest - Aggregated to hourly:', loadData.length, 'points, sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+    } else if (rawData.length >= 8760) {
+      // Already hourly data (8760 points/year)
+      loadData = rawData.slice(0, 8760);
+      console.log('📊 buildSizingRequest - Using REAL hourly load data:', loadData.length, 'points, sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+    } else {
+      // Less than 8760 points - extrapolate to full year
+      console.log('📊 buildSizingRequest - Extrapolating partial data:', rawData.length, 'points');
+      const multiplier = Math.ceil(8760 / rawData.length);
+      const extendedData = [];
+      for (let m = 0; m < multiplier && extendedData.length < 8760; m++) {
+        for (let i = 0; i < rawData.length && extendedData.length < 8760; i++) {
+          extendedData.push(rawData[i] || 0);
+        }
+      }
+      loadData = extendedData.slice(0, 8760);
+      console.log('📊 buildSizingRequest - Extrapolated to:', loadData.length, 'points');
+    }
+  } else {
+    // Generate synthetic profile based on annual total
+    const loadScaleFactor = totalLoad / 8760 / 50; // Base load ~50 kW avg
+
+    console.log('📊 buildSizingRequest - Generating synthetic 8760h load profile:', { totalLoad, loadScaleFactor });
+
+    for (let h = 0; h < hours; h++) {
+      const hourOfDay = h % 24;
+
+      // Load: industrial profile with evening peak (for peak shaving scenarios)
+      let loadPower = 30 * loadScaleFactor;
+
+      if (hourOfDay >= 6 && hourOfDay <= 22) {
+        // Working hours - higher load
+        loadPower = (60 + 20 * Math.sin((hourOfDay - 6) * Math.PI / 16)) * loadScaleFactor;
+      }
+
+      // Evening peak (17:00-21:00) - when PV is low but consumption high
+      if (hourOfDay >= 17 && hourOfDay <= 21) {
+        const peakHourFactor = 1 - Math.abs(hourOfDay - 19) / 3; // Peak at 19:00
+        loadPower = (80 + 40 * peakHourFactor) * loadScaleFactor;
+      }
+
+      loadData.push(Math.max(10, loadPower));
+    }
+  }
+
+  // For load_only topology, PV should be empty array
+  if (advancedConfig.topology === 'load_only' || totalProduction === 0) {
+    pvData = new Array(hours).fill(0);
+    console.log('📊 LOAD_ONLY mode: PV array set to zeros');
+  } else {
+    // Generate PV profile for PV+BESS mode
+    const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+
+    for (let h = 0; h < hours; h++) {
+      const hourOfDay = h % 24;
+      const dayOfYear = Math.floor(h / 24);
+
+      // PV: realistic profile with daytime production and seasonal variation
+      let pvPower = 0;
+      if (hourOfDay >= 6 && hourOfDay <= 18) {
+        const solarFactor = Math.sin((hourOfDay - 6) * Math.PI / 12);
+        // Seasonal: peak in June (day 172), min in December
+        const seasonFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos((dayOfYear - 172) * 2 * Math.PI / 365));
+        // Peak power for 1 MWp ~800-1000 kW
+        pvPower = 900 * solarFactor * seasonFactor * pvScaleFactor;
+      }
+      pvData.push(Math.max(0, pvPower));
+    }
+  }
+
+  console.log('📊 Final profiles - PV sum:', (pvData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh, Load sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+
+  // For load_only topology, PV should be empty
+  const effectivePv = advancedConfig.topology === 'load_only' ? [] : pvData;
+
+  // Determine dispatch mode based on topology
+  let mode = 'pv_surplus';
+  if (advancedConfig.topology === 'load_only') {
+    mode = 'load_only';
+  } else if (settings.bessPeakShavingEnabled) {
+    mode = 'stacked';
+  }
+
+  const request = {
+    pv_generation_kw: effectivePv,
+    load_kw: loadData,
+    interval_minutes: 60,
+    mode: mode,
+
+    // Battery constraints
+    min_power_kw: 10,
+    max_power_kw: 1000,
+    power_steps: 15,
+    durations_h: [1.0, 2.0, 4.0],
+
+    // Battery params
+    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
+    soc_min: settings.bessSocMin || 0.1,
+    soc_max: settings.bessSocMax || 0.9,
+
+    // Economics
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    opex_pct_per_year: 0.015,
+    discount_rate: 0.07,
+    analysis_years: settings.bessLifetimeYears || 15,
+
+    // Pricing
+    prices: {
+      import_price_pln_mwh: settings.energyPurchasePrice || 800,
+      export_price_pln_mwh: 0
+    },
+
+    // Optimization config
+    optimization: {
+      objective: advancedConfig.objective,
+      constraints: advancedConfig.constraints,
+      constraint_penalty_weight: 0.3
+    }
+  };
+
+  // Add peak limit for load_only or stacked
+  if (mode === 'load_only' || mode === 'stacked') {
+    request.peak_limit_kw = settings.bessPeakLimitKw || Math.max(...loadData) * 0.7;
+  }
+
+  // Add stacked params
+  if (mode === 'stacked') {
+    request.stacked_params = {
+      peak_limit_kw: settings.bessPeakLimitKw || Math.max(...loadData) * 0.7,
+      reserve_fraction: settings.bessReserveFraction || 0.3,
+      allow_reserve_breach: false
+    };
+  }
+
+  return request;
+}
+
+/**
+ * Hide BESS-specific sections for PV-only mode
+ */
+function hideBessSpecificSections() {
+  const sectionsToHide = [
+    'bessContent',
+    'sizingVariantsSection',
+    'degradationBudgetSection',
+    'sensitivitySection',
+    'advancedConfigSection'
+  ];
+
+  // Actually just show a message instead of hiding everything
+  const banner = document.getElementById('bessDisabledBanner');
+  if (banner) {
+    banner.style.display = 'flex';
+    banner.querySelector('h3').textContent = 'Tryb tylko PV';
+    banner.querySelector('p').textContent = 'BESS nie jest analizowany w trybie PV-only. Przełącz topologię aby włączyć analizę BESS.';
+  }
+
+  const content = document.getElementById('bessContent');
+  if (content) content.style.display = 'none';
+}
+
+/**
+ * Update display with sizing result from API
+ */
+function updateDisplayWithSizingResult(result) {
+  // This function updates the UI with results from the /sizing endpoint
+  // when using multi-objective optimization
+
+  if (!result || !result.variants) return;
+
+  // Show sizing variants section
+  const section = document.getElementById('sizingVariantsSection');
+  if (section) section.style.display = 'block';
+
+  // Display sizing variants
+  displaySizingVariants(result);
+
+  // Update recommended variant info
+  if (result.recommended_variant) {
+    console.log('📊 Recommended variant:', result.recommended_variant);
+  }
+
+  // Find and display warning about constraints
+  if (result.warnings && result.warnings.length > 0) {
+    console.warn('⚠️ Sizing warnings:', result.warnings);
+  }
+
+  // Update quick results summary panel
+  updateConfigResultsSummary(result);
+}
+
+/**
+ * Update the quick results summary panel below advanced config
+ */
+function updateConfigResultsSummary(result) {
+  const summaryPanel = document.getElementById('configResultsSummary');
+  if (!summaryPanel) return;
+
+  // Find recommended variant
+  const recommended = result.variants?.find(v => v.is_recommended) || result.variants?.[0];
+
+  if (!recommended) {
+    summaryPanel.style.display = 'none';
+    return;
+  }
+
+  // Show panel
+  summaryPanel.style.display = 'block';
+
+  // Update values
+  const variantLabels = {
+    'small': 'Small (1h)',
+    'medium': 'Medium (2h)',
+    'large': 'Large (4h)'
+  };
+
+  setElementText('summaryRecommended', variantLabels[result.recommended_variant] || result.recommended_variant || '-');
+  setElementText('summaryPowerEnergy', `${formatNumberEU(recommended.power_kw, 0)} kW / ${formatNumberEU(recommended.energy_kwh, 0)} kWh`);
+
+  // NPV with color
+  const npvEl = document.getElementById('summaryNpv');
+  if (npvEl) {
+    npvEl.textContent = `${formatNumberEU(recommended.npv_pln / 1000, 0)} tys. PLN`;
+    npvEl.className = 'summary-value ' + (recommended.npv_pln >= 0 ? 'positive' : 'negative');
+  }
+
+  setElementText('summaryPayback', recommended.simple_payback_years < 100 ? `${formatNumberEU(recommended.simple_payback_years, 1)} lat` : '> 25 lat');
+  setElementText('summaryCapex', `${formatNumberEU(recommended.capex_pln / 1000, 0)} tys. PLN`);
+  setElementText('summaryEfc', `${formatNumberEU(recommended.degradation?.efc_total || 0, 0)} cykli`);
+
+  // Handle constraint warnings
+  const warningsPanel = document.getElementById('constraintWarnings');
+  const warningsList = document.getElementById('warningsList');
+
+  if (result.warnings && result.warnings.length > 0) {
+    warningsPanel.style.display = 'block';
+    warningsList.innerHTML = result.warnings.map(w => {
+      // Parse warning to determine if hard or soft (backend sends [TWARDE] or [MIĘKKIE])
+      const isHard = w.includes('[TWARDE]');
+      const isSoft = w.includes('[MIĘKKIE]');
+      let className = '';
+      let icon = '⚠️';
+      if (isHard) {
+        className = 'hard';
+        icon = '🚫';
+      } else if (isSoft) {
+        className = 'soft';
+        icon = '⚠️';
+      }
+      // Clean up the message for display
+      const cleanMsg = w.replace('[TWARDE]', '').replace('[MIĘKKIE]', '').trim();
+      return `<li class="${className}">${icon} <span class="warning-detail">${cleanMsg}</span></li>`;
+    }).join('');
+  } else {
+    warningsPanel.style.display = 'none';
+  }
+
+  console.log('📊 Results summary updated:', {
+    variant: result.recommended_variant,
+    npv: recommended.npv_pln,
+    payback: recommended.simple_payback_years,
+    warnings: result.warnings?.length || 0
+  });
+}
+
+/**
+ * Reset advanced configuration to defaults
+ */
+function resetAdvancedConfig() {
+  console.log('🔄 Resetting advanced configuration...');
+
+  // Reset config object
+  advancedConfig = {
+    topology: 'pv_load',
+    objective: 'npv',
+    constraints: []
+  };
+
+  // Reset UI elements
+  document.querySelector('input[name="topology"][value="pv_load"]').checked = true;
+  document.getElementById('optimizationObjective').value = 'npv';
+  document.getElementById('objectiveInfo').innerHTML =
+    '<span class="info-icon">ℹ️</span><span>NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji</span>';
+
+  // Reset all constraints
+  const constraintCheckboxes = [
+    'constraintCapex', 'constraintPayback', 'constraintNpv',
+    'constraintEfc', 'constraintSelfConsumption'
+  ];
+
+  for (const id of constraintCheckboxes) {
+    const checkbox = document.getElementById(id);
+    const valueInput = document.getElementById(id + 'Value');
+    const typeSelect = document.getElementById(id + 'Type');
+
+    if (checkbox) checkbox.checked = false;
+    if (valueInput) {
+      valueInput.value = '';
+      valueInput.disabled = true;
+    }
+    if (typeSelect) {
+      typeSelect.value = 'hard';
+      typeSelect.disabled = true;
+    }
+  }
+
+  // Clear localStorage
+  localStorage.removeItem('bessTopology');
+  localStorage.removeItem('bessObjective');
+
+  // Update status
+  const statusEl = document.getElementById('configStatus');
+  if (statusEl) {
+    statusEl.textContent = '🔄 Zresetowano do ustawień domyślnych';
+    statusEl.className = 'config-status';
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  }
+}
+
+/**
+ * Load saved configuration from localStorage
+ */
+function loadSavedConfig() {
+  const savedTopology = localStorage.getItem('bessTopology');
+  const savedObjective = localStorage.getItem('bessObjective');
+
+  if (savedTopology) {
+    advancedConfig.topology = savedTopology;
+    const radioBtn = document.querySelector(`input[name="topology"][value="${savedTopology}"]`);
+    if (radioBtn) radioBtn.checked = true;
+  }
+
+  if (savedObjective) {
+    advancedConfig.objective = savedObjective;
+    const selectEl = document.getElementById('optimizationObjective');
+    if (selectEl) selectEl.value = savedObjective;
+    updateOptimizationObjective(savedObjective);
+  }
+}
+
+// Initialize advanced config on load
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(loadSavedConfig, 100);
+});
+
+// Export advanced config functions
+window.updateTopology = updateTopology;
+window.updateOptimizationObjective = updateOptimizationObjective;
+window.toggleConstraint = toggleConstraint;
+window.applyAdvancedConfig = applyAdvancedConfig;
+window.resetAdvancedConfig = resetAdvancedConfig;
+window.advancedConfig = advancedConfig;
+
+console.log('📦 bess.js v3.13 - added config results summary panel with constraint warnings');

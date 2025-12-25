@@ -915,6 +915,39 @@
         </div>
       </div>
 
+      <!-- BESS Topology Selector (PV+BESS vs BESS-only) -->
+      <div style="margin-bottom:24px;padding:20px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1976d2;font-size:15px;margin-bottom:12px">Topologia systemu</div>
+        <div style="font-size:11px;color:#666;margin-bottom:16px">
+          Wybierz czy BESS współpracuje z instalacją PV, czy działa samodzielnie (tylko peak shaving / arbitraż).
+        </div>
+
+        <div style="display:flex;gap:12px">
+          <div id="topologyPvBess" onclick="setBessTopology('pv_bess')" style="flex:1;padding:16px 12px;background:#e8f5e9;border-radius:8px;text-align:center;border:2px solid #4caf50;cursor:pointer;transition:all 0.2s">
+            <div style="font-size:24px">☀️🔋</div>
+            <div style="font-weight:700;color:#2e7d32;font-size:14px;margin-top:4px">PV + BESS</div>
+            <div style="font-size:10px;color:#666;margin-top:2px">Magazyn + fotowoltaika</div>
+          </div>
+          <div id="topologyBessOnly" onclick="setBessTopology('bess_only')" style="flex:1;padding:16px 12px;background:#fff3e0;border-radius:8px;text-align:center;border:2px solid transparent;cursor:pointer;opacity:0.6;transition:all 0.2s">
+            <div style="font-size:24px">🔋⚡</div>
+            <div style="font-weight:700;color:#e65100;font-size:14px;margin-top:4px">Tylko BESS</div>
+            <div style="font-size:10px;color:#666;margin-top:2px">Peak shaving / arbitraż bez PV</div>
+          </div>
+        </div>
+        <input type="hidden" id="bessTopology" value="pv_bess">
+
+        <!-- BESS-only mode info (shown when selected) -->
+        <div id="bessOnlyInfo" style="display:none;margin-top:16px;padding:12px;background:#fff8e1;border-radius:6px;border-left:3px solid #ff9800">
+          <div style="font-size:12px;color:#e65100;line-height:1.5">
+            <strong>⚠️ Tryb Tylko BESS:</strong><br>
+            • Wymaga załadowania profilu zużycia w module KONFIGURACJA<br>
+            • Nie wymaga danych produkcji PV<br>
+            • Optymalizacja pod peak shaving lub arbitraż cenowy<br>
+            • Wyniki propagowane do modułów BESS i EKONOMIA
+          </div>
+        </div>
+      </div>
+
       <!-- BESS Mode Selector (3-way) -->
       <div style="margin-bottom:24px;padding:20px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
         <div style="font-weight:600;color:#1976d2;font-size:15px;margin-bottom:12px">Tryb magazynu energii</div>

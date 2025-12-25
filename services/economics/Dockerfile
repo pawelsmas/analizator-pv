@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY bess_optimizer.py .
 COPY scoring/ ./scoring/
+COPY monte_carlo/ ./monte_carlo/
 
 # Expose port
 EXPOSE 8003

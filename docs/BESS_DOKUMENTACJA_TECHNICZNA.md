@@ -1,11 +1,12 @@
 # Dokumentacja Techniczna Modułu BESS
 ## Battery Energy Storage System - Magazyn Energii
 
-**Wersja:** 3.7
+**Wersja:** 3.9
 **Data:** 2025-12-23
 **Autor:** Analizator PV
 **Engine Version:** 1.2.0
 **Service Version:** 1.1.0
+**Frontend Version:** 3.14
 
 ---
 
@@ -21,7 +22,7 @@
 8. [Przykłady Obliczeń](#8-przykłady-obliczeń)
 9. [Do Rozwoju - Strategie Rozładowywania](#9-do-rozwoju---strategie-rozładowywania-bess)
 10. [Szczegółowy Opis Algorytmów](#10-szczegółowy-opis-algorytmów)
-11. [Nowe Funkcjonalności v3.7](#11-nowe-funkcjonalności-v37)
+11. [Nowe Funkcjonalności v3.7-3.14](#11-nowe-funkcjonalności-v37)
 
 ---
 
@@ -1495,7 +1496,7 @@ Próg 100%: EXCEEDED  - Przekroczenie budżetu degradacji
 
 ---
 
-## 11. Nowe Funkcjonalności (v3.7)
+## 11. Nowe Funkcjonalności (v3.7-3.14)
 
 ### 11.1 Analiza Wrażliwości (Tornado Chart)
 
@@ -1708,14 +1709,193 @@ def evaluate_configuration(config, request):
 | `/dispatch` | POST | Dispatch z nową topologią LOAD_ONLY |
 | `/sizing` | POST | Sizing z multi-objective optimization |
 
-### 11.5 Wersjonowanie
+### 11.5 Interfejs Użytkownika (Frontend BESS v3.12)
+
+#### 11.5.1 Nowa Sekcja: Konfiguracja Zaawansowana
+
+W wersji 3.12 dodano sekcję "Konfiguracja Zaawansowana BESS" umożliwiającą:
+
+1. **Wybór Topologii Systemu**
+   - `PV + BESS + Load` - standardowa konfiguracja z instalacją PV
+   - `BESS + Load (bez PV)` - magazyn energii bez PV (peak shaving/arbitraż)
+   - `Tylko PV (bez BESS)` - scenariusz bazowy tylko z instalacją PV
+
+2. **Wybór Celu Optymalizacji**
+   - Maksymalizuj NPV (domyślne)
+   - Minimalizuj Payback
+   - Maksymalizuj Autokonsumpcję
+   - Maksymalizuj Redukcję Szczytów
+   - Optymalizuj Wykorzystanie Cykli
+
+3. **Edytor Ograniczeń (Constraints)**
+   - Max CAPEX [PLN] - limit budżetu inwestycyjnego
+   - Max Payback [lat] - maksymalny okres zwrotu
+   - Min NPV [PLN] - minimalna wartość NPV
+   - Max EFC/rok [cykli] - limit cykli rocznych
+   - Min Autokonsumpcja [%] - wymagana autokonsumpcja
+
+Każde ograniczenie może być:
+- **Twarde** - konfiguracja naruszająca jest odrzucana
+- **Miękkie** - konfiguracja naruszająca jest penalizowana w rankingu
+
+#### 11.5.2 Analiza Wrażliwości w UI
+
+Sekcja Tornado Chart jest teraz zawsze widoczna dla wariantów z BESS. Funkcjonalności:
+
+- **Podsumowanie bazowe**: NPV, Payback, CAPEX
+- **Wykres Tornado**: wizualizacja wpływu parametrów na NPV
+- **Tabela szczegółowa**: wartości dla każdego parametru
+- **Ostrzeżenia breakeven**: scenariusze gdzie NPV staje się ujemne
+
+#### 11.5.3 Przepływ Użytkownika
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PRZEPŁYW UŻYTKOWNIKA                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Wybierz wariant instalacji (A/B/C/D)                       │
+│                     ↓                                           │
+│  2. [Opcjonalne] Skonfiguruj zaawansowane ustawienia:          │
+│     ├── Wybierz topologię                                      │
+│     ├── Wybierz cel optymalizacji                              │
+│     └── Zdefiniuj ograniczenia                                 │
+│                     ↓                                           │
+│  3. Kliknij "Zastosuj konfigurację i przelicz"                │
+│                     ↓                                           │
+│  4. Przejrzyj wyniki:                                          │
+│     ├── Metryki energetyczne                                   │
+│     ├── Ekonomia BESS (NPV, Payback, ROI)                      │
+│     ├── Warianty doboru (S/M/L)                                │
+│     └── Analiza wrażliwości (tornado)                          │
+│                     ↓                                           │
+│  5. [Opcjonalne] Uruchom szczegółową analizę wrażliwości       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 11.5.4 Tryb Spójnych Obliczeń
+
+System zapewnia spójność obliczeń dla wszystkich topologii:
+
+| Scenariusz | Opis | Tryb Dispatch |
+|------------|------|---------------|
+| **PV solo** | Tylko instalacja PV | Brak BESS |
+| **PV + BESS** | Standardowa konfiguracja | PV_SURPLUS lub STACKED |
+| **BESS alone** | Magazyn bez PV | LOAD_ONLY |
+
+Wszystkie scenariusze używają tego samego profilu obciążenia (load_kw) i parametrów ekonomicznych dla porównywalności wyników.
+
+### 11.6 Panel Wyników Optymalizacji (v3.13)
+
+W wersji 3.13 dodano panel "Wyniki Optymalizacji" wyświetlany bezpośrednio pod przyciskiem "Zastosuj konfigurację", eliminując konieczność przewijania strony.
+
+#### 11.6.1 Metryki w Panelu
+
+| Metryka | Opis |
+|---------|------|
+| **Rekomendowany wariant** | S/M/L z najwyższym score |
+| **Moc / Pojemność** | np. "150 kW / 300 kWh" |
+| **NPV** | Wartość bieżąca netto z kolorystycznym wskaźnikiem |
+| **Payback** | Prosty okres zwrotu w latach |
+| **CAPEX** | Całkowity koszt inwestycji |
+| **EFC/rok** | Cykle ekwiwalentne na rok |
+
+#### 11.6.2 Sekcja Naruszeń Ograniczeń
+
+Jeśli którekolwiek z zdefiniowanych ograniczeń (constraints) zostanie naruszone, wyświetlana jest sekcja "Naruszenia Ograniczeń" z listą:
+
+```
+⚠️ Naruszenia Ograniczeń
+──────────────────────────
+🚫 Medium (2h): EFC 301 cykli > max 200 cykli
+⚠️ Small (1h): Payback 8.5y > max 7.0y
+```
+
+**Ikony:**
+- 🚫 - ograniczenie twarde (hard) - konfiguracja silnie penalizowana
+- ⚠️ - ograniczenie miękkie (soft) - konfiguracja lekko penalizowana
+
+### 11.7 Wyświetlanie Ostrzeżeń Constraints (v3.14)
+
+#### 11.7.1 Zmiany w Zachowaniu Hard Constraints
+
+W wersji 3.14 zmieniono logikę obsługi twardych ograniczeń:
+
+**Poprzednie zachowanie (v3.12):**
+- Konfiguracje naruszające hard constraints były pomijane
+- Użytkownik nie widział ostrzeżeń o naruszeniach
+- Wyniki pokazywały tylko "bezpieczne" konfiguracje
+
+**Nowe zachowanie (v3.14):**
+- Wszystkie konfiguracje są pokazywane
+- Hard constraints nakładają **surową karę** na score (10x)
+- Ostrzeżenia o naruszeniach są **zawsze widoczne** w panelu wyników
+- Użytkownik widzi pełny obraz sytuacji i może świadomie zdecydować
+
+#### 11.7.2 Format Ostrzeżeń z API
+
+Backend zwraca ostrzeżenia w formacie:
+
+```json
+{
+  "warnings": [
+    "Small (1h): [TWARDE] CAPEX 850000 PLN > max 500000 PLN",
+    "Medium (2h): [TWARDE] EFC 301 cykli > max 200 cykli",
+    "Large (4h): [MIĘKKIE] Payback 9.2y > max 7.0y"
+  ]
+}
+```
+
+#### 11.7.3 Obsługiwane Typy Ostrzeżeń
+
+| Ograniczenie | Komunikat naruszenia |
+|--------------|---------------------|
+| MAX_CAPEX | `CAPEX {actual} PLN > max {limit} PLN` |
+| MAX_PAYBACK | `Payback {actual}y > max {limit}y` |
+| MIN_NPV | `NPV {actual} PLN < min {limit} PLN` |
+| MAX_EFC | `EFC {actual} cykli > max {limit} cykli` |
+| MIN_SELF_CONSUMPTION | `Autokonsumpcja {actual}% < min {limit}%` |
+
+#### 11.7.4 Algorytm Penalizacji
+
+```python
+def evaluate_with_constraints(config, constraints):
+    score = calculate_base_score(config)
+
+    for constraint in constraints:
+        if violated(constraint):
+            if constraint.hard:
+                # Surowa kara - de facto eliminacja
+                score -= abs(score) * 10.0
+            else:
+                # Proporcjonalna kara
+                violation_ratio = violation_amount / constraint.value
+                score -= abs(score) * violation_ratio * penalty_weight
+
+    return score
+```
+
+### 11.8 Auto-Scroll do Wyników
+
+Po kliknięciu "Zastosuj konfigurację" strona automatycznie przewija się do panelu wyników, zapewniając natychmiastowy feedback dla użytkownika.
+
+```javascript
+// Automatyczne przewinięcie do wyników
+const summaryPanel = document.getElementById('configResultsSummary');
+if (summaryPanel) {
+  summaryPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+```
+
+### 11.9 Wersjonowanie
 
 | Komponent | Wersja |
 |-----------|--------|
-| Dokumentacja | 3.7 |
+| Dokumentacja | 3.9 |
 | Engine | 1.2.0 |
 | Service | 1.1.0 |
-| Frontend BESS | 3.11 |
+| Frontend BESS | 3.14 |
 
 ---
 

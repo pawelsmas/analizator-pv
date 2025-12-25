@@ -545,6 +545,279 @@
       <canvas id="sensitivityAnalysis"></canvas>
     </div>
 
+    <!-- ============== MONTE CARLO SIMULATION SECTION ============== -->
+    <div class="chart-section full-width" id="monteCarloSection">
+      <h2>🎲 Analiza Monte Carlo - Symulacja Ryzyka Finansowego</h2>
+      <div class="chart-info">
+        Symulacja stochastyczna z uwzględnieniem niepewności parametrów i korelacji
+      </div>
+
+      <!-- Monte Carlo Configuration -->
+      <div style="background:#f8f9fa;border-radius:8px;padding:20px;margin-top:16px;border:1px solid #dee2e6">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
+          <!-- Number of simulations -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Liczba symulacji</label>
+            <select id="mcSimulations" style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px">
+              <option value="1000">1,000 (szybka)</option>
+              <option value="5000" selected>5,000 (standardowa)</option>
+              <option value="10000">10,000 (dokładna)</option>
+              <option value="50000">50,000 (bardzo dokładna)</option>
+            </select>
+          </div>
+
+          <!-- Preset -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Profil ryzyka</label>
+            <select id="mcPreset" style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px">
+              <option value="conservative">Konserwatywny</option>
+              <option value="moderate" selected>Umiarkowany</option>
+              <option value="optimistic">Optymistyczny</option>
+            </select>
+          </div>
+
+          <!-- Electricity price uncertainty -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Niepewność ceny energii [%]</label>
+            <input type="number" id="mcPriceUncertainty" value="12" min="0" max="30" step="1"
+                   style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px"
+                   title="Standard bankowy: 12% (FfE, IMF 2024)">
+          </div>
+
+          <!-- Production uncertainty -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Niepewność produkcji [%]</label>
+            <input type="number" id="mcProductionUncertainty" value="8" min="0" max="20" step="1"
+                   style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px"
+                   title="Standard NREL P50/P90: 8%">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:center">
+          <button class="btn" onclick="runMonteCarlo()" id="mcRunButton">
+            🎲 URUCHOM SYMULACJĘ MONTE CARLO
+          </button>
+          <span id="mcStatus" style="font-size:13px;color:#666"></span>
+        </div>
+      </div>
+
+      <!-- Monte Carlo Results (hidden until simulation runs) -->
+      <div id="mcResults" style="display:none;margin-top:24px">
+
+        <!-- BASE SCENARIO PARAMETERS PANEL -->
+        <div style="background:#fff;border:2px solid #1565c0;border-radius:8px;padding:16px;margin-bottom:24px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <h4 style="margin:0;font-size:14px;color:#1565c0">📋 Parametry Scenariusza Bazowego (punkt startowy analizy)</h4>
+            <button class="btn" onclick="exportMonteCarloToExcel()" style="background:#27ae60;font-size:12px;padding:8px 16px">
+              📊 EKSPORT DO EXCEL
+            </button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+            <!-- Variant data -->
+            <div style="background:#e3f2fd;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Moc instalacji</div>
+              <div id="mcBaseCapacity" style="font-size:16px;font-weight:600;color:#1565c0">-</div>
+              <div style="font-size:10px;color:#888">kWp</div>
+            </div>
+            <div style="background:#e3f2fd;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Roczna produkcja</div>
+              <div id="mcBaseProduction" style="font-size:16px;font-weight:600;color:#1565c0">-</div>
+              <div style="font-size:10px;color:#888">MWh/rok</div>
+            </div>
+            <div style="background:#e3f2fd;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Autokonsumpcja</div>
+              <div id="mcBaseSelfConsumed" style="font-size:16px;font-weight:600;color:#1565c0">-</div>
+              <div style="font-size:10px;color:#888">MWh/rok</div>
+            </div>
+            <div style="background:#e3f2fd;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Autokonsumpcja %</div>
+              <div id="mcBaseAutoPct" style="font-size:16px;font-weight:600;color:#1565c0">-</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+            <!-- Economic parameters -->
+            <div style="background:#fff3e0;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Cena energii (z opł. moc.)</div>
+              <div id="mcBaseEnergyPrice" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+              <div style="font-size:10px;color:#888">PLN/MWh</div>
+            </div>
+            <div style="background:#fff3e0;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">CAPEX jednostkowy</div>
+              <div id="mcBaseCapex" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+              <div style="font-size:10px;color:#888">PLN/kWp</div>
+            </div>
+            <div style="background:#fff3e0;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">CAPEX całkowity</div>
+              <div id="mcBaseTotalCapex" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+              <div style="font-size:10px;color:#888">mln PLN</div>
+            </div>
+            <div style="background:#fff3e0;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Stopa dyskontowa</div>
+              <div id="mcBaseDiscount" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+            <!-- Additional params -->
+            <div style="background:#f5f5f5;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">OPEX</div>
+              <div id="mcBaseOpex" style="font-size:16px;font-weight:600;color:#555">-</div>
+              <div style="font-size:10px;color:#888">PLN/kWp/rok</div>
+            </div>
+            <div style="background:#f5f5f5;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Degradacja</div>
+              <div id="mcBaseDegradation" style="font-size:16px;font-weight:600;color:#555">-</div>
+              <div style="font-size:10px;color:#888">%/rok</div>
+            </div>
+            <div style="background:#f5f5f5;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Okres analizy</div>
+              <div id="mcBasePeriod" style="font-size:16px;font-weight:600;color:#555">-</div>
+              <div style="font-size:10px;color:#888">lat</div>
+            </div>
+            <div style="background:#f5f5f5;padding:12px;border-radius:6px">
+              <div style="font-size:11px;color:#666;margin-bottom:4px">Inflacja</div>
+              <div id="mcBaseInflation" style="font-size:16px;font-weight:600;color:#555">-</div>
+              <div style="font-size:10px;color:#888">%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Key Risk Metrics -->
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:24px">
+          <div style="background:#e8f5e9;padding:16px;border-radius:8px;text-align:center">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Prawdopodobieństwo zysku</div>
+            <div id="mcProbPositive" style="font-size:28px;font-weight:700;color:#2e7d32">-</div>
+            <div style="font-size:11px;color:#888">%</div>
+          </div>
+          <div style="background:#e3f2fd;padding:16px;border-radius:8px;text-align:center">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">NPV Mediana (P50)</div>
+            <div id="mcNpvMedian" style="font-size:22px;font-weight:700;color:#1565c0">-</div>
+            <div style="font-size:11px;color:#888">mln PLN</div>
+          </div>
+          <div style="background:#fff3e0;padding:16px;border-radius:8px;text-align:center">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">NPV Pesymistyczny (P10)</div>
+            <div id="mcNpvP10" style="font-size:22px;font-weight:700;color:#e65100">-</div>
+            <div style="font-size:11px;color:#888">mln PLN</div>
+          </div>
+          <div style="background:#e8eaf6;padding:16px;border-radius:8px;text-align:center">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">NPV Optymistyczny (P90)</div>
+            <div id="mcNpvP90" style="font-size:22px;font-weight:700;color:#3f51b5">-</div>
+            <div style="font-size:11px;color:#888">mln PLN</div>
+          </div>
+          <div style="background:#fce4ec;padding:16px;border-radius:8px;text-align:center">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">VaR 95%</div>
+            <div id="mcVar95" style="font-size:22px;font-weight:700;color:#c2185b">-</div>
+            <div style="font-size:11px;color:#888">mln PLN</div>
+          </div>
+        </div>
+
+        <!-- NPV Histogram Chart -->
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-bottom:24px">
+          <div style="background:#fff;border:1px solid #dee2e6;border-radius:8px;padding:16px">
+            <h4 style="margin:0 0 12px 0;font-size:14px;color:#2c3e50">Rozkład NPV (Histogram)</h4>
+            <canvas id="mcNpvHistogram" style="max-height:300px"></canvas>
+          </div>
+
+          <!-- IRR and Payback Stats -->
+          <div style="background:#fff;border:1px solid #dee2e6;border-radius:8px;padding:16px">
+            <h4 style="margin:0 0 16px 0;font-size:14px;color:#2c3e50">Statystyki IRR i Payback</h4>
+
+            <div style="margin-bottom:20px">
+              <div style="font-size:12px;color:#666;margin-bottom:8px">IRR</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+                <div style="background:#f5f5f5;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">P10</div>
+                  <div id="mcIrrP10" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+                </div>
+                <div style="background:#e8f5e9;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">Mediana</div>
+                  <div id="mcIrrMedian" style="font-size:16px;font-weight:600;color:#2e7d32">-</div>
+                </div>
+                <div style="background:#f5f5f5;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">P90</div>
+                  <div id="mcIrrP90" style="font-size:16px;font-weight:600;color:#3f51b5">-</div>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-bottom:20px">
+              <div style="font-size:12px;color:#666;margin-bottom:8px">Okres zwrotu (lat)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+                <div style="background:#e8f5e9;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">P10 (najlepszy)</div>
+                  <div id="mcPaybackP10" style="font-size:16px;font-weight:600;color:#2e7d32">-</div>
+                </div>
+                <div style="background:#f5f5f5;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">Mediana</div>
+                  <div id="mcPaybackMedian" style="font-size:16px;font-weight:600;color:#2c3e50">-</div>
+                </div>
+                <div style="background:#fff3e0;padding:8px;border-radius:4px">
+                  <div style="font-size:10px;color:#888">P90 (najgorszy)</div>
+                  <div id="mcPaybackP90" style="font-size:16px;font-weight:600;color:#e65100">-</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Computation info -->
+            <div style="font-size:11px;color:#888;border-top:1px solid #eee;padding-top:12px">
+              <div>Symulacji: <span id="mcSimCount">-</span></div>
+              <div>Czas obliczeń: <span id="mcCompTime">-</span> ms</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Insights -->
+        <div style="background:#e3f2fd;border-radius:8px;padding:16px;margin-bottom:24px">
+          <h4 style="margin:0 0 12px 0;font-size:14px;color:#1565c0">💡 Wnioski z analizy</h4>
+          <ul id="mcInsights" style="margin:0;padding-left:20px;font-size:13px;line-height:1.8;color:#1565c0">
+            <li>Uruchom symulację aby zobaczyć wnioski</li>
+          </ul>
+        </div>
+
+        <!-- Scenario Comparison -->
+        <div style="background:#fff;border:1px solid #dee2e6;border-radius:8px;padding:16px">
+          <h4 style="margin:0 0 16px 0;font-size:14px;color:#2c3e50">Porównanie scenariuszy</h4>
+          <table class="payback-table" style="margin:0">
+            <thead>
+              <tr>
+                <th>Scenariusz</th>
+                <th>NPV<br/><span class="unit">mln PLN</span></th>
+                <th>IRR<br/><span class="unit">%</span></th>
+                <th>Payback<br/><span class="unit">lat</span></th>
+                <th>Interpretacja</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="background:#fff3e0">
+                <td><strong>Pesymistyczny (P10)</strong></td>
+                <td id="mcScenP10Npv">-</td>
+                <td id="mcScenP10Irr">-</td>
+                <td id="mcScenP10Payback">-</td>
+                <td style="font-size:12px">10% scenariuszy jest gorszych</td>
+              </tr>
+              <tr style="background:#e8f5e9">
+                <td><strong>Bazowy (Mediana)</strong></td>
+                <td id="mcScenBaseNpv">-</td>
+                <td id="mcScenBaseIrr">-</td>
+                <td id="mcScenBasePayback">-</td>
+                <td style="font-size:12px">Najbardziej prawdopodobny wynik</td>
+              </tr>
+              <tr style="background:#e8eaf6">
+                <td><strong>Optymistyczny (P90)</strong></td>
+                <td id="mcScenP90Npv">-</td>
+                <td id="mcScenP90Irr">-</td>
+                <td id="mcScenP90Payback">-</td>
+                <td style="font-size:12px">90% scenariuszy jest gorszych</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- No data message -->
+      <div id="mcNoData" style="text-align:center;padding:40px;color:#666">
+        <div style="font-size:48px;margin-bottom:16px">🎲</div>
+        <p>Wykonaj analizę ekonomiczną (moduł Konfiguracja), a następnie uruchom symulację Monte Carlo.</p>
+      </div>
+    </div>
+
     <!-- BESS Analysis Section - MOVED TO DEDICATED BESS MODULE -->
     <!-- Sekcja BESS przeniesiona do dedykowanego modułu BESS w menu głównym -->
 
@@ -651,6 +924,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20251220-BREAKEVEN-FOCUS"></script>
+<script src="economics.js?v=20251224-MONTE-CARLO"></script>
+<script src="monte-carlo.js?v=20251224"></script>
 </body>
 </html>

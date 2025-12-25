@@ -99,10 +99,24 @@ def run_dispatch_with_params(
         soc_initial=0.5,
     )
 
+    # Determine effective mode and peak_limit_kw
+    effective_mode = request.mode
+    effective_peak_limit = request.peak_limit_kw
+
+    # For STACKED mode, we need a valid peak_limit_kw > 0
+    if effective_mode == DispatchMode.STACKED:
+        if not effective_peak_limit or effective_peak_limit <= 0:
+            # Calculate peak_limit from load profile (90th percentile)
+            load_array = np.array(request.load_kw)
+            effective_peak_limit = float(np.percentile(load_array, 90))
+            if effective_peak_limit <= 0:
+                # Fallback to PV_SURPLUS if no valid peak can be calculated
+                effective_mode = DispatchMode.PV_SURPLUS
+
     stacked_params = None
-    if request.mode == DispatchMode.STACKED:
+    if effective_mode == DispatchMode.STACKED:
         stacked_params = StackedModeParams(
-            peak_limit_kw=request.peak_limit_kw or 0,
+            peak_limit_kw=effective_peak_limit,
             reserve_fraction=request.reserve_fraction,
         )
 
@@ -116,9 +130,9 @@ def run_dispatch_with_params(
         load_kw=request.load_kw,
         interval_minutes=request.interval_minutes,
         battery=battery,
-        mode=request.mode,
+        mode=effective_mode,
         stacked_params=stacked_params,
-        peak_limit_kw=request.peak_limit_kw,
+        peak_limit_kw=effective_peak_limit,
         prices=prices,
     )
 
@@ -165,7 +179,7 @@ def evaluate_point(
     elif param == SensitivityParameter.DISCOUNT_RATE:
         discount_rate = param_value / 100  # Convert back from percentage
     elif param == SensitivityParameter.ROUNDTRIP_EFFICIENCY:
-        efficiency = param_value / 100  # Convert back from percentage
+        efficiency = min(param_value / 100, 0.99)  # Convert back from percentage, cap at 99%
     elif param == SensitivityParameter.OPEX_PCT:
         opex_pct = param_value / 100  # Convert back from percentage
 

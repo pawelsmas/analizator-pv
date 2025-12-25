@@ -6,6 +6,62 @@
  * heatmap visualization, and variant comparison.
  */
 
+// ============================================
+// CROSS-MODULE NAVIGATION (global scope)
+// ============================================
+
+/**
+ * Navigate to another module via parent shell
+ * @param {string} moduleName - module name (bess, economics, config, etc.)
+ */
+function navigateToModule(moduleName) {
+    console.log(`🔗 Profile: Navigating to module: ${moduleName}`);
+
+    // Send navigation request to parent shell
+    window.parent.postMessage({
+        type: 'NAVIGATE_TO_MODULE',
+        module: moduleName
+    }, '*');
+}
+
+/**
+ * Load shared BESS config from localStorage (set by BESS module)
+ */
+function loadSharedBessConfig() {
+    try {
+        const saved = localStorage.getItem('pv_shared_bess_config');
+        if (saved) {
+            const config = JSON.parse(saved);
+            console.log('📥 Profile: Loaded shared BESS config:', config);
+
+            // Update display
+            const el = document.getElementById('sharedBessConfig');
+            if (el && config.power_kw > 0 && config.energy_kwh > 0) {
+                el.textContent = `BESS: ${config.power_kw} kW / ${config.energy_kwh} kWh`;
+            }
+
+            // Optionally pre-fill form fields
+            if (config.power_kw > 0) {
+                const powerInput = document.getElementById('bessPower');
+                if (powerInput) powerInput.value = config.power_kw;
+            }
+            if (config.energy_kwh > 0) {
+                const energyInput = document.getElementById('bessEnergy');
+                if (energyInput) energyInput.value = config.energy_kwh;
+            }
+            if (config.pv_capacity_kwp > 0) {
+                const pvInput = document.getElementById('pvCapacity');
+                if (pvInput) pvInput.value = config.pv_capacity_kwp;
+            }
+
+            return config;
+        }
+    } catch (e) {
+        console.warn('⚠️ Profile: Could not load shared BESS config:', e);
+    }
+    return null;
+}
+
 (function() {
     'use strict';
 
@@ -24,6 +80,9 @@
         setupEventListeners();
         setupMessageListener();
         loadDataFromShell();
+
+        // Load shared BESS config from localStorage (cross-module sharing)
+        loadSharedBessConfig();
     }
 
     function setupEventListeners() {
