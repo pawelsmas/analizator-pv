@@ -267,3 +267,671 @@ body::-webkit-scrollbar {
     flex-wrap: wrap;
   }
 }
+
+/* =============================================================================
+   Time-of-Use Tariff Visualization
+   ============================================================================= */
+
+/* Main 24h Timeline */
+.timeline-24h {
+  position: relative;
+  height: 60px;
+  background: linear-gradient(to right, #1a237e 0%, #1565c0 25%, #fdd835 50%, #ef6c00 75%, #1a237e 100%);
+  background-size: 100% 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 16px 0;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.timeline-24h-interactive {
+  cursor: pointer;
+}
+
+/* Hour markers on timeline */
+.timeline-hours {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+  font-size: 11px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.timeline-hours span {
+  width: 24px;
+  text-align: center;
+}
+
+.timeline-hours span.highlight {
+  font-weight: 700;
+  color: #1565c0;
+}
+
+/* Zone segments on timeline */
+.timeline-segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  transition: all 0.2s ease;
+  border-right: 1px solid rgba(255,255,255,0.3);
+}
+
+.timeline-segment:hover {
+  filter: brightness(1.1);
+  z-index: 10;
+}
+
+.timeline-segment.zone-peak,
+.timeline-segment.zone-I {
+  background: linear-gradient(180deg, #ef5350 0%, #c62828 100%);
+}
+
+.timeline-segment.zone-day,
+.timeline-segment.zone-II {
+  background: linear-gradient(180deg, #ffca28 0%, #f9a825 100%);
+  color: #5d4037;
+  text-shadow: none;
+}
+
+.timeline-segment.zone-night,
+.timeline-segment.zone-III {
+  background: linear-gradient(180deg, #42a5f5 0%, #1565c0 100%);
+}
+
+.timeline-segment.zone-offpeak,
+.timeline-segment.zone-IV {
+  background: linear-gradient(180deg, #66bb6a 0%, #2e7d32 100%);
+}
+
+.timeline-segment.zone-flat {
+  background: linear-gradient(180deg, #78909c 0%, #455a64 100%);
+}
+
+.timeline-segment.zone-selected {
+  background: linear-gradient(180deg, #ff9800 0%, #e65100 100%);
+}
+
+.timeline-segment.zone-unselected {
+  background: linear-gradient(180deg, #90a4ae 0%, #607d8b 100%);
+  opacity: 0.6;
+}
+
+/* Zone legend */
+.zone-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.zone-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.zone-legend-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.zone-legend-color.peak { background: linear-gradient(180deg, #ef5350 0%, #c62828 100%); }
+.zone-legend-color.day { background: linear-gradient(180deg, #ffca28 0%, #f9a825 100%); }
+.zone-legend-color.night { background: linear-gradient(180deg, #42a5f5 0%, #1565c0 100%); }
+.zone-legend-color.offpeak { background: linear-gradient(180deg, #66bb6a 0%, #2e7d32 100%); }
+.zone-legend-color.selected { background: linear-gradient(180deg, #ff9800 0%, #e65100 100%); }
+.zone-legend-color.unselected { background: linear-gradient(180deg, #90a4ae 0%, #607d8b 100%); }
+
+/* Zone cards with better styling */
+.tariff-zone-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.tariff-zone-card {
+  padding: 16px;
+  border-radius: 12px;
+  color: white;
+  position: relative;
+  overflow: hidden;
+}
+
+.tariff-zone-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 60px;
+  height: 60px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 0 0 0 60px;
+}
+
+.tariff-zone-card.peak {
+  background: linear-gradient(135deg, #ef5350 0%, #c62828 100%);
+}
+
+.tariff-zone-card.day {
+  background: linear-gradient(135deg, #ffca28 0%, #f9a825 100%);
+  color: #5d4037;
+}
+
+.tariff-zone-card.night {
+  background: linear-gradient(135deg, #42a5f5 0%, #1565c0 100%);
+}
+
+.tariff-zone-card.offpeak {
+  background: linear-gradient(135deg, #66bb6a 0%, #2e7d32 100%);
+}
+
+/* Zone card header with icon and title */
+.tariff-zone-card .zone-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tariff-zone-card .zone-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.tariff-zone-card .zone-title {
+  flex: 1;
+}
+
+.tariff-zone-card .zone-name {
+  font-size: 18px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.tariff-zone-card .zone-hours {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+/* PROMINENT RATE - największy element na karcie */
+.rate-prominent {
+  background: rgba(255,255,255,0.95);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.rate-prominent input {
+  width: 100%;
+  max-width: 140px;
+  font-size: 36px;
+  font-weight: 800;
+  text-align: center;
+  border: none;
+  background: transparent;
+  color: #1a1a1a;
+  padding: 0;
+  -moz-appearance: textfield;
+}
+
+.rate-prominent input::-webkit-outer-spin-button,
+.rate-prominent input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.rate-prominent input:focus {
+  outline: none;
+}
+
+.rate-prominent .rate-unit {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Zone details - kompaktowe pola godzin */
+.zone-details {
+  background: rgba(255,255,255,0.2);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.zone-details .detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.zone-details .detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.zone-details label {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.9;
+  min-width: 50px;
+}
+
+.zone-details .hour-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.9);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.zone-details .hour-inputs input {
+  width: 40px;
+  padding: 4px;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  border: none;
+  background: transparent;
+  color: #333;
+  -moz-appearance: textfield;
+}
+
+.zone-details .hour-inputs input::-webkit-outer-spin-button,
+.zone-details .hour-inputs input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+}
+
+.zone-details .hour-inputs input:focus {
+  outline: none;
+  background: #e3f2fd;
+  border-radius: 4px;
+}
+
+.zone-details .hour-inputs span {
+  color: #666;
+  font-weight: 600;
+}
+
+.zone-details .auto-text {
+  font-size: 12px;
+  opacity: 0.85;
+  font-style: italic;
+}
+
+/* 3-zone layout adjustment */
+.tariff-zone-cards.three-zone {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.tariff-zone-cards.three-zone .tariff-zone-card {
+  min-width: 0;
+  padding: 16px;
+}
+
+.tariff-zone-cards.three-zone .zone-header {
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tariff-zone-cards.three-zone .zone-icon {
+  font-size: 24px;
+}
+
+.tariff-zone-cards.three-zone .zone-name {
+  font-size: 14px;
+}
+
+.tariff-zone-cards.three-zone .rate-prominent {
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.tariff-zone-cards.three-zone .rate-prominent input {
+  font-size: 28px;
+  max-width: 100px;
+}
+
+.tariff-zone-cards.three-zone .zone-details {
+  padding: 8px;
+}
+
+.tariff-zone-cards.three-zone .zone-details label {
+  min-width: 40px;
+  font-size: 11px;
+}
+
+.tariff-zone-cards.three-zone .zone-details .hour-inputs {
+  padding: 4px 8px;
+}
+
+.tariff-zone-cards.three-zone .zone-details .hour-inputs input {
+  width: 30px;
+  font-size: 13px;
+  padding: 2px;
+}
+
+.tariff-zone-cards.three-zone .zone-details .auto-text {
+  font-size: 11px;
+}
+
+.tariff-zone-cards.three-zone .detail-row {
+  gap: 6px;
+}
+
+/* Legacy classes for backwards compat */
+.tariff-zone-card .zone-rate {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.tariff-zone-card .zone-rate-unit {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* Hour range input group */
+.hour-range-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 2px solid #e0e0e0;
+  transition: all 0.2s;
+}
+
+.hour-range-group:focus-within {
+  border-color: #1976d2;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+.hour-range-group input[type="number"] {
+  width: 60px;
+  padding: 8px 12px;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+  border: none;
+  background: white;
+  border-radius: 6px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.hour-range-group input[type="number"]:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px #1976d2;
+}
+
+.hour-range-group .colon {
+  font-size: 18px;
+  font-weight: 700;
+  color: #666;
+}
+
+.hour-range-group .minutes {
+  font-size: 14px;
+  color: #999;
+  font-weight: 600;
+}
+
+.hour-range-group .separator {
+  font-size: 20px;
+  color: #999;
+  margin: 0 4px;
+}
+
+/* Rate input with unit */
+.rate-input-group {
+  display: flex;
+  align-items: stretch;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid #e0e0e0;
+  transition: all 0.2s;
+}
+
+.rate-input-group:focus-within {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+.rate-input-group input {
+  flex: 1;
+  padding: 12px 16px;
+  font-size: 18px;
+  font-weight: 700;
+  border: none;
+  background: white;
+}
+
+.rate-input-group input:focus {
+  outline: none;
+}
+
+.rate-input-group .unit {
+  padding: 12px 16px;
+  background: #f5f5f5;
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  display: flex;
+  align-items: center;
+  border-left: 1px solid #e0e0e0;
+}
+
+/* =============================================================================
+   Capacity Fee Visualization
+   ============================================================================= */
+
+/* Selected hours timeline */
+.capacity-fee-timeline {
+  position: relative;
+  height: 50px;
+  background: #eceff1;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+
+.capacity-fee-timeline .selected-window {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(180deg, #ff9800 0%, #e65100 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.capacity-fee-timeline .unselected {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(180deg, #90a4ae 0%, #607d8b 100%);
+  opacity: 0.4;
+}
+
+/* Quarter tabs */
+.quarter-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.quarter-tab {
+  flex: 1;
+  padding: 12px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  background: white;
+  font-size: 14px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.quarter-tab:hover {
+  border-color: #1976d2;
+  color: #1976d2;
+}
+
+.quarter-tab.active {
+  border-color: #1976d2;
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.quarter-tab .quarter-name {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.quarter-tab .quarter-months {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
+/* K-class cards */
+.k-class-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.k-class-card {
+  padding: 16px;
+  border-radius: 12px;
+  text-align: center;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: 2px solid transparent;
+}
+
+.k-class-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.k-class-card.selected {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.2);
+}
+
+.k-class-card.k1 { background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 100%); }
+.k-class-card.k2 { background: linear-gradient(135deg, #dcedc8 0%, #c5e1a5 100%); }
+.k-class-card.k3 { background: linear-gradient(135deg, #fff9c4 0%, #fff59d 100%); }
+.k-class-card.k4 { background: linear-gradient(135deg, #ffccbc 0%, #ffab91 100%); }
+
+.k-class-card .k-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: #333;
+}
+
+.k-class-card .k-delta {
+  font-size: 12px;
+  color: #666;
+  margin: 4px 0;
+}
+
+.k-class-card .k-coefficient {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1565c0;
+}
+
+.k-class-card .k-discount {
+  font-size: 11px;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Info boxes */
+.info-box {
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.info-box.blue {
+  background: #e3f2fd;
+  border-left: 4px solid #2196f3;
+}
+
+.info-box.orange {
+  background: #fff3e0;
+  border-left: 4px solid #ff9800;
+}
+
+.info-box.green {
+  background: #e8f5e9;
+  border-left: 4px solid #4caf50;
+}
+
+.info-box h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.info-box p, .info-box ul {
+  font-size: 12px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.info-box ul {
+  padding-left: 20px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .tariff-zone-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .k-class-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .quarter-tabs {
+    flex-wrap: wrap;
+  }
+
+  .quarter-tab {
+    flex: 1 1 45%;
+  }
+}

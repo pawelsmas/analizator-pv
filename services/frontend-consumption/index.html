@@ -224,6 +224,101 @@
       </div>
     </div>
 
+    <!-- Analiza Taryfowa -->
+    <div class="chart-section full-width" id="tariffAnalysisSection">
+      <h2>💰 Analiza Zużycia wg Stref Taryfowych</h2>
+      <div class="chart-info">
+        Rozkład zużycia i kosztów energii w poszczególnych strefach taryfowych (dane z USTAWIEŃ)
+      </div>
+
+      <!-- Tariff Info Banner -->
+      <div id="tariffInfoBanner" class="tariff-info-banner">
+        <div class="tariff-type-badge" id="tariffTypeBadge">-</div>
+        <div class="tariff-name" id="tariffNameDisplay">Ładowanie konfiguracji...</div>
+        <button class="btn-small" onclick="goToTariffSettings()">⚙️ Zmień taryfę</button>
+      </div>
+
+      <!-- Tariff 24h Visualization (like in settings) -->
+      <div class="tariff-24h-wrapper">
+        <h4 style="font-size:14px;color:#2c3e50;margin-bottom:10px;">Profil dobowy (dzień roboczy)</h4>
+        <div class="tariff-24h-bar-consumption" id="tariff24hBarConsumption">
+          <!-- Generated dynamically -->
+        </div>
+        <div class="tariff-hours-labels">
+          <span>0</span><span>3</span><span>6</span><span>9</span><span>12</span><span>15</span><span>18</span><span>21</span><span>24</span>
+        </div>
+      </div>
+
+      <!-- Zone Statistics Cards -->
+      <div class="tariff-zones-grid" id="tariffZonesGrid">
+        <!-- Filled dynamically based on tariff type -->
+      </div>
+
+      <!-- Tariff Cost Summary -->
+      <div class="tariff-summary-box" id="tariffSummaryBox">
+        <div class="tariff-summary-item">
+          <span class="label">Całkowity koszt energii:</span>
+          <span class="value" id="tariffTotalCost">-</span>
+        </div>
+        <div class="tariff-summary-item">
+          <span class="label">Średnia cena efektywna:</span>
+          <span class="value" id="tariffAvgPrice">-</span>
+        </div>
+        <div class="tariff-summary-item highlight">
+          <span class="label">Potencjalna oszczędność przy optymalizacji:</span>
+          <span class="value" id="tariffSavingsPotential">-</span>
+        </div>
+      </div>
+
+      <!-- Tariff Zone Breakdown Chart -->
+      <div class="tariff-charts-row">
+        <div class="tariff-chart-container">
+          <h4>Zużycie wg stref [kWh]</h4>
+          <canvas id="tariffEnergyChart"></canvas>
+        </div>
+        <div class="tariff-chart-container">
+          <h4>Koszt wg stref [PLN]</h4>
+          <canvas id="tariffCostChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Monthly Breakdown by Tariff Zone -->
+      <div class="tariff-monthly-section">
+        <h4 style="font-size:15px;color:#2c3e50;margin:20px 0 12px;">Miesięczny rozkład kosztów wg stref taryfowych</h4>
+        <canvas id="tariffMonthlyChart" style="max-height:280px;"></canvas>
+      </div>
+
+      <!-- Detailed Table -->
+      <div class="tariff-table-section" style="margin-top:20px;overflow-x:auto;">
+        <table id="tariffDetailsTable" class="tariff-details-table">
+          <thead>
+            <tr>
+              <th>Strefa</th>
+              <th>Godziny</th>
+              <th>Czas [h/rok]</th>
+              <th>% czasu</th>
+              <th>Zużycie [MWh]</th>
+              <th>% zużycia</th>
+              <th>Stawka [PLN/kWh]</th>
+              <th>Koszt [PLN]</th>
+              <th>% kosztu</th>
+            </tr>
+          </thead>
+          <tbody id="tariffDetailsTableBody">
+            <tr><td colspan="9" style="text-align:center;padding:20px;color:#7f8c8d;">Ładowanie analizy taryfowej...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Optimization Tips -->
+      <div class="tariff-tips-section" id="tariffTipsSection">
+        <h4 style="font-size:14px;color:#2c3e50;margin-bottom:10px;">💡 Rekomendacje optymalizacji taryfowej</h4>
+        <div class="tariff-tips-list" id="tariffTipsList">
+          <!-- Generated based on analysis -->
+        </div>
+      </div>
+    </div>
+
     <!-- Statystyki szczegółowe -->
     <div class="details-section">
       <h2>Statystyki Szczegółowe</h2>

@@ -14,23 +14,27 @@
   </div>
 
   <div class="settings-content">
-    <!-- Energy Tariff Section -->
+    <!-- Fixed Charges Section (without active energy) -->
     <div class="settings-section">
       <div class="section-header">
         <span class="section-icon">💡</span>
-        <h2>Taryfa Energetyczna</h2>
-        <span class="section-info">Składniki ceny energii [PLN/MWh]</span>
+        <h2>Opłaty Stałe</h2>
+        <span class="section-info">Składniki ceny energii BEZ energii czynnej [PLN/MWh]</span>
       </div>
+
+      <div class="info-box blue" style="margin-bottom:16px">
+        <p style="margin:0;font-size:13px">
+          <strong>⚡ Energia czynna</strong> jest definiowana osobno w sekcji <strong>Taryfy Dobowe (ToU)</strong> poniżej.<br>
+          Tu konfigurujemy tylko opłaty stałe, które są takie same niezależnie od strefy czasowej<br>
+          <em style="color:#666">(wyjątek: opłata mocowa naliczana tylko w godz. 7-22 w dni robocze)</em>
+        </p>
+      </div>
+
       <div class="settings-grid">
-        <div class="setting-item">
-          <label>Energia czynna</label>
-          <input type="number" id="energyActive" value="550" step="10">
-          <span class="setting-hint">Podstawowa stawka za energię</span>
-        </div>
         <div class="setting-item">
           <label>Dystrybucja</label>
           <input type="number" id="distribution" value="200" step="10">
-          <span class="setting-hint">Opłata dystrybucyjna</span>
+          <span class="setting-hint">Opłata dystrybucyjna OSD</span>
         </div>
         <div class="setting-item">
           <label>Opłata jakościowa</label>
@@ -48,9 +52,9 @@
           <span class="setting-hint">Wsparcie kogeneracji</span>
         </div>
         <div class="setting-item">
-          <label>Opłata mocowa (7-21)</label>
-          <input type="number" id="capacityFee" value="219" step="10">
-          <span class="setting-hint">Godziny szczytu</span>
+          <label>Opłata mocowa</label>
+          <input type="number" id="capacityFee" value="219" step="1" readonly style="background:#f5f5f5">
+          <span class="setting-hint">Stawka SOM × 1000 (konfig. poniżej) — tylko 7-22 Pn-Pt</span>
         </div>
         <div class="setting-item">
           <label>Akcyza</label>
@@ -58,10 +62,404 @@
           <span class="setting-hint">Podatek akcyzowy</span>
         </div>
         <div class="setting-item highlight">
-          <label>SUMA</label>
-          <input type="number" id="totalEnergyPrice" value="1001" readonly>
-          <span class="setting-hint">Całkowita cena energii</span>
+          <label>SUMA opłat stałych</label>
+          <input type="number" id="totalFixedCharges" value="451" readonly>
+          <span class="setting-hint">Doliczane do energii czynnej (bez mocowej w nocy)</span>
         </div>
+        <!-- Hidden field for backwards compatibility -->
+        <input type="hidden" id="energyActive" value="0">
+        <input type="hidden" id="totalEnergyPrice" value="451">
+      </div>
+    </div>
+
+    <!-- Time-of-Use Tariffs Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🕐</span>
+        <h2>Taryfy Dobowe (ToU)</h2>
+        <span class="section-info">Strefy czasowe i stawki energii</span>
+      </div>
+
+      <div class="info-box blue">
+        <h4>📋 Typy taryf</h4>
+        <p>
+          <strong>C11/G11</strong> — jednoskładnikowa (jedna stawka 24h)<br>
+          <strong>C12a/G12</strong> — dwustrefowa (dzień + noc)<br>
+          <strong>C12b/C22</strong> — trzystrefowa (szczyt + dzień + noc)<br>
+          <em style="color:#666">Stawki w PLN/MWh netto (bez VAT)</em>
+        </p>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Typ taryfy</label>
+          <select id="tariffType" onchange="onTariffTypeChange()" style="padding:12px;font-size:14px;font-weight:600">
+            <option value="flat">C11/G11 — Jednoskładnikowa</option>
+            <option value="two_zone" selected>C12a/G12 — Dwustrefowa</option>
+            <option value="three_zone">C12b/C22 — Trzystrefowa</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label>Nazwa taryfy (OSD)</label>
+          <input type="text" id="tariffName" value="C12a" placeholder="np. C12a, G12" style="font-size:16px;font-weight:600">
+        </div>
+      </div>
+
+      <!-- Prominent 24h Timeline Visualization -->
+      <div style="margin-top:20px;padding:20px;background:linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);border-radius:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <label style="font-weight:700;font-size:14px;color:#333">Podgląd 24h — dzień roboczy (Pn-Pt)</label>
+          <span id="tariffTimeInfo" style="font-size:12px;color:#666;background:white;padding:4px 12px;border-radius:20px">Czas zimowy (CET)</span>
+        </div>
+        <div id="tariffTimeline" class="timeline-24h" style="height:70px">
+          <!-- Populated by JavaScript -->
+        </div>
+        <div class="timeline-hours" style="font-size:12px;font-weight:600">
+          <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+          <span class="highlight">6</span><span class="highlight">7</span><span class="highlight">8</span>
+          <span class="highlight">9</span><span class="highlight">10</span><span class="highlight">11</span>
+          <span class="highlight">12</span><span class="highlight">13</span><span class="highlight">14</span>
+          <span class="highlight">15</span><span class="highlight">16</span><span class="highlight">17</span>
+          <span class="highlight">18</span><span class="highlight">19</span><span class="highlight">20</span>
+          <span class="highlight">21</span><span>22</span><span>23</span>
+        </div>
+      </div>
+
+      <!-- Flat tariff (single rate) -->
+      <div id="tariffFlatZone" style="display:none;margin-top:20px">
+        <div class="tariff-zone-cards" style="grid-template-columns:1fr">
+          <div class="tariff-zone-card" style="background:linear-gradient(135deg, #78909c 0%, #455a64 100%)">
+            <div class="zone-icon">⚡</div>
+            <div class="zone-name">Stawka całodobowa</div>
+            <div class="zone-hours">00:00 — 24:00 (wszystkie dni)</div>
+            <div style="margin-top:12px">
+              <label style="font-size:11px;opacity:0.8">Stawka [PLN/MWh]</label>
+              <div class="rate-input-group" style="margin-top:4px;border-color:rgba(255,255,255,0.3)">
+                <input type="number" id="tariffFlatRate" value="750" step="10" min="0" style="background:rgba(255,255,255,0.9);color:#333">
+                <span class="unit" style="background:rgba(0,0,0,0.2);color:white;border:none">PLN/MWh</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Two-zone tariff (day/night) -->
+      <div id="tariffTwoZone" style="margin-top:20px">
+        <div class="tariff-zone-cards">
+          <!-- Day zone card -->
+          <div class="tariff-zone-card day">
+            <div class="zone-header">
+              <div class="zone-icon">☀️</div>
+              <div class="zone-title">
+                <div class="zone-name">DZIEŃ</div>
+                <div class="zone-hours" id="dayZoneHoursDisplay">06:00 — 22:00</div>
+              </div>
+            </div>
+
+            <!-- STAWKA NA GÓRZE - DUŻA I WIDOCZNA -->
+            <div class="rate-prominent">
+              <input type="number" id="tariffDayRate" value="850" step="10" min="0" onchange="updateTariffVisualization()">
+              <span class="rate-unit">PLN/MWh</span>
+            </div>
+
+            <div class="zone-details">
+              <div class="detail-row">
+                <label>Pn-Pt:</label>
+                <div class="hour-inputs">
+                  <input type="number" id="tariffDayStartWeekday" value="6" min="0" max="23" onchange="updateTariffVisualization()">
+                  <span>—</span>
+                  <input type="number" id="tariffDayEndWeekday" value="22" min="1" max="24" onchange="updateTariffVisualization()">
+                </div>
+              </div>
+              <div class="detail-row">
+                <label>So-Nd:</label>
+                <div class="hour-inputs">
+                  <input type="number" id="tariffDayStartWeekend" value="6" min="0" max="23" onchange="updateTariffVisualization()">
+                  <span>—</span>
+                  <input type="number" id="tariffDayEndWeekend" value="13" min="1" max="24" onchange="updateTariffVisualization()">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Night zone card -->
+          <div class="tariff-zone-card night">
+            <div class="zone-header">
+              <div class="zone-icon">🌙</div>
+              <div class="zone-title">
+                <div class="zone-name">NOC</div>
+                <div class="zone-hours" id="nightZoneHoursDisplay">22:00 — 06:00</div>
+              </div>
+            </div>
+
+            <!-- STAWKA NA GÓRZE - DUŻA I WIDOCZNA -->
+            <div class="rate-prominent">
+              <input type="number" id="tariffNightRate" value="450" step="10" min="0" onchange="updateTariffVisualization()">
+              <span class="rate-unit">PLN/MWh</span>
+            </div>
+
+            <div class="zone-details">
+              <div class="detail-row">
+                <label>Godziny:</label>
+                <span class="auto-text">Automatycznie (poza dniem)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Three-zone tariff (peak/partial/off-peak) -->
+      <div id="tariffThreeZone" style="display:none;margin-top:20px">
+        <!-- Stawki - proste karty -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+          <!-- SZCZYT -->
+          <div style="background:linear-gradient(135deg,#ef5350,#c62828);color:white;border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px">🔴 SZCZYT</div>
+            <div style="font-size:11px;opacity:0.9;margin-bottom:12px">07-13, 17-21</div>
+            <input type="number" id="tariffPeakRate" value="950" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:120px;font-size:32px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:8px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:12px;margin-top:6px;opacity:0.9">PLN/MWh</div>
+          </div>
+          <!-- DZIEŃ -->
+          <div style="background:linear-gradient(135deg,#ffca28,#f9a825);color:#5d4037;border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px">🟡 DZIEŃ</div>
+            <div style="font-size:11px;opacity:0.8;margin-bottom:12px">pośredni</div>
+            <input type="number" id="tariffPartialRate" value="700" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:120px;font-size:32px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:8px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:12px;margin-top:6px;opacity:0.8">PLN/MWh</div>
+          </div>
+          <!-- NOC -->
+          <div style="background:linear-gradient(135deg,#66bb6a,#2e7d32);color:white;border-radius:12px;padding:20px;text-align:center">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px">🟢 NOC</div>
+            <div style="font-size:11px;opacity:0.9;margin-bottom:12px">22-06</div>
+            <input type="number" id="tariffOffPeakRate" value="400" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:120px;font-size:32px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:8px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:12px;margin-top:6px;opacity:0.9">PLN/MWh</div>
+          </div>
+        </div>
+
+        <!-- Godziny - osobny panel -->
+        <div style="background:#f5f5f5;border-radius:8px;padding:16px">
+          <div style="font-size:12px;font-weight:600;color:#666;margin-bottom:12px">Konfiguracja godzin stref</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+            <!-- Szczyt godziny -->
+            <div>
+              <div style="font-size:11px;color:#c62828;font-weight:600;margin-bottom:6px">SZCZYT (Pn-Pt)</div>
+              <div style="display:flex;align-items:center;gap:4px;font-size:13px">
+                <input type="number" id="tariffPeakStart" value="7" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffPeakEnd" value="13" min="1" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span style="color:#999;margin:0 4px">&</span>
+                <input type="number" id="tariffPeakStart2" value="17" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffPeakEnd2" value="21" min="1" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+              </div>
+            </div>
+            <!-- Dzień - auto -->
+            <div>
+              <div style="font-size:11px;color:#f9a825;font-weight:600;margin-bottom:6px">DZIEŃ</div>
+              <div style="font-size:12px;color:#666;padding:6px 0">Automatycznie (między szczytem a nocą)</div>
+            </div>
+            <!-- Noc godziny -->
+            <div>
+              <div style="font-size:11px;color:#2e7d32;font-weight:600;margin-bottom:6px">NOC</div>
+              <div style="display:flex;align-items:center;gap:4px;font-size:13px">
+                <input type="number" id="tariffNightStart3" value="22" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffNightEnd3" value="6" min="0" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span style="font-size:11px;color:#666;margin-left:4px">(+ weekendy)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary stats -->
+      <div style="margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        <div style="padding:16px;background:#f5f5f5;border-radius:8px;text-align:center">
+          <div style="font-size:12px;color:#666;margin-bottom:4px">Średnia stawka</div>
+          <div style="font-size:24px;font-weight:700;color:#1565c0" id="tariffAverageRate">690</div>
+          <div style="font-size:11px;color:#999">PLN/MWh</div>
+        </div>
+        <div style="padding:16px;background:#e8f5e9;border-radius:8px;text-align:center">
+          <div style="font-size:12px;color:#666;margin-bottom:4px">Oszczędność noc vs dzień</div>
+          <div style="font-size:24px;font-weight:700;color:#2e7d32" id="tariffNightSavings">47%</div>
+          <div style="font-size:11px;color:#999">taniej w nocy</div>
+        </div>
+        <div style="padding:16px;background:#fff3e0;border-radius:8px;text-align:center">
+          <div style="font-size:12px;color:#666;margin-bottom:4px">Godziny szczytu</div>
+          <div style="font-size:24px;font-weight:700;color:#e65100" id="tariffPeakHours">16h</div>
+          <div style="font-size:11px;color:#999">dziennie (Pn-Pt)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Capacity Fee (Opłata Mocowa) Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">⚡</span>
+        <h2>Opłata Mocowa (Rynek Mocy)</h2>
+        <span class="section-info">Konfiguracja wg Ustawy o rynku mocy i URE</span>
+      </div>
+
+      <div class="info-box orange">
+        <h4>📋 Wzór opłaty mocowej</h4>
+        <p>
+          <strong>WOM = A × SOM × ZS</strong><br>
+          <strong>A</strong> — współczynnik K-klasy (0.17 / 0.50 / 0.83 / 1.00)<br>
+          <strong>SOM</strong> — stawka opłaty mocowej [PLN/kWh]<br>
+          <strong>ZS</strong> — energia pobrana w godzinach wybranych [kWh]<br>
+          <em style="color:#666">Opłata naliczana tylko w dni robocze (Pn-Pt, bez świąt polskich)</em>
+        </p>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Rok rozliczeniowy</label>
+          <select id="capacityFeeYear" onchange="onCapacityFeeYearChange()" style="padding:12px;font-size:14px;font-weight:600">
+            <option value="2024">2024</option>
+            <option value="2025">2025</option>
+            <option value="2026" selected>2026</option>
+            <option value="2027">2027</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label>Stawka SOM</label>
+          <div class="rate-input-group">
+            <input type="number" id="somRate" value="0.2194" step="0.0001" min="0">
+            <span class="unit">PLN/kWh</span>
+          </div>
+          <span class="setting-hint">URE 58/2025</span>
+        </div>
+      </div>
+
+      <!-- 24h Timeline for Selected Hours -->
+      <div style="margin-top:20px;padding:20px;background:linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);border-radius:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <label style="font-weight:700;font-size:14px;color:#333">Godziny wybrane (ZS) — 24h dzień roboczy</label>
+          <span style="font-size:12px;color:#666;background:white;padding:4px 12px;border-radius:20px">15h/dobę wg URE</span>
+        </div>
+        <div id="capacityFeeTimeline" class="capacity-fee-timeline" style="height:60px">
+          <!-- Populated by JavaScript -->
+        </div>
+        <div class="timeline-hours" style="font-size:12px;font-weight:600">
+          <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span>
+          <span class="highlight" style="color:#e65100">7</span><span class="highlight" style="color:#e65100">8</span>
+          <span class="highlight" style="color:#e65100">9</span><span class="highlight" style="color:#e65100">10</span>
+          <span class="highlight" style="color:#e65100">11</span><span class="highlight" style="color:#e65100">12</span>
+          <span class="highlight" style="color:#e65100">13</span><span class="highlight" style="color:#e65100">14</span>
+          <span class="highlight" style="color:#e65100">15</span><span class="highlight" style="color:#e65100">16</span>
+          <span class="highlight" style="color:#e65100">17</span><span class="highlight" style="color:#e65100">18</span>
+          <span class="highlight" style="color:#e65100">19</span><span class="highlight" style="color:#e65100">20</span>
+          <span class="highlight" style="color:#e65100">21</span><span>22</span><span>23</span>
+        </div>
+
+        <div class="zone-legend" style="margin-top:12px;background:white">
+          <div class="zone-legend-item">
+            <div class="zone-legend-color selected"></div>
+            <span><strong>Godziny wybrane (ZS)</strong> — naliczana opłata mocowa</span>
+          </div>
+          <div class="zone-legend-item">
+            <div class="zone-legend-color unselected"></div>
+            <span>Poza godzinami wybranymi — brak opłaty</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quarter Selector with Tabs -->
+      <div style="margin-top:20px">
+        <label style="font-weight:700;font-size:14px;color:#333;display:block;margin-bottom:12px">Konfiguracja godzin wybranych per kwartał</label>
+
+        <div class="quarter-tabs">
+          <button class="quarter-tab active" onclick="selectCapacityFeeQuarter('Q1')" id="cfTabQ1">
+            <div class="quarter-name">Q1</div>
+            <div class="quarter-months">sty-mar</div>
+          </button>
+          <button class="quarter-tab" onclick="selectCapacityFeeQuarter('Q2')" id="cfTabQ2">
+            <div class="quarter-name">Q2</div>
+            <div class="quarter-months">kwi-cze</div>
+          </button>
+          <button class="quarter-tab" onclick="selectCapacityFeeQuarter('Q3')" id="cfTabQ3">
+            <div class="quarter-name">Q3</div>
+            <div class="quarter-months">lip-wrz</div>
+          </button>
+          <button class="quarter-tab" onclick="selectCapacityFeeQuarter('Q4')" id="cfTabQ4">
+            <div class="quarter-name">Q4</div>
+            <div class="quarter-months">paź-gru</div>
+          </button>
+        </div>
+
+        <div style="padding:20px;background:#f5f5f5;border-radius:8px;margin-top:8px">
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+            <label style="font-weight:600;color:#333">Godziny wybrane:</label>
+            <div class="hour-range-group" style="flex:1;min-width:280px;max-width:400px">
+              <input type="number" id="selectedHoursStart" value="7" min="0" max="23" onchange="updateCapacityFeeVisualization()">
+              <span class="colon">:</span>
+              <span class="minutes">00</span>
+              <span class="separator">—</span>
+              <input type="number" id="selectedHoursEnd" value="22" min="1" max="24" onchange="updateCapacityFeeVisualization()">
+              <span class="colon">:</span>
+              <span class="minutes">00</span>
+            </div>
+            <div style="font-size:14px;color:#666">
+              = <strong id="selectedHoursCount">15</strong> godzin/dobę
+            </div>
+          </div>
+          <p style="font-size:12px;color:#888;margin-top:8px">
+            Domyślnie: 07:00-22:00 (15 godzin) dla wszystkich kwartałów wg URE
+          </p>
+        </div>
+
+        <!-- Hidden inputs for all quarters (for form submission) -->
+        <input type="hidden" id="selectedHoursQ1Start" value="7">
+        <input type="hidden" id="selectedHoursQ1End" value="22">
+        <input type="hidden" id="selectedHoursQ2Start" value="7">
+        <input type="hidden" id="selectedHoursQ2End" value="22">
+        <input type="hidden" id="selectedHoursQ3Start" value="7">
+        <input type="hidden" id="selectedHoursQ3End" value="22">
+        <input type="hidden" id="selectedHoursQ4Start" value="7">
+        <input type="hidden" id="selectedHoursQ4End" value="22">
+      </div>
+
+      <!-- K-class coefficients -->
+      <div style="margin-top:20px">
+        <label style="font-weight:700;font-size:14px;color:#333;display:block;margin-bottom:12px">Klasy K-odbiorców i rabaty</label>
+        <div class="k-class-cards">
+          <div class="k-class-card k1">
+            <div class="k-name">K1</div>
+            <div class="k-delta">Δs &lt; 5%</div>
+            <div class="k-coefficient">A = 0.17</div>
+            <div class="k-discount">83% rabatu</div>
+          </div>
+          <div class="k-class-card k2">
+            <div class="k-name">K2</div>
+            <div class="k-delta">Δs 5-10%</div>
+            <div class="k-coefficient">A = 0.50</div>
+            <div class="k-discount">50% rabatu</div>
+          </div>
+          <div class="k-class-card k3">
+            <div class="k-name">K3</div>
+            <div class="k-delta">Δs 10-15%</div>
+            <div class="k-coefficient">A = 0.83</div>
+            <div class="k-discount">17% rabatu</div>
+          </div>
+          <div class="k-class-card k4 selected">
+            <div class="k-name">K4</div>
+            <div class="k-delta">Δs ≥ 15%</div>
+            <div class="k-coefficient">A = 1.00</div>
+            <div class="k-discount">brak rabatu</div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:#666;margin-top:12px;padding:8px 12px;background:#f5f5f5;border-radius:4px">
+          <strong>Δs</strong> = (średnie zużycie w ZS / średnie zużycie poza ZS − 1) × 100%<br>
+          Im bardziej płaski profil zużycia, tym niższa klasa K i większy rabat.
+        </p>
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end">
+        <button onclick="loadCapacityFeePreset()" style="padding:10px 20px;background:#2196f3;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px">
+          <span>🔄</span> Pobierz preset z API
+        </button>
       </div>
     </div>
 

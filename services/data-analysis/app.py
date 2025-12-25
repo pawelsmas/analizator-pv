@@ -92,10 +92,10 @@ class MonthlyBand(BaseModel):
 class BandPowerStats(BaseModel):
     """Statystyki mocy dla pasma (godziny PV)"""
     band: str
-    p_q10: float  # 10. percentyl [kW]
-    p_q20: float  # 20. percentyl [kW]
-    p_q30: float  # 30. percentyl [kW]
-    p_recommended: float  # Zalecana moc AC [kW]
+    p_q50: float  # 50. percentyl (mediana) [kW]
+    p_q75: float  # 75. percentyl [kW]
+    p_q95: float  # 95. percentyl [kW] - limit dla peak shaving
+    p_recommended: float  # Zalecana moc AC [kW] = P95
     hours_count: int  # Liczba godzin w paśmie
 
 class SeasonalityAnalysis(BaseModel):
@@ -400,18 +400,18 @@ def compute_band_powers(
         band_data = df_pv[df_pv['band'] == band]['P_kW']
 
         if len(band_data) > 0:
-            p_q10 = np.percentile(band_data, 10)
-            p_q20 = np.percentile(band_data, 20)
-            p_q30 = np.percentile(band_data, 30)
-            p_recommended = p_q20  # 20. percentyl = ~80% czasu load >= tej mocy
+            p_q50 = np.percentile(band_data, 50)  # Mediana
+            p_q75 = np.percentile(band_data, 75)
+            p_q95 = np.percentile(band_data, 95)  # P95 - 95% pomiarów poniżej tej wartości
+            p_recommended = p_q95  # P95 = limit mocy AC dla ścinania szczytów
         else:
-            p_q10 = p_q20 = p_q30 = p_recommended = 0
+            p_q50 = p_q75 = p_q95 = p_recommended = 0
 
         results.append({
             'band': band,
-            'p_q10': p_q10,
-            'p_q20': p_q20,
-            'p_q30': p_q30,
+            'p_q50': p_q50,
+            'p_q75': p_q75,
+            'p_q95': p_q95,
             'p_recommended': p_recommended,
             'hours_count': len(band_data)
         })
@@ -521,9 +521,9 @@ def analyze_seasonality(
     band_powers = [
         BandPowerStats(
             band=row['band'],
-            p_q10=float(row['p_q10']),
-            p_q20=float(row['p_q20']),
-            p_q30=float(row['p_q30']),
+            p_q50=float(row['p_q50']),
+            p_q75=float(row['p_q75']),
+            p_q95=float(row['p_q95']),
             p_recommended=float(row['p_recommended']),
             hours_count=int(row['hours_count'])
         )

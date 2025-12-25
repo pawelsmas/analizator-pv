@@ -42,8 +42,18 @@ let currentIntervalMinutes = 60; // Data interval: 15 for quarter-hourly, 60 for
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
-  loadConsumptionData();
+  // Request settings from shell first
+  console.log('📊 Consumption: Requesting settings from shell on load');
+  window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+
+  // Load data after short delay to allow settings to arrive
+  setTimeout(() => {
+    loadConsumptionData();
+  }, 100);
 });
+
+// Cache for system settings received from shell
+let cachedSystemSettings = null;
 
 // Listen for messages from shell
 window.addEventListener('message', (event) => {
@@ -59,6 +69,24 @@ window.addEventListener('message', (event) => {
       // Project was loaded - reload consumption data
       console.log('📂 Consumption: Project loaded, reloading data');
       loadConsumptionData();
+      break;
+    case 'SETTINGS_UPDATED':
+      // Settings updated from shell - cache them
+      if (event.data.data) {
+        cachedSystemSettings = event.data.data;
+        console.log('📊 Consumption: Settings received from shell:', cachedSystemSettings.tariffConfig);
+        // Re-run tariff analysis with new settings
+        if (consumptionData && consumptionData.hourlyData) {
+          performTariffAnalysis();
+        }
+      }
+      break;
+    case 'SHARED_DATA_RESPONSE':
+      // Shared data response - may contain settings
+      if (event.data.data && event.data.data.settings) {
+        cachedSystemSettings = event.data.data.settings;
+        console.log('📊 Consumption: Settings from SHARED_DATA_RESPONSE:', cachedSystemSettings.tariffConfig);
+      }
       break;
   }
 });
@@ -2197,4 +2225,827 @@ function generateSeasonalityChart(dailyBands) {
     }
   });
 }
+
+// ===========================================
+// TARIFF ANALYSIS SECTION
+// ===========================================
+
+// Chart instances for tariff analysis
+let tariffEnergyChart = null;
+let tariffCostChart = null;
+let tariffMonthlyChart = null;
+
+/**
+ * Get tariff configuration from settings (cached from shell or localStorage)
+ */
+function getTariffConfig() {
+  // FIRST: Try cached settings from shell (most reliable in iframe context)
+  if (cachedSystemSettings && cachedSystemSettings.tariffConfig) {
+    return cachedSystemSettings.tariffConfig;
+  }
+
+  // Try to get from parent window (shell's settings)
+  if (window.parent && window.parent.getSettings) {
+    try {
+      const settings = window.parent.getSettings();
+      if (settings && settings.tariffConfig) {
+        console.log('📊 Tariff config from parent window:', settings.tariffConfig);
+        cachedSystemSettings = settings; // Cache for future use
+        return settings.tariffConfig;
+      }
+    } catch (e) {
+      // Cross-origin error expected in iframe
+    }
+  }
+
+  // Try pv_system_settings (main settings storage - may not work in iframe)
+  try {
+    const pvSettings = localStorage.getItem('pv_system_settings');
+    if (pvSettings) {
+      const settings = JSON.parse(pvSettings);
+      if (settings && settings.tariffConfig) {
+        console.log('📊 Tariff config from pv_system_settings:', settings.tariffConfig);
+        cachedSystemSettings = settings;
+        return settings.tariffConfig;
+      }
+    }
+  } catch (e) {
+    // localStorage may not be accessible
+  }
+
+  // Request settings from shell if not cached
+  if (!cachedSystemSettings) {
+    console.log('📊 Requesting settings from shell...');
+    window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+  }
+
+  console.warn('📊 Using DEFAULT tariff config - no settings found!');
+
+  // Default configuration (C12a two-zone)
+  return {
+    type: 'two_zone',
+    name: 'C12a',
+    flatRate: 750,
+    twoZone: {
+      dayRate: 850,
+      nightRate: 450,
+      weekday: { start: 6, end: 22 },
+      weekend: { start: 6, end: 13 }
+    },
+    threeZone: {
+      peakRate: 950,
+      partialRate: 700,
+      offPeakRate: 400,
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      partial: { start: 6, end: 22 }
+    }
+  };
+}
+
+/**
+ * Get hourly rates for a specific day type (weekday or weekend)
+ * Returns array of 24 rates (PLN/MWh)
+ */
+function getTariffHourlyRates(dayType = 'weekday') {
+  const config = getTariffConfig();
+  const rates = new Array(24).fill(0);
+
+  if (config.type === 'flat') {
+    rates.fill(config.flatRate || 750);
+  } else if (config.type === 'two_zone') {
+    const zone = config.twoZone || {};
+    const nightRate = zone.nightRate || 450;
+    const dayRate = zone.dayRate || 850;
+
+    const schedule = dayType === 'weekend' ? zone.weekend : zone.weekday;
+    const start = schedule?.start || 6;
+    const end = schedule?.end || 22;
+
+    for (let h = 0; h < 24; h++) {
+      rates[h] = (h >= start && h < end) ? dayRate : nightRate;
+    }
+  } else if (config.type === 'three_zone') {
+    const zone = config.threeZone || {};
+    const offPeakRate = zone.offPeakRate || 400;
+    const partialRate = zone.partialRate || 700;
+    const peakRate = zone.peakRate || 950;
+
+    const peak1 = zone.peak1 || { start: 7, end: 13 };
+    const peak2 = zone.peak2 || { start: 16, end: 21 };
+    const partial = zone.partial || { start: 6, end: 22 };
+
+    for (let h = 0; h < 24; h++) {
+      if ((h >= peak1.start && h < peak1.end) || (h >= peak2.start && h < peak2.end)) {
+        rates[h] = peakRate;
+      } else if (h >= partial.start && h < partial.end) {
+        rates[h] = partialRate;
+      } else {
+        rates[h] = offPeakRate;
+      }
+    }
+  }
+
+  return rates;
+}
+
+/**
+ * Get zone name for a specific hour and day type
+ */
+function getZoneForHour(hour, dayType = 'weekday') {
+  const config = getTariffConfig();
+
+  if (config.type === 'flat') {
+    return 'flat';
+  } else if (config.type === 'two_zone') {
+    const zone = config.twoZone || {};
+    const schedule = dayType === 'weekend' ? zone.weekend : zone.weekday;
+    const start = schedule?.start || 6;
+    const end = schedule?.end || 22;
+    return (hour >= start && hour < end) ? 'day' : 'night';
+  } else if (config.type === 'three_zone') {
+    const zone = config.threeZone || {};
+    const peak1 = zone.peak1 || { start: 7, end: 13 };
+    const peak2 = zone.peak2 || { start: 16, end: 21 };
+    const partial = zone.partial || { start: 6, end: 22 };
+
+    if ((hour >= peak1.start && hour < peak1.end) || (hour >= peak2.start && hour < peak2.end)) {
+      return 'peak';
+    } else if (hour >= partial.start && hour < partial.end) {
+      return 'partial';
+    } else {
+      return 'off-peak';
+    }
+  }
+  return 'flat';
+}
+
+/**
+ * Perform tariff analysis on consumption data
+ */
+async function performTariffAnalysis() {
+  const config = getTariffConfig();
+
+  // Update info banner
+  updateTariffInfoBanner(config);
+
+  // Generate 24h visualization bar
+  generate24hVisualizationBar(config);
+
+  // Get 15-min or hourly data
+  let dataValues = [];
+  let dataTimestamps = [];
+  let intervalMinutes = 60;
+
+  try {
+    // Try 15-min data first
+    const quarterHourResponse = await fetch(`${API_URLS.dataAnalysis}/quarter-hour-data`);
+    if (quarterHourResponse.ok) {
+      const data = await quarterHourResponse.json();
+      if (data.values && data.values.length > 0) {
+        dataValues = data.values;
+        dataTimestamps = data.timestamps;
+        intervalMinutes = 15;
+        console.log(`📊 Tariff analysis using 15-min data: ${dataValues.length} intervals`);
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load 15-min data for tariff analysis:', e);
+  }
+
+  // Fallback to hourly
+  if (dataValues.length === 0 && consumptionData?.hourlyData) {
+    dataValues = consumptionData.hourlyData.values;
+    dataTimestamps = consumptionData.hourlyData.timestamps;
+    intervalMinutes = 60;
+    console.log(`📊 Tariff analysis using hourly data: ${dataValues.length} intervals`);
+  }
+
+  if (dataValues.length === 0) {
+    console.warn('No data available for tariff analysis');
+    return;
+  }
+
+  // Calculate zone statistics
+  const zoneStats = calculateZoneStatistics(dataValues, dataTimestamps, intervalMinutes, config);
+
+  // Update UI
+  updateTariffZonesGrid(zoneStats, config);
+  updateTariffSummary(zoneStats);
+  updateTariffDetailsTable(zoneStats);
+  generateTariffCharts(zoneStats);
+
+  // Calculate monthly breakdown
+  const monthlyStats = calculateMonthlyTariffStats(dataValues, dataTimestamps, intervalMinutes, config);
+  generateTariffMonthlyChart(monthlyStats, config);
+
+  // Generate optimization tips
+  generateTariffTips(zoneStats, config);
+}
+
+/**
+ * Calculate statistics for each tariff zone
+ */
+function calculateZoneStatistics(values, timestamps, intervalMinutes, config) {
+  const hoursPerInterval = intervalMinutes / 60;
+  const zones = {};
+
+  // Initialize zones based on tariff type
+  if (config.type === 'flat') {
+    zones.flat = { energy: 0, hours: 0, rate: config.flatRate || 750, intervals: 0 };
+  } else if (config.type === 'two_zone') {
+    zones.day = { energy: 0, hours: 0, rate: config.twoZone?.dayRate || 850, intervals: 0 };
+    zones.night = { energy: 0, hours: 0, rate: config.twoZone?.nightRate || 450, intervals: 0 };
+  } else if (config.type === 'three_zone') {
+    zones.peak = { energy: 0, hours: 0, rate: config.threeZone?.peakRate || 950, intervals: 0 };
+    zones.partial = { energy: 0, hours: 0, rate: config.threeZone?.partialRate || 700, intervals: 0 };
+    zones['off-peak'] = { energy: 0, hours: 0, rate: config.threeZone?.offPeakRate || 400, intervals: 0 };
+  }
+
+  // Process each interval
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    const timestamp = timestamps[i];
+    const date = new Date(timestamp);
+    const hour = date.getHours();
+    const dayOfWeek = date.getDay(); // 0 = Sunday
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const dayType = isWeekend ? 'weekend' : 'weekday';
+
+    const zoneName = getZoneForHour(hour, dayType);
+    const energyKWh = value * hoursPerInterval; // value is in kW
+
+    if (zones[zoneName]) {
+      zones[zoneName].energy += energyKWh;
+      zones[zoneName].intervals += 1;
+    }
+  }
+
+  // Calculate hours and costs
+  const totalIntervals = values.length;
+  const totalHours = totalIntervals * hoursPerInterval;
+  let totalEnergy = 0;
+  let totalCost = 0;
+
+  Object.keys(zones).forEach(key => {
+    const zone = zones[key];
+    zone.hours = zone.intervals * hoursPerInterval;
+    zone.cost = (zone.energy / 1000) * zone.rate; // energy in kWh, rate in PLN/MWh
+    zone.pctTime = (zone.hours / totalHours) * 100;
+    totalEnergy += zone.energy;
+    totalCost += zone.cost;
+  });
+
+  // Calculate percentages
+  Object.keys(zones).forEach(key => {
+    const zone = zones[key];
+    zone.pctEnergy = totalEnergy > 0 ? (zone.energy / totalEnergy) * 100 : 0;
+    zone.pctCost = totalCost > 0 ? (zone.cost / totalCost) * 100 : 0;
+  });
+
+  return {
+    zones,
+    totalEnergy,
+    totalCost,
+    totalHours,
+    avgPrice: totalEnergy > 0 ? (totalCost / (totalEnergy / 1000)) : 0 // PLN/MWh
+  };
+}
+
+/**
+ * Calculate monthly tariff statistics
+ */
+function calculateMonthlyTariffStats(values, timestamps, intervalMinutes, config) {
+  const hoursPerInterval = intervalMinutes / 60;
+  const months = {};
+
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    const timestamp = timestamps[i];
+    const date = new Date(timestamp);
+    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const hour = date.getHours();
+    const dayOfWeek = date.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const dayType = isWeekend ? 'weekend' : 'weekday';
+
+    const zoneName = getZoneForHour(hour, dayType);
+    const energyKWh = value * hoursPerInterval;
+
+    if (!months[monthKey]) {
+      months[monthKey] = {};
+    }
+    if (!months[monthKey][zoneName]) {
+      months[monthKey][zoneName] = { energy: 0, cost: 0 };
+    }
+
+    const rate = getTariffRateForZone(zoneName, config);
+    months[monthKey][zoneName].energy += energyKWh;
+    months[monthKey][zoneName].cost += (energyKWh / 1000) * rate;
+  }
+
+  return months;
+}
+
+/**
+ * Get tariff rate for a specific zone
+ */
+function getTariffRateForZone(zoneName, config) {
+  if (config.type === 'flat') {
+    return config.flatRate || 750;
+  } else if (config.type === 'two_zone') {
+    return zoneName === 'day' ? (config.twoZone?.dayRate || 850) : (config.twoZone?.nightRate || 450);
+  } else if (config.type === 'three_zone') {
+    if (zoneName === 'peak') return config.threeZone?.peakRate || 950;
+    if (zoneName === 'partial') return config.threeZone?.partialRate || 700;
+    return config.threeZone?.offPeakRate || 400;
+  }
+  return 750;
+}
+
+/**
+ * Update tariff info banner
+ */
+function updateTariffInfoBanner(config) {
+  const typeBadge = document.getElementById('tariffTypeBadge');
+  const nameDisplay = document.getElementById('tariffNameDisplay');
+
+  const typeNames = {
+    flat: 'Jednostrefowa',
+    two_zone: 'Dwustrefowa',
+    three_zone: 'Trzystrefowa'
+  };
+
+  if (typeBadge) {
+    typeBadge.textContent = typeNames[config.type] || config.type;
+  }
+
+  if (nameDisplay) {
+    nameDisplay.textContent = `Taryfa: ${config.name || 'Nieokreślona'}`;
+  }
+}
+
+/**
+ * Generate 24h visualization bar
+ */
+function generate24hVisualizationBar(config) {
+  const bar = document.getElementById('tariff24hBarConsumption');
+  if (!bar) return;
+
+  let html = '';
+  for (let h = 0; h < 24; h++) {
+    const zone = getZoneForHour(h, 'weekday');
+    html += `<div class="hour-block ${zone}" title="${h}:00 - ${zone}">${h}</div>`;
+  }
+  bar.innerHTML = html;
+}
+
+/**
+ * Update tariff zones grid with cards
+ */
+function updateTariffZonesGrid(stats, config) {
+  const grid = document.getElementById('tariffZonesGrid');
+  if (!grid) return;
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Strefa dzienna',
+    night: 'Strefa nocna',
+    peak: 'Szczyt',
+    partial: 'Strefa pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  let html = '';
+  Object.keys(stats.zones).forEach(key => {
+    const zone = stats.zones[key];
+    const label = zoneLabels[key] || key;
+    const energyMWh = (zone.energy / 1000).toFixed(1);
+    const costPLN = formatNumberEU(zone.cost, 0);
+
+    html += `
+      <div class="tariff-zone-card ${key}">
+        <div class="zone-header">
+          <span class="zone-name">${label}</span>
+          <span class="zone-rate">${zone.rate} PLN/MWh</span>
+        </div>
+        <div class="zone-stats">
+          <div class="zone-stat">
+            <div class="stat-value">${energyMWh}</div>
+            <div class="stat-label">MWh</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${costPLN}</div>
+            <div class="stat-label">PLN</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${zone.pctEnergy.toFixed(1)}%</div>
+            <div class="stat-label">Zużycia</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${zone.pctCost.toFixed(1)}%</div>
+            <div class="stat-label">Kosztu</div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  grid.innerHTML = html;
+}
+
+/**
+ * Update tariff summary
+ */
+function updateTariffSummary(stats) {
+  const totalCostEl = document.getElementById('tariffTotalCost');
+  const avgPriceEl = document.getElementById('tariffAvgPrice');
+  const savingsEl = document.getElementById('tariffSavingsPotential');
+
+  if (totalCostEl) {
+    totalCostEl.textContent = `${formatNumberEU(stats.totalCost, 0)} PLN`;
+  }
+
+  if (avgPriceEl) {
+    avgPriceEl.textContent = `${formatNumberEU(stats.avgPrice, 1)} PLN/MWh`;
+  }
+
+  // Calculate potential savings (shift 10% from peak to off-peak)
+  if (savingsEl) {
+    const zones = stats.zones;
+    let potentialSavings = 0;
+
+    if (zones.peak && zones['off-peak']) {
+      // 10% of peak energy moved to off-peak
+      const shiftableEnergy = zones.peak.energy * 0.1;
+      const peakRate = zones.peak.rate;
+      const offPeakRate = zones['off-peak'].rate;
+      potentialSavings = (shiftableEnergy / 1000) * (peakRate - offPeakRate);
+    } else if (zones.day && zones.night) {
+      const shiftableEnergy = zones.day.energy * 0.1;
+      const dayRate = zones.day.rate;
+      const nightRate = zones.night.rate;
+      potentialSavings = (shiftableEnergy / 1000) * (dayRate - nightRate);
+    }
+
+    if (potentialSavings > 0) {
+      savingsEl.textContent = `~${formatNumberEU(potentialSavings, 0)} PLN/rok (przesunięcie 10% zużycia)`;
+    } else {
+      savingsEl.textContent = '-';
+    }
+  }
+}
+
+/**
+ * Update tariff details table
+ */
+function updateTariffDetailsTable(stats) {
+  const tbody = document.getElementById('tariffDetailsTableBody');
+  if (!tbody) return;
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Strefa dzienna',
+    night: 'Strefa nocna',
+    peak: 'Szczyt',
+    partial: 'Strefa pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  const zoneHoursLabels = {
+    flat: 'Całą dobę',
+    day: '6:00-22:00 (roboczy)',
+    night: '22:00-6:00',
+    peak: '7:00-13:00, 16:00-21:00',
+    partial: '6:00-22:00 (bez szczytu)',
+    'off-peak': '22:00-6:00'
+  };
+
+  let html = '';
+  Object.keys(stats.zones).forEach(key => {
+    const zone = stats.zones[key];
+    const label = zoneLabels[key] || key;
+    const hoursLabel = zoneHoursLabels[key] || '-';
+
+    html += `
+      <tr>
+        <td>
+          <span class="zone-badge">
+            <span class="zone-dot ${key}"></span>
+            ${label}
+          </span>
+        </td>
+        <td>${hoursLabel}</td>
+        <td>${formatNumberEU(zone.hours, 0)}</td>
+        <td>${formatNumberEU(zone.pctTime, 1)}%</td>
+        <td>${formatNumberEU(zone.energy / 1000, 1)}</td>
+        <td>${formatNumberEU(zone.pctEnergy, 1)}%</td>
+        <td>${formatNumberEU(zone.rate, 0)}</td>
+        <td>${formatNumberEU(zone.cost, 0)}</td>
+        <td>${formatNumberEU(zone.pctCost, 1)}%</td>
+      </tr>
+    `;
+  });
+
+  // Total row
+  html += `
+    <tr class="total-row">
+      <td><strong>RAZEM</strong></td>
+      <td>-</td>
+      <td>${formatNumberEU(stats.totalHours, 0)}</td>
+      <td>100%</td>
+      <td>${formatNumberEU(stats.totalEnergy / 1000, 1)}</td>
+      <td>100%</td>
+      <td>${formatNumberEU(stats.avgPrice, 0)}</td>
+      <td>${formatNumberEU(stats.totalCost, 0)}</td>
+      <td>100%</td>
+    </tr>
+  `;
+
+  tbody.innerHTML = html;
+}
+
+/**
+ * Generate tariff pie charts
+ */
+function generateTariffCharts(stats) {
+  const zoneColors = {
+    flat: '#3498db',
+    day: '#f39c12',
+    night: '#27ae60',
+    peak: '#e74c3c',
+    partial: '#f39c12',
+    'off-peak': '#27ae60'
+  };
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Dzień',
+    night: 'Noc',
+    peak: 'Szczyt',
+    partial: 'Pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  const labels = Object.keys(stats.zones).map(k => zoneLabels[k] || k);
+  const colors = Object.keys(stats.zones).map(k => zoneColors[k] || '#95a5a6');
+  const energyData = Object.values(stats.zones).map(z => z.energy / 1000); // MWh
+  const costData = Object.values(stats.zones).map(z => z.cost);
+
+  // Energy chart
+  const energyCtx = document.getElementById('tariffEnergyChart');
+  if (energyCtx) {
+    if (tariffEnergyChart) tariffEnergyChart.destroy();
+    tariffEnergyChart = new Chart(energyCtx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: energyData,
+          backgroundColor: colors,
+          borderWidth: 2,
+          borderColor: 'white'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { font: { size: 11 } }
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.label}: ${formatNumberEU(ctx.raw, 1)} MWh`
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Cost chart
+  const costCtx = document.getElementById('tariffCostChart');
+  if (costCtx) {
+    if (tariffCostChart) tariffCostChart.destroy();
+    tariffCostChart = new Chart(costCtx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: costData,
+          backgroundColor: colors,
+          borderWidth: 2,
+          borderColor: 'white'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { font: { size: 11 } }
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.label}: ${formatNumberEU(ctx.raw, 0)} PLN`
+            }
+          }
+        }
+      }
+    });
+  }
+}
+
+/**
+ * Generate monthly stacked bar chart for tariff zones
+ */
+function generateTariffMonthlyChart(monthlyStats, config) {
+  const ctx = document.getElementById('tariffMonthlyChart');
+  if (!ctx) return;
+
+  if (tariffMonthlyChart) tariffMonthlyChart.destroy();
+
+  const monthLabels = Object.keys(monthlyStats).sort();
+  const monthNames = monthLabels.map(m => {
+    const [year, month] = m.split('-');
+    const months = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru'];
+    return months[parseInt(month) - 1] + ' ' + year.slice(2);
+  });
+
+  const zoneColors = {
+    flat: '#3498db',
+    day: '#f39c12',
+    night: '#27ae60',
+    peak: '#e74c3c',
+    partial: '#f39c12',
+    'off-peak': '#27ae60'
+  };
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Dzień',
+    night: 'Noc',
+    peak: 'Szczyt',
+    partial: 'Pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  // Get all zone keys
+  const allZones = new Set();
+  Object.values(monthlyStats).forEach(month => {
+    Object.keys(month).forEach(z => allZones.add(z));
+  });
+
+  const datasets = Array.from(allZones).map(zone => ({
+    label: zoneLabels[zone] || zone,
+    data: monthLabels.map(m => (monthlyStats[m][zone]?.cost || 0)),
+    backgroundColor: zoneColors[zone] || '#95a5a6',
+    borderWidth: 0
+  }));
+
+  tariffMonthlyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: monthNames,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { font: { size: 11 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${formatNumberEU(ctx.raw, 0)} PLN`
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          title: { display: false }
+        },
+        y: {
+          stacked: true,
+          title: { display: true, text: 'Koszt [PLN]' },
+          ticks: {
+            callback: (val) => formatNumberEU(val, 0)
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Generate optimization tips based on tariff analysis
+ */
+function generateTariffTips(stats, config) {
+  const tipsList = document.getElementById('tariffTipsList');
+  if (!tipsList) return;
+
+  const tips = [];
+  const zones = stats.zones;
+
+  if (config.type === 'flat') {
+    tips.push({
+      icon: '💡',
+      text: 'Taryfa jednostrefowa nie daje możliwości optymalizacji czasowej. Rozważ przejście na taryfę dwu- lub trzystrefową.',
+      type: 'warning'
+    });
+  } else if (zones.peak && zones['off-peak']) {
+    // Three-zone tips
+    if (zones.peak.pctEnergy > 40) {
+      tips.push({
+        icon: '⚠️',
+        text: `Wysokie zużycie w szczycie (${zones.peak.pctEnergy.toFixed(1)}%). Rozważ przesunięcie procesów produkcyjnych na godziny pozaszczytowe.`,
+        type: 'warning'
+      });
+    }
+
+    if (zones['off-peak'].pctEnergy < 20) {
+      tips.push({
+        icon: '🔋',
+        text: 'Niskie wykorzystanie taniej strefy nocnej. Magazyn energii BESS mógłby ładować się w nocy i rozładowywać w szczycie.',
+        type: 'success'
+      });
+    }
+
+    const rateDiff = zones.peak.rate - zones['off-peak'].rate;
+    if (rateDiff > 300) {
+      const savingsPerMWh = rateDiff;
+      tips.push({
+        icon: '💰',
+        text: `Różnica cen szczyt/pozaszczyt: ${savingsPerMWh} PLN/MWh. Każda MWh przesunięta z szczytu do nocy to oszczędność ${savingsPerMWh} PLN.`,
+        type: 'success'
+      });
+    }
+  } else if (zones.day && zones.night) {
+    // Two-zone tips
+    if (zones.day.pctEnergy > 80) {
+      tips.push({
+        icon: '⚠️',
+        text: `Aż ${zones.day.pctEnergy.toFixed(1)}% zużycia w droższej strefie dziennej. Rozważ przesunięcie niektórych procesów na noc.`,
+        type: 'warning'
+      });
+    }
+
+    if (zones.night.pctEnergy > 30) {
+      tips.push({
+        icon: '✅',
+        text: `Dobre wykorzystanie tańszej strefy nocnej (${zones.night.pctEnergy.toFixed(1)}%). Utrzymuj tę strategię.`,
+        type: 'success'
+      });
+    }
+  }
+
+  // BESS recommendation
+  if (stats.totalEnergy > 100000) { // > 100 MWh/rok
+    tips.push({
+      icon: '🔋',
+      text: 'Przy tym wolumenie zużycia magazyn energii BESS może przynieść znaczące oszczędności poprzez arbitraż taryfowy.',
+      type: 'success'
+    });
+  }
+
+  let html = '';
+  tips.forEach(tip => {
+    html += `
+      <div class="tariff-tip ${tip.type}">
+        <span class="tip-icon">${tip.icon}</span>
+        <span>${tip.text}</span>
+      </div>
+    `;
+  });
+
+  if (tips.length === 0) {
+    html = '<div class="tariff-tip success"><span class="tip-icon">✅</span><span>Profil zużycia jest dobrze zoptymalizowany pod obecną taryfę.</span></div>';
+  }
+
+  tipsList.innerHTML = html;
+}
+
+/**
+ * Navigate to tariff settings
+ */
+function goToTariffSettings() {
+  // Send message to parent (shell) to switch to Settings module
+  if (window.parent && window.parent.postMessage) {
+    window.parent.postMessage({ type: 'NAVIGATE_TO', module: 'settings', section: 'tariff' }, '*');
+  }
+}
+
+// Call tariff analysis after main analysis
+const originalPerformAnalysis = performAnalysis;
+performAnalysis = async function() {
+  await originalPerformAnalysis();
+  // Run tariff analysis after main analysis completes
+  await performTariffAnalysis();
+};
 
