@@ -34,6 +34,7 @@ scrape_configs:
           - 'pv-pvgis-proxy:8020'
           - 'pv-geo-service:8021'
           - 'pv-bess-optimizer:8030'
+          - 'pv-bess-dispatch:8031'
           - 'pv-profile-analysis:8040'
           - 'pv-database-api:8050'
     metrics_path: /metrics
