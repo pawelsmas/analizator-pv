@@ -1405,6 +1405,121 @@ body {
   color: #e57373;
 }
 
+/* Savings Breakdown Section */
+.savings-breakdown-section {
+  margin: 8px 0 12px 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid rgba(129, 199, 132, 0.5);
+}
+
+.breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.breakdown-label {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.breakdown-value {
+  color: #a5d6a7;
+  font-weight: 500;
+}
+
+.breakdown-value.negative {
+  color: #ef9a9a;
+}
+
+.breakdown-row.degradation {
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+
+/* Prices Info Section */
+.prices-info-section {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px;
+  background: rgba(255, 193, 7, 0.15);
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.prices-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
+.prices-value {
+  background: rgba(255, 193, 7, 0.2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #fff3cd;
+}
+
+/* ToU pricing breakdown */
+.tou-breakdown {
+  width: 100%;
+}
+
+.tou-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tou-row:last-child {
+  border-bottom: none;
+}
+
+.tou-label {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+}
+
+.tou-value {
+  font-weight: 600;
+  color: #fff;
+  font-size: 11px;
+}
+
+.tou-row.baseline .tou-value {
+  color: #e0e0e0;
+}
+
+.tou-row.project .tou-value {
+  color: #64b5f6;
+}
+
+.tou-row.savings .tou-value.positive {
+  color: #81c784;
+  font-weight: 700;
+}
+
+.tou-row.config {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+}
+
+.tou-row.config .tou-value {
+  font-family: monospace;
+  font-size: 10px;
+  background: rgba(156, 39, 176, 0.3);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
 .variant-degradation {
   padding: 12px;
   background: rgba(156, 39, 176, 0.1);
@@ -2360,4 +2475,460 @@ body {
   .results-summary-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* =============================================================================
+   NEW v3.14: ToU Arbitrage Configuration Styles
+   ============================================================================= */
+
+.arbitrage-card {
+  background: linear-gradient(135deg, #fff8e1 0%, #fffde7 100%);
+  border-color: #ffc107;
+}
+
+.arbitrage-card:hover {
+  border-color: #ff9800;
+  box-shadow: 0 4px 12px rgba(255, 152, 0, 0.15);
+}
+
+.arbitrage-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 52px;
+  height: 28px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: 0.3s;
+  border-radius: 28px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 22px;
+  width: 22px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(24px);
+}
+
+.toggle-label {
+  font-weight: 600;
+  font-size: 14px;
+  color: #2c3e50;
+}
+
+/* Arbitrage Config Form */
+.arbitrage-config {
+  background: white;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid #e9ecef;
+}
+
+.arbitrage-config .config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.arbitrage-config .config-row:last-child {
+  margin-bottom: 0;
+}
+
+.arbitrage-config label {
+  font-size: 13px;
+  color: #555;
+  min-width: 160px;
+}
+
+.arbitrage-config select,
+.arbitrage-config input[type="date"],
+.arbitrage-config input[type="number"] {
+  padding: 8px 12px;
+  font-size: 13px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #f8f9fa;
+  transition: all 0.2s ease;
+}
+
+.arbitrage-config select {
+  flex: 1;
+  min-width: 200px;
+}
+
+.arbitrage-config input[type="date"] {
+  width: 150px;
+}
+
+.arbitrage-config input[type="number"] {
+  width: 80px;
+  text-align: center;
+}
+
+.arbitrage-config select:focus,
+.arbitrage-config input:focus {
+  outline: none;
+  border-color: #ff9800;
+  background: white;
+}
+
+.arbitrage-config .unit {
+  font-size: 12px;
+  color: #888;
+  min-width: 20px;
+}
+
+/* Percentile Row */
+.percentile-row {
+  flex-wrap: wrap;
+}
+
+.percentile-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.percentile-input label {
+  min-width: auto;
+  font-size: 12px;
+}
+
+/* Arbitrage Info */
+.arbitrage-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fff3e0;
+  border-radius: 8px;
+  border-left: 3px solid #ff9800;
+}
+
+.arbitrage-info .info-icon {
+  font-size: 16px;
+}
+
+.arbitrage-info span:last-child {
+  font-size: 11px;
+  color: #666;
+  line-height: 1.5;
+}
+
+/* Arbitrage Results in STACKED info banner */
+.stacked-mode-info.with-arbitrage {
+  background: linear-gradient(135deg, #e8f5e9 0%, #fff8e1 100%);
+  border-color: #4caf50;
+}
+
+.arbitrage-savings-highlight {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+/* ============================================================================
+   ToU COST ANALYSIS - MVP v3.17 (PR3)
+   ============================================================================ */
+
+.tou-analysis-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border: 1px solid #e0e0e0;
+}
+
+.tou-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.tou-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1976d2;
+}
+
+.tou-type {
+  font-size: 12px;
+  color: #666;
+  background: #f5f5f5;
+  padding: 4px 10px;
+  border-radius: 12px;
+  text-transform: capitalize;
+}
+
+.tou-summary {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.tou-metric {
+  flex: 1;
+  text-align: center;
+  padding: 16px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.tou-metric.savings {
+  background: #e8f5e9;
+}
+
+.tou-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #333;
+}
+
+.tou-metric.savings .tou-value {
+  color: #2e7d32;
+}
+
+.tou-label {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.tou-pct {
+  font-size: 14px;
+  font-weight: 600;
+  color: #4caf50;
+  margin-top: 4px;
+}
+
+.tou-breakdown {
+  margin-top: 16px;
+}
+
+.tou-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tou-table th,
+.tou-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.tou-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+}
+
+.tou-table td {
+  font-size: 13px;
+}
+
+.zone-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.zone-badge.zone-flat {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.zone-badge.zone-day,
+.zone-badge.zone-peak {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.zone-badge.zone-night,
+.zone-badge.zone-offpeak {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.zone-badge.zone-partial {
+  background: #fff8e1;
+  color: #f57c00;
+}
+
+/* ============================================================================
+   CAPACITY FEE OVERLAY - MVP v3.17 (PR4)
+   ============================================================================ */
+
+.capacity-fee-overlay-card {
+  background: linear-gradient(135deg, #fff3e0 0%, #ffffff 100%);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 4px 16px rgba(255, 152, 0, 0.15);
+  border: 2px solid #ff9800;
+  position: relative;
+}
+
+.overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.overlay-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e65100;
+}
+
+.overlay-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #999;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.overlay-close:hover {
+  color: #333;
+}
+
+.overlay-comparison {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.comparison-item {
+  flex: 1;
+  text-align: center;
+  padding: 16px;
+  border-radius: 10px;
+  max-width: 180px;
+}
+
+.comparison-item.before {
+  background: #ffebee;
+}
+
+.comparison-item.after {
+  background: #e8f5e9;
+}
+
+.comparison-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.comparison-value {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.comparison-item.before .comparison-value {
+  color: #c62828;
+}
+
+.comparison-item.after .comparison-value {
+  color: #2e7d32;
+}
+
+.comparison-kclass {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.comparison-arrow {
+  font-size: 28px;
+  color: #ff9800;
+}
+
+.overlay-savings {
+  text-align: center;
+  padding: 16px;
+  background: #4caf50;
+  border-radius: 10px;
+  color: white;
+}
+
+.savings-amount {
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.savings-label {
+  font-size: 13px;
+  opacity: 0.9;
+  margin-top: 4px;
+}
+
+.overlay-details {
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #666;
+}
+
+.detail-row span:last-child {
+  font-weight: 600;
+  color: #333;
 }

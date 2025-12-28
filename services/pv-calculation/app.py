@@ -32,8 +32,11 @@ optimization_progress = {
     "tested_configs": 0
 }
 
-# BESS Optimizer Service URL (for PRO mode)
-BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name
+# BESS Dispatch Service URL (for PRO mode with LP/MIP solver)
+BESS_DISPATCH_URL = "http://bess-dispatch:8031"  # Docker network name
+
+# Legacy - keep for backwards compatibility but prefer BESS_DISPATCH_URL
+BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name (deprecated)
 
 # Import pvlib
 try:
@@ -206,6 +209,29 @@ class SimulationResult(BaseModel):
     bess_soc_histogram: Optional["BESSSOCHistogram"] = None
 
 # ============== BESS PRO Configuration (LP/MIP Optimization) ==============
+class CapacityFeeConfig(BaseModel):
+    """Polish capacity fee (opłata mocowa) configuration"""
+    enabled: bool = False
+    som_rate_pln_kw: float = 0.2194  # Monthly SOM rate in PLN/kW
+    qualification_period: str = 'daily'  # 'daily' | 'monthly'
+    peak_hours: List[int] = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]  # default peak hours
+
+class TariffConfig(BaseModel):
+    """Time-of-Use tariff configuration"""
+    type: str = 'flat'  # 'flat' | 'two_zone' | 'three_zone'
+    flat_rate_pln_mwh: float = 800.0
+    # Two-zone (day/night)
+    day_rate_pln_mwh: Optional[float] = None
+    night_rate_pln_mwh: Optional[float] = None
+    day_hours_start: int = 6
+    day_hours_end: int = 22
+    # Three-zone (peak/day/night)
+    peak_rate_pln_mwh: Optional[float] = None
+    peak_hours: Optional[List[int]] = None
+    # Fixed charges (OSD dystrybucja, OZE, kog, jakość, mocowa, akcyza)
+    # These are added on top of ToU rates for total energy cost
+    other_fees_pln_mwh: float = 451.0  # Default: 451 PLN/MWh
+
 class BESSProConfig(BaseModel):
     """BESS PRO configuration for LP/MIP optimization"""
     min_power_kw: float = 50.0
@@ -221,11 +247,11 @@ class BESSProConfig(BaseModel):
     zero_export: bool = True
     export_penalty: float = 1000.0  # PLN/MWh
 
-# ============== BESS Configuration Model (LIGHT/AUTO or PRO Mode) ==============
+# ============== BESS Configuration Model (PRO Mode - LIGHT deprecated) ==============
 class BESSConfigLite(BaseModel):
-    """BESS configuration - supports both LIGHT and PRO modes"""
-    enabled: bool = False
-    mode: str = 'light'  # 'light' = auto-sizing, 'pro' = LP/MIP optimization
+    """BESS configuration - PRO mode is default (LIGHT deprecated)"""
+    enabled: bool = True
+    mode: str = 'pro'  # 'pro' = LP/MIP optimization (light deprecated)
     duration: str = 'auto'  # 'auto' | '1' | '2' | '4' hours (E/P ratio) - for LIGHT mode
     # Technical parameters
     roundtrip_efficiency: float = 0.90  # 88-92% typical for Li-ion
@@ -238,6 +264,16 @@ class BESSConfigLite(BaseModel):
     opex_pct_per_year: float = 1.5  # OPEX as % of CAPEX
     lifetime_years: int = 15
     degradation_pct_per_year: float = 2.0
+    # Dispatch mode and topology (from scenario selection)
+    dispatch_mode: str = 'pv_surplus'  # 'pv_surplus' | 'stacked' | 'load_only'
+    topology: str = 'pv_load'  # 'pv_load' | 'load_only'
+    # Peak shaving / demand charge parameters
+    demand_charge_pln_kw_month: float = 0.0  # Monthly demand charge (PLN/kW)
+    peak_limit_kw: Optional[float] = None  # Target peak limit for peak shaving
+    # Capacity fee (opłata mocowa) configuration
+    capacity_fee_config: Optional[CapacityFeeConfig] = None
+    # Tariff configuration (for ToU arbitrage)
+    tariff_config: Optional[TariffConfig] = None
     # PRO mode configuration (optional, only when mode='pro')
     pro_config: Optional[BESSProConfig] = None
 
@@ -288,6 +324,10 @@ class VariantResult(BaseModel):
     bess_soc_histogram: Optional["BESSSOCHistogram"] = None
     # Baseline comparison (without BESS) - for impact analysis
     baseline_no_bess: Optional[BaselineMetrics] = None
+    # Savings breakdown from bess-dispatch (PRO mode)
+    savings_breakdown: Optional["SavingsBreakdown"] = None
+    # Dispatch metadata from bess-dispatch (PRO mode)
+    dispatch_metadata: Optional["DispatchMetadata"] = None
 
 class BESSMonthlyData(BaseModel):
     """Monthly BESS performance data"""
@@ -309,10 +349,27 @@ class BESSSOCHistogram(BaseModel):
     hours: List[int]  # Number of hours in each bin
     percentages: List[float]  # Percentage of total hours in each bin
 
+class SavingsBreakdown(BaseModel):
+    """Detailed breakdown of BESS savings from bess-dispatch"""
+    energy_savings_pln: float = 0.0
+    demand_charge_savings_pln: float = 0.0
+    capacity_fee_savings_pln: float = 0.0
+    arbitrage_savings_pln: float = 0.0
+    degradation_cost_pln: float = 0.0
+    net_savings_pln: float = 0.0
+    source: str = "bess_dispatch_accurate"  # Always accurate from bess-dispatch
+
+class DispatchMetadata(BaseModel):
+    """Metadata about dispatch mode and topology"""
+    dispatch_mode: str = "pv_surplus"
+    topology: str = "pv_load"
+    peak_shaving_enabled: bool = False
+    peak_limit_kw: Optional[float] = None
+
 class BESSSummary(BaseModel):
-    """Summary of BESS sizing and performance"""
+    """Summary of BESS sizing and performance from bess-dispatch PRO solver"""
     enabled: bool = False
-    mode: str = 'lite'
+    mode: str = 'pro'  # Always PRO - uses bess-dispatch full solver
     duration_selected: str = 'auto'
     power_kw: float = 0.0
     energy_kwh: float = 0.0
@@ -323,8 +380,16 @@ class BESSSummary(BaseModel):
     cycles_equivalent: float = 0.0
     capex_total: float = 0.0
     opex_annual: float = 0.0
+    annual_savings_pln: float = 0.0  # Total annual savings from BESS
+    npv_pln: float = 0.0  # NPV from bess-dispatch
     # Monthly breakdown (NEW in v3.2)
     monthly_data: Optional[List[BESSMonthlyData]] = None
+    # Savings breakdown from bess-dispatch (PRECISE - LP/MIP solver)
+    savings_breakdown: Optional[SavingsBreakdown] = None
+    # Dispatch metadata
+    dispatch_metadata: Optional[DispatchMetadata] = None
+    # Schema version for frontend compatibility
+    schema_version: str = "bess_economics_v2"
 
 class AnalysisResult(BaseModel):
     scenarios: List[SimulationResult]
@@ -2191,6 +2256,151 @@ def call_bess_pro_optimizer(
         return None
 
 
+def call_bess_dispatch_sizing(
+    pv_generation_kw: List[float],
+    load_kw: List[float],
+    topology: str,  # 'pv_load' or 'load_only'
+    bess_settings: dict,
+    interval_minutes: int = 60
+) -> Optional[dict]:
+    """
+    Call bess-dispatch /sizing endpoint for PRO optimization with LP/MIP solver.
+
+    This is the ONLY way to get precise savings_breakdown.
+
+    Args:
+        pv_generation_kw: Hourly PV generation [kW] (empty for load_only)
+        load_kw: Hourly load consumption [kW]
+        topology: 'pv_load' (PV+BESS) or 'load_only' (BESS stand-alone)
+        bess_settings: BESS settings from frontend (capex, opex, efficiency, etc.)
+        interval_minutes: Data interval (60 for hourly)
+
+    Returns:
+        SizingResult dict with variants and savings_breakdown, or None if failed
+    """
+    # Determine dispatch mode based on topology and settings
+    if topology == 'load_only':
+        mode = 'load_only'
+        # For load_only, we need peak_limit_kw for peak shaving
+        peak_limit_kw = bess_settings.get('peak_limit_kw')
+        if not peak_limit_kw:
+            # Calculate reasonable peak limit from load profile
+            load_array = np.array(load_kw)
+            peak_limit_kw = float(np.percentile(load_array, 90))  # P90 as default target
+    else:
+        # Use dispatch_mode from settings if available, otherwise default to 'pv_surplus'
+        mode = bess_settings.get('dispatch_mode', 'pv_surplus')
+        peak_limit_kw = bess_settings.get('peak_limit_kw')
+        # For stacked mode, calculate peak_limit from P95 if not provided
+        if mode == 'stacked' and not peak_limit_kw:
+            load_array = np.array(load_kw)
+            peak_limit_kw = float(np.percentile(load_array, 95))  # P95 as default target
+            print(f"   📊 Stacked mode: auto peak_limit_kw = {peak_limit_kw:.1f} kW (P95)")
+
+    # Build request payload
+    payload = {
+        "pv_generation_kw": pv_generation_kw if topology == 'pv_load' else [],
+        "load_kw": load_kw,
+        "interval_minutes": interval_minutes,
+        "mode": mode,
+
+        # Peak shaving params (for load_only or stacked)
+        "peak_limit_kw": peak_limit_kw,
+        "reserve_fraction": bess_settings.get('reserve_fraction', 0.3),
+
+        # Battery constraints from settings
+        "min_power_kw": bess_settings.get('min_power_kw', 10.0),
+        "max_power_kw": bess_settings.get('max_power_kw', 10000.0),
+        "power_steps": bess_settings.get('power_steps', 10),
+
+        # Duration variants
+        "durations_h": bess_settings.get('durations_h', [1.0, 2.0, 4.0]),
+
+        # Battery parameters
+        "roundtrip_efficiency": bess_settings.get('roundtrip_efficiency', 0.90),
+        "soc_min": bess_settings.get('soc_min', 0.10),
+        "soc_max": bess_settings.get('soc_max', 0.90),
+
+        # EOL (End-of-Life) degradation sizing
+        # eol_capacity_factor: if set (e.g., 0.70), battery will be oversized so EOL capacity is 70% of BOL
+        "eol_capacity_factor": bess_settings.get('eol_capacity_factor', 0.70),  # Default: size for 70% at EOL
+        "annual_degradation_pct": bess_settings.get('annual_degradation_pct', 2.0),  # 2%/year default
+
+        # Economics
+        "capex_per_kwh": bess_settings.get('capex_per_kwh', 750.0),
+        "capex_per_kw": bess_settings.get('capex_per_kw', 150.0),
+        "opex_pct_per_year": bess_settings.get('opex_pct_per_year', 0.015),
+        "discount_rate": bess_settings.get('discount_rate', 0.07),
+        "analysis_years": bess_settings.get('analysis_years', 15),
+
+        # Prices
+        "import_price_pln_mwh": bess_settings.get('import_price_pln_mwh', 800.0),
+        "export_price_pln_mwh": bess_settings.get('export_price_pln_mwh', 0.0),
+        "demand_charge_pln_kw_month": bess_settings.get('demand_charge_pln_kw_month', 0.0),
+
+        # Degradation budget (optional)
+        "max_efc_per_year": bess_settings.get('max_efc_per_year'),
+        "max_throughput_mwh_per_year": bess_settings.get('max_throughput_mwh_per_year'),
+    }
+
+    # Add ToU pricing if available
+    if bess_settings.get('prices'):
+        payload['prices'] = bess_settings['prices']
+
+    # Add capacity fee configuration if available
+    if bess_settings.get('capacity_fee'):
+        cf = bess_settings['capacity_fee']
+        # Add to prices dict (bess-dispatch expects it there)
+        if 'prices' not in payload:
+            payload['prices'] = {}
+        payload['prices']['capacity_fee_method'] = 'polish_som'
+        payload['prices']['capacity_fee_som_pln_kwh'] = cf.get('som_rate_pln_kw', 0.2194)
+        print(f"   📊 Capacity fee: SOM={cf.get('som_rate_pln_kw', 0.2194)} PLN/kW/month")
+
+    try:
+        print(f"🚀 Calling bess-dispatch /sizing at {BESS_DISPATCH_URL}/sizing")
+        print(f"   Mode: {mode}, Topology: {topology}, dispatch_mode from settings: {bess_settings.get('dispatch_mode', 'NOT_SET')}")
+        print(f"   Load points: {len(load_kw)}, PV points: {len(pv_generation_kw)}")
+        print(f"   demand_charge: {bess_settings.get('demand_charge_pln_kw_month', 0)} PLN/kW/month, peak_limit: {peak_limit_kw} kW")
+
+        response = requests.post(
+            f"{BESS_DISPATCH_URL}/sizing",
+            json=payload,
+            timeout=300  # 5 minutes timeout for optimization
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ bess-dispatch sizing successful:")
+            print(f"   Recommended: {result.get('recommended_power_kw', 0):.0f} kW / {result.get('recommended_energy_kwh', 0):.0f} kWh")
+            if result.get('variants'):
+                best = result['variants'][0]
+                print(f"   Annual savings: {best.get('annual_savings_pln', 0):.0f} PLN")
+                if best.get('savings_breakdown'):
+                    sb = best['savings_breakdown']
+                    print(f"   Savings breakdown: energy={sb.get('energy_savings_pln', 0):.0f}, "
+                          f"demand={sb.get('demand_charge_savings_pln', 0):.0f}, "
+                          f"capacity={sb.get('capacity_fee_savings_pln', 0):.0f}")
+            return result
+        else:
+            print(f"❌ bess-dispatch sizing error: {response.status_code}")
+            print(f"   Response: {response.text[:500]}")
+            return None
+
+    except requests.exceptions.Timeout:
+        print("❌ bess-dispatch sizing timeout (>5min)")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ bess-dispatch connection error: {e}")
+        print("   Is bess-dispatch service running?")
+        return None
+    except Exception as e:
+        print(f"❌ bess-dispatch sizing error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def find_variant(scenarios: List[SimulationResult], threshold: float) -> Optional[SimulationResult]:
     """Find the largest installation that meets the autoconsumption threshold"""
     valid = [s for s in scenarios if s.auto_consumption_pct >= threshold]
@@ -2608,33 +2818,150 @@ async def analyze(request: AnalysisRequest):
             variant_scenario = find_variant(scenarios, threshold)
 
             if variant_scenario:
-                # For BESS PRO mode: re-optimize BESS only for key variants
-                if bess_enabled and bess_mode == 'pro' and bess_config.pro_config:
-                    print(f"   🚀 PRO optimization for variant {variant_name} ({variant_scenario.capacity:.0f} kWp)...")
-                    pv_generation = pv_profile * variant_scenario.capacity * variant_scenario.dcac_ratio
-                    pro_result = call_bess_pro_optimizer(
-                        pv_generation=pv_generation,
-                        consumption=consumption,
-                        pv_capacity_kwp=variant_scenario.capacity,
-                        bess_config=bess_config,
-                        energy_price_plnmwh=800.0,
-                        discount_rate=0.07,
-                        analysis_period_years=25
+                # For BESS PRO mode: call bess-dispatch /sizing for full LP/MIP optimization
+                bess_dispatch_result = None
+                if bess_enabled and bess_mode == 'pro':
+                    print(f"   🚀 bess-dispatch PRO optimization for variant {variant_name} ({variant_scenario.capacity:.0f} kWp)...")
+
+                    # Prepare PV generation profile
+                    pv_generation_kw = (pv_profile * variant_scenario.capacity / variant_scenario.dcac_ratio).tolist()
+
+                    # Determine topology from settings
+                    topology = getattr(bess_config, 'topology', 'pv_load')
+                    if topology == 'load_only' or not any(pv_generation_kw):
+                        topology = 'load_only'
+                    else:
+                        topology = 'pv_load'
+
+                    # Build settings dict for bess-dispatch
+                    # Note: opex_pct_per_year in bess_config is stored as percentage (e.g., 1.5 means 1.5%)
+                    # bess-dispatch expects fraction (0.015), so divide by 100
+                    opex_fraction = bess_config.opex_pct_per_year / 100.0 if bess_config.opex_pct_per_year > 0.1 else bess_config.opex_pct_per_year
+
+                    # Debug: log incoming economic params from frontend
+                    print(f"   💰 BESS Economic Params from frontend:")
+                    print(f"      demand_charge_pln_kw_month: {getattr(bess_config, 'demand_charge_pln_kw_month', 0.0)}")
+                    print(f"      peak_limit_kw: {getattr(bess_config, 'peak_limit_kw', None)}")
+                    if bess_config.capacity_fee_config:
+                        print(f"      capacity_fee_config: enabled={bess_config.capacity_fee_config.enabled}, som_rate={bess_config.capacity_fee_config.som_rate_pln_kw}")
+                    else:
+                        print(f"      capacity_fee_config: None (WILL USE DEFAULT!)")
+                    if bess_config.tariff_config:
+                        print(f"      tariff_config: type={bess_config.tariff_config.type}, day={bess_config.tariff_config.day_rate_pln_mwh}, night={bess_config.tariff_config.night_rate_pln_mwh}")
+                    else:
+                        print(f"      tariff_config: None (WILL USE DEFAULT!)")
+
+                    bess_settings = {
+                        'roundtrip_efficiency': bess_config.roundtrip_efficiency,
+                        'soc_min': bess_config.soc_min,
+                        'soc_max': bess_config.soc_max,
+                        'capex_per_kwh': bess_config.capex_per_kwh,
+                        'capex_per_kw': bess_config.capex_per_kw,
+                        'opex_pct_per_year': opex_fraction,
+                        'discount_rate': getattr(request.pv_config, 'discount_rate', 0.07),
+                        'analysis_years': bess_config.lifetime_years,
+                        'import_price_pln_mwh': getattr(request.pv_config, 'energy_price', 800.0),
+                        'durations_h': [1.0, 2.0, 4.0],
+                        # Demand charge for peak shaving savings
+                        'demand_charge_pln_kw_month': getattr(bess_config, 'demand_charge_pln_kw_month', 0.0),
+                        'peak_limit_kw': getattr(bess_config, 'peak_limit_kw', None),
+                        # Dispatch mode from scenario
+                        'dispatch_mode': getattr(bess_config, 'dispatch_mode', 'pv_surplus'),
+                    }
+
+                    # Add capacity fee configuration if enabled
+                    if bess_config.capacity_fee_config and bess_config.capacity_fee_config.enabled:
+                        bess_settings['capacity_fee'] = {
+                            'enabled': True,
+                            'som_rate_pln_kw': bess_config.capacity_fee_config.som_rate_pln_kw,
+                            'qualification_period': bess_config.capacity_fee_config.qualification_period,
+                            'peak_hours': bess_config.capacity_fee_config.peak_hours,
+                        }
+                        print(f"   📊 Capacity fee enabled: SOM={bess_config.capacity_fee_config.som_rate_pln_kw} PLN/kW/month")
+
+                    # Add tariff configuration for ToU arbitrage
+                    if bess_config.tariff_config and bess_config.tariff_config.type != 'flat':
+                        tariff = bess_config.tariff_config
+                        # Get fixed charges (opłaty stałe) - default 451 PLN/MWh
+                        other_fees = tariff.other_fees_pln_mwh or 451.0
+                        if tariff.type == 'two_zone':
+                            day_rate = tariff.day_rate_pln_mwh or 800.0
+                            night_rate = tariff.night_rate_pln_mwh or 400.0
+                            # Calculate weighted average (same as BESS frontend: 60% day, 40% night)
+                            avg_energia = day_rate * 0.6 + night_rate * 0.4
+                            full_price = avg_energia + other_fees
+                            bess_settings['prices'] = {
+                                'type': 'two_zone',
+                                'day_rate_pln_mwh': day_rate,
+                                'night_rate_pln_mwh': night_rate,
+                                'day_hours_start': tariff.day_hours_start,
+                                'day_hours_end': tariff.day_hours_end,
+                                'other_fees_pln_mwh': other_fees,  # Fixed charges on top of ToU rates
+                            }
+                            # Set import_price_pln_mwh to fullPrice for consistent calculations
+                            bess_settings['import_price_pln_mwh'] = full_price
+                            print(f"   📊 ToU tariff: day={day_rate} / night={night_rate} + other_fees={other_fees} = fullPrice={full_price} PLN/MWh")
+                        elif tariff.type == 'three_zone':
+                            peak_rate = tariff.peak_rate_pln_mwh or 1200.0
+                            day_rate = tariff.day_rate_pln_mwh or 800.0
+                            night_rate = tariff.night_rate_pln_mwh or 400.0
+                            # Calculate weighted average (same as BESS frontend: 20% peak, 40% day, 40% night)
+                            avg_energia = peak_rate * 0.2 + day_rate * 0.4 + night_rate * 0.4
+                            full_price = avg_energia + other_fees
+                            bess_settings['prices'] = {
+                                'type': 'three_zone',
+                                'peak_rate_pln_mwh': peak_rate,
+                                'day_rate_pln_mwh': day_rate,
+                                'night_rate_pln_mwh': night_rate,
+                                'peak_hours': tariff.peak_hours or [7, 8, 9, 10, 11, 12, 13, 17, 18, 19, 20, 21],
+                                'other_fees_pln_mwh': other_fees,  # Fixed charges on top of ToU rates
+                            }
+                            # Set import_price_pln_mwh to fullPrice for consistent calculations
+                            bess_settings['import_price_pln_mwh'] = full_price
+                            print(f"   📊 ToU tariff 3-zone: peak={peak_rate} / day={day_rate} / night={night_rate} + other_fees={other_fees} = fullPrice={full_price} PLN/MWh")
+
+                    # Add PRO config constraints if available
+                    if bess_config.pro_config:
+                        bess_settings.update({
+                            'min_power_kw': bess_config.pro_config.min_power_kw,
+                            'max_power_kw': bess_config.pro_config.max_power_kw,
+                            'min_energy_kwh': bess_config.pro_config.min_energy_kwh,
+                            'max_energy_kwh': bess_config.pro_config.max_energy_kwh,
+                        })
+
+                    # Call bess-dispatch for precise sizing with savings_breakdown
+                    bess_dispatch_result = call_bess_dispatch_sizing(
+                        pv_generation_kw=pv_generation_kw,
+                        load_kw=consumption.tolist(),
+                        topology=topology,
+                        bess_settings=bess_settings,
+                        interval_minutes=60
                     )
-                    if pro_result:
-                        # Re-simulate with PRO-optimized BESS sizing
+
+                    if bess_dispatch_result and bess_dispatch_result.get('variants'):
+                        # Use recommended variant from bess-dispatch
+                        best_bess_variant = bess_dispatch_result['variants'][0]  # First is recommended
+
+                        # Re-simulate with bess-dispatch optimized sizing
                         variant_scenario = simulate_pv_system_with_bess(
                             capacity=variant_scenario.capacity,
                             pv_profile=pv_profile,
                             consumption=consumption,
-                            bess_power_kw=pro_result['optimal_power_kw'],
-                            bess_energy_kwh=pro_result['optimal_energy_kwh'],
+                            bess_power_kw=best_bess_variant['power_kw'],
+                            bess_energy_kwh=best_bess_variant['energy_kwh'],
                             dc_ac_ratio=variant_scenario.dcac_ratio,
                             roundtrip_efficiency=bess_config.roundtrip_efficiency,
                             soc_min=bess_config.soc_min,
                             soc_max=bess_config.soc_max,
                             soc_initial=bess_config.soc_initial
                         )
+
+                        # Store bess-dispatch result for savings_breakdown
+                        variant_scenario._bess_dispatch_result = bess_dispatch_result
+                        print(f"   ✅ bess-dispatch: {best_bess_variant['power_kw']:.0f} kW / {best_bess_variant['energy_kwh']:.0f} kWh")
+                        if best_bess_variant.get('savings_breakdown'):
+                            sb = best_bess_variant['savings_breakdown']
+                            print(f"   💰 Savings: {sb.get('net_savings_pln', 0):.0f} PLN/year")
 
                 # Calculate hourly production for this variant (AC output with clipping)
                 # pv_profile is normalized per 1 kWp
@@ -2671,6 +2998,33 @@ async def analyze(request: AnalysisRequest):
                     variant_result.bess_monthly_data = variant_scenario.bess_monthly_data
                     # SOC histogram (NEW in v3.2)
                     variant_result.bess_soc_histogram = variant_scenario.bess_soc_histogram
+
+                    # Savings breakdown from bess-dispatch (PRO mode)
+                    if hasattr(variant_scenario, '_bess_dispatch_result') and variant_scenario._bess_dispatch_result:
+                        bess_result = variant_scenario._bess_dispatch_result
+                        if bess_result.get('variants'):
+                            best_variant = bess_result['variants'][0]  # Recommended variant
+                            if best_variant.get('savings_breakdown'):
+                                sb = best_variant['savings_breakdown']
+                                variant_result.savings_breakdown = SavingsBreakdown(
+                                    energy_savings_pln=sb.get('energy_savings_pln', 0.0),
+                                    demand_charge_savings_pln=sb.get('demand_charge_savings_pln', 0.0),
+                                    capacity_fee_savings_pln=sb.get('capacity_fee_savings_pln', 0.0),
+                                    arbitrage_savings_pln=sb.get('arbitrage_savings_pln', 0.0),
+                                    degradation_cost_pln=sb.get('degradation_cost_pln', 0.0),
+                                    net_savings_pln=sb.get('net_savings_pln', 0.0),
+                                    source="bess_dispatch_accurate"
+                                )
+                                print(f"      💰 Savings breakdown: {sb.get('net_savings_pln', 0):.0f} PLN/year (precise)")
+
+                            # Dispatch metadata
+                            if best_variant.get('dispatch_mode') or bess_result.get('topology'):
+                                variant_result.dispatch_metadata = DispatchMetadata(
+                                    dispatch_mode=best_variant.get('dispatch_mode', 'pv_surplus'),
+                                    topology=bess_result.get('topology', 'pv_load'),
+                                    peak_shaving_enabled=best_variant.get('peak_shaving_enabled', False),
+                                    peak_limit_kw=best_variant.get('peak_limit_kw')
+                                )
 
                     # DEBUG: Check if monthly data exists
                     monthly_count = len(variant_scenario.bess_monthly_data) if variant_scenario.bess_monthly_data else 0
@@ -2734,25 +3088,44 @@ async def analyze(request: AnalysisRequest):
 
             if best_scenario and best_scenario.bess_power_kw is not None:
                 total_consumption = consumption.sum()
+
+                # Get savings_breakdown from variant_70 (or best variant with bess-dispatch data)
+                variant_savings_breakdown = None
+                variant_dispatch_metadata = None
+                variant_npv = 0.0
+                variant_annual_savings = 0.0
+
+                for vname in ['variant_70', 'variant_80', 'variant_60', 'variant_90']:
+                    if vname in key_variants:
+                        vr = key_variants[vname]
+                        if vr.savings_breakdown:
+                            variant_savings_breakdown = vr.savings_breakdown
+                            variant_annual_savings = vr.savings_breakdown.net_savings_pln
+                            break
+                        if vr.dispatch_metadata:
+                            variant_dispatch_metadata = vr.dispatch_metadata
+
                 bess_summary = BESSSummary(
                     enabled=True,
-                    mode=bess_mode,  # 'light' or 'pro'
-                    duration=str(bess_config.duration) if bess_mode == 'light' else 'optimized',
-                    bess_power_kw=best_scenario.bess_power_kw,
-                    bess_energy_kwh=best_scenario.bess_energy_kwh,
-                    total_charged_kwh=best_scenario.bess_charged_kwh,
-                    total_discharged_kwh=best_scenario.bess_discharged_kwh,
-                    total_curtailed_kwh=best_scenario.bess_curtailed_kwh,
-                    total_grid_import_kwh=best_scenario.bess_grid_import_kwh,
-                    self_consumed_direct_kwh=best_scenario.bess_self_consumed_direct_kwh,
-                    self_consumed_from_bess_kwh=best_scenario.bess_self_consumed_from_bess_kwh,
+                    mode='pro',  # Always PRO - uses bess-dispatch full solver
+                    duration_selected='optimized',
+                    power_kw=best_scenario.bess_power_kw,
+                    energy_kwh=best_scenario.bess_energy_kwh,
+                    annual_charged_kwh=best_scenario.bess_charged_kwh,
+                    annual_discharged_kwh=best_scenario.bess_discharged_kwh,
+                    annual_curtailed_kwh=best_scenario.bess_curtailed_kwh,
+                    annual_grid_import_kwh=best_scenario.bess_grid_import_kwh,
                     cycles_equivalent=best_scenario.bess_cycles_equivalent,
-                    auto_consumption_pct=best_scenario.auto_consumption_pct,
-                    coverage_pct=best_scenario.coverage_pct
+                    annual_savings_pln=variant_annual_savings,
+                    savings_breakdown=variant_savings_breakdown,
+                    dispatch_metadata=variant_dispatch_metadata,
+                    schema_version="bess_economics_v2"
                 )
                 print(f"   BESS Summary: {best_scenario.bess_power_kw:.0f} kW / {best_scenario.bess_energy_kwh:.0f} kWh")
                 print(f"   Charged: {best_scenario.bess_charged_kwh:.0f} kWh, Discharged: {best_scenario.bess_discharged_kwh:.0f} kWh")
                 print(f"   Curtailed: {best_scenario.bess_curtailed_kwh:.0f} kWh, Grid Import: {best_scenario.bess_grid_import_kwh:.0f} kWh")
+                if variant_savings_breakdown:
+                    print(f"   💰 Annual savings: {variant_annual_savings:.0f} PLN (precise from bess-dispatch)")
 
         return AnalysisResult(
             scenarios=scenarios,
