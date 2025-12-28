@@ -32,6 +32,18 @@ from .versioning import (
     SCHEMA_VERSION,
 )
 
+from .logging_structured import (
+    log_sizing_request,
+    log_sizing_response,
+    log_dispatch_request,
+    log_dispatch_response,
+    log_error,
+    log_warning,
+    record_sizing_metrics,
+    record_dispatch_metrics,
+    PROMETHEUS_AVAILABLE,
+)
+
 __all__ = [
     # Calendar
     "DayType",
@@ -52,4 +64,14 @@ __all__ = [
     "get_assumptions_version",
     "get_version_info",
     "SCHEMA_VERSION",
+    # Structured logging
+    "log_sizing_request",
+    "log_sizing_response",
+    "log_dispatch_request",
+    "log_dispatch_response",
+    "log_error",
+    "log_warning",
+    "record_sizing_metrics",
+    "record_dispatch_metrics",
+    "PROMETHEUS_AVAILABLE",
 ]

@@ -50,6 +50,11 @@ from dispatch_engine import (
     check_degradation_budget,
 )
 from common.versioning import get_version_info
+from common.logging_structured import (
+    log_sizing_request,
+    log_sizing_response,
+    record_sizing_metrics,
+)
 from economics_helper import (
     PricingConfig,
     CostBreakdown,
@@ -958,11 +963,34 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     --------
     SizingResult with all variant details and recommendation
     """
+    import time
+    start_time = time.time()
+
     # Use effective_pv_kw which returns zeros for LOAD_ONLY topology
     pv_kw = np.array(request.effective_pv_kw)
     load_kw = np.array(request.load_kw)
     dt_hours = request.interval_minutes / 60.0
     n = len(load_kw)  # Use load length as reference (more reliable)
+
+    # Determine arbitrage enabled
+    arbitrage_enabled = bool(
+        request.arbitrage_config and request.arbitrage_config.enabled
+    )
+    objective = "npv"
+    if request.optimization:
+        objective = request.optimization.objective.value
+
+    # Structured log: sizing request
+    log_sizing_request(
+        mode=request.mode.value,
+        period_hours=n * dt_hours,
+        arbitrage_enabled=arbitrage_enabled,
+        objective=objective,
+        extra={
+            "load_points": n,
+            "durations": request.durations_h,
+        },
+    )
 
     # =========================================================================
     # Fetch price bundle if arbitrage enabled
@@ -1167,6 +1195,30 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     # Get version info for API response
     version_info = get_version_info()
+
+    # Compute total time
+    compute_time_ms = (time.time() - start_time) * 1000
+
+    # Structured log: sizing response (SSoT traceability)
+    log_sizing_response(
+        schema_version=version_info["schema_version"],
+        assumptions_version=version_info["assumptions_version"],
+        period_hours=period_hours,
+        is_full_year=is_full_year,
+        mode=request.mode.value,
+        arbitrage_enabled=arbitrage_enabled,
+        recommended_variant=recommended.variant.value if recommended else None,
+        recommended_npv=recommended.npv_pln if recommended else None,
+        num_variants=len(variants),
+        compute_time_ms=compute_time_ms,
+    )
+
+    # Record Prometheus metrics (if available)
+    record_sizing_metrics(
+        mode=request.mode.value,
+        arbitrage_enabled=arbitrage_enabled,
+        duration_seconds=compute_time_ms / 1000,
+    )
 
     return SizingResult(
         schema_version=version_info["schema_version"],
