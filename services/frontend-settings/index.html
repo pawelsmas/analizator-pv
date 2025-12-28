@@ -1371,6 +1371,35 @@
         <input type="hidden" id="bessMode" value="off">
       </div>
 
+      <!-- BESS Scenario Selector (MVP v3.17) -->
+      <div id="bessScenarioSection" style="display:none;margin-bottom:24px;padding:20px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="font-weight:600;color:#1976d2;font-size:15px;margin-bottom:8px">
+          🎯 Scenariusz pracy magazynu
+        </div>
+        <div style="font-size:12px;color:#666;margin-bottom:16px">
+          Wybierz główny cel optymalizacji BESS. Scenariusz ustawi domyślne parametry.
+        </div>
+
+        <!-- Scenario Tiles Container -->
+        <div id="bessScenarioTiles" class="scenario-tiles-container">
+          <!-- Tiles will be rendered by renderScenarioTiles() -->
+        </div>
+
+        <!-- Hidden input for scenario ID -->
+        <input type="hidden" id="bessScenarioId" value="">
+
+        <!-- Capacity Fee Overlay Checkbox (Scenario 6 equivalent) -->
+        <div style="margin-top:16px;padding:12px;background:#f5f5f5;border-radius:6px;display:flex;align-items:center;gap:12px">
+          <input type="checkbox" id="bessCapacityFeeOverlay" style="width:18px;height:18px;cursor:pointer">
+          <label for="bessCapacityFeeOverlay" style="cursor:pointer;font-size:13px;color:#333">
+            <strong>📊 Pokaż oszczędności opłaty mocowej</strong>
+            <span style="display:block;font-size:11px;color:#666;margin-top:2px">
+              Po symulacji wyświetli overlay z analizą opłaty mocowej (przed/po BESS)
+            </span>
+          </label>
+        </div>
+      </div>
+
       <!-- BESS Duration Selector (shown only when BESS enabled) -->
       <div id="bessDurationSection" style="display:none;margin-bottom:24px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
         <div style="font-weight:600;color:#1976d2;margin-bottom:12px;font-size:14px">
@@ -1445,14 +1474,36 @@
                 <input type="number" id="bessSocMax" value="90" min="70" max="100" step="5">
                 <span class="setting-hint">% (ochrona baterii)</span>
               </div>
+              <div class="setting-item" style="grid-column: span 2">
+                <label>Profil degradacji</label>
+                <select id="bessDegradationProfile" onchange="applyDegradationProfile(this.value, 'light')" style="padding:10px;font-size:13px">
+                  <option value="custom">📝 Własne parametry</option>
+                  <optgroup label="🏭 Profile producentów">
+                    <option value="catl_lfp">CATL LFP (Chiny) - 80% po 10 latach</option>
+                    <option value="byd_blade">BYD Blade (Chiny) - 80% po 8 lat/6000 cykli</option>
+                    <option value="tesla_megapack">Tesla Megapack (USA) - 70% po 15 lat</option>
+                    <option value="samsung_sdi">Samsung SDI (Korea) - 80% po 10 lat</option>
+                    <option value="lg_resu">LG RESU (Korea) - 60% po 10 lat</option>
+                    <option value="pylontech">Pylontech (Chiny) - 80% po 10 lat</option>
+                    <option value="huawei_luna">Huawei LUNA (Chiny) - 70% po 10 lat</option>
+                  </optgroup>
+                  <optgroup label="📊 Profile użytkowe">
+                    <option value="conservative">Konserwatywny - 70% po 10 lat</option>
+                    <option value="moderate" selected>Umiarkowany - 80% po 15 lat</option>
+                    <option value="optimistic">Optymistyczny - 85% po 15 lat</option>
+                    <option value="aggressive">Agresywny (wysoki DoD) - 70% po 8 lat</option>
+                  </optgroup>
+                </select>
+                <span class="setting-hint">Wybierz profil lub ustaw własne parametry poniżej</span>
+              </div>
               <div class="setting-item">
                 <label>Degradacja rok 1</label>
-                <input type="number" id="bessDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="syncDegradationParams('light')">
+                <input type="number" id="bessDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="onDegradationManualChange('light')">
                 <span class="setting-hint">% (pierwszy rok - wyższa)</span>
               </div>
               <div class="setting-item">
                 <label>Degradacja lata 2+</label>
-                <input type="number" id="bessDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="syncDegradationParams('light')">
+                <input type="number" id="bessDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="onDegradationManualChange('light')">
                 <span class="setting-hint">% (pozostałe lata)</span>
               </div>
               <div class="setting-item">
@@ -1574,14 +1625,36 @@
           <div style="font-weight:600;color:#bf360c;font-size:12px;margin-bottom:8px">🔋 Degradacja BESS (centralne ustawienia)</div>
           <div style="font-size:10px;color:#888;margin-bottom:8px">Te same parametry co w wersji LIGHT - zmiana tutaj = zmiana wszędzie</div>
           <div class="settings-grid">
+            <div class="setting-item" style="grid-column: span 2">
+              <label>Profil degradacji</label>
+              <select id="bessProDegradationProfile" onchange="applyDegradationProfile(this.value, 'pro')" style="padding:10px;font-size:13px">
+                <option value="custom">📝 Własne parametry</option>
+                <optgroup label="🏭 Profile producentów">
+                  <option value="catl_lfp">CATL LFP (Chiny) - 80% po 10 latach</option>
+                  <option value="byd_blade">BYD Blade (Chiny) - 80% po 8 lat/6000 cykli</option>
+                  <option value="tesla_megapack">Tesla Megapack (USA) - 70% po 15 lat</option>
+                  <option value="samsung_sdi">Samsung SDI (Korea) - 80% po 10 lat</option>
+                  <option value="lg_resu">LG RESU (Korea) - 60% po 10 lat</option>
+                  <option value="pylontech">Pylontech (Chiny) - 80% po 10 lat</option>
+                  <option value="huawei_luna">Huawei LUNA (Chiny) - 70% po 10 lat</option>
+                </optgroup>
+                <optgroup label="📊 Profile użytkowe">
+                  <option value="conservative">Konserwatywny - 70% po 10 lat</option>
+                  <option value="moderate" selected>Umiarkowany - 80% po 15 lat</option>
+                  <option value="optimistic">Optymistyczny - 85% po 15 lat</option>
+                  <option value="aggressive">Agresywny (wysoki DoD) - 70% po 8 lat</option>
+                </optgroup>
+              </select>
+              <span class="setting-hint">Wybierz profil lub ustaw własne parametry poniżej</span>
+            </div>
             <div class="setting-item">
               <label>Degradacja rok 1</label>
-              <input type="number" id="bessProDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="syncDegradationParams('pro')">
+              <input type="number" id="bessProDegradationYear1" value="3.0" min="0" max="10" step="0.1" onchange="onDegradationManualChange('pro')">
               <span class="setting-hint">% (pierwszy rok - wyższa)</span>
             </div>
             <div class="setting-item">
               <label>Degradacja lata 2+</label>
-              <input type="number" id="bessProDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="syncDegradationParams('pro')">
+              <input type="number" id="bessProDegradationPctPerYear" value="2.0" min="0" max="5" step="0.1" onchange="onDegradationManualChange('pro')">
               <span class="setting-hint">% (pozostałe lata)</span>
             </div>
             <div class="setting-item">
@@ -1640,14 +1713,73 @@
           </div>
         </div>
 
-        <!-- Price Arbitrage Section -->
-        <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%);border-radius:8px;border:1px solid #f48fb1">
-          <div style="font-weight:600;color:#c2185b;margin-bottom:12px;font-size:14px">
-            💹 Arbitraż Cenowy (RDN)
+        <!-- OSD Tariff Arbitrage Section (ToU - Time of Use) -->
+        <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);border-radius:8px;border:1px solid #ffb74d">
+          <div style="font-weight:600;color:#e65100;margin-bottom:12px;font-size:14px">
+            ⚡ Arbitraż Taryfowy OSD (ToU)
           </div>
           <div style="font-size:11px;color:#666;margin-bottom:16px">
-            Kupuj energię tanio (ładuj BESS), sprzedawaj drogo (rozładuj BESS).
-            Wymaga dostępu do cen godzinowych RDN lub ręcznego profilu cenowego.
+            Wykorzystaj różnice cen w strefach taryfowych OSD (np. C12a, C22a).
+            Ładuj BESS w strefie pozaszczytowej (tańszej), rozładuj w szczytowej (droższej).
+            Przewidywalny zysk = różnica stawek × energia × sprawność BESS.
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="bessOsdArbitrageEnabled" style="width:18px;height:18px">
+                Włącz Arbitraż Taryfowy
+              </label>
+              <span class="setting-hint">Optymalizacja pod strefy czasowe OSD</span>
+            </div>
+            <div class="setting-item">
+              <label>Operator OSD</label>
+              <select id="bessOsdOperator" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="pge">PGE Dystrybucja</option>
+                <option value="tauron">TAURON Dystrybucja</option>
+                <option value="energa">ENERGA-OPERATOR</option>
+                <option value="enea">ENEA Operator</option>
+                <option value="innogy">Stoen (innogy)</option>
+              </select>
+              <span class="setting-hint">Operator sieci dystrybucyjnej</span>
+            </div>
+            <div class="setting-item">
+              <label>Grupa taryfowa</label>
+              <select id="bessOsdTariffGroup" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="C12a">C12a (dwustrefowa)</option>
+                <option value="C12b">C12b (dwustrefowa WE)</option>
+                <option value="C22a">C22a (trzystrefowa)</option>
+                <option value="C22b">C22b (trzystrefowa WE)</option>
+                <option value="C11">C11 (jednostrefowa)</option>
+              </select>
+              <span class="setting-hint">Typ taryfy z umowy OSD</span>
+            </div>
+            <div class="setting-item">
+              <label>Stawka szczyt [PLN/kWh]</label>
+              <input type="number" id="bessOsdPeakRate" value="0.75" min="0" max="3" step="0.01">
+              <span class="setting-hint">Cena w strefie szczytowej</span>
+            </div>
+            <div class="setting-item">
+              <label>Stawka pozaszczyt [PLN/kWh]</label>
+              <input type="number" id="bessOsdOffPeakRate" value="0.45" min="0" max="2" step="0.01">
+              <span class="setting-hint">Cena w strefie pozaszczytowej</span>
+            </div>
+            <div class="setting-item">
+              <label>Min. spread [PLN/kWh]</label>
+              <input type="number" id="bessOsdMinSpread" value="0.15" min="0" max="1" step="0.01">
+              <span class="setting-hint">Min. różnica cen do arbitrażu</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Price Arbitrage Section (RDN - spot market) -->
+        <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%);border-radius:8px;border:1px solid #f48fb1">
+          <div style="font-weight:600;color:#c2185b;margin-bottom:12px;font-size:14px">
+            💹 Arbitraż Cenowy RDN (Spot)
+          </div>
+          <div style="font-size:11px;color:#666;margin-bottom:16px">
+            Kupuj energię tanio (ładuj BESS), sprzedawaj drogo (rozładuj BESS) na rynku spot.
+            Wymaga dostępu do cen godzinowych z TGE (Rynek Dnia Następnego).
             Zysk = Σ(cena_sprzedaży - cena_kupna) × energia × sprawność.
           </div>
 

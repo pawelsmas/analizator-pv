@@ -304,11 +304,11 @@ const DEFAULT_CONFIG = {
   // ============================================================================
   // Tryby:
   //   - 'off'   = brak magazynu
-  //   - 'light' = auto-sizing (prosty algorytm zachłanny)
-  //   - 'pro'   = optymalizacja LP/MIP przez PyPSA + HiGHS
+  //   - 'pro'   = optymalizacja LP/MIP przez PyPSA + HiGHS (DOMYŚLNY)
+  //   - 'light' = DEPRECATED - legacy auto-sizing
 
-  bessMode: 'off',                     // Master mode: 'off' | 'light' | 'pro'
-  bessEnabled: false,                  // Legacy: for backwards compatibility (true = 'light')
+  bessMode: 'pro',                     // Master mode: 'off' | 'pro' (light deprecated)
+  bessEnabled: true,                   // Legacy: for backwards compatibility
   bessDuration: 'auto',                // Duration mode: 'auto' | 1 | 2 | 4 (hours)
                                        // 'auto' = system tests 1h/2h/4h and picks best NPV
 
@@ -361,15 +361,160 @@ const DEFAULT_CONFIG = {
   bessPeakShavingPctReduction: 15,     // Target % reduction from historical peak (for percentage mode)
   bessPowerChargePlnPerKwMonth: 50,    // Power charge [PLN/kW/month] for peak shaving savings
 
-  // Price Arbitrage (arbitraż cenowy RDN - kupuj tanio, sprzedawaj drogo)
-  bessPriceArbitrageEnabled: false,    // Enable price arbitrage optimization
+  // OSD Tariff Arbitrage (ToU - arbitraż na strefach czasowych OSD)
+  bessOsdArbitrageEnabled: false,      // Enable OSD tariff arbitrage
+  bessOsdOperator: 'pge',              // 'pge' | 'tauron' | 'energa' | 'enea' | 'innogy'
+  bessOsdTariffGroup: 'C12a',          // 'C11' | 'C12a' | 'C12b' | 'C22a' | 'C22b'
+  bessOsdPeakRate: 0.75,               // Peak zone rate [PLN/kWh]
+  bessOsdOffPeakRate: 0.45,            // Off-peak zone rate [PLN/kWh]
+  bessOsdMinSpread: 0.15,              // Minimum spread to trigger arbitrage [PLN/kWh]
+
+  // RDN Price Arbitrage (arbitraż cenowy RDN/spot - kupuj tanio, sprzedawaj drogo)
+  bessPriceArbitrageEnabled: false,    // Enable RDN price arbitrage optimization
   bessPriceArbitrageSource: 'manual',  // 'manual' | 'tge_api' | 'csv_upload'
   bessPriceArbitrageBuyThreshold: 300, // Buy energy when price below [PLN/MWh]
   bessPriceArbitrageSellThreshold: 600,// Sell energy when price above [PLN/MWh]
   bessPriceArbitrageSpread: 100,       // Minimum spread to trigger arbitrage [PLN/MWh]
   bessRdnPriceFlat: 500,               // Flat RDN price [PLN/MWh] (for manual mode without profile)
-  bessRdnPriceMultiplier: 1.0          // RDN price multiplier (for scenario analysis)
+  bessRdnPriceMultiplier: 1.0,         // RDN price multiplier (for scenario analysis)
+
+  // ============================================================================
+  // BESS Scenarios - Work mode selection (MVP v3.17)
+  // ============================================================================
+  bessScenarioId: null,                 // Selected scenario ID (null = auto-select based on topology)
+  bessCapacityFeeOverlay: false         // Show capacity fee savings overlay after dispatch
 };
+
+// ============================================================================
+// BESS SCENARIOS DEFINITIONS
+// ============================================================================
+// Note:
+// - Scenario 6 (Capacity Fee) is a CHECKBOX OVERLAY, not a base scenario
+// - Scenario 7 baseMode depends on topology (stacked for pv_bess, load_only for bess_only)
+
+const BESS_SCENARIOS = {
+  1: {
+    id: 1,
+    name: 'Autokonsumpcja PV (0-export)',
+    shortName: 'Autokonsumpcja',
+    description: 'Maksymalizacja zużycia własnego, minimalizacja curtailment',
+    topologies: ['pv_bess'],
+    modes: ['light', 'pro'],
+    baseMode: 'pv_surplus',
+    presets: {
+      bessRoundtripEfficiency: 90,
+      bessSocMin: 10,
+      bessSocMax: 90,
+      bessDuration: 'auto'
+    },
+    requiredFields: [],
+    kpiLabels: ['Self-consumption', 'Curtailment'],
+    icon: '☀️'
+  },
+  2: {
+    id: 2,
+    name: 'PV + Peak Shaving (STACKED)',
+    shortName: 'PV + Peak',
+    description: 'Autokonsumpcja + redukcja szczytów mocy pobieranej z sieci',
+    topologies: ['pv_bess'],
+    modes: ['light', 'pro'],
+    baseMode: 'stacked',
+    presets: {
+      bessPeakShavingEnabled: true,
+      bessPeakShavingMode: 'auto',
+      // reserve_fraction handled via stacked_params in request
+    },
+    requiredFields: [],  // peak_limit_kw opcjonalny - auto z P95
+    recommended: true,
+    kpiLabels: ['Peak reduction', 'Savings'],
+    icon: '⚡'
+  },
+  3: {
+    id: 3,
+    name: 'Peak Shaving (BESS-only)',
+    shortName: 'Peak Shaving',
+    description: 'Redukcja szczytów bez PV - tylko magazyn energii',
+    topologies: ['bess_only'],
+    modes: ['light', 'pro'],
+    baseMode: 'load_only',
+    presets: {
+      bessPeakShavingEnabled: true,
+      bessPeakShavingMode: 'auto'
+    },
+    requiredFields: [],  // peak_limit_kw opcjonalny - auto z P95
+    recommended: true,  // Default dla bess_only
+    kpiLabels: ['Peak reduction', 'Monthly savings'],
+    icon: '📉'
+  },
+  4: {
+    id: 4,
+    name: 'ToU + Analiza kosztów',
+    shortName: 'ToU Analiza',
+    description: 'Raport kosztów wg stref taryfowych OSD (analiza po stronie FE)',
+    topologies: ['pv_bess'],
+    modes: ['light', 'pro'],
+    baseMode: 'stacked',
+    presets: {
+      bessOsdArbitrageEnabled: true,
+      bessOsdTariffGroup: 'C12a'
+    },
+    requiredFields: ['bessOsdTariffGroup'],
+    feAnalysis: true,  // Analiza kosztów po stronie frontend
+    kpiLabels: ['Cost by zone', 'Savings vs flat'],
+    icon: '🕐'
+  },
+  5: {
+    id: 5,
+    name: 'ToU Arbitrage',
+    shortName: 'Arbitraż',
+    description: 'Arbitraż cenowy na strefach taryfowych - osobny endpoint API',
+    topologies: ['pv_bess', 'bess_only'],
+    modes: ['pro'],
+    baseMode: null,  // Osobny flow /arbitrage/dispatch
+    presets: {},
+    requiredFields: [],
+    beta: true,
+    betaTooltip: 'BETA – wymaga osobnego flow /arbitrage/dispatch (nie zintegrowane z /dispatch)',
+    icon: '💹'
+  },
+  // Scenariusz 6 NIE jest kafelkiem - to checkbox overlay
+  // Definicja tylko dla dokumentacji
+  7: {
+    id: 7,
+    name: 'Backup / UPS (wysoka rezerwa)',
+    shortName: 'Backup/UPS',
+    description: 'Wysoka rezerwa SOC dla zasilania awaryjnego',
+    topologies: ['pv_bess', 'bess_only'],
+    modes: ['light', 'pro'],
+    // baseMode zależny od topologii - obsługiwane w getScenarioBaseMode()
+    baseMode: null,
+    presets: {
+      // reserve_fraction: 0.70 handled in request building
+    },
+    requiredFields: [],
+    reserveFraction: 0.70,
+    infoTooltip: 'MVP: rezerwa dotyczy PV shifting; peak shaving może naruszyć rezerwę w sytuacji awaryjnej',
+    icon: '🔒'
+  },
+  8: {
+    id: 8,
+    name: 'Duże piki (EV hub / rozruchy)',
+    shortName: 'Duże piki',
+    description: 'Optymalizacja pod krótkie, intensywne szczyty mocy',
+    topologies: ['pv_bess'],
+    modes: ['pro'],
+    baseMode: 'stacked',
+    presets: {
+      bessDuration: '1',  // 1h - wysoka moc, mała pojemność
+      bessPeakShavingEnabled: true,
+      bessPeakShavingMode: 'manual'
+    },
+    requiredFields: ['bessPeakShavingTargetKw'],
+    interval15minSupport: true,  // 15-min tylko jeśli dane mają 35040 punktów
+    kpiLabels: ['Peak kW cut', 'Duration coverage'],
+    icon: '🚗'
+  }
+}
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -488,6 +633,199 @@ function toggleBessSection() {
 }
 
 /**
+ * Predefiniowane profile degradacji baterii od producentów
+ * Wartości obliczone na podstawie gwarancji i specyfikacji technicznych
+ *
+ * Wzór: pozostała_pojemność = (1 - deg_rok1) × (1 - deg_roczna)^(lata-1)
+ *
+ * Przykład dla CATL LFP (80% po 10 latach):
+ * 0.80 = (1 - 0.03) × (1 - 0.0189)^9
+ * → deg_rok1 = 3%, deg_roczna = 1.89%
+ */
+const DEGRADATION_PROFILES = {
+  // ========== Profile producentów ==========
+  catl_lfp: {
+    name: 'CATL LFP',
+    year1: 3.0,      // % degradacji w roku 1
+    annual: 1.9,     // % degradacji rocznie (lata 2+)
+    lifetime: 15,    // gwarantowana żywotność [lat]
+    cycles: 6000,    // gwarantowane cykle
+    eol_capacity: 80, // % pojemności na koniec gwarancji
+    chemistry: 'LFP',
+    notes: 'Chińskie ogniwa LFP, wysoka żywotność, stabilność termiczna'
+  },
+  byd_blade: {
+    name: 'BYD Blade',
+    year1: 3.5,
+    annual: 2.2,
+    lifetime: 10,
+    cycles: 6000,
+    eol_capacity: 80,
+    chemistry: 'LFP (Blade)',
+    notes: 'Technologia Blade - bezpieczna, długa żywotność'
+  },
+  tesla_megapack: {
+    name: 'Tesla Megapack',
+    year1: 2.5,
+    annual: 2.0,
+    lifetime: 15,
+    cycles: 4000,
+    eol_capacity: 70,
+    chemistry: 'NMC/LFP',
+    notes: 'Przemysłowe magazyny Tesla, gwarancja 70% po 15 latach'
+  },
+  samsung_sdi: {
+    name: 'Samsung SDI',
+    year1: 3.0,
+    annual: 2.0,
+    lifetime: 10,
+    cycles: 6000,
+    eol_capacity: 80,
+    chemistry: 'NMC',
+    notes: 'Koreańskie ogniwa NMC, wysoka gęstość energii'
+  },
+  lg_resu: {
+    name: 'LG RESU',
+    year1: 4.0,
+    annual: 3.5,
+    lifetime: 10,
+    cycles: 4000,
+    eol_capacity: 60,
+    chemistry: 'NMC',
+    notes: 'Magazyny residencyjne LG, krótszy okres gwarancji'
+  },
+  pylontech: {
+    name: 'Pylontech',
+    year1: 3.0,
+    annual: 2.0,
+    lifetime: 10,
+    cycles: 6000,
+    eol_capacity: 80,
+    chemistry: 'LFP',
+    notes: 'Popularne chińskie ogniwa LFP, dobry stosunek cena/jakość'
+  },
+  huawei_luna: {
+    name: 'Huawei LUNA',
+    year1: 3.0,
+    annual: 2.8,
+    lifetime: 10,
+    cycles: 4000,
+    eol_capacity: 70,
+    chemistry: 'LFP',
+    notes: 'Magazyny Huawei, zintegrowane z falownikami'
+  },
+
+  // ========== Profile użytkowe ==========
+  conservative: {
+    name: 'Konserwatywny',
+    year1: 4.0,
+    annual: 3.0,
+    lifetime: 10,
+    cycles: 3000,
+    eol_capacity: 70,
+    chemistry: 'Generic',
+    notes: 'Ostrożne założenia dla nieznanego producenta'
+  },
+  moderate: {
+    name: 'Umiarkowany',
+    year1: 3.0,
+    annual: 2.0,
+    lifetime: 15,
+    cycles: 5000,
+    eol_capacity: 80,
+    chemistry: 'Generic',
+    notes: 'Typowe wartości dla dobrych magazynów Li-ion'
+  },
+  optimistic: {
+    name: 'Optymistyczny',
+    year1: 2.0,
+    annual: 1.5,
+    lifetime: 15,
+    cycles: 6000,
+    eol_capacity: 85,
+    chemistry: 'LFP Premium',
+    notes: 'Optymistyczne założenia dla premium LFP'
+  },
+  aggressive: {
+    name: 'Agresywny (wysoki DoD)',
+    year1: 5.0,
+    annual: 4.0,
+    lifetime: 8,
+    cycles: 2000,
+    eol_capacity: 70,
+    chemistry: 'Generic',
+    notes: 'Intensywna eksploatacja, wysoki DoD, częste cykle'
+  }
+};
+
+/**
+ * Zastosuj profil degradacji do pól formularza
+ * @param {string} profileId - ID profilu z DEGRADATION_PROFILES
+ * @param {string} mode - 'light' lub 'pro'
+ */
+function applyDegradationProfile(profileId, mode) {
+  if (profileId === 'custom') {
+    console.log(`📝 Degradation profile: custom (manual input enabled)`);
+    return;
+  }
+
+  const profile = DEGRADATION_PROFILES[profileId];
+  if (!profile) {
+    console.warn(`❓ Unknown degradation profile: ${profileId}`);
+    return;
+  }
+
+  // Ustaw wartości w odpowiednich polach
+  const prefix = mode === 'pro' ? 'bessProDegradation' : 'bessDegradation';
+
+  const year1El = document.getElementById(`${prefix}Year1`);
+  const annualEl = document.getElementById(`${prefix}PctPerYear`);
+
+  if (year1El) year1El.value = profile.year1;
+  if (annualEl) annualEl.value = profile.annual;
+
+  // Synchronizuj do drugiego trybu
+  syncDegradationParams(mode);
+
+  // Synchronizuj również dropdown w drugim trybie
+  const otherPrefix = mode === 'pro' ? 'bessDegradation' : 'bessProDegradation';
+  const otherDropdown = document.getElementById(`${otherPrefix}Profile`);
+  if (otherDropdown) {
+    otherDropdown.value = profileId;
+  }
+
+  console.log(`🔋 Degradation profile applied: ${profile.name}`, {
+    year1: profile.year1 + '%',
+    annual: profile.annual + '%/rok',
+    eol: profile.eol_capacity + '% po ' + profile.lifetime + ' lat',
+    chemistry: profile.chemistry
+  });
+
+  markUnsaved();
+}
+
+/**
+ * Obsługa ręcznej zmiany parametrów degradacji
+ * Przełącza dropdown na "Własne parametry"
+ */
+function onDegradationManualChange(mode) {
+  const prefix = mode === 'pro' ? 'bessProDegradation' : 'bessDegradation';
+  const dropdown = document.getElementById(`${prefix}Profile`);
+  if (dropdown) {
+    dropdown.value = 'custom';
+  }
+
+  // Synchronizuj również drugi tryb
+  const otherPrefix = mode === 'pro' ? 'bessDegradation' : 'bessProDegradation';
+  const otherDropdown = document.getElementById(`${otherPrefix}Profile`);
+  if (otherDropdown) {
+    otherDropdown.value = 'custom';
+  }
+
+  syncDegradationParams(mode);
+}
+
+/**
  * Synchronize degradation parameters between LIGHT and PRO sections
  * When user changes a value in one mode, it updates the other mode
  * @param {string} source - 'light' or 'pro' - which section triggered the change
@@ -524,6 +862,288 @@ function syncDegradationParams(source) {
 
   markUnsaved();
 }
+
+// ============================================================================
+// BESS SCENARIOS FUNCTIONS
+// ============================================================================
+
+// Current selected scenario ID
+let currentBessScenarioId = null;
+
+/**
+ * Get available scenarios based on topology and bessMode
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ * @param {string} bessMode - 'off' | 'light' | 'pro'
+ * @returns {Array} - Array of scenario objects
+ */
+function getAvailableScenarios(topology, bessMode) {
+  if (bessMode === 'off') return [];
+
+  return Object.values(BESS_SCENARIOS).filter(scenario => {
+    const topologyMatch = scenario.topologies.includes(topology);
+    const modeMatch = scenario.modes.includes(bessMode);
+    return topologyMatch && modeMatch;
+  });
+}
+
+/**
+ * Get default scenario ID for given topology
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ * @returns {number|null} - Default scenario ID
+ */
+function getDefaultScenarioId(topology) {
+  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 3 (LOAD_ONLY)
+  return topology === 'pv_bess' ? 2 : 3;
+}
+
+/**
+ * Get baseMode for a scenario, considering topology
+ * Scenario 7 (Backup) has topology-dependent baseMode
+ * @param {object} scenario - Scenario object
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ * @returns {string|null} - Base dispatch mode
+ */
+function getScenarioBaseMode(scenario, topology) {
+  // Scenario 7 (Backup) - baseMode depends on topology
+  if (scenario.id === 7) {
+    return topology === 'pv_bess' ? 'stacked' : 'load_only';
+  }
+  return scenario.baseMode;
+}
+
+/**
+ * Set BESS scenario and apply presets
+ * @param {number} scenarioId - Scenario ID to select
+ */
+function setBessScenario(scenarioId) {
+  const scenario = BESS_SCENARIOS[scenarioId];
+  if (!scenario) {
+    console.warn(`Unknown scenario ID: ${scenarioId}`);
+    return;
+  }
+
+  // Check if scenario is BETA and disabled
+  if (scenario.beta) {
+    showToast('info', scenario.betaTooltip || 'Ten scenariusz jest w wersji BETA');
+    return;
+  }
+
+  currentBessScenarioId = scenarioId;
+
+  // Update hidden input
+  const scenarioInput = document.getElementById('bessScenarioId');
+  if (scenarioInput) scenarioInput.value = scenarioId;
+
+  // Apply presets from scenario
+  if (scenario.presets) {
+    Object.entries(scenario.presets).forEach(([key, value]) => {
+      applyScenarioPreset(key, value);
+    });
+  }
+
+  // Update scenario tiles UI
+  renderScenarioTiles();
+
+  console.log(`🎯 BESS scenario set to: ${scenarioId} (${scenario.name})`);
+  markUnsaved();
+}
+
+/**
+ * Apply a single preset value to UI
+ * @param {string} key - Setting key
+ * @param {any} value - Value to set
+ */
+function applyScenarioPreset(key, value) {
+  const el = document.getElementById(key);
+  if (!el) return;
+
+  if (el.type === 'checkbox') {
+    el.checked = !!value;
+  } else {
+    el.value = value;
+  }
+
+  // Trigger change event for any dependent logic
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/**
+ * Render scenario tiles in the UI
+ * Called on topology/mode change and on page load
+ */
+function renderScenarioTiles() {
+  const container = document.getElementById('bessScenarioTiles');
+  if (!container) return;
+
+  const topology = document.getElementById('bessTopology')?.value || 'pv_bess';
+  const bessMode = document.getElementById('bessMode')?.value || 'off';
+
+  // Hide entire section if bessMode is 'off'
+  const scenarioSection = document.getElementById('bessScenarioSection');
+  if (scenarioSection) {
+    scenarioSection.style.display = bessMode === 'off' ? 'none' : 'block';
+  }
+
+  if (bessMode === 'off') {
+    container.innerHTML = '';
+    return;
+  }
+
+  const availableScenarios = getAvailableScenarios(topology, bessMode);
+
+  // Load saved scenario ID from hidden input if currentBessScenarioId is not set
+  if (!currentBessScenarioId) {
+    const savedScenarioId = document.getElementById('bessScenarioId')?.value;
+    if (savedScenarioId) {
+      currentBessScenarioId = parseInt(savedScenarioId, 10);
+    }
+  }
+
+  // Auto-select default scenario if none selected or current not available
+  if (!currentBessScenarioId ||
+      !availableScenarios.find(s => s.id === currentBessScenarioId)) {
+    currentBessScenarioId = getDefaultScenarioId(topology);
+  }
+
+  // Build tiles HTML
+  let tilesHTML = '';
+  availableScenarios.forEach(scenario => {
+    const isSelected = scenario.id === currentBessScenarioId;
+    const isBeta = scenario.beta;
+    const isRecommended = scenario.recommended;
+
+    const tileClass = [
+      'scenario-tile',
+      isSelected ? 'selected' : '',
+      isBeta ? 'beta disabled' : '',
+      isRecommended ? 'recommended' : ''
+    ].filter(Boolean).join(' ');
+
+    const tooltip = isBeta ? scenario.betaTooltip :
+                   (scenario.infoTooltip || '');
+
+    tilesHTML += `
+      <div class="${tileClass}"
+           onclick="setBessScenario(${scenario.id})"
+           ${tooltip ? `title="${tooltip}"` : ''}>
+        <div class="scenario-icon">${scenario.icon || '🔋'}</div>
+        <div class="scenario-content">
+          <div class="scenario-name">
+            ${scenario.shortName || scenario.name}
+            ${isRecommended ? '<span class="badge recommended">ZALECANY</span>' : ''}
+            ${isBeta ? '<span class="badge beta">BETA</span>' : ''}
+          </div>
+          <div class="scenario-description">${scenario.description}</div>
+        </div>
+      </div>
+    `;
+  });
+
+  container.innerHTML = tilesHTML;
+
+  // Update hidden input
+  const scenarioInput = document.getElementById('bessScenarioId');
+  if (scenarioInput) scenarioInput.value = currentBessScenarioId || '';
+
+  console.log(`📊 Rendered ${availableScenarios.length} scenario tiles for topology=${topology}, mode=${bessMode}`);
+}
+
+/**
+ * Handle topology change - update scenarios and auto-select default
+ * Extended version of setBessTopology
+ */
+const originalSetBessTopology = setBessTopology;
+setBessTopology = function(topology) {
+  // Call original function
+  originalSetBessTopology(topology);
+
+  // Re-render scenarios with new topology
+  // Reset scenario selection to default for new topology
+  currentBessScenarioId = null;
+  renderScenarioTiles();
+};
+
+/**
+ * Handle bessMode change - update scenarios visibility
+ * Extended version of setBessMode
+ */
+const originalSetBessMode = setBessMode;
+setBessMode = function(mode) {
+  // Call original function
+  originalSetBessMode(mode);
+
+  // Re-render scenarios with new mode
+  renderScenarioTiles();
+};
+
+/**
+ * Show toast notification
+ * @param {string} type - 'info' | 'success' | 'warning' | 'error'
+ * @param {string} message - Message to display
+ */
+function showToast(type, message) {
+  // Simple toast implementation - can be enhanced
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  toast.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 24px;
+    background: ${type === 'info' ? '#2196f3' : type === 'success' ? '#4caf50' : type === 'warning' ? '#ff9800' : '#f44336'};
+    color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    z-index: 10000;
+    font-size: 14px;
+    animation: fadeIn 0.3s ease;
+  `;
+
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+/**
+ * Get current scenario configuration for request building
+ * @returns {object} - Scenario config with baseMode, presets, etc.
+ */
+function getCurrentScenarioConfig() {
+  const topology = document.getElementById('bessTopology')?.value || 'pv_bess';
+  const scenarioId = currentBessScenarioId || getDefaultScenarioId(topology);
+  const scenario = BESS_SCENARIOS[scenarioId];
+
+  if (!scenario) {
+    return {
+      scenarioId: null,
+      baseMode: topology === 'pv_bess' ? 'stacked' : 'load_only',
+      presets: {},
+      requiredFields: []
+    };
+  }
+
+  return {
+    scenarioId: scenario.id,
+    baseMode: getScenarioBaseMode(scenario, topology),
+    presets: scenario.presets || {},
+    requiredFields: scenario.requiredFields || [],
+    feAnalysis: scenario.feAnalysis || false,
+    reserveFraction: scenario.reserveFraction || 0.30,
+    beta: scenario.beta || false
+  };
+}
+
+// Make functions globally available
+window.setBessScenario = setBessScenario;
+window.renderScenarioTiles = renderScenarioTiles;
+window.getAvailableScenarios = getAvailableScenarios;
+window.getCurrentScenarioConfig = getCurrentScenarioConfig;
+window.BESS_SCENARIOS = BESS_SCENARIOS;
 
 // Setup event listeners for auto-save and calculations
 function setupEventListeners() {
@@ -688,21 +1308,101 @@ function applySettingsToUI(config) {
     setBessTopology(config.bessTopology || 'pv_bess');
   }
 
-  // BESS mode (3-way: off/light/pro)
+  // BESS mode - just set hidden input value here, will call setBessMode() at the end
+  // to ensure all BESS fields (including bessScenarioId) are set first
   const bessModeEl = document.getElementById('bessMode');
-  if (bessModeEl) {
-    // Support legacy bessEnabled field for backwards compatibility
-    let mode = config.bessMode || 'off';
-    if (!config.bessMode && config.bessEnabled) {
-      mode = 'light';  // Legacy: bessEnabled=true means LIGHT mode
-    }
-    bessModeEl.value = mode;
+  let bessMode = config.bessMode || 'pro';  // Default to PRO (light deprecated)
+  if (!config.bessMode && config.bessEnabled) {
+    bessMode = 'pro';  // Legacy: bessEnabled=true now means PRO mode
   }
+  // Force PRO if light was saved
+  if (bessMode === 'light') {
+    bessMode = 'pro';
+  }
+  if (bessModeEl) bessModeEl.value = bessMode;
 
   // BESS PRO zero-export checkbox
   const bessProZeroExportEl = document.getElementById('bessProZeroExport');
   if (bessProZeroExportEl) {
     bessProZeroExportEl.checked = config.bessProZeroExport !== false;  // Default true
+  }
+
+  // BESS Peak Shaving checkbox and fields
+  const bessPeakShavingEnabledEl = document.getElementById('bessPeakShavingEnabled');
+  if (bessPeakShavingEnabledEl) {
+    bessPeakShavingEnabledEl.checked = config.bessPeakShavingEnabled ?? false;
+  }
+  const bessPeakShavingModeEl = document.getElementById('bessPeakShavingMode');
+  if (bessPeakShavingModeEl) {
+    bessPeakShavingModeEl.value = config.bessPeakShavingMode || 'auto';
+  }
+  const bessPeakShavingTargetKwEl = document.getElementById('bessPeakShavingTargetKw');
+  if (bessPeakShavingTargetKwEl) {
+    bessPeakShavingTargetKwEl.value = config.bessPeakShavingTargetKw ?? 0;
+  }
+  const bessPeakShavingPctReductionEl = document.getElementById('bessPeakShavingPctReduction');
+  if (bessPeakShavingPctReductionEl) {
+    bessPeakShavingPctReductionEl.value = config.bessPeakShavingPctReduction ?? 15;
+  }
+  const bessPowerChargePlnPerKwMonthEl = document.getElementById('bessPowerChargePlnPerKwMonth');
+  if (bessPowerChargePlnPerKwMonthEl) {
+    bessPowerChargePlnPerKwMonthEl.value = config.bessPowerChargePlnPerKwMonth ?? 50;
+  }
+
+  // BESS OSD Tariff Arbitrage (ToU) checkbox and fields
+  const bessOsdArbitrageEnabledEl = document.getElementById('bessOsdArbitrageEnabled');
+  if (bessOsdArbitrageEnabledEl) {
+    bessOsdArbitrageEnabledEl.checked = config.bessOsdArbitrageEnabled ?? false;
+  }
+  const bessOsdOperatorEl = document.getElementById('bessOsdOperator');
+  if (bessOsdOperatorEl) {
+    bessOsdOperatorEl.value = config.bessOsdOperator || 'pge';
+  }
+  const bessOsdTariffGroupEl = document.getElementById('bessOsdTariffGroup');
+  if (bessOsdTariffGroupEl) {
+    bessOsdTariffGroupEl.value = config.bessOsdTariffGroup || 'C12a';
+  }
+  const bessOsdPeakRateEl = document.getElementById('bessOsdPeakRate');
+  if (bessOsdPeakRateEl) {
+    bessOsdPeakRateEl.value = config.bessOsdPeakRate ?? 0.75;
+  }
+  const bessOsdOffPeakRateEl = document.getElementById('bessOsdOffPeakRate');
+  if (bessOsdOffPeakRateEl) {
+    bessOsdOffPeakRateEl.value = config.bessOsdOffPeakRate ?? 0.45;
+  }
+  const bessOsdMinSpreadEl = document.getElementById('bessOsdMinSpread');
+  if (bessOsdMinSpreadEl) {
+    bessOsdMinSpreadEl.value = config.bessOsdMinSpread ?? 0.15;
+  }
+
+  // BESS RDN Price Arbitrage (Spot) checkbox and fields
+  const bessPriceArbitrageEnabledEl = document.getElementById('bessPriceArbitrageEnabled');
+  if (bessPriceArbitrageEnabledEl) {
+    bessPriceArbitrageEnabledEl.checked = config.bessPriceArbitrageEnabled ?? false;
+  }
+  const bessPriceArbitrageSourceEl = document.getElementById('bessPriceArbitrageSource');
+  if (bessPriceArbitrageSourceEl) {
+    bessPriceArbitrageSourceEl.value = config.bessPriceArbitrageSource || 'manual';
+  }
+  const bessPriceArbitrageBuyThresholdEl = document.getElementById('bessPriceArbitrageBuyThreshold');
+  if (bessPriceArbitrageBuyThresholdEl) {
+    bessPriceArbitrageBuyThresholdEl.value = config.bessPriceArbitrageBuyThreshold ?? 300;
+  }
+  const bessPriceArbitrageSellThresholdEl = document.getElementById('bessPriceArbitrageSellThreshold');
+  if (bessPriceArbitrageSellThresholdEl) {
+    bessPriceArbitrageSellThresholdEl.value = config.bessPriceArbitrageSellThreshold ?? 600;
+  }
+  const bessPriceArbitrageSpreadEl = document.getElementById('bessPriceArbitrageSpread');
+  if (bessPriceArbitrageSpreadEl) {
+    bessPriceArbitrageSpreadEl.value = config.bessPriceArbitrageSpread ?? 100;
+  }
+  const bessRdnPriceFlatEl = document.getElementById('bessRdnPriceFlat');
+  if (bessRdnPriceFlatEl) {
+    bessRdnPriceFlatEl.value = config.bessRdnPriceFlat ?? 500;
+  }
+  const bessRdnPriceMultiplierEl = document.getElementById('bessRdnPriceMultiplier');
+  if (bessRdnPriceMultiplierEl) {
+    bessRdnPriceMultiplierEl.value = config.bessRdnPriceMultiplier ?? 1.0;
   }
 
   // Legacy BESS enabled field (for backwards compat)
@@ -764,6 +1464,26 @@ function applySettingsToUI(config) {
   // Sync degradation params from LIGHT to PRO (LIGHT is the master)
   // This ensures PRO fields show the same values as LIGHT after loading
   syncDegradationParams('light');
+
+  // BESS Scenarios (MVP v3.17)
+  // Load saved scenario ID
+  if (config.bessScenarioId) {
+    currentBessScenarioId = config.bessScenarioId;
+  }
+  const bessScenarioIdEl = document.getElementById('bessScenarioId');
+  if (bessScenarioIdEl) {
+    bessScenarioIdEl.value = config.bessScenarioId || '';
+  }
+
+  // Capacity Fee Overlay checkbox
+  const bessCapacityFeeOverlayEl = document.getElementById('bessCapacityFeeOverlay');
+  if (bessCapacityFeeOverlayEl) {
+    bessCapacityFeeOverlayEl.checked = config.bessCapacityFeeOverlay ?? false;
+  }
+
+  // NOW call setBessMode() to update UI (status indicators, sections visibility)
+  // This also calls renderScenarioTiles() which needs bessScenarioId to be already set
+  setBessMode(bessMode);
 }
 
 // Get current settings from UI
@@ -954,7 +1674,15 @@ function getCurrentSettings() {
     bessPeakShavingPctReduction: parseFloat(document.getElementById('bessPeakShavingPctReduction')?.value || DEFAULT_CONFIG.bessPeakShavingPctReduction),
     bessPowerChargePlnPerKwMonth: parseFloat(document.getElementById('bessPowerChargePlnPerKwMonth')?.value || DEFAULT_CONFIG.bessPowerChargePlnPerKwMonth),
 
-    // BESS Price Arbitrage
+    // BESS OSD Tariff Arbitrage (ToU)
+    bessOsdArbitrageEnabled: document.getElementById('bessOsdArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessOsdArbitrageEnabled,
+    bessOsdOperator: document.getElementById('bessOsdOperator')?.value || DEFAULT_CONFIG.bessOsdOperator,
+    bessOsdTariffGroup: document.getElementById('bessOsdTariffGroup')?.value || DEFAULT_CONFIG.bessOsdTariffGroup,
+    bessOsdPeakRate: parseFloat(document.getElementById('bessOsdPeakRate')?.value || DEFAULT_CONFIG.bessOsdPeakRate),
+    bessOsdOffPeakRate: parseFloat(document.getElementById('bessOsdOffPeakRate')?.value || DEFAULT_CONFIG.bessOsdOffPeakRate),
+    bessOsdMinSpread: parseFloat(document.getElementById('bessOsdMinSpread')?.value || DEFAULT_CONFIG.bessOsdMinSpread),
+
+    // BESS RDN Price Arbitrage (Spot)
     bessPriceArbitrageEnabled: document.getElementById('bessPriceArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessPriceArbitrageEnabled,
     bessPriceArbitrageSource: document.getElementById('bessPriceArbitrageSource')?.value || DEFAULT_CONFIG.bessPriceArbitrageSource,
     bessPriceArbitrageBuyThreshold: parseFloat(document.getElementById('bessPriceArbitrageBuyThreshold')?.value || DEFAULT_CONFIG.bessPriceArbitrageBuyThreshold),
@@ -962,6 +1690,10 @@ function getCurrentSettings() {
     bessPriceArbitrageSpread: parseFloat(document.getElementById('bessPriceArbitrageSpread')?.value || DEFAULT_CONFIG.bessPriceArbitrageSpread),
     bessRdnPriceFlat: parseFloat(document.getElementById('bessRdnPriceFlat')?.value || DEFAULT_CONFIG.bessRdnPriceFlat),
     bessRdnPriceMultiplier: parseFloat(document.getElementById('bessRdnPriceMultiplier')?.value || DEFAULT_CONFIG.bessRdnPriceMultiplier),
+
+    // BESS Scenarios (MVP v3.17)
+    bessScenarioId: parseInt(document.getElementById('bessScenarioId')?.value) || currentBessScenarioId || null,
+    bessCapacityFeeOverlay: document.getElementById('bessCapacityFeeOverlay')?.checked ?? DEFAULT_CONFIG.bessCapacityFeeOverlay,
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
