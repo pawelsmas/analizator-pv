@@ -9,11 +9,23 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
+# Copy application modules
 COPY models.py .
 COPY dispatch_engine.py .
 COPY sizing_runner.py .
 COPY sensitivity_runner.py .
+COPY price_engine.py .
+COPY economics_helper.py .
+COPY dispatch_arbitrage.py .
+COPY api_arbitrage.py .
+COPY excel_export.py .
+
+# Copy subpackages
+COPY capacity_fee_pl/ ./capacity_fee_pl/
+COPY common/ ./common/
+COPY osd_tariffs/ ./osd_tariffs/
+
+# Copy main app (last - changes most often)
 COPY app.py .
 
 # Expose port

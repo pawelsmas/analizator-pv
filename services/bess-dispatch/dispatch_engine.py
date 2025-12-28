@@ -34,6 +34,9 @@ from models import (
     ResamplingMethod,
     AuditMetadata,
     TopologyType,
+    ArbitrageConfig,
+    SavingsBreakdown,
+    PricesSummary,
     ENGINE_VERSION,
 )
 
@@ -44,6 +47,107 @@ class DispatchState:
     soc_kwh: float  # Current SOC in kWh
     timestep: int
 
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def calculate_energy_cost(
+    grid_import_kw: np.ndarray,
+    import_prices_pln_kwh: float | np.ndarray,
+    dt_hours: float
+) -> float:
+    """
+    Calculate energy cost supporting both constant and time-varying prices.
+
+    Uses np.isscalar for robust type detection (handles numpy scalar types).
+
+    Args:
+        grid_import_kw: Grid import power profile [kW]
+        import_prices_pln_kwh: Price per kWh (constant float or array)
+        dt_hours: Time step duration in hours
+
+    Returns:
+        Total energy cost [PLN]
+    """
+    grid_import_kw = np.asarray(grid_import_kw, dtype=float)
+
+    if np.isscalar(import_prices_pln_kwh):
+        price = float(import_prices_pln_kwh)
+        return float(np.sum(grid_import_kw) * dt_hours * price)
+
+    prices = np.asarray(import_prices_pln_kwh, dtype=float)
+    if prices.shape[0] != grid_import_kw.shape[0]:
+        raise ValueError(f"Price series length ({prices.shape[0]}) != grid_import length ({grid_import_kw.shape[0]})")
+    return float(np.sum(grid_import_kw * prices) * dt_hours)
+
+
+def create_prices_summary(prices: PriceConfig, tariff_type: str = "flat") -> PricesSummary:
+    """
+    Create PricesSummary from PriceConfig.
+
+    Args:
+        prices: Price configuration
+        tariff_type: Type of tariff used ("flat", "two_zone", "three_zone")
+
+    Returns:
+        PricesSummary for inclusion in DispatchResult
+    """
+    return PricesSummary(
+        import_price_pln_mwh=prices.import_price_pln_mwh,
+        export_price_pln_mwh=prices.export_price_pln_mwh,
+        demand_charge_pln_kw_month=prices.demand_charge_pln_kw_month,
+        demand_charge_pln_kw_year=prices.demand_charge_pln_kw_year,
+        tariff_type=tariff_type,
+        tariff_id=None,
+        zone_rates=None
+    )
+
+
+def create_savings_breakdown(
+    energy_savings_pln: float,
+    demand_charge_savings_pln: float,
+    arbitrage_savings_pln: float = 0.0,
+    capacity_fee_savings_pln: float = 0.0,
+    degradation_cost_pln: float = 0.0
+) -> SavingsBreakdown:
+    """
+    Create SavingsBreakdown with calculated net savings.
+
+    Note: degradation_cost impacts only net_savings and UI display,
+    not annual_savings_pln which goes to NPV calculation.
+
+    Args:
+        energy_savings_pln: Savings from self-consumption / reduced import
+        demand_charge_savings_pln: Savings from peak shaving (demand charge)
+        arbitrage_savings_pln: Savings from ToU arbitrage (incremental vs no-arb)
+        capacity_fee_savings_pln: Savings from capacity fee PL (separate module)
+        degradation_cost_pln: Battery degradation cost (throughput-based)
+
+    Returns:
+        SavingsBreakdown instance
+    """
+    net_savings = (
+        energy_savings_pln +
+        demand_charge_savings_pln +
+        arbitrage_savings_pln +
+        capacity_fee_savings_pln -
+        abs(degradation_cost_pln)
+    )
+
+    return SavingsBreakdown(
+        energy_savings_pln=energy_savings_pln,
+        demand_charge_savings_pln=demand_charge_savings_pln,
+        arbitrage_savings_pln=arbitrage_savings_pln,
+        capacity_fee_savings_pln=capacity_fee_savings_pln,
+        degradation_cost_pln=degradation_cost_pln,
+        net_savings_pln=net_savings
+    )
+
+
+# =============================================================================
+# Dispatch Algorithms
+# =============================================================================
 
 def dispatch_pv_surplus(
     pv_kw: np.ndarray,
@@ -204,7 +308,42 @@ def dispatch_pv_surplus(
 
     # Project cost
     project_cost = total_import * import_price - total_export * export_price
-    annual_savings = baseline_cost - project_cost
+
+    # === SAVINGS BREAKDOWN ===
+
+    # 1. Energy savings (autokonsumpcja + redukcja importu)
+    energy_savings_pln = baseline_cost - project_cost
+
+    # 2. Demand charge savings (peak shaving)
+    # PV_SURPLUS mode may have some peak reduction, calculate it
+    baseline_peak = float(np.max(baseline_import))
+    project_peak = float(np.max(grid_import))
+    demand_charge_rate_annual = prices.annual_demand_charge_pln_kw
+    demand_charge_savings_pln = (baseline_peak - project_peak) * demand_charge_rate_annual
+
+    # 3. Arbitrage savings - 0 in PV_SURPLUS
+    arbitrage_savings_pln = 0.0
+
+    # 4. Capacity fee savings - 0 (separate overlay)
+    capacity_fee_savings_pln = 0.0
+
+    # 5. Degradation cost - 0 (default)
+    degradation_cost_pln = 0.0
+
+    # annual_savings_pln = energy + demand (goes to NPV)
+    annual_savings = energy_savings_pln + demand_charge_savings_pln
+
+    # Create breakdown
+    savings_breakdown = create_savings_breakdown(
+        energy_savings_pln=energy_savings_pln,
+        demand_charge_savings_pln=demand_charge_savings_pln,
+        arbitrage_savings_pln=arbitrage_savings_pln,
+        capacity_fee_savings_pln=capacity_fee_savings_pln,
+        degradation_cost_pln=degradation_cost_pln
+    )
+
+    # Create prices summary
+    prices_summary = create_prices_summary(prices, tariff_type="flat")
 
     # Build audit info
     audit = audit_metadata or AuditMetadata(
@@ -233,10 +372,16 @@ def dispatch_pv_surplus(
         self_consumption_kwh=self_consumption,
         self_consumption_pct=self_consumption_pct,
         grid_independence_pct=grid_independence,
+        original_peak_kw=baseline_peak,
+        new_peak_kw=project_peak,
+        peak_reduction_kw=baseline_peak - project_peak,
+        peak_reduction_pct=((baseline_peak - project_peak) / baseline_peak * 100) if baseline_peak > 0 else 0,
         degradation=degradation,
         baseline_cost_pln=baseline_cost,
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
+        savings_breakdown=savings_breakdown,
+        prices_summary=prices_summary,
         warnings=[],
         info=info_dict,
     )
@@ -454,44 +599,65 @@ def dispatch_stacked(
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
+    # Arbitrage parameters (optional)
+    import_prices: Optional[np.ndarray] = None,
+    arb_config: Optional[ArbitrageConfig] = None,
 ) -> DispatchResult:
     """
-    STACKED Dispatch Algorithm (PV Shifting + Peak Shaving)
-    =======================================================
+    STACKED Dispatch Algorithm (PV Shifting + Peak Shaving + Optional Arbitrage)
+    =============================================================================
 
-    One battery provides two services with priority:
-    1. Peak Shaving (priority 1): Protect against grid peaks
-    2. PV Shifting (priority 2): Maximize self-consumption
+    One battery provides two or three services with priority:
+    1. Peak Shaving (priority 1): Protect against grid peaks - uses FULL SOC
+    2. PV Surplus Charging (priority 2): Always charge from PV first - FREE energy
+    3. Arbitrage Grid Charge (priority 3): Charge from grid when price low (if enabled)
+    4. Arbitrage Discharge (priority 4): Discharge when price high (if enabled)
+    5. PV Shifting Discharge (priority 5): Discharge for load deficit (above reserve)
+
+    CRITICAL: PV charging has priority over grid charging to avoid curtailing free energy.
 
     SOC Reserve mechanism:
-    - A portion of SOC is reserved for peak shaving
-    - PV shifting can only use SOC above reserve level
-    - Peak shaving can use full SOC (including reserve)
+    - reserve_soc: Reserved for peak shaving (PV shifting can't go below)
+    - arb_soc_min: Additional floor for arbitrage discharge
+    - Effective discharge floor = max(reserve_soc, arb_soc_min, soc_min)
+
+    Arbitrage gating:
+    - When price <= charge_threshold (cheap): allow grid charging, but NO PV-shifting discharge
+    - When price >= discharge_threshold (expensive): allow arbitrage discharge
+    - In neutral band: hold (no discharge except for peak shaving)
 
     Parameters:
     -----------
     stacked_params : StackedModeParams
         - peak_limit_kw: Grid import limit [kW]
         - reserve_fraction: SOC fraction reserved for peak shaving (e.g., 0.3)
-        - allow_reserve_breach: Allow PV shifting to use reserve in emergency
-
-    Algorithm:
-    ----------
-    For each timestep:
-    1. Calculate net load (load - PV)
-    2. If net > peak_limit: discharge for peak shaving (use full SOC)
-    3. If net <= peak_limit and PV surplus: charge from PV (up to soc_max)
-    4. If net <= peak_limit and deficit: discharge for PV shifting (only above reserve)
-    5. Track throughput separately for each service
+    import_prices : np.ndarray, optional
+        Time-varying import prices [PLN/kWh] per timestep (for arbitrage)
+    arb_config : ArbitrageConfig, optional
+        Arbitrage configuration (thresholds, limits, etc.)
 
     Returns:
     --------
-    DispatchResult with per-service degradation breakdown
+    DispatchResult with per-service degradation breakdown including arbitrage metrics
     """
     n = len(pv_kw)
     prices = prices or PriceConfig()
     peak_limit = stacked_params.peak_limit_kw
     reserve_frac = stacked_params.reserve_fraction
+
+    # Arbitrage setup
+    arb_enabled = (arb_config is not None and arb_config.enabled and import_prices is not None)
+    if arb_enabled:
+        # Calculate thresholds from price distribution
+        charge_threshold = float(np.percentile(import_prices, arb_config.charge_below_percentile))
+        discharge_threshold = float(np.percentile(import_prices, arb_config.discharge_above_percentile))
+        arb_soc_min_kwh = battery.energy_kwh * arb_config.arbitrage_soc_min
+        max_grid_charge = arb_config.max_grid_charge_kw or battery.power_kw
+    else:
+        charge_threshold = 0.0
+        discharge_threshold = float('inf')
+        arb_soc_min_kwh = 0.0
+        max_grid_charge = 0.0
 
     # Net load
     net_load = load_kw - pv_kw
@@ -500,10 +666,11 @@ def dispatch_stacked(
     direct_pv = np.zeros(n)
     charge = np.zeros(n)
     charge_from_pv = np.zeros(n)   # Track charge source: PV
-    charge_from_grid = np.zeros(n) # Track charge source: grid
+    charge_from_grid = np.zeros(n) # Track charge source: grid (arbitrage)
     discharge = np.zeros(n)
     discharge_peak = np.zeros(n)  # For peak shaving service
     discharge_pv = np.zeros(n)    # For PV shifting service
+    discharge_arb = np.zeros(n)   # For arbitrage service
     grid_import = np.zeros(n)
     grid_export = np.zeros(n)
     curtailment = np.zeros(n)
@@ -516,6 +683,8 @@ def dispatch_stacked(
     reserve_soc_kwh = battery.energy_kwh * reserve_frac
     # Effective min SOC for PV shifting (above reserve)
     pv_soc_min_kwh = max(soc_min_kwh, reserve_soc_kwh)
+    # Effective floor for arbitrage discharge = max(reserve, arb_min, soc_min)
+    arb_discharge_floor_kwh = max(reserve_soc_kwh, arb_soc_min_kwh, soc_min_kwh)
 
     p_max = battery.power_kw
     eta_ch = battery.eta_charge
@@ -525,10 +694,16 @@ def dispatch_stacked(
     new_peak = 0.0
     warnings = []
 
+    # Arbitrage metrics
+    arb_charge_kwh = 0.0
+    arb_discharge_kwh = 0.0
+    arb_cycles = 0
+
     for t in range(n):
         pv_t = pv_kw[t]
         load_t = load_kw[t]
         net_t = net_load[t]
+        price_t = import_prices[t] if arb_enabled else 0.0
 
         # Direct PV consumption
         direct = min(pv_t, load_t)
@@ -543,7 +718,10 @@ def dispatch_stacked(
         if net_t > 0:
             original_peak = max(original_peak, net_t)
 
-        # ===== PRIORITY 1: Peak Shaving =====
+        # Remaining charging capacity after this timestep (updated as we go)
+        remaining_charge_capacity = p_max
+
+        # ===== PRIORITY 1: Peak Shaving (discharge) =====
         if net_t > peak_limit:
             # Discharge to shave peak - can use full SOC including reserve
             required_discharge = net_t - peak_limit
@@ -567,53 +745,128 @@ def dispatch_stacked(
             grid_import[t] = max(0, actual_net)
             new_peak = max(new_peak, grid_import[t])
 
-        # ===== PRIORITY 2: PV Shifting =====
-        elif surplus > 0:
-            # Charge from PV surplus
-            charge_power_limit = min(surplus, p_max)
-            space_available = soc_max_kwh - current_soc
-            max_charge_energy = charge_power_limit * eta_ch * dt_hours
+        else:
+            # No peak shaving needed - proceed with other priorities
 
-            if max_charge_energy > space_available:
-                actual_charge_energy = space_available
-                charge_power = actual_charge_energy / (eta_ch * dt_hours)
-            else:
-                charge_power = charge_power_limit
-                actual_charge_energy = max_charge_energy
+            # ===== PRIORITY 2: PV Surplus Charging (ALWAYS FIRST for charging) =====
+            if surplus > 0 and current_soc < soc_max_kwh:
+                charge_power_limit = min(surplus, p_max)
+                space_available = soc_max_kwh - current_soc
+                max_charge_energy = charge_power_limit * eta_ch * dt_hours
 
-            charge[t] = charge_power
-            charge_from_pv[t] = charge_power  # All charge from PV surplus
-            current_soc += actual_charge_energy
-
-            # Curtail excess
-            curtailment[t] = surplus - charge_power
-
-        elif deficit > 0:
-            # Discharge for PV shifting - only use SOC above reserve
-            energy_available_pv = max(0, current_soc - pv_soc_min_kwh)
-
-            if energy_available_pv > 0:
-                discharge_power_limit = min(deficit, p_max)
-                max_discharge_from_soc = discharge_power_limit / eta_dis * dt_hours
-
-                if max_discharge_from_soc > energy_available_pv:
-                    actual_discharge_from_soc = energy_available_pv
-                    discharge_power = actual_discharge_from_soc * eta_dis / dt_hours
+                if max_charge_energy > space_available:
+                    actual_charge_energy = space_available
+                    pv_charge_power = actual_charge_energy / (eta_ch * dt_hours)
                 else:
-                    discharge_power = discharge_power_limit
-                    actual_discharge_from_soc = max_discharge_from_soc
+                    pv_charge_power = charge_power_limit
+                    actual_charge_energy = max_charge_energy
 
-                discharge[t] = discharge_power
-                discharge_pv[t] = discharge_power  # Track as PV service
-                current_soc -= actual_discharge_from_soc
+                charge[t] += pv_charge_power
+                charge_from_pv[t] = pv_charge_power
+                current_soc += actual_charge_energy
+                remaining_charge_capacity -= pv_charge_power
 
-                # Remaining deficit from grid
-                grid_import[t] = deficit - discharge_power
-            else:
-                # No energy above reserve - import from grid
-                grid_import[t] = deficit
+                # Curtail excess PV that couldn't be stored
+                curtailment[t] = surplus - pv_charge_power
 
-            new_peak = max(new_peak, grid_import[t])
+            elif surplus > 0:
+                # Battery full, curtail all surplus
+                curtailment[t] = surplus
+
+            # ===== PRIORITY 3: Arbitrage Grid Charging (if price low) =====
+            if arb_enabled and price_t <= charge_threshold:
+                # Cheap energy - charge from grid (but only if spare capacity)
+                if remaining_charge_capacity > 0 and current_soc < soc_max_kwh:
+                    # Calculate headroom to stay under peak_limit
+                    current_import = max(0, deficit) if deficit > 0 else 0
+                    headroom = peak_limit - current_import
+
+                    if headroom > 0:
+                        arb_charge_limit = min(remaining_charge_capacity, max_grid_charge, headroom)
+                        space_available = soc_max_kwh - current_soc
+                        max_charge_energy = arb_charge_limit * eta_ch * dt_hours
+
+                        if max_charge_energy > space_available:
+                            actual_charge_energy = space_available
+                            grid_charge_power = actual_charge_energy / (eta_ch * dt_hours)
+                        else:
+                            grid_charge_power = arb_charge_limit
+                            actual_charge_energy = max_charge_energy
+
+                        if grid_charge_power > 0.01:  # Threshold to avoid tiny charges
+                            charge[t] += grid_charge_power
+                            charge_from_grid[t] = grid_charge_power
+                            current_soc += actual_charge_energy
+                            arb_charge_kwh += grid_charge_power * dt_hours
+
+                # In cheap zone: NO PV-shifting discharge (hold energy for later)
+                # Just import deficit from grid
+                if deficit > 0:
+                    grid_import[t] = deficit + charge_from_grid[t]
+                else:
+                    grid_import[t] = charge_from_grid[t]
+                new_peak = max(new_peak, grid_import[t])
+
+            # ===== PRIORITY 4: Arbitrage Discharge (if price high) =====
+            elif arb_enabled and price_t >= discharge_threshold and deficit > 0:
+                # Expensive energy - discharge to cover load (above arb floor)
+                energy_available_arb = max(0, current_soc - arb_discharge_floor_kwh)
+
+                if energy_available_arb > 0:
+                    discharge_power_limit = min(deficit, p_max)
+                    max_discharge_from_soc = discharge_power_limit / eta_dis * dt_hours
+
+                    if max_discharge_from_soc > energy_available_arb:
+                        actual_discharge_from_soc = energy_available_arb
+                        arb_dis_power = actual_discharge_from_soc * eta_dis / dt_hours
+                    else:
+                        arb_dis_power = discharge_power_limit
+                        actual_discharge_from_soc = max_discharge_from_soc
+
+                    discharge[t] = arb_dis_power
+                    discharge_arb[t] = arb_dis_power
+                    current_soc -= actual_discharge_from_soc
+                    arb_discharge_kwh += arb_dis_power * dt_hours
+                    arb_cycles += 1
+
+                    # Remaining deficit from grid
+                    grid_import[t] = deficit - arb_dis_power
+                else:
+                    grid_import[t] = deficit
+
+                new_peak = max(new_peak, grid_import[t])
+
+            # ===== PRIORITY 5: PV Shifting Discharge (neutral zone or arb disabled) =====
+            elif deficit > 0:
+                # Not in cheap zone - can discharge for PV shifting (above reserve)
+                # Skip if in cheap zone (handled above with hold strategy)
+                if not arb_enabled or price_t > charge_threshold:
+                    energy_available_pv = max(0, current_soc - pv_soc_min_kwh)
+
+                    if energy_available_pv > 0:
+                        discharge_power_limit = min(deficit, p_max)
+                        max_discharge_from_soc = discharge_power_limit / eta_dis * dt_hours
+
+                        if max_discharge_from_soc > energy_available_pv:
+                            actual_discharge_from_soc = energy_available_pv
+                            pv_dis_power = actual_discharge_from_soc * eta_dis / dt_hours
+                        else:
+                            pv_dis_power = discharge_power_limit
+                            actual_discharge_from_soc = max_discharge_from_soc
+
+                        discharge[t] = pv_dis_power
+                        discharge_pv[t] = pv_dis_power
+                        current_soc -= actual_discharge_from_soc
+
+                        # Remaining deficit from grid
+                        grid_import[t] = deficit - pv_dis_power
+                    else:
+                        grid_import[t] = deficit
+                else:
+                    # In cheap zone but already handled above
+                    pass
+
+                new_peak = max(new_peak, grid_import[t])
 
         soc[t + 1] = current_soc
 
@@ -627,6 +880,7 @@ def dispatch_stacked(
     total_discharge = float(np.sum(discharge) * dt_hours)
     total_discharge_peak = float(np.sum(discharge_peak) * dt_hours)
     total_discharge_pv = float(np.sum(discharge_pv) * dt_hours)
+    total_discharge_arb = float(np.sum(discharge_arb) * dt_hours)
     total_import = float(np.sum(grid_import) * dt_hours)
     total_export = float(np.sum(grid_export) * dt_hours)
     total_curtail = float(np.sum(curtailment) * dt_hours)
@@ -642,7 +896,7 @@ def dispatch_stacked(
     peak_reduction = original_peak - new_peak
     peak_reduction_pct = (peak_reduction / original_peak * 100) if original_peak > 0 else 0
 
-    # Degradation with per-service breakdown (now with extra metrics)
+    # Degradation with per-service breakdown (now with arbitrage metrics)
     degradation = calculate_degradation_metrics_stacked(
         total_charge=total_charge,
         total_discharge=total_discharge,
@@ -656,12 +910,78 @@ def dispatch_stacked(
         charge_from_grid_kwh=total_charge_grid,
     )
 
-    # Economics
-    import_price = prices.import_price_pln_mwh / 1000
-    baseline_import_kwh = float(np.sum(np.maximum(net_load, 0)) * dt_hours)
-    baseline_cost = baseline_import_kwh * import_price
-    project_cost = total_import * import_price
-    annual_savings = baseline_cost - project_cost
+    # Add arbitrage metrics to degradation
+    if arb_enabled:
+        degradation.throughput_arb_mwh = (arb_charge_kwh + arb_discharge_kwh) / 1000
+        degradation.efc_arb = arb_discharge_kwh / battery.usable_capacity_kwh if battery.usable_capacity_kwh > 0 else 0
+        degradation.arb_charge_from_grid_kwh = arb_charge_kwh
+        degradation.arb_discharge_kwh = arb_discharge_kwh
+        degradation.arb_cycles_count = arb_cycles
+
+    # Economics - use time-varying prices if available
+    if arb_enabled:
+        # Time-varying prices: calculate actual costs
+        baseline_import_profile = np.maximum(net_load, 0)
+        baseline_cost = float(np.sum(baseline_import_profile * import_prices) * dt_hours)
+        project_cost = float(np.sum(grid_import * import_prices) * dt_hours)
+
+        # Calculate arbitrage spread for info
+        if arb_discharge_kwh > 0 and arb_charge_kwh > 0:
+            avg_charge_price = float(np.mean(import_prices[charge_from_grid > 0])) if np.any(charge_from_grid > 0) else 0
+            avg_discharge_price = float(np.mean(import_prices[discharge_arb > 0])) if np.any(discharge_arb > 0) else 0
+            arb_spread = avg_discharge_price - avg_charge_price
+        else:
+            avg_charge_price = 0.0
+            avg_discharge_price = 0.0
+            arb_spread = 0.0
+    else:
+        # Flat price
+        import_price = prices.import_price_pln_mwh / 1000
+        baseline_import_kwh = float(np.sum(np.maximum(net_load, 0)) * dt_hours)
+        baseline_cost = baseline_import_kwh * import_price
+        project_cost = total_import * import_price
+        avg_charge_price = 0.0
+        avg_discharge_price = 0.0
+        arb_spread = 0.0
+
+    # === SAVINGS BREAKDOWN ===
+
+    # 1. Energy savings (autokonsumpcja + redukcja importu)
+    energy_savings_pln = baseline_cost - project_cost
+
+    # 2. Demand charge savings (peak shaving)
+    # demand_charge_pln_kw_month * 12 + demand_charge_pln_kw_year = annual rate
+    demand_charge_rate_annual = prices.annual_demand_charge_pln_kw
+    baseline_demand_cost = original_peak * demand_charge_rate_annual
+    project_demand_cost = new_peak * demand_charge_rate_annual
+    demand_charge_savings_pln = baseline_demand_cost - project_demand_cost
+
+    # 3. Arbitrage savings
+    # On MVP: 0 in STACKED (arbitrage only in /arbitrage/dispatch as incremental benefit)
+    arbitrage_savings_pln = 0.0
+
+    # 4. Capacity fee savings
+    # On MVP: 0 (separate overlay /capacity-fee/savings)
+    capacity_fee_savings_pln = 0.0
+
+    # 5. Degradation cost (default 0, enabled only if user provides params)
+    # Uses throughput_total (charge + discharge) from degradation metrics
+    degradation_cost_pln = 0.0
+
+    # IMPORTANT: annual_savings_pln = energy + demand (goes to NPV)
+    annual_savings = energy_savings_pln + demand_charge_savings_pln
+
+    # Create breakdown
+    savings_breakdown = create_savings_breakdown(
+        energy_savings_pln=energy_savings_pln,
+        demand_charge_savings_pln=demand_charge_savings_pln,
+        arbitrage_savings_pln=arbitrage_savings_pln,
+        capacity_fee_savings_pln=capacity_fee_savings_pln,
+        degradation_cost_pln=degradation_cost_pln
+    )
+
+    # Create prices summary
+    prices_summary = create_prices_summary(prices, tariff_type="flat")
 
     # Build audit info
     audit = audit_metadata or AuditMetadata(
@@ -675,7 +995,24 @@ def dispatch_stacked(
         "peak_limit_kw": peak_limit,
         "discharge_peak_kwh": total_discharge_peak,
         "discharge_pv_kwh": total_discharge_pv,
+        "discharge_arb_kwh": total_discharge_arb,
     }
+
+    # Add arbitrage info if enabled
+    if arb_enabled:
+        info_dict["arbitrage"] = {
+            "enabled": True,
+            "tariff_id": arb_config.tariff_id,
+            "charge_threshold_pln_kwh": charge_threshold,
+            "discharge_threshold_pln_kwh": discharge_threshold,
+            "charge_kwh": arb_charge_kwh,
+            "discharge_kwh": arb_discharge_kwh,
+            "avg_charge_price": avg_charge_price,
+            "avg_discharge_price": avg_discharge_price,
+            "spread_pln_kwh": arb_spread,
+            "energy_savings_pln": energy_savings_pln,
+            "cycles_count": arb_cycles,
+        }
 
     result = DispatchResult(
         mode=DispatchMode.STACKED,
@@ -702,6 +1039,8 @@ def dispatch_stacked(
         baseline_cost_pln=baseline_cost,
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
+        savings_breakdown=savings_breakdown,
+        prices_summary=prices_summary,
         warnings=warnings,
         info=info_dict,
     )
@@ -1068,6 +1407,22 @@ def dispatch_load_only(
     project_cost = project_energy_cost + project_demand_cost
     annual_savings = energy_savings + demand_savings  # Energy (negative) + Demand (positive)
 
+    # === SAVINGS BREAKDOWN ===
+    # Note: energy_savings may be negative in LOAD_ONLY (battery losses)
+    # demand_savings is the main value driver
+
+    # Create breakdown
+    savings_breakdown = create_savings_breakdown(
+        energy_savings_pln=energy_savings,
+        demand_charge_savings_pln=demand_savings,
+        arbitrage_savings_pln=0.0,
+        capacity_fee_savings_pln=0.0,
+        degradation_cost_pln=0.0
+    )
+
+    # Create prices summary
+    prices_summary = create_prices_summary(prices, tariff_type="flat")
+
     # Build audit info
     audit = audit_metadata or AuditMetadata(
         engine_version=ENGINE_VERSION,
@@ -1105,6 +1460,8 @@ def dispatch_load_only(
         baseline_cost_pln=baseline_cost,
         project_cost_pln=project_cost,
         annual_savings_pln=annual_savings,
+        savings_breakdown=savings_breakdown,
+        prices_summary=prices_summary,
         warnings=[],
         info=info_dict,
     )
@@ -1119,16 +1476,45 @@ def dispatch_load_only(
     return result
 
 
-def run_dispatch(request: DispatchRequest) -> DispatchResult:
+def run_dispatch(
+    request: DispatchRequest,
+    import_prices: Optional[np.ndarray] = None,
+) -> DispatchResult:
     """
     Main dispatch entry point - routes to appropriate algorithm.
 
     Supports both PV+Load and Load-only topologies.
+
+    Parameters:
+    -----------
+    request : DispatchRequest
+        Dispatch request with all configuration
+    import_prices : np.ndarray, optional
+        Time-varying import prices [PLN/kWh] per timestep.
+        Required if request.arbitrage_config.enabled is True.
+        Should be fetched from price_engine before calling this function.
+
+    Returns:
+    --------
+    DispatchResult with dispatch results and optional arbitrage metrics
     """
     # Use effective_pv_kw which handles LOAD_ONLY topology (returns zeros)
     pv = np.array(request.effective_pv_kw)
     load = np.array(request.load_kw)
     dt_hours = request.dt_hours
+
+    # Validate arbitrage requirements
+    arb_config = request.arbitrage_config
+    if arb_config and arb_config.enabled:
+        if import_prices is None:
+            raise ValueError(
+                "import_prices required when arbitrage_config.enabled=True. "
+                "Fetch prices using price_engine before calling run_dispatch."
+            )
+        if len(import_prices) != len(load):
+            raise ValueError(
+                f"import_prices length ({len(import_prices)}) must match load_kw length ({len(load)})"
+            )
 
     if request.mode == DispatchMode.PV_SURPLUS:
         result = dispatch_pv_surplus(
@@ -1148,7 +1534,9 @@ def run_dispatch(request: DispatchRequest) -> DispatchResult:
             raise ValueError("stacked_params required for STACKED mode")
         result = dispatch_stacked(
             pv, load, request.battery, dt_hours,
-            request.stacked_params, request.prices
+            request.stacked_params, request.prices,
+            import_prices=import_prices,
+            arb_config=arb_config,
         )
 
     elif request.mode == DispatchMode.LOAD_ONLY:

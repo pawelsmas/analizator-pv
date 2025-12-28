@@ -8,11 +8,12 @@ Supports:
 - PV-surplus (autokonsumpcja) mode
 - Peak shaving mode
 - STACKED mode (PV + Peak with SOC reserve)
+- ToU Arbitrage integration (price-driven dispatch)
 - Degradation metrics (throughput, EFC, budget)
-- Time-varying prices (future-ready)
+- Time-varying prices with OSD tariffs
 - Audit metadata for reproducibility
 
-Version: 1.2.0
+Version: 1.3.0
 """
 
 from enum import Enum
@@ -20,7 +21,7 @@ from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, validator
 
 # Engine version for audit trail
-ENGINE_VERSION = "1.2.0"
+ENGINE_VERSION = "1.3.0"
 
 
 class TimeResolution(str, Enum):
@@ -50,6 +51,17 @@ class DispatchMode(str, Enum):
     LOAD_ONLY = "load_only"             # Stand-alone BESS without PV (peak shaving focus)
 
 
+class ArbitrageStrategy(str, Enum):
+    """
+    Arbitrage strategy for price-driven dispatch.
+
+    Determines how charge/discharge thresholds are calculated.
+    """
+    PERCENTILE_THRESHOLD = "percentile"  # Charge below P25, discharge above P75
+    ZONE_BASED = "zone_based"            # Charge in zone II/III, discharge in zone I
+    SPREAD_THRESHOLD = "spread"          # Require minimum spread before acting
+
+
 class TopologyType(str, Enum):
     """
     System topology - defines which components are present.
@@ -65,6 +77,97 @@ class DegradationStatus(str, Enum):
     OK = "ok"
     WARNING = "warning"
     EXCEEDED = "exceeded"
+
+
+# =============================================================================
+# ANALYTICAL PERIOD - Time Axis Definition
+# =============================================================================
+
+class AnalyticalPeriodConfig(BaseModel):
+    """
+    Time axis definition for analysis.
+
+    This is the SINGLE SOURCE OF TRUTH for time-related calculations.
+    All modules must use this instead of hardcoded 8760/365 or date(year, 1, 1).
+
+    The time axis is defined by:
+    - start_datetime: When the analysis period begins
+    - interval_minutes: Data resolution (15 or 60)
+    - n_points: Number of data points (determines period length)
+
+    The end_datetime is calculated as: start + (n_points - 1) * interval
+
+    Usage:
+    - ToU pricing: Use time_index derived from this for zone lookup
+    - Capacity fee: Use time_index for working day determination
+    - Daily metrics: Use groupby(date) on time_index, NOT hardcoded 365 days
+    """
+    start_datetime: str = Field(
+        ...,
+        description="Analysis start datetime (ISO 8601: YYYY-MM-DDTHH:MM:SS)"
+    )
+    interval_minutes: int = Field(
+        60,
+        ge=15, le=60,
+        description="Time resolution: 15 or 60 minutes"
+    )
+    n_points: int = Field(
+        ...,
+        ge=1,
+        description="Number of data points (determines period length)"
+    )
+    timezone: str = Field(
+        "Europe/Warsaw",
+        description="Timezone for ToU/capacity fee calculations"
+    )
+    clock_mode: str = Field(
+        "CET_FIXED",
+        description="Clock mode: CET_FIXED (ignore DST) or LOCAL_TZ (honor DST)"
+    )
+
+    # Optional: raw timestamps for irregular data or DST handling
+    timestamps: Optional[List[str]] = Field(
+        None,
+        description="If provided, use these timestamps 1:1 instead of generating from start_datetime"
+    )
+
+    @property
+    def period_hours(self) -> float:
+        """Total hours in analysis period"""
+        return (self.n_points * self.interval_minutes) / 60
+
+    @property
+    def period_days(self) -> float:
+        """Total days in analysis period"""
+        return self.period_hours / 24
+
+    @property
+    def is_full_year(self) -> bool:
+        """True if period covers at least one full year (8760 hours)"""
+        return self.period_hours >= 8760
+
+    @property
+    def annualization_factor(self) -> float:
+        """Factor to scale period values to annual (8760 / period_hours)"""
+        return 1.0 if self.is_full_year else (8760 / self.period_hours)
+
+
+class PeriodInfo(BaseModel):
+    """
+    Period information included in responses.
+
+    Helps UI understand whether results are for a full year or partial period,
+    and whether annualization was applied.
+    """
+    period_hours: float = Field(..., description="Total hours in analysis period")
+    period_days: float = Field(..., description="Total days in analysis period")
+    is_full_year: bool = Field(..., description="True if period >= 8760 hours")
+    annualization_factor: float = Field(
+        ...,
+        description="8760 / period_hours. Use to scale to annual if needed."
+    )
+    start_datetime: str = Field(..., description="Analysis start (ISO 8601)")
+    end_datetime: str = Field(..., description="Analysis end (ISO 8601)")
 
 
 # =============================================================================
@@ -137,47 +240,192 @@ class DegradationBudget(BaseModel):
 
 
 # =============================================================================
+# Arbitrage Configuration
+# =============================================================================
+
+class ArbitrageConfig(BaseModel):
+    """
+    Configuration for Time-of-Use (ToU) arbitrage dispatch.
+
+    Arbitrage exploits price differences between tariff zones:
+    - Charge from grid when price is low (below threshold)
+    - Discharge when price is high (above threshold)
+
+    IMPORTANT: For NPV calculations, capacity fee (opłata mocowa) is NOT
+    included in price thresholds. It's calculated post-dispatch using
+    the capacity_fee_pl module based on the actual import profile.
+
+    Integration with STACKED mode:
+    - Peak shaving has priority 1 (can use full SOC range)
+    - PV surplus charging has priority 2 (always before grid charging)
+    - Arbitrage grid-charge has priority 3 (only if spare charging capacity)
+    - Arbitrage discharge has priority 4 (when price high and SOC > floor)
+    """
+    enabled: bool = Field(False, description="Enable ToU arbitrage in dispatch")
+
+    # Tariff selection (must match osd_tariffs/presets keys)
+    tariff_id: str = Field(
+        "pge_c12a_2025",
+        description="OSD tariff preset ID (from /osd-tariffs/presets)"
+    )
+
+    # Strategy
+    strategy: ArbitrageStrategy = Field(
+        ArbitrageStrategy.PERCENTILE_THRESHOLD,
+        description="How to calculate charge/discharge thresholds"
+    )
+
+    # Percentile thresholds (for PERCENTILE_THRESHOLD strategy)
+    charge_below_percentile: float = Field(
+        25.0,
+        ge=0,
+        le=50,
+        description="Charge from grid when price below this percentile [%]"
+    )
+    discharge_above_percentile: float = Field(
+        75.0,
+        ge=50,
+        le=100,
+        description="Discharge when price above this percentile [%]"
+    )
+
+    # Minimum spread for profitability (accounts for efficiency + degradation)
+    min_spread_pln_kwh: float = Field(
+        0.10,
+        ge=0,
+        description="Minimum price spread to act [PLN/kWh]"
+    )
+
+    # SOC floor for arbitrage discharge
+    # Arbitrage cannot discharge below max(reserve_soc, arb_soc_min, soc_min)
+    arbitrage_soc_min: float = Field(
+        0.20,
+        ge=0.0,
+        le=0.5,
+        description="Minimum SOC for arbitrage discharge [0-1]"
+    )
+
+    # Grid charging limits
+    max_grid_charge_kw: Optional[float] = Field(
+        None,
+        description="Maximum power for grid charging [kW]. None = use battery power."
+    )
+
+    # Degradation cost for profitability calculation
+    degradation_cost_pln_kwh: float = Field(
+        0.05,
+        ge=0,
+        description="Degradation cost per kWh throughput [PLN/kWh]"
+    )
+
+    # Price components to include in import_total (for dispatch steering)
+    # NOTE: capacity_fee should be 0 here - it's calculated post-dispatch!
+    capacity_fee_pln_kwh: float = Field(
+        0.0,
+        ge=0,
+        description="Capacity fee in steering prices [PLN/kWh]. Keep 0 for accurate NPV."
+    )
+    other_components_pln_kwh: float = Field(
+        0.0,
+        ge=0,
+        description="Other components (akcyza, OZE, etc.) [PLN/kWh]"
+    )
+
+
+# =============================================================================
 # Price Configuration (future-ready for time-varying)
 # =============================================================================
 
 class PriceConfig(BaseModel):
     """
     Energy price configuration.
-    Currently supports constant prices, but structure ready for time-varying.
+
+    Supports two pricing modes:
+    1. Flat pricing (legacy): Single import/export rate
+    2. ToU pricing (Opcja B): OSD tariff + OTHER fees + capacity fee separately
+
+    When tariff_id is set, ToU pricing is used with:
+    - OSD rates = energia czynna + dystrybucja (combined from preset)
+    - other_fees = OZE + kog + jakość + akcyza (added on top)
+    - capacity_fee = calculated separately via capacity_fee_pl module
     """
+    # Legacy flat pricing (used when tariff_id is None)
     import_price_pln_mwh: float = Field(800.0, ge=0,
                                          description="Import price [PLN/MWh]")
     export_price_pln_mwh: float = Field(0.0, ge=0,
                                          description="Export price [PLN/MWh] (0 for 0-export)")
 
-    # Demand charge (opłata mocowa) - essential for peak shaving economics
+    # Demand charge (opłata za moc umowną) - for peak shaving
     demand_charge_pln_kw_month: float = Field(0.0, ge=0,
                                                description="Monthly demand charge [PLN/kW/month] based on peak import")
     demand_charge_pln_kw_year: float = Field(0.0, ge=0,
                                               description="Annual demand charge [PLN/kW/year] based on peak import")
 
-    # TODO: Future support for time-varying prices
-    # import_prices_pln_mwh: Optional[List[float]] = None  # Per-timestep import prices
-    # export_prices_pln_mwh: Optional[List[float]] = None  # Per-timestep export prices
+    # === NEW: ToU Pricing (Opcja B - OSD_ALL_IN) ===
+
+    # OSD tariff preset (e.g., "pge_c12a_2025")
+    tariff_id: Optional[str] = Field(
+        None,
+        description="OSD tariff preset ID. If set, uses ToU pricing instead of flat."
+    )
+
+    # OTHER fees (suma opłat stałych) - added to energia czynna rates
+    other_fees_pln_mwh: float = Field(
+        451.0,  # Default: 200 + 10 + 7 + 10 + 219 + 5 (OSD, OZE, kog, jakość, mocowa, akcyza)
+        ge=0,
+        description="Suma opłat stałych [PLN/MWh]"
+    )
+
+    # Capacity fee (opłata mocowa PL) settings
+    capacity_fee_method: str = Field(
+        "dynamic",
+        description="'dynamic' (A×SOM×ZS) or 'fixed' (simple per-MWh)"
+    )
+    capacity_fee_som_pln_kwh: float = Field(
+        0.2194,  # 2025/2026 rate
+        ge=0,
+        description="SOM rate for dynamic capacity fee [PLN/kWh]"
+    )
+    capacity_fee_fixed_pln_mwh: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Fixed capacity fee rate [PLN/MWh] - only for 'fixed' method"
+    )
+
+    # Analysis year (for ToU zone calculation)
+    analysis_year: int = Field(
+        2025,
+        ge=2020,
+        le=2035,
+        description="Year for calendar calculations (holidays, weekends)"
+    )
+
+    @property
+    def is_tou_enabled(self) -> bool:
+        """Check if ToU pricing is enabled (tariff_id set)"""
+        return self.tariff_id is not None
 
     @property
     def is_time_varying(self) -> bool:
-        """Check if prices are time-varying (future feature)"""
-        return False  # TODO: implement when arrays added
+        """Check if prices are time-varying"""
+        return self.is_tou_enabled
 
     @property
     def annual_demand_charge_pln_kw(self) -> float:
         """Get annual demand charge per kW peak (sum of monthly or annual rate)"""
         return self.demand_charge_pln_kw_month * 12 + self.demand_charge_pln_kw_year
 
+    @property
+    def other_fees_pln_kwh(self) -> float:
+        """Get OTHER fees in PLN/kWh"""
+        return self.other_fees_pln_mwh / 1000.0
+
     def get_import_price(self, timestep: int = 0) -> float:
-        """Get import price for timestep (constant for now)"""
-        # TODO: return self.import_prices_pln_mwh[timestep] if time-varying
+        """Get import price for timestep (constant for flat, ToU handled separately)"""
         return self.import_price_pln_mwh
 
     def get_export_price(self, timestep: int = 0) -> float:
         """Get export price for timestep (constant for now)"""
-        # TODO: return self.export_prices_pln_mwh[timestep] if time-varying
         return self.export_price_pln_mwh
 
 
@@ -200,6 +448,13 @@ class DispatchRequest(BaseModel):
     load_kw: List[float] = Field(..., min_items=24,
                                   description="Load consumption [kW_avg]")
 
+    # Analytical period - SINGLE SOURCE OF TRUTH for time axis
+    # If provided, overrides interval_minutes and start_date with period config
+    analytical_period: Optional[AnalyticalPeriodConfig] = Field(
+        None,
+        description="Time axis configuration. If provided, is the single source of truth for time calculations."
+    )
+
     # Profile unit declaration for audit trail
     profile_unit: ProfileUnit = Field(
         ProfileUnit.KW_AVG,
@@ -218,6 +473,18 @@ class DispatchRequest(BaseModel):
     # Mode-specific parameters
     stacked_params: Optional[StackedModeParams] = None
     peak_limit_kw: Optional[float] = None  # For PEAK_SHAVING / LOAD_ONLY mode
+
+    # Arbitrage configuration (optional, enables ToU arbitrage in STACKED mode)
+    arbitrage_config: Optional[ArbitrageConfig] = Field(
+        None,
+        description="ToU arbitrage configuration. If enabled, adds arbitrage to STACKED mode."
+    )
+
+    # Start date for price lookup (required when arbitrage enabled)
+    start_date: Optional[str] = Field(
+        None,
+        description="Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled."
+    )
 
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
@@ -279,6 +546,17 @@ class DispatchRequest(BaseModel):
             )
         return v
 
+    @validator('start_date', always=True)
+    def validate_start_date_for_arbitrage(cls, v, values):
+        """Validate start_date is provided when arbitrage is enabled"""
+        arb_config = values.get('arbitrage_config')
+        if arb_config and arb_config.enabled and not v:
+            raise ValueError(
+                "start_date is required when arbitrage_config.enabled=True. "
+                "Provide date in YYYY-MM-DD format for tariff price lookup."
+            )
+        return v
+
     @property
     def dt_hours(self) -> float:
         """Time step duration in hours"""
@@ -323,6 +601,13 @@ class DegradationMetrics(BaseModel):
     efc_pv: float = Field(0.0, description="EFC for PV shifting")
     efc_peak: float = Field(0.0, description="EFC for peak shaving")
 
+    # Arbitrage metrics (for STACKED + arbitrage)
+    throughput_arb_mwh: float = Field(0.0, description="Throughput for arbitrage [MWh]")
+    efc_arb: float = Field(0.0, description="EFC for arbitrage")
+    arb_charge_from_grid_kwh: float = Field(0.0, description="Energy charged from grid for arbitrage [kWh]")
+    arb_discharge_kwh: float = Field(0.0, description="Energy discharged for arbitrage [kWh]")
+    arb_cycles_count: int = Field(0, description="Number of arbitrage charge/discharge cycles")
+
     # Peak shaving event statistics
     peak_events_count: int = Field(0, description="Number of hours with peak shaving discharge")
     peak_events_energy_kwh: float = Field(0.0, description="Total energy discharged for peak shaving [kWh]")
@@ -360,6 +645,59 @@ class HourlyDispatch(BaseModel):
     # For STACKED mode: service breakdown
     discharge_peak_kw: float = 0.0
     discharge_pv_kw: float = 0.0
+    discharge_arb_kw: float = 0.0  # For arbitrage
+
+
+class SavingsBreakdown(BaseModel):
+    """
+    Detailed breakdown of annual savings by source.
+
+    Used for transparent NPV calculation and frontend display.
+    Sum of all components equals net_savings_pln.
+
+    NOTE on terminology:
+    - demand_charge_savings_pln = peak shaving (opłata za moc umowną / demand charge)
+    - capacity_fee_savings_pln = opłata mocowa PL (rynek mocy) - osobny moduł
+    """
+    # Positive savings
+    energy_savings_pln: float = Field(0.0, description="Savings from self-consumption and reduced grid import")
+    arbitrage_savings_pln: float = Field(0.0, description="Incremental savings from ToU price arbitrage (vs no-arb)")
+    capacity_fee_savings_pln: float = Field(0.0, description="Savings from reduced capacity fee (opłata mocowa PL)")
+    demand_charge_savings_pln: float = Field(0.0, description="Savings from peak shaving (opłata za moc / demand charge)")
+
+    # Negative (costs)
+    degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
+
+    # Net
+    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee - degradation")
+
+    def calculate_net(self) -> float:
+        """Calculate net savings from components"""
+        return (
+            self.energy_savings_pln +
+            self.arbitrage_savings_pln +
+            self.capacity_fee_savings_pln +
+            self.demand_charge_savings_pln -
+            abs(self.degradation_cost_pln)
+        )
+
+
+class PricesSummary(BaseModel):
+    """
+    Summary of prices used in simulation.
+
+    For transparency - user can verify what assumptions were used.
+    """
+    import_price_pln_mwh: float = Field(description="Import price [PLN/MWh]")
+    export_price_pln_mwh: float = Field(description="Export price [PLN/MWh]")
+    demand_charge_pln_kw_month: float = Field(description="Monthly demand charge [PLN/kW/month]")
+    demand_charge_pln_kw_year: float = Field(default=0.0, description="Annual demand charge [PLN/kW/year]")
+    tariff_type: str = Field(default="flat", description="Tariff type: flat, two_zone, three_zone")
+    tariff_id: Optional[str] = Field(default=None, description="OSD tariff preset ID if used")
+    zone_rates: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Zone rates if ToU tariff [PLN/MWh], e.g. {'peak': 950, 'partial': 700, 'off_peak': 450}"
+    )
 
 
 class DispatchResult(BaseModel):
@@ -401,6 +739,19 @@ class DispatchResult(BaseModel):
     project_cost_pln: float = 0.0
     annual_savings_pln: float = 0.0
 
+    # Detailed savings breakdown (optional, for transparency)
+    savings_breakdown: Optional[SavingsBreakdown] = Field(
+        None,
+        description="Detailed breakdown of savings by source (energy, arbitrage, capacity fee, etc.)"
+    )
+
+    # Price summary (for transparency - what prices were used)
+    # Can be PricesSummary or Dict for ToU detailed breakdown
+    prices_summary: Optional[Union[PricesSummary, Dict[str, Any]]] = Field(
+        None,
+        description="Summary of prices used in simulation (or ToU cost breakdown)"
+    )
+
     # Hourly arrays (optional, for charts)
     hourly_charge_kw: Optional[List[float]] = None
     hourly_discharge_kw: Optional[List[float]] = None
@@ -436,6 +787,13 @@ class SizingRequest(BaseModel):
     load_kw: List[float]
     interval_minutes: int = 60
 
+    # Analytical period - SINGLE SOURCE OF TRUTH for time axis
+    # If provided, overrides interval_minutes and start_date with period config
+    analytical_period: Optional[AnalyticalPeriodConfig] = Field(
+        None,
+        description="Time axis configuration. If provided, is the single source of truth for time calculations."
+    )
+
     # Profile unit declaration for audit trail
     profile_unit: ProfileUnit = Field(
         ProfileUnit.KW_AVG,
@@ -446,6 +804,18 @@ class SizingRequest(BaseModel):
     mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
     stacked_params: Optional[StackedModeParams] = None
     peak_limit_kw: Optional[float] = None
+
+    # Arbitrage configuration (optional, enables ToU arbitrage in sizing)
+    arbitrage_config: Optional[ArbitrageConfig] = Field(
+        None,
+        description="ToU arbitrage configuration. If enabled, sizing includes arbitrage savings in NPV."
+    )
+
+    # Start date for price lookup (required when arbitrage enabled)
+    start_date: Optional[str] = Field(
+        None,
+        description="Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled."
+    )
 
     # Battery constraints
     min_power_kw: float = Field(10.0, ge=0)
@@ -459,6 +829,20 @@ class SizingRequest(BaseModel):
     roundtrip_efficiency: float = Field(0.90, ge=0.7, le=1.0)
     soc_min: float = Field(0.10, ge=0.0, le=0.5)
     soc_max: float = Field(0.90, ge=0.5, le=1.0)
+
+    # Degradation and EOL sizing
+    # EOL capacity factor: target capacity at end-of-life as % of BOL (beginning-of-life)
+    # Example: 0.70 means size battery so that at EOL (after analysis_years) it still has 70% of original
+    # Formula: required_bol_capacity = target_eol_capacity / eol_capacity_factor
+    # If 0.0 or not set, no EOL adjustment is made (legacy behavior)
+    eol_capacity_factor: float = Field(
+        0.0, ge=0.0, le=1.0,
+        description="Target EOL capacity as fraction of BOL. 0.70 = size for 70% capacity at end of life."
+    )
+    annual_degradation_pct: float = Field(
+        2.0, ge=0.0, le=10.0,
+        description="Annual capacity degradation [%/year]. Used to calculate EOL capacity."
+    )
 
     # Economics
     capex_per_kwh: float = Field(1500.0, ge=0, description="CAPEX [PLN/kWh]")
@@ -519,6 +903,26 @@ class SizingVariantResult(BaseModel):
     # Recommendation score (0-100)
     score: float = 0.0
     is_recommended: bool = False
+
+    # Convenience aliases for frontend (expose nested fields at top level for JSON)
+    # These are stored as explicit fields that get populated from dispatch_summary
+    savings_breakdown: Optional[SavingsBreakdown] = Field(
+        None,
+        description="Alias - populated from dispatch_summary.savings_breakdown"
+    )
+    prices_summary: Optional[Union[PricesSummary, Dict[str, Any]]] = Field(
+        None,
+        description="Alias - populated from dispatch_summary.prices_summary (ToU breakdown)"
+    )
+
+    def model_post_init(self, __context):
+        """Pydantic v2: populate alias fields after init"""
+        if self.dispatch_summary:
+            # Use object.__setattr__ to bypass frozen model check
+            if self.dispatch_summary.savings_breakdown and self.savings_breakdown is None:
+                object.__setattr__(self, 'savings_breakdown', self.dispatch_summary.savings_breakdown)
+            if self.dispatch_summary.prices_summary and self.prices_summary is None:
+                object.__setattr__(self, 'prices_summary', self.dispatch_summary.prices_summary)
 
 
 class SizingResult(BaseModel):
