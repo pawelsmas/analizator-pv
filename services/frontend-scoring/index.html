@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KPI / Scoring - PV Optimizer</title>
+  <link rel="stylesheet" href="styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="module-header">
+    <h1>KPI / Scoring</h1>
+    <p class="subtitle">Multi-Criteria Decision Analysis - porownanie ofert PV</p>
+  </div>
+
+  <!-- Controls Bar -->
+  <div class="controls-bar">
+    <!-- Profile Selector -->
+    <div class="control-group">
+      <label>Profil wag:</label>
+      <div class="profile-buttons">
+        <button class="profile-btn active" data-profile="cfo" onclick="setProfile('cfo')">
+          <span class="profile-icon">CFO</span>
+          <span class="profile-name">Finanse</span>
+        </button>
+        <button class="profile-btn" data-profile="esg" onclick="setProfile('esg')">
+          <span class="profile-icon">ESG</span>
+          <span class="profile-name">Zrownowazone</span>
+        </button>
+        <button class="profile-btn" data-profile="operations" onclick="setProfile('operations')">
+          <span class="profile-icon">OPS</span>
+          <span class="profile-name">Technika</span>
+        </button>
+        <button class="profile-btn" data-profile="custom" onclick="setProfile('custom')">
+          <span class="profile-icon">...</span>
+          <span class="profile-name">Wlasny</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Horizon Selector -->
+    <div class="control-group">
+      <label>Horyzont T:</label>
+      <select id="horizonSelect" onchange="updateHorizon(this.value)">
+        <option value="10">10 lat</option>
+        <option value="15">15 lat</option>
+        <option value="20">20 lat</option>
+        <option value="25" selected>25 lat</option>
+      </select>
+    </div>
+
+    <!-- Conservative Scenario Toggle -->
+    <div class="control-group">
+      <label>Scenariusz konserwatywny:</label>
+      <div class="conservative-params">
+        <span class="param-label">Yield:</span>
+        <select id="consYield" onchange="updateConservative()">
+          <option value="0.95">-5%</option>
+          <option value="0.90" selected>-10%</option>
+          <option value="0.85">-15%</option>
+        </select>
+        <span class="param-label">Ceny:</span>
+        <select id="consPrices" onchange="updateConservative()">
+          <option value="0.95">-5%</option>
+          <option value="0.90" selected>-10%</option>
+          <option value="0.85">-15%</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Recalculate Button -->
+    <button class="btn-primary" onclick="recalculateScores()">
+      Przelicz Scoring
+    </button>
+  </div>
+
+  <!-- Weight Distribution (visible in Custom mode) -->
+  <div class="weight-editor" id="weightEditor" style="display: none;">
+    <h3>Konfiguracja wag</h3>
+    <div class="weight-sliders">
+      <div class="weight-row">
+        <span class="bucket-label value">VALUE</span>
+        <input type="range" id="weightValue" min="0" max="100" value="40" oninput="updateWeight('value', this.value)">
+        <span class="weight-value" id="weightValueDisplay">40%</span>
+      </div>
+      <div class="weight-row">
+        <span class="bucket-label robustness">ROBUSTNESS</span>
+        <input type="range" id="weightRobustness" min="0" max="100" value="30" oninput="updateWeight('robustness', this.value)">
+        <span class="weight-value" id="weightRobustnessDisplay">30%</span>
+      </div>
+      <div class="weight-row">
+        <span class="bucket-label tech">TECH</span>
+        <input type="range" id="weightTech" min="0" max="100" value="20" oninput="updateWeight('tech', this.value)">
+        <span class="weight-value" id="weightTechDisplay">20%</span>
+      </div>
+      <div class="weight-row">
+        <span class="bucket-label esg">ESG</span>
+        <input type="range" id="weightEsg" min="0" max="100" value="10" oninput="updateWeight('esg', this.value)">
+        <span class="weight-value" id="weightEsgDisplay">10%</span>
+      </div>
+    </div>
+    <div class="weight-total">
+      Suma: <span id="weightTotal">100%</span>
+    </div>
+  </div>
+
+  <!-- Main Content: Ranking + Details -->
+  <div class="main-content">
+    <!-- Left: Ranking Table -->
+    <div class="ranking-section">
+      <h2>Ranking Ofert</h2>
+
+      <!-- No Data Placeholder -->
+      <div class="no-data" id="noDataPlaceholder">
+        <div class="no-data-icon">🏆</div>
+        <p>Brak ofert do porownania.</p>
+        <p class="hint">Wykonaj symulacje w module <strong>Konfiguracja</strong> lub <strong>Produkcja PV</strong>, aby wygenerowac warianty.</p>
+      </div>
+
+      <!-- Ranking Table -->
+      <div class="ranking-table-wrapper" id="rankingTableWrapper" style="display: none;">
+        <table class="ranking-table" id="rankingTable">
+          <thead>
+            <tr>
+              <th class="col-rank">#</th>
+              <th class="col-name">Oferta</th>
+              <th class="col-score">Score</th>
+              <th class="col-bucket">VALUE</th>
+              <th class="col-bucket">ROBUSTNESS</th>
+              <th class="col-bucket">TECH</th>
+              <th class="col-bucket">ESG</th>
+              <th class="col-compare">Porownaj</th>
+            </tr>
+          </thead>
+          <tbody id="rankingTableBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Right: Selected Offer Details -->
+    <div class="details-section" id="detailsSection" style="display: none;">
+      <h2>Szczegoly: <span id="selectedOfferName">-</span></h2>
+
+      <!-- Score Gauge -->
+      <div class="score-gauge-container">
+        <div class="score-gauge">
+          <svg viewBox="0 0 120 120">
+            <circle class="gauge-bg" cx="60" cy="60" r="50" />
+            <circle class="gauge-fill" id="gaugeCircle" cx="60" cy="60" r="50" />
+          </svg>
+          <div class="gauge-value" id="gaugeValue">0</div>
+          <div class="gauge-label">pkt</div>
+        </div>
+      </div>
+
+      <!-- Bucket Bars -->
+      <div class="bucket-bars">
+        <div class="bucket-bar-row">
+          <span class="bucket-label value">VALUE</span>
+          <div class="bar-container">
+            <div class="bar-fill value" id="barValue" style="width: 0%"></div>
+          </div>
+          <span class="bar-value" id="barValueText">0</span>
+        </div>
+        <div class="bucket-bar-row">
+          <span class="bucket-label robustness">ROBUSTNESS</span>
+          <div class="bar-container">
+            <div class="bar-fill robustness" id="barRobustness" style="width: 0%"></div>
+          </div>
+          <span class="bar-value" id="barRobustnessText">0</span>
+        </div>
+        <div class="bucket-bar-row">
+          <span class="bucket-label tech">TECH</span>
+          <div class="bar-container">
+            <div class="bar-fill tech" id="barTech" style="width: 0%"></div>
+          </div>
+          <span class="bar-value" id="barTechText">0</span>
+        </div>
+        <div class="bucket-bar-row">
+          <span class="bucket-label esg">ESG</span>
+          <div class="bar-container">
+            <div class="bar-fill esg" id="barEsg" style="width: 0%"></div>
+          </div>
+          <span class="bar-value" id="barEsgText">0</span>
+        </div>
+      </div>
+
+      <!-- KPI Table -->
+      <div class="kpi-table-section">
+        <h3>Wskazniki KPI</h3>
+        <table class="kpi-table">
+          <thead>
+            <tr>
+              <th>KPI</th>
+              <th>Wartosc</th>
+              <th>vs Baseline</th>
+              <th>Punkty</th>
+            </tr>
+          </thead>
+          <tbody id="kpiTableBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Flags & Reasons -->
+      <div class="flags-section" id="flagsSection">
+        <h3>Flagi i Uzasadnienie</h3>
+        <div class="flags-list" id="flagsList"></div>
+        <div class="reasons-list" id="reasonsList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison Panel (when 2 offers selected) -->
+  <div class="comparison-panel" id="comparisonPanel" style="display: none;">
+    <div class="comparison-header">
+      <h2>Porownanie Ofert</h2>
+      <button class="btn-close" onclick="closeComparison()">×</button>
+    </div>
+    <div class="comparison-content">
+      <div class="comparison-offer" id="compOffer1">
+        <div class="offer-header">
+          <span class="offer-rank">#1</span>
+          <span class="offer-name">Oferta A</span>
+          <span class="offer-score">85.2 pkt</span>
+        </div>
+        <div class="offer-buckets"></div>
+      </div>
+      <div class="comparison-vs">VS</div>
+      <div class="comparison-offer" id="compOffer2">
+        <div class="offer-header">
+          <span class="offer-rank">#2</span>
+          <span class="offer-name">Oferta B</span>
+          <span class="offer-score">72.1 pkt</span>
+        </div>
+        <div class="offer-buckets"></div>
+      </div>
+    </div>
+    <div class="comparison-justification" id="comparisonJustification">
+      <h3>Dlaczego rekomendujemy Oferte A?</h3>
+      <ul id="justificationList"></ul>
+    </div>
+  </div>
+
+  <!-- Rules Section (collapsible) -->
+  <details class="rules-section">
+    <summary>Reguly Scoringu (progi, definicje)</summary>
+    <div class="rules-content">
+      <div class="rules-intro">
+        <p>Scoring oparty jest na oszczednosciach vs baseline (koszty energii bez PV). Wszystkie wskazniki sa normalizowane do baseline.</p>
+      </div>
+
+      <div class="rules-buckets">
+        <div class="rules-bucket">
+          <h4 class="value">VALUE (max 40 pkt)</h4>
+          <table class="rules-table">
+            <tr><th>KPI</th><th>Progi</th><th>Punkty</th></tr>
+            <tr>
+              <td>NPV oszczednosci / PV(baseline)</td>
+              <td>0%, 5%, 10%, 20%, 30%</td>
+              <td>0, 5, 10, 15, 20 pkt</td>
+            </tr>
+            <tr>
+              <td>Oszczednosci Rok 1 / Baseline Rok 1</td>
+              <td>0%, 10%, 20%, 30%, 40%</td>
+              <td>0, 5, 10, 15, 20 pkt</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="rules-bucket">
+          <h4 class="robustness">ROBUSTNESS (max 30 pkt)</h4>
+          <table class="rules-table">
+            <tr><th>KPI</th><th>Progi</th><th>Punkty</th></tr>
+            <tr>
+              <td>NPV oszczednosci (scenariusz pesym.)</td>
+              <td>0%, 3%, 7%, 12%, 20%</td>
+              <td>0, 5, 10, 15, 20 pkt</td>
+            </tr>
+            <tr>
+              <td>NPV pesym. / NPV bazowe</td>
+              <td>50%, 60%, 70%, 80%, 90%</td>
+              <td>0, 2.5, 5, 7.5, 10 pkt</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="rules-bucket">
+          <h4 class="tech">TECH (max 20 pkt)</h4>
+          <table class="rules-table">
+            <tr><th>KPI</th><th>Progi</th><th>Punkty</th></tr>
+            <tr>
+              <td>Autokonsumpcja</td>
+              <td>30%, 50%, 70%, 85%, 95%</td>
+              <td>0, 2.5, 5, 7.5, 10 pkt</td>
+            </tr>
+            <tr>
+              <td>Pokrycie zuzycia</td>
+              <td>20%, 40%, 60%, 80%, 100%</td>
+              <td>0, 2.5, 5, 7.5, 10 pkt</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="rules-bucket">
+          <h4 class="esg">ESG (max 10 pkt)</h4>
+          <table class="rules-table">
+            <tr><th>KPI</th><th>Progi</th><th>Punkty</th></tr>
+            <tr>
+              <td>Redukcja CO2 / Baseline CO2</td>
+              <td>0%, 20%, 40%, 60%, 80%</td>
+              <td>0, 2.5, 5, 7.5, 10 pkt</td>
+            </tr>
+          </table>
+          <p class="note">* Jesli brak danych CO2, wagi ESG sa rozdzielane proporcjonalnie do pozostalych kategorii.</p>
+        </div>
+      </div>
+    </div>
+  </details>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="scoring.js?v=20251220-INITIAL"></script>
+</body>
+</html>

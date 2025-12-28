@@ -6,7 +6,13 @@ import numpy as np
 from scipy import stats
 from datetime import datetime, timedelta
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(title="Typical Days Analysis Service", version="1.0.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(

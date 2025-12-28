@@ -1,4 +1,193 @@
-console.log('🔋 bess.js LOADED v=3.2.2 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.16 - timestamp:', new Date().toISOString());
+
+// ============================================
+// CROSS-MODULE NAVIGATION
+// ============================================
+
+/**
+ * Navigate to another module via parent shell
+ * @param {string} moduleName - module name (profile, economics, config, etc.)
+ */
+function navigateToModule(moduleName) {
+  console.log(`🔗 Navigating to module: ${moduleName}`);
+
+  // Save current BESS config to localStorage for sharing
+  saveBessConfigToSharedStorage();
+
+  // Send navigation request to parent shell
+  window.parent.postMessage({
+    type: 'NAVIGATE_TO_MODULE',
+    module: moduleName
+  }, '*');
+}
+
+/**
+ * Send BESS sizing result to Shell/Economics using v2 payload format
+ * This enables Economics to display savings breakdown (energy, peak shaving, capacity fee, etc.)
+ * @param {object} sizingResult - Result from bess-dispatch sizing API
+ */
+function sendBessResultToShell(sizingResult) {
+  if (!sizingResult || !sizingResult.variants || sizingResult.variants.length === 0) {
+    console.log('⚠️ No sizing result to send to shell');
+    return;
+  }
+
+  // Find recommended variant or best NPV
+  const recommended = sizingResult.variants.find(v => v.is_recommended) ||
+                      sizingResult.variants.reduce((best, v) =>
+                        (v.npv_pln || 0) > (best.npv_pln || 0) ? v : best, sizingResult.variants[0]);
+
+  if (!recommended) return;
+
+  // Build v2 payload matching profile.js format
+  const bessData = {
+    schema_version: 'bess_economics_v2',
+
+    // BESS sizing
+    bess_power_kw: recommended.power_kw || 0,
+    bess_energy_kwh: recommended.energy_kwh || 0,
+
+    // Energy flows
+    annual_cycles: recommended.dispatch_summary?.degradation?.efc || 0,
+    annual_discharge_mwh: (recommended.dispatch_summary?.total_discharge_kwh || 0) / 1000,
+
+    // Economics
+    npv_pln: recommended.npv_pln || 0,
+    payback_years: recommended.payback_years || 0,
+    capex_pln: recommended.capex_pln || 0,
+    annual_savings_pln: recommended.annual_savings_pln || 0,
+
+    // Dispatch metadata
+    dispatch_metadata: {
+      dispatch_mode: recommended.dispatch_summary?.mode || sizingResult.request_summary?.mode || 'stacked',
+      topology: sizingResult.request_summary?.topology || 'pv_load',
+      interval_minutes: sizingResult.request_summary?.interval_minutes || 60,
+      start_date: sizingResult.request_summary?.start_date || null,
+      export_policy: 'zero_export',
+      peak_shaving_enabled: recommended.dispatch_summary?.peak_reduction_kw > 0,
+      price_arbitrage_enabled: false,
+    },
+
+    // Savings breakdown - from bess-dispatch (accurate!)
+    savings_breakdown: recommended.savings_breakdown ? {
+      energy_savings_pln: recommended.savings_breakdown.energy_savings_pln || 0,
+      demand_charge_savings_pln: recommended.savings_breakdown.demand_charge_savings_pln || 0,
+      capacity_fee_savings_pln: recommended.savings_breakdown.capacity_fee_savings_pln || 0,
+      arbitrage_savings_pln: recommended.savings_breakdown.arbitrage_savings_pln || 0,
+      degradation_cost_pln: recommended.savings_breakdown.degradation_cost_pln || 0,
+      net_savings_pln: recommended.savings_breakdown.net_savings_pln || recommended.annual_savings_pln || 0,
+      source: 'bess_dispatch_accurate',
+    } : {
+      energy_savings_pln: recommended.annual_savings_pln || 0,
+      demand_charge_savings_pln: 0,
+      capacity_fee_savings_pln: 0,
+      arbitrage_savings_pln: 0,
+      degradation_cost_pln: 0,
+      net_savings_pln: recommended.annual_savings_pln || 0,
+      source: 'bess_pro_fallback',
+    },
+
+    // Prices summary
+    prices_summary: recommended.prices_summary ? {
+      import_price_pln_mwh: recommended.prices_summary.import_price_pln_mwh || 0,
+      export_price_pln_mwh: recommended.prices_summary.export_price_pln_mwh || 0,
+      demand_charge_pln_kw_month: recommended.prices_summary.demand_charge_pln_kw_month || 0,
+      tariff_type: recommended.prices_summary.tariff_type || 'flat',
+      tariff_id: recommended.prices_summary.tariff_id || null,
+      zone_rates: recommended.prices_summary.zone_rates || null,
+    } : {
+      import_price_pln_mwh: 800,
+      export_price_pln_mwh: 0,
+      demand_charge_pln_kw_month: 0,
+      tariff_type: 'flat',
+      tariff_id: null,
+      zone_rates: null,
+    },
+
+    // Strategy (from BESS PRO is always 'sizing' not profile-analysis)
+    strategy: 'bess_pro_sizing',
+
+    // All variants for reference
+    all_variants: sizingResult.variants.map(v => ({
+      variant_label: v.variant_label,
+      power_kw: v.power_kw,
+      energy_kwh: v.energy_kwh,
+      npv_pln: v.npv_pln,
+      payback_years: v.payback_years,
+      is_recommended: v.is_recommended
+    }))
+  };
+
+  // Send to Shell
+  if (window.parent !== window) {
+    window.parent.postMessage({
+      type: 'BESS_SIZING_COMPLETE',
+      data: {
+        bessData: bessData,
+        sizingResult: sizingResult
+      }
+    }, '*');
+    console.log('📤 BESS PRO: Sent BESS_SIZING_COMPLETE v2 to shell:', {
+      schema_version: bessData.schema_version,
+      bess_power_kw: bessData.bess_power_kw,
+      bess_energy_kwh: bessData.bess_energy_kwh,
+      savings_source: bessData.savings_breakdown?.source,
+      dispatch_mode: bessData.dispatch_metadata?.dispatch_mode
+    });
+  }
+
+  // Also save to localStorage for cross-module access
+  localStorage.setItem('bess_economics_payload_v2', JSON.stringify(bessData));
+}
+
+/**
+ * Save current BESS configuration to shared localStorage
+ * This allows Profile Analysis and Economics modules to access BESS params
+ */
+function saveBessConfigToSharedStorage() {
+  const currentData = variants[currentVariant];
+  if (!currentData) return;
+
+  const settings = systemSettings || {};
+  const bessSettings = settings[`variant${currentVariant}`]?.bess || {};
+
+  const sharedBessConfig = {
+    power_kw: bessSettings.power || currentData.bess?.power_kw || 0,
+    energy_kwh: bessSettings.energy || currentData.bess?.energy_kwh || 0,
+    enabled: bessSettings.enabled || false,
+    variant: currentVariant,
+    pv_capacity_kwp: currentData.capacity || 0,
+    annual_production_kwh: currentData.production || 0,
+    self_consumed_kwh: currentData.self_consumed || 0,
+    updated_at: new Date().toISOString()
+  };
+
+  localStorage.setItem('pv_shared_bess_config', JSON.stringify(sharedBessConfig));
+  console.log('💾 Saved shared BESS config:', sharedBessConfig);
+}
+
+/**
+ * Update the shared BESS config display in cross-module nav bar
+ */
+function updateSharedBessConfigDisplay() {
+  const el = document.getElementById('sharedBessConfig');
+  if (!el) return;
+
+  const currentData = variants[currentVariant];
+  const settings = systemSettings || {};
+  const bessSettings = settings[`variant${currentVariant}`]?.bess || {};
+
+  const power = bessSettings.power || currentData?.bess?.power_kw || 0;
+  const energy = bessSettings.energy || currentData?.bess?.energy_kwh || 0;
+
+  if (power > 0 && energy > 0) {
+    el.textContent = `BESS: ${power} kW / ${energy} kWh`;
+    el.style.color = '#2e7d32';
+  } else {
+    el.textContent = 'BESS: nie skonfigurowany';
+    el.style.color = '#999';
+  }
+}
 
 // ============================================
 // NUMBER FORMATTING - European format
@@ -27,6 +216,7 @@ let variants = {};
 let currentVariant = 'A';
 let systemSettings = null;
 let analysisResults = null;
+let lastSizingResult = null; // Store last sizing result for Excel export
 
 // ============================================
 // INITIALIZATION
@@ -39,6 +229,11 @@ document.addEventListener('DOMContentLoaded', () => {
   requestSharedData();
   requestSettingsFromShell();
 
+  // Setup sticky variant selector
+  setupStickyVariantSelector();
+
+  // v3.15: Arbitrage settings are now in Settings module (no local restore needed)
+
   // Fallback: try localStorage
   setTimeout(() => {
     if (!analysisResults || Object.keys(variants).length === 0) {
@@ -47,6 +242,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 500);
 });
+
+// Setup sticky variant selector with scroll animation
+function setupStickyVariantSelector() {
+  const variantSelector = document.querySelector('.variant-selector');
+  if (!variantSelector) return;
+
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 50) {
+      variantSelector.classList.add('scrolled');
+    } else {
+      variantSelector.classList.remove('scrolled');
+    }
+  });
+}
 
 // Listen for messages from parent shell
 window.addEventListener('message', (event) => {
@@ -66,10 +275,29 @@ window.addEventListener('message', (event) => {
     updateDisplay();
   }
 
+  // Handle variant changes from other modules (via shell broadcast)
+  if (type === 'MASTER_VARIANT_CHANGED') {
+    console.log('📥 Received MASTER_VARIANT_CHANGED:', data);
+    if (data && data.variantKey && data.variantKey !== currentVariant) {
+      // Update local state without re-broadcasting to shell
+      currentVariant = data.variantKey;
+      // Update button states
+      document.querySelectorAll('.variant-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.variant === data.variantKey);
+      });
+      updateDisplay();
+    }
+  }
+
+  // Legacy support for VARIANT_CHANGED
   if (type === 'VARIANT_CHANGED') {
     console.log('📥 Received VARIANT_CHANGED:', data);
-    if (data && data.variant) {
-      selectVariant(data.variant);
+    if (data && data.variant && data.variant !== currentVariant) {
+      currentVariant = data.variant;
+      document.querySelectorAll('.variant-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.variant === data.variant);
+      });
+      updateDisplay();
     }
   }
 
@@ -78,6 +306,36 @@ window.addEventListener('message', (event) => {
     console.log('📥 Received SCENARIO_CHANGED:', data);
     // Refresh data
     requestSharedData();
+  }
+
+  // =========================================================================
+  // NEW: BESS_RESULT_UPDATED - Single Source of Truth from shell
+  // =========================================================================
+  if (type === 'BESS_RESULT_UPDATED') {
+    console.log('🔋 BESS result updated (Single Source of Truth):', data);
+    if (data) {
+      // Store bessResult for display
+      window.bessResult = data;
+
+      // Update display with new BESS data
+      if (data.variants && data.variants.length > 0) {
+        // Display sizing variants from single source
+        displaySizingVariants({ variants: data.variants });
+
+        // Display degradation if available
+        const recommended = data.variants.find(v => v.is_recommended) || data.variants[0];
+        if (recommended?.degradation) {
+          displayDegradationBudget(recommended.degradation, {});
+        }
+
+        // Log savings breakdown (displayed in economics module)
+        if (recommended?.savings_breakdown) {
+          console.log('📊 Savings breakdown available:', recommended.savings_breakdown);
+        }
+
+        console.log('✅ BESS display updated from Single Source of Truth');
+      }
+    }
   }
 });
 
@@ -124,7 +382,29 @@ function handleSharedData(data) {
     console.log('📌 Using masterVariant:', currentVariant);
   }
 
+  // Update button states to match current variant
+  document.querySelectorAll('.variant-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.variant === currentVariant);
+  });
+
   updateDisplay();
+}
+
+function resolveSavingsBreakdown(sourceObj) {
+  // Try multiple possible shapes/locations for savings_breakdown
+  if (!sourceObj) return null;
+  return (
+    sourceObj.savings_breakdown ||
+    sourceObj.savingsBreakdown ||
+    sourceObj?.bess_summary?.savings_breakdown ||
+    sourceObj?.bessResult?.savings_breakdown ||
+    (analysisResults?.bess_summary?.savings_breakdown || null) ||
+    (typeof window !== 'undefined' &&
+      window.sharedData?.analysisResults?.bess_summary?.savings_breakdown) ||
+    (typeof window !== 'undefined' &&
+      window.sharedData?.bessResult?.variants?.[0]?.savings_breakdown) ||
+    null
+  );
 }
 
 function parseKeyVariants(keyVariants) {
@@ -141,6 +421,8 @@ function parseKeyVariants(keyVariants) {
       bess_soc_histogram: s.bess_soc_histogram ? 'EXISTS' : 'NONE'
     });
 
+    // Normalize savings_breakdown casing and fallback sources
+    const savingsBreakdown = resolveSavingsBreakdown(s);
     variants[key] = {
       key: key,
       name: `Wariant ${key}`,
@@ -161,6 +443,10 @@ function parseKeyVariants(keyVariants) {
       bess_self_consumed_direct_kwh: s.bess_self_consumed_direct_kwh || 0,
       bess_self_consumed_from_bess_kwh: s.bess_self_consumed_from_bess_kwh || 0,
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
+      // Economics metadata passed from backend (SSoT)
+      savings_breakdown: savingsBreakdown,
+      dispatch_metadata: s.dispatch_metadata || null,
+      prices_summary: s.prices_summary || null,
       // Monthly breakdown (NEW in v3.2)
       bess_monthly_data: s.bess_monthly_data || [],
       // SOC histogram (NEW in v3.2)
@@ -175,7 +461,22 @@ function parseKeyVariants(keyVariants) {
 
 function loadFromLocalStorage() {
   try {
-    // Load analysis results - try different localStorage keys
+    // Check for BESS-only results first (from KONFIGURACJA with bess_only topology)
+    const bessOnlyResultsStr = localStorage.getItem('bessOnlyResults');
+    if (bessOnlyResultsStr) {
+      try {
+        const bessOnlyResults = JSON.parse(bessOnlyResultsStr);
+        if (bessOnlyResults.topology === 'bess_only' && bessOnlyResults.variants) {
+          console.log('🔋 Loading BESS-only results from localStorage');
+          loadBessOnlyResults(bessOnlyResults);
+          return;
+        }
+      } catch (e) {
+        console.warn('Failed to parse bessOnlyResults:', e);
+      }
+    }
+
+    // Load PV analysis results - try different localStorage keys
     const storedResults = localStorage.getItem('pv_analysis_results') || localStorage.getItem('analysisResults');
     if (storedResults) {
       analysisResults = JSON.parse(storedResults);
@@ -186,6 +487,22 @@ function loadFromLocalStorage() {
         parseKeyVariants(analysisResults.key_variants);
       } else if (analysisResults?.scenarios) {
         parseVariants(analysisResults.scenarios);
+      }
+    }
+
+    // Also check pvAnalysisVariants for BESS-only data
+    const pvVariantsStr = localStorage.getItem('pvAnalysisVariants');
+    if (pvVariantsStr && Object.keys(variants).length === 0) {
+      try {
+        const pvVariants = JSON.parse(pvVariantsStr);
+        // Check if this is BESS-only data
+        if (pvVariants.A?.topology === 'bess_only') {
+          console.log('🔋 Loading BESS-only variants from pvAnalysisVariants');
+          variants = pvVariants;
+          currentVariant = 'A';
+        }
+      } catch (e) {
+        console.warn('Failed to parse pvAnalysisVariants:', e);
       }
     }
 
@@ -226,6 +543,7 @@ function parseVariants(scenarios) {
 
   scenarios.forEach(s => {
     const variantKey = s.threshold_key || s.variant || 'A';
+    const savingsBreakdown = resolveSavingsBreakdown(s);
     variants[variantKey] = {
       key: variantKey,
       capacity: s.capacity,
@@ -245,6 +563,10 @@ function parseVariants(scenarios) {
       bess_self_consumed_direct_kwh: s.bess_self_consumed_direct_kwh || 0,
       bess_self_consumed_from_bess_kwh: s.bess_self_consumed_from_bess_kwh || 0,
       bess_grid_import_kwh: s.bess_grid_import_kwh || 0,
+      // Economics metadata passed from backend (SSoT)
+      savings_breakdown: savingsBreakdown,
+      dispatch_metadata: s.dispatch_metadata || null,
+      prices_summary: s.prices_summary || null,
       // Monthly breakdown (NEW in v3.2)
       bess_monthly_data: s.bess_monthly_data || [],
       // SOC histogram (NEW in v3.2)
@@ -268,18 +590,24 @@ function selectVariant(variantKey) {
   }
 
   currentVariant = variantKey;
+  console.log('🔄 Variant selected:', variantKey);
 
   // Update button states
   document.querySelectorAll('.variant-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.variant === variantKey);
   });
 
-  // Notify parent shell
+  // Notify parent shell - use MASTER_VARIANT_SELECTED for shell compatibility
   if (window.parent !== window) {
     window.parent.postMessage({
-      type: 'VARIANT_CHANGED',
-      data: { variant: variantKey, source: 'bess' }
+      type: 'MASTER_VARIANT_SELECTED',
+      data: {
+        variantKey: variantKey,
+        variantData: variants[variantKey],
+        source: 'bess'
+      }
     }, '*');
+    console.log('📤 Sent MASTER_VARIANT_SELECTED to shell:', variantKey);
   }
 
   updateDisplay();
@@ -294,6 +622,9 @@ function updateDisplay() {
 
   // Update variant buttons descriptions
   updateVariantDescriptions();
+
+  // Update shared BESS config display for cross-module navigation
+  updateSharedBessConfigDisplay();
 
   const variant = variants[currentVariant];
 
@@ -342,6 +673,12 @@ function updateDisplay() {
   updateTechnicalParams(variant);
   generateDegradationTable(variant);
   updateDataInfo(variant);
+
+  // NEW v3.3: Try to fetch sizing variants from bess-dispatch service
+  tryFetchSizingVariants(variant);
+
+  // NEW v3.17: Capacity fee overlay (if enabled in settings)
+  runCapacityFeeAnalysisIfEnabled(variant);
 }
 
 function updateVariantDescriptions() {
@@ -710,6 +1047,58 @@ function renderCurtailmentChart(variant) {
 // DELTA ECONOMICS (NEW in v3.2)
 // ============================================
 
+/**
+ * Calculate full energy price including energia czynna from tariff + fixed charges
+ *
+ * Since settings.totalEnergyPrice now contains only fixed charges (bez energii czynnej),
+ * we need to add the average energia czynna from tariffConfig.
+ *
+ * @param {object} settings - System settings
+ * @returns {number} - Full energy price in PLN/MWh
+ */
+function calculateFullEnergyPrice(settings) {
+  // Fixed charges (dystrybucja, jakość, OZE, kog, akcyza, opłata mocowa)
+  const fixedCharges = settings.totalFixedCharges || settings.totalEnergyPrice || 0;
+
+  // Get energia czynna from tariffConfig
+  const tariffConfig = settings.tariffConfig || {};
+  const tariffType = tariffConfig.type || 'flat';
+
+  let averageEnergiaPrice = 0;
+
+  if (tariffType === 'flat') {
+    averageEnergiaPrice = tariffConfig.flatRate || 350;
+  } else if (tariffType === 'two_zone') {
+    // C12a: weighted average (assume 60% day, 40% night for typical load)
+    const dayRate = tariffConfig.twoZone?.dayRate || 450;
+    const nightRate = tariffConfig.twoZone?.nightRate || 280;
+    averageEnergiaPrice = dayRate * 0.6 + nightRate * 0.4;
+  } else if (tariffType === 'three_zone') {
+    // C12b: weighted average (assume 20% peak, 40% partial, 40% off-peak)
+    const peakRate = tariffConfig.threeZone?.peakRate || 550;
+    const partialRate = tariffConfig.threeZone?.partialRate || 400;
+    const offPeakRate = tariffConfig.threeZone?.offPeakRate || 250;
+    averageEnergiaPrice = peakRate * 0.2 + partialRate * 0.4 + offPeakRate * 0.4;
+  }
+
+  // Full price = energia czynna + opłaty stałe
+  const fullPrice = averageEnergiaPrice + fixedCharges;
+
+  console.log('💰 calculateFullEnergyPrice:', {
+    tariffType,
+    averageEnergiaPrice,
+    fixedCharges,
+    fullPrice
+  });
+
+  // Fallback to legacy energyPurchasePrice if no tariffConfig
+  if (!tariffConfig.type && settings.energyPurchasePrice) {
+    return settings.energyPurchasePrice;
+  }
+
+  return fullPrice > 0 ? fullPrice : 800; // Default fallback
+}
+
 function updateDeltaEconomics(variant) {
   const settings = systemSettings || {};
   const powerKw = variant.bess_power_kw || 0;
@@ -724,13 +1113,23 @@ function updateDeltaEconomics(variant) {
   const bessDischargedMWh = (variant.bess_discharged_kwh || 0) / 1000;
   const deltaSelfConsumedMWh = bessDischargedMWh; // This is energy delivered by BESS
 
-  // Energy price (from settings or default) - try multiple field names
-  // Settings module uses: totalEnergyPrice or npvEnergyPrice (in PLN/MWh)
-  const energyPrice = settings.totalEnergyPrice || settings.npvEnergyPrice || settings.energyPrice || settings.purchasePrice || 800; // PLN/MWh
+  // SSoT: Use savings_breakdown.net_savings_pln from backend (same as EKONOMIA module)
+  // This ensures both modules display identical savings values
+  let deltaSavingsAnnual;
+  let savingsSource = 'local';
 
-  // Annual savings from BESS = energy from battery * energy price
-  // This represents money saved by not buying from grid
-  const deltaSavingsAnnual = deltaSelfConsumedMWh * energyPrice; // PLN/year
+  if (variant.savings_breakdown && Number.isFinite(variant.savings_breakdown.net_savings_pln)) {
+    // Use backend SSoT value (includes energy savings, demand charge, capacity fee, etc.)
+    deltaSavingsAnnual = variant.savings_breakdown.net_savings_pln;
+    savingsSource = variant.savings_breakdown.source || 'dispatch';
+    console.log('updateDeltaEconomics: Using SSoT savings_breakdown.net_savings_pln:', deltaSavingsAnnual, variant.savings_breakdown);
+  } else {
+    // Fallback: local calculation (only if SSoT not available)
+    const energyPrice = calculateFullEnergyPrice(settings); // PLN/MWh
+    deltaSavingsAnnual = deltaSelfConsumedMWh * energyPrice; // PLN/year
+    console.log('updateDeltaEconomics: Fallback to local calculation:', deltaSavingsAnnual, 'at', energyPrice, 'PLN/MWh', { savings_breakdown: variant.savings_breakdown });
+  }
+
   const deltaSavingsAnnualK = deltaSavingsAnnual / 1000; // tys. PLN/year
 
   // Simple payback = CAPEX / annual savings
@@ -744,7 +1143,9 @@ function updateDeltaEconomics(variant) {
   document.getElementById('deltaSelfConsumedInfo').textContent = `${formatNumberEU(variant.bess_discharged_kwh || 0, 0)} kWh/rok`;
 
   document.getElementById('deltaSavings').textContent = formatNumberEU(deltaSavingsAnnualK, 1);
-  document.getElementById('deltaSavingsInfo').textContent = `przy ${formatNumberEU(energyPrice, 0)} PLN/MWh`;
+  // Show source of savings (SSoT or local fallback)
+  const sourceLabel = savingsSource === 'local' ? 'lokalnie' : 'SSoT';
+  document.getElementById('deltaSavingsInfo').textContent = `źródło: ${sourceLabel}`;
 
   if (simplePayback === Infinity || simplePayback > 50) {
     document.getElementById('deltaPayback').textContent = '>50';
@@ -968,6 +1369,141 @@ function showBessDisabled() {
   document.getElementById('noDataMessage').style.display = 'none';
 }
 
+/**
+ * Load BESS-only results from KONFIGURACJA module (bess_only topology)
+ * These results are pre-calculated - just display them
+ */
+function loadBessOnlyResults(bessOnlyResults) {
+  console.log('🔋 Loading BESS-only results:', bessOnlyResults);
+
+  // Load settings
+  const storedSettings = localStorage.getItem('systemSettings');
+  if (storedSettings) {
+    systemSettings = JSON.parse(storedSettings);
+    window.systemSettings = systemSettings;
+  }
+
+  // Hide variant selector (not applicable for BESS-only)
+  const variantSelector = document.querySelector('.variant-selector');
+  if (variantSelector) {
+    variantSelector.style.display = 'none';
+  }
+
+  // Hide no-data message and disabled banner
+  document.getElementById('noDataMessage').style.display = 'none';
+  document.getElementById('bessDisabledBanner').style.display = 'none';
+
+  // Show main content
+  document.getElementById('bessContent').style.display = 'grid';
+
+  // Update header info
+  const dataInfo = document.getElementById('dataInfo');
+  if (dataInfo) {
+    const totalMWh = (bessOnlyResults.totalLoadMwh || 0).toFixed(1);
+    dataInfo.textContent = `🔋 BESS-only: ${totalMWh} MWh/rok | ${bessOnlyResults.variants?.length || 0} wariantów`;
+  }
+
+  // Display sizing variants directly
+  const sizingResult = {
+    variants: bessOnlyResults.variants,
+    recommended_variant: bessOnlyResults.recommendedVariant,
+    warnings: bessOnlyResults.warnings
+  };
+
+  displaySizingVariants(sizingResult);
+  updateConfigResultsSummary(sizingResult);
+
+  // Show sizing variants section prominently
+  const sizingSection = document.getElementById('sizingVariantsSection');
+  if (sizingSection) {
+    sizingSection.style.display = 'block';
+    setTimeout(() => {
+      sizingSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 200);
+  }
+
+  // Update status
+  const statusEl = document.getElementById('advancedConfigStatus');
+  if (statusEl) {
+    statusEl.textContent = '✅ Wyniki analizy BESS (bez PV) załadowane z KONFIGURACJI';
+    statusEl.className = 'config-status success';
+  }
+
+  console.log('✅ BESS-only results displayed');
+}
+
+/**
+ * Show LOAD_ONLY mode interface when consumption data is available but no PV variants
+ * This allows BESS sizing analysis without requiring PV configuration
+ */
+function showLoadOnlyMode(consumptionData) {
+  console.log('🔋 Entering LOAD_ONLY mode with consumption data:', consumptionData);
+
+  // Load settings first
+  const storedSettings = localStorage.getItem('systemSettings');
+  if (storedSettings) {
+    systemSettings = JSON.parse(storedSettings);
+    window.systemSettings = systemSettings;
+  }
+
+  // Hide variant selector (not needed for LOAD_ONLY)
+  const variantSelector = document.querySelector('.variant-selector');
+  if (variantSelector) {
+    variantSelector.style.display = 'none';
+  }
+
+  // Hide no-data message
+  document.getElementById('noDataMessage').style.display = 'none';
+  document.getElementById('bessDisabledBanner').style.display = 'none';
+
+  // Show main content
+  document.getElementById('bessContent').style.display = 'grid';
+
+  // Update header info
+  const dataInfo = document.getElementById('dataInfo');
+  if (dataInfo) {
+    const totalMWh = ((consumptionData.totalConsumption || consumptionData.sum || 0) / 1000).toFixed(1);
+    const dataPoints = consumptionData.dataPoints || consumptionData.hourlyData?.values?.length || 0;
+    const interval = dataPoints > 8760 ? '15-min' : '1h';
+    dataInfo.textContent = `LOAD_ONLY: ${totalMWh} MWh/rok (${dataPoints} punktów, ${interval})`;
+  }
+
+  // Set topology to load_only
+  advancedConfig.topology = 'load_only';
+  const loadOnlyRadio = document.querySelector('input[name="topology"][value="load_only"]');
+  if (loadOnlyRadio) {
+    loadOnlyRadio.checked = true;
+  }
+
+  // Store consumption data for later use
+  window.loadOnlyConsumptionData = consumptionData;
+
+  // Show advanced config section prominently
+  const advSection = document.getElementById('advancedConfigSection');
+  if (advSection) {
+    advSection.style.display = 'block';
+    // Scroll to it
+    setTimeout(() => {
+      advSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 200);
+  }
+
+  // Update status
+  const statusEl = document.getElementById('advancedConfigStatus');
+  if (statusEl) {
+    statusEl.textContent = '🔋 Tryb LOAD_ONLY - uruchamiam analizę doboru BESS...';
+    statusEl.className = 'config-status info';
+  }
+
+  console.log('✅ LOAD_ONLY mode UI ready - auto-running sizing analysis');
+
+  // AUTO-RUN: Automatically trigger BESS sizing analysis
+  setTimeout(() => {
+    console.log('🚀 Auto-triggering applyAdvancedConfig for LOAD_ONLY mode');
+    applyAdvancedConfig();
+  }, 500); // Short delay to ensure UI is fully rendered
+}
+
 // ============================================
 // ACTIONS
 // ============================================
@@ -977,6 +1513,26 @@ function refreshData() {
   requestSharedData();
   requestSettingsFromShell();
 }
+
+// DEBUG: Show current variant data
+function debugVariantData() {
+  const variant = variants[currentVariant];
+  console.log('🔍 DEBUG - Current variant:', currentVariant);
+  console.log('🔍 DEBUG - All variants:', Object.keys(variants));
+  console.log('🔍 DEBUG - Variant data:', variant);
+  console.log('🔍 DEBUG - BESS fields:', {
+    bess_power_kw: variant?.bess_power_kw,
+    bess_energy_kwh: variant?.bess_energy_kwh,
+    bess_charged_kwh: variant?.bess_charged_kwh,
+    bess_discharged_kwh: variant?.bess_discharged_kwh,
+    production: variant?.production,
+    consumption: variant?.consumption
+  });
+  console.log('🔍 DEBUG - System settings:', systemSettings);
+
+  alert(`Wariant: ${currentVariant}\nBESS Power: ${variant?.bess_power_kw || 0} kW\nBESS Energy: ${variant?.bess_energy_kwh || 0} kWh\nProduction: ${variant?.production || 0} kWh`);
+}
+window.debugVariantData = debugVariantData;
 
 function exportBessData() {
   const variant = variants[currentVariant];
@@ -1018,9 +1574,2726 @@ function exportBessData() {
   console.log('📥 BESS data exported');
 }
 
+// ============================================
+// EXCEL EXPORT - DETAILED HOURLY ECONOMICS
+// ============================================
+
+/**
+ * Export detailed hourly economics to Excel via backend endpoint.
+ *
+ * Generates Excel with:
+ * - Summary sheet with annual totals
+ * - Hourly breakdown: energia czynna, dystrybucja, jakość, OZE, kog, akcyza, mocowa
+ * - Baseline (PV only) vs Project (PV+BESS) comparison
+ * - Daily and monthly summaries
+ */
+async function exportEconomicsToExcel() {
+  const variant = variants[currentVariant];
+  if (!variant) {
+    alert('Najpierw uruchom analizę BESS (Sizing)');
+    return;
+  }
+
+  const settings = systemSettings || {};
+  const tariffConfig = settings.tariffConfig || {};
+
+  // Use lastSizingResult (stored from displaySizingVariants) or fallback
+  const sizingResult = lastSizingResult || analysisResults?.sizingResult;
+
+  // Check if we have sizing data
+  if (!sizingResult?.variants || sizingResult.variants.length === 0) {
+    alert('Brak danych do eksportu. Uruchom analizę sizing.');
+    return;
+  }
+
+  // Find matching variant with hourly data
+  let sizingVariant = sizingResult.variants.find(v =>
+    v.power_kw === variant.bess_power_kw &&
+    v.energy_kwh === variant.bess_energy_kwh
+  );
+
+  // Fallback: use first variant if no exact match
+  if (!sizingVariant) {
+    sizingVariant = sizingResult.variants[0];
+    console.log('⚠️ Using first sizing variant as fallback');
+  }
+
+  // Check for hourly data - if not available, generate from load profile
+  let projectImport = sizingVariant?.hourly_grid_import_kw;
+  if (!projectImport || projectImport.length === 0) {
+    console.log('⚠️ No hourly_grid_import_kw in sizing result, generating from load profile');
+
+    // Try multiple sources for load profile
+    let loadProfile = variant.hourlyLoad ||
+                      variant.hourly_load_kw ||
+                      variants[currentVariant]?.hourlyLoad ||
+                      variants[currentVariant]?.hourly_load_kw ||
+                      [];
+
+    // Try localStorage consumption data
+    if (loadProfile.length === 0) {
+      const storedConsumption = localStorage.getItem('pv_consumption_data');
+      if (storedConsumption) {
+        try {
+          const consumptionData = JSON.parse(storedConsumption);
+          loadProfile = consumptionData.hourlyData?.values ||
+                       consumptionData.values ||
+                       consumptionData.hourly ||
+                       [];
+          console.log('📊 Loaded consumption from localStorage:', loadProfile.length, 'points');
+        } catch (e) {
+          console.warn('Failed to parse consumption data:', e);
+        }
+      }
+    }
+
+    // Try window.loadOnlyConsumptionData
+    if (loadProfile.length === 0 && window.loadOnlyConsumptionData) {
+      loadProfile = window.loadOnlyConsumptionData.hourlyData?.values ||
+                   window.loadOnlyConsumptionData.values ||
+                   [];
+      console.log('📊 Using loadOnlyConsumptionData:', loadProfile.length, 'points');
+    }
+
+    // Try sizing request load_kw from lastSizingResult
+    if (loadProfile.length === 0 && lastSizingResult?.request_summary?.load_kw) {
+      loadProfile = lastSizingResult.request_summary.load_kw;
+      console.log('📊 Using load_kw from sizing request:', loadProfile.length, 'points');
+    }
+
+    const pvProfile = variant.hourlyPv ||
+                     variant.hourly_pv_kw ||
+                     variants[currentVariant]?.hourlyPv ||
+                     [];
+
+    if (loadProfile.length > 0) {
+      // Estimate: project import = load - pv - bess_discharge_per_hour
+      const avgDischargePerHour = (sizingVariant.bess_discharged_kwh || variant.bess_discharged_kwh || 0) / loadProfile.length;
+      projectImport = loadProfile.map((load, i) => {
+        const pv = pvProfile[i] || 0;
+        return Math.max(0, load - pv - avgDischargePerHour);
+      });
+      console.log('✅ Generated projectImport from load profile:', projectImport.length, 'points');
+    } else {
+      // Last resort: generate synthetic 8760-hour profile from annual totals
+      const annualLoadKwh = variant.consumption ||
+                           sizingVariant.dispatch_summary?.total_load_kwh ||
+                           500000; // Default 500 MWh
+      const avgLoadKw = annualLoadKwh / 8760;
+      loadProfile = Array(8760).fill(avgLoadKw);
+
+      const annualPvKwh = variant.production || 0;
+      const avgPvKw = annualPvKwh / 8760;
+
+      const avgDischargePerHour = (sizingVariant.bess_discharged_kwh || variant.bess_discharged_kwh || 0) / 8760;
+      projectImport = loadProfile.map((load, i) => {
+        // Simple sinusoidal pattern for PV (peak at noon)
+        const hour = i % 24;
+        const pvFactor = hour >= 6 && hour <= 18 ? Math.sin((hour - 6) * Math.PI / 12) : 0;
+        const pv = avgPvKw * 2 * pvFactor;
+        return Math.max(0, load - pv - avgDischargePerHour);
+      });
+      console.log('⚠️ Generated synthetic 8760h profile from annual totals');
+    }
+  }
+
+  // Show loading state
+  const btn = document.getElementById('exportExcelBtn');
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '<span style="font-size: 18px;">⏳</span> Generowanie...';
+  btn.disabled = true;
+
+  try {
+    // projectImport is already set above (either from sizing or generated)
+    // Calculate baseline: load - pv (clipped to 0)
+    const currentData = variants[currentVariant];
+    const pvGeneration = currentData.hourlyPv || [];
+    const loadProfile = currentData.hourlyLoad || [];
+
+    let baselineImport = [];
+    if (pvGeneration.length === projectImport.length && loadProfile.length === projectImport.length) {
+      baselineImport = loadProfile.map((load, i) => Math.max(0, load - pvGeneration[i]));
+    } else {
+      // Fallback: use dispatch summary
+      const baselineGridKwh = sizingVariant.dispatch_summary?.baseline_grid_import_kwh || 0;
+      const projectGridKwh = sizingVariant.dispatch_summary?.total_grid_import_kwh || 0;
+
+      // Estimate baseline from ratio
+      const ratio = baselineGridKwh > 0 ? (baselineGridKwh / projectGridKwh) : 1.2;
+      baselineImport = projectImport.map(v => v * ratio);
+    }
+
+    // Build request payload
+    const payload = {
+      baseline_import_kw: baselineImport,
+      project_import_kw: projectImport,
+      bess_power_kw: variant.bess_power_kw,
+      bess_energy_kwh: variant.bess_energy_kwh,
+      start_date: '2025-01-01',
+      interval_minutes: 60,
+
+      // ToU configuration from settings
+      tariff_type: tariffConfig.type || 'two_zone',
+      flat_rate: tariffConfig.flatRate || 750,
+      day_rate: tariffConfig.twoZone?.dayRate || 850,
+      night_rate: tariffConfig.twoZone?.nightRate || 450,
+      peak_rate: tariffConfig.threeZone?.peakRate || 950,
+      partial_rate: tariffConfig.threeZone?.partialRate || 700,
+      off_peak_rate: tariffConfig.threeZone?.offPeakRate || 400,
+
+      // ToU time windows
+      weekday_day_start: tariffConfig.twoZone?.weekday?.start || 6,
+      weekday_day_end: tariffConfig.twoZone?.weekday?.end || 22,
+      weekend_day_start: tariffConfig.twoZone?.weekend?.start || 6,
+      weekend_day_end: tariffConfig.twoZone?.weekend?.end || 13,
+      peak1_start: tariffConfig.threeZone?.peak1?.start || 7,
+      peak1_end: tariffConfig.threeZone?.peak1?.end || 13,
+      peak2_start: tariffConfig.threeZone?.peak2?.start || 17,
+      peak2_end: tariffConfig.threeZone?.peak2?.end || 21,
+
+      // Fixed charges from settings
+      distribution: settings.distribution || 200,
+      quality_fee: settings.qualityFee || 10,
+      oze_fee: settings.ozeFee || 7,
+      cogeneration_fee: settings.cogenerationFee || 10,
+      excise_tax: settings.exciseTax || 5,
+      capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
+
+      // Report title
+      project_name: `Analiza BESS Wariant ${currentVariant} - ${variant.bess_power_kw} kW / ${variant.bess_energy_kwh} kWh`,
+    };
+
+    console.log('📊 Exporting economics to Excel:', payload);
+
+    // Call backend endpoint
+    const response = await fetch('/api/bess-dispatch/sizing-export-excel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Export failed: ${response.status} - ${errorText}`);
+    }
+
+    // Download the file
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `BESS_Economics_${variant.bess_power_kw}kW_${variant.bess_energy_kwh}kWh.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+
+    console.log('✅ Excel exported successfully');
+
+  } catch (error) {
+    console.error('❌ Excel export error:', error);
+    alert(`Błąd eksportu Excel: ${error.message}`);
+  } finally {
+    // Restore button state
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+  }
+}
+window.exportEconomicsToExcel = exportEconomicsToExcel;
+
+// ============================================
+// BESS CYCLE ANIMATION
+// ============================================
+
+// Animation state
+let bessAnimInterval = null;
+let bessAnimIsPlaying = false;
+let bessAnimCurrentHour = 0;
+let bessAnimSpeed = 500; // ms per hour
+let bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+
+// Simulated hourly data (will be generated from variant data)
+let bessAnimHourlyData = [];
+
+/**
+ * Initialize BESS animation with current variant data
+ */
+function initBessAnimation() {
+  const variant = variants[currentVariant];
+  if (!variant) {
+    console.log('BESS Animation: No variant data');
+    return;
+  }
+
+  // Generate simulated hourly data for 8760 hours
+  bessAnimHourlyData = generateHourlyBessData(variant);
+  bessAnimCurrentHour = 0;
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+
+  // Update initial display
+  updateBessAnimDisplay(0);
+
+  console.log('BESS Animation initialized with', bessAnimHourlyData.length, 'hours of data');
+}
+
+/**
+ * Generate simulated hourly BESS data from variant statistics
+ */
+function generateHourlyBessData(variant) {
+  const hours = 8760;
+  const data = [];
+
+  const totalProduction = variant.production || 0; // kWh/year
+  const totalLoad = variant.consumption || variant.load || totalProduction * 1.5;
+  const bessEnergyKwh = variant.bess_energy_kwh || 100;
+  const bessPowerKw = variant.bess_power_kw || 50;
+  const bessCharged = variant.bess_charged_kwh || 0;
+  const bessDischargedTotal = variant.bess_discharged_kwh || 0;
+  const bessCurtailed = variant.bess_curtailed_kwh || 0;
+
+  // Calculate average hourly values
+  const avgPvPerHour = totalProduction / hours;
+  const avgLoadPerHour = totalLoad / hours;
+
+  // SOC tracking
+  let soc = 20; // Start at 20%
+  const socMin = 10;
+  const socMax = 90;
+
+  for (let h = 0; h < hours; h++) {
+    const hourOfDay = h % 24;
+    const dayOfYear = Math.floor(h / 24);
+    const month = Math.floor(dayOfYear / 30.4);
+
+    // Simulate PV production (peak at noon, seasonal variation)
+    const solarFactor = Math.max(0, Math.sin((hourOfDay - 6) * Math.PI / 12));
+    const seasonFactor = 0.5 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
+    const pvPower = avgPvPerHour * 3 * solarFactor * (0.7 + 0.6 * seasonFactor);
+
+    // Simulate load (higher during day, some variation)
+    const loadFactor = 0.6 + 0.4 * Math.sin((hourOfDay - 14) * Math.PI / 12);
+    const loadPower = avgLoadPerHour * (0.8 + 0.4 * loadFactor);
+
+    // Energy balance
+    const surplus = pvPower - loadPower;
+    let charging = 0;
+    let discharging = 0;
+    let gridImport = 0;
+    let curtailment = 0;
+
+    if (surplus > 0) {
+      // Excess PV - try to charge battery
+      const canCharge = Math.min(surplus, bessPowerKw, (socMax - soc) * bessEnergyKwh / 100);
+      if (canCharge > 0) {
+        charging = canCharge;
+        soc += (charging / bessEnergyKwh) * 100;
+      }
+      // Any remaining surplus is curtailed (0-export mode)
+      curtailment = surplus - charging;
+    } else {
+      // Deficit - try to discharge battery
+      const deficit = -surplus;
+      const canDischarge = Math.min(deficit, bessPowerKw, (soc - socMin) * bessEnergyKwh / 100);
+      if (canDischarge > 0) {
+        discharging = canDischarge;
+        soc -= (discharging / bessEnergyKwh) * 100;
+      }
+      // Remaining deficit from grid
+      gridImport = deficit - discharging;
+    }
+
+    // Clamp SOC
+    soc = Math.max(socMin, Math.min(socMax, soc));
+
+    data.push({
+      hour: h,
+      hourOfDay,
+      dayOfYear,
+      month,
+      pvPower: Math.round(pvPower * 10) / 10,
+      loadPower: Math.round(loadPower * 10) / 10,
+      charging: Math.round(charging * 10) / 10,
+      discharging: Math.round(discharging * 10) / 10,
+      gridImport: Math.round(gridImport * 10) / 10,
+      curtailment: Math.round(curtailment * 10) / 10,
+      soc: Math.round(soc * 10) / 10,
+      batteryKwh: Math.round(soc * bessEnergyKwh / 100)
+    });
+  }
+
+  return data;
+}
+
+/**
+ * Toggle BESS animation play/pause
+ */
+function toggleBessAnimation() {
+  if (bessAnimIsPlaying) {
+    stopBessAnimation();
+  } else {
+    startBessAnimation();
+  }
+}
+
+/**
+ * Start BESS animation
+ */
+function startBessAnimation() {
+  if (bessAnimHourlyData.length === 0) {
+    initBessAnimation();
+  }
+
+  if (bessAnimHourlyData.length === 0) {
+    console.warn('BESS Animation: No data to animate');
+    return;
+  }
+
+  bessAnimIsPlaying = true;
+
+  // Update button state
+  const btn = document.getElementById('bessAnimPlayBtn');
+  const icon = document.getElementById('bessAnimPlayIcon');
+  const text = document.getElementById('bessAnimPlayText');
+  if (btn) btn.classList.add('playing');
+  if (icon) icon.textContent = '⏸️';
+  if (text) text.textContent = 'Pauza';
+
+  // Get speed from selector
+  bessAnimSpeed = parseInt(document.getElementById('bessAnimSpeedSelect')?.value || '500');
+
+  // Start animation loop
+  bessAnimInterval = setInterval(() => {
+    bessAnimCurrentHour++;
+    if (bessAnimCurrentHour >= bessAnimHourlyData.length) {
+      bessAnimCurrentHour = 0;
+      bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+    }
+    updateBessAnimDisplay(bessAnimCurrentHour);
+  }, bessAnimSpeed);
+
+  console.log('BESS Animation started at speed:', bessAnimSpeed, 'ms/hour');
+}
+
+/**
+ * Stop BESS animation
+ */
+function stopBessAnimation() {
+  bessAnimIsPlaying = false;
+
+  if (bessAnimInterval) {
+    clearInterval(bessAnimInterval);
+    bessAnimInterval = null;
+  }
+
+  // Update button state
+  const btn = document.getElementById('bessAnimPlayBtn');
+  const icon = document.getElementById('bessAnimPlayIcon');
+  const text = document.getElementById('bessAnimPlayText');
+  if (btn) btn.classList.remove('playing');
+  if (icon) icon.textContent = '▶️';
+  if (text) text.textContent = 'Start';
+
+  console.log('BESS Animation stopped');
+}
+
+/**
+ * Reset BESS animation
+ */
+function resetBessAnimation() {
+  stopBessAnimation();
+  bessAnimCurrentHour = 0;
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  updateBessAnimDisplay(0);
+  console.log('BESS Animation reset');
+}
+
+/**
+ * Jump to specific position in animation
+ */
+function bessAnimJump(direction) {
+  const wasPlaying = bessAnimIsPlaying;
+  if (wasPlaying) stopBessAnimation();
+
+  switch (direction) {
+    case 'start':
+      bessAnimCurrentHour = 0;
+      bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+      break;
+    case 'end':
+      bessAnimCurrentHour = Math.max(0, bessAnimHourlyData.length - 1);
+      break;
+    case 'prev-day':
+      bessAnimCurrentHour = Math.max(0, bessAnimCurrentHour - 24);
+      recalculateDailyStats();
+      break;
+    case 'next-day':
+      bessAnimCurrentHour = Math.min(bessAnimHourlyData.length - 1, bessAnimCurrentHour + 24);
+      recalculateDailyStats();
+      break;
+  }
+
+  updateBessAnimDisplay(bessAnimCurrentHour);
+  if (wasPlaying) startBessAnimation();
+}
+
+/**
+ * Update animation speed
+ */
+function updateBessAnimSpeed() {
+  if (bessAnimIsPlaying) {
+    stopBessAnimation();
+    startBessAnimation();
+  }
+}
+
+/**
+ * Recalculate daily stats when jumping
+ */
+function recalculateDailyStats() {
+  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  const dayStart = Math.floor(bessAnimCurrentHour / 24) * 24;
+  const dayEnd = Math.min(dayStart + 24, bessAnimCurrentHour + 1);
+
+  for (let h = dayStart; h < dayEnd; h++) {
+    const hourData = bessAnimHourlyData[h];
+    if (hourData) {
+      bessAnimDailyStats.pv += hourData.pvPower;
+      bessAnimDailyStats.load += hourData.loadPower;
+      bessAnimDailyStats.fromBess += hourData.discharging;
+    }
+  }
+
+  // Calculate equivalent cycles
+  const variant = variants[currentVariant];
+  const bessEnergyKwh = variant?.bess_energy_kwh || 100;
+  bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
+}
+
+/**
+ * Update BESS animation display
+ */
+function updateBessAnimDisplay(hourIndex) {
+  if (hourIndex < 0 || hourIndex >= bessAnimHourlyData.length) return;
+
+  const hourData = bessAnimHourlyData[hourIndex];
+  const variant = variants[currentVariant];
+
+  // Update time display
+  const hourOfDay = hourData.hourOfDay;
+  const dayOfYear = hourData.dayOfYear + 1;
+  const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                      'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+  const dayInMonth = (dayOfYear - 1) % 30 + 1;
+  const monthIndex = Math.min(11, Math.floor((dayOfYear - 1) / 30.4));
+
+  document.getElementById('animDate').textContent = `${dayInMonth} ${monthNames[monthIndex]}`;
+  document.getElementById('animTime').textContent =
+    `${hourOfDay.toString().padStart(2, '0')}:00`;
+
+  // Day/night indicator
+  const dayNightEl = document.getElementById('animDayNight');
+  if (hourOfDay >= 6 && hourOfDay < 20) {
+    dayNightEl.textContent = '☀️';
+    dayNightEl.className = 'anim-daynight day';
+  } else {
+    dayNightEl.textContent = '🌙';
+    dayNightEl.className = 'anim-daynight night';
+  }
+
+  // Update node values
+  document.getElementById('animPvPower').textContent = `${formatNumberEU(hourData.pvPower, 1)} kW`;
+  document.getElementById('animLoadPower').textContent = `${formatNumberEU(hourData.loadPower, 1)} kW`;
+  document.getElementById('animBatteryKwh').textContent = `${formatNumberEU(hourData.batteryKwh, 0)} kWh`;
+  document.getElementById('animGridPower').textContent = `${formatNumberEU(hourData.gridImport, 1)} kW`;
+  document.getElementById('animCurtailment').textContent = `${formatNumberEU(hourData.curtailment, 1)} kW`;
+
+  // Update battery fill level
+  const batteryFill = document.getElementById('batteryFill');
+  const batteryLevel = document.getElementById('batteryLevel');
+  if (batteryFill) {
+    batteryFill.style.height = `${hourData.soc}%`;
+    // Add charging/discharging animation class
+    batteryFill.classList.remove('charging', 'discharging');
+    if (hourData.charging > 0) batteryFill.classList.add('charging');
+    else if (hourData.discharging > 0) batteryFill.classList.add('discharging');
+  }
+  if (batteryLevel) {
+    batteryLevel.textContent = `${Math.round(hourData.soc)}%`;
+  }
+
+  // Update flow arrows
+  updateFlowArrow('arrowPvBattery', hourData.charging > 0);
+  updateFlowArrow('arrowPvLoad', hourData.pvPower > 0 && hourData.loadPower > 0);
+  updateFlowArrow('arrowBatteryLoad', hourData.discharging > 0);
+  updateFlowArrow('arrowGridLoad', hourData.gridImport > 0);
+  updateFlowArrow('arrowCurtailment', hourData.curtailment > 0);
+
+  // Update flow values
+  document.getElementById('flowPvBattery').textContent = hourData.charging > 0 ? `${formatNumberEU(hourData.charging, 0)} kW` : '';
+  document.getElementById('flowPvLoad').textContent = hourData.pvPower > 0 ? `${formatNumberEU(Math.min(hourData.pvPower, hourData.loadPower), 0)} kW` : '';
+  document.getElementById('flowBatteryLoad').textContent = hourData.discharging > 0 ? `${formatNumberEU(hourData.discharging, 0)} kW` : '';
+  document.getElementById('flowGridLoad').textContent = hourData.gridImport > 0 ? `${formatNumberEU(hourData.gridImport, 0)} kW` : '';
+  document.getElementById('flowCurtailment').textContent = hourData.curtailment > 0 ? `${formatNumberEU(hourData.curtailment, 0)} kW` : '';
+
+  // Show/hide curtailment node
+  const curtailmentNode = document.getElementById('curtailmentNode');
+  if (curtailmentNode) {
+    curtailmentNode.style.display = hourData.curtailment > 0 ? 'flex' : 'none';
+  }
+
+  // Update daily stats
+  if (hourOfDay === 0) {
+    bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  }
+  bessAnimDailyStats.pv += hourData.pvPower;
+  bessAnimDailyStats.load += hourData.loadPower;
+  bessAnimDailyStats.fromBess += hourData.discharging;
+
+  const bessEnergyKwh = variant?.bess_energy_kwh || 100;
+  bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
+
+  document.getElementById('animDailyPv').textContent = `${formatNumberEU(bessAnimDailyStats.pv, 0)} kWh`;
+  document.getElementById('animDailyLoad').textContent = `${formatNumberEU(bessAnimDailyStats.load, 0)} kWh`;
+  document.getElementById('animDailyFromBess').textContent = `${formatNumberEU(bessAnimDailyStats.fromBess, 0)} kWh`;
+  document.getElementById('animDailyCycles').textContent = formatNumberEU(bessAnimDailyStats.cycles, 2);
+
+  // Update year progress
+  document.getElementById('animDayOfYear').textContent = `${dayOfYear} / 365`;
+  const yearProgressEl = document.getElementById('animYearProgress');
+  if (yearProgressEl) {
+    yearProgressEl.style.width = `${(dayOfYear / 365) * 100}%`;
+  }
+}
+
+/**
+ * Show/hide flow arrow with animation
+ */
+function updateFlowArrow(arrowId, active) {
+  const arrow = document.getElementById(arrowId);
+  if (arrow) {
+    if (active) {
+      arrow.classList.add('active');
+    } else {
+      arrow.classList.remove('active');
+    }
+  }
+}
+
 // Expose functions globally
 window.selectVariant = selectVariant;
 window.refreshData = refreshData;
 window.exportBessData = exportBessData;
+window.toggleBessAnimation = toggleBessAnimation;
+window.bessAnimJump = bessAnimJump;
+window.resetBessAnimation = resetBessAnimation;
+window.updateBessAnimSpeed = updateBessAnimSpeed;
 
-console.log('📦 bess.js fully loaded');
+// Initialize animation when variant changes
+const originalSelectVariant = selectVariant;
+window.selectVariant = function(v) {
+  originalSelectVariant(v);
+  setTimeout(initBessAnimation, 500);
+};
+
+console.log('📦 bess.js fully loaded with animation support');
+
+// ============================================
+// NEW v3.3: SIZING VARIANTS (S/M/L) DISPLAY
+// ============================================
+
+/**
+ * Display sizing variants (S/M/L) from bess-dispatch service
+ * @param {Object} sizingResult - Result from /sizing endpoint
+ */
+function displaySizingVariants(sizingResult) {
+  const section = document.getElementById('sizingVariantsSection');
+  const grid = document.getElementById('sizingVariantsGrid');
+
+  if (!section || !grid) {
+    console.log('⚠️ Sizing variants section not found in DOM');
+    return;
+  }
+
+  if (!sizingResult || !sizingResult.variants || sizingResult.variants.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Store sizing result for Excel export
+  lastSizingResult = sizingResult;
+  console.log('📊 Stored sizing result for export:', sizingResult.variants?.length, 'variants');
+
+  // Send v2 payload to Shell/Economics for savings breakdown display
+  sendBessResultToShell(sizingResult);
+
+  // Show section
+  section.style.display = 'block';
+
+  // Build HTML for variants
+  let html = '';
+
+  for (const v of sizingResult.variants) {
+    const isRecommended = v.is_recommended;
+    const statusClass = getStatusClass(v.degradation_status);
+    const statusIcon = getStatusIcon(v.degradation_status);
+    const statusLabel = getStatusLabel(v.degradation_status);
+
+    html += `
+      <div class="sizing-variant-card ${isRecommended ? 'recommended' : ''}">
+        <div class="variant-header">
+          <span class="variant-name">${v.variant_label}</span>
+          <span class="variant-duration">${v.duration_h}h</span>
+        </div>
+
+        <div class="variant-specs">
+          <div class="variant-spec">
+            <div class="variant-spec-value">${formatNumberEU(v.power_kw, 0)}</div>
+            <div class="variant-spec-label">kW</div>
+          </div>
+          <div class="variant-spec">
+            <div class="variant-spec-value">${formatNumberEU(v.energy_kwh, 0)}</div>
+            <div class="variant-spec-label">kWh</div>
+          </div>
+        </div>
+
+        <div class="variant-economics">
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">CAPEX:</span>
+            <span class="variant-econ-value">${formatNumberEU(v.capex_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">Oszczędności/rok:</span>
+            <span class="variant-econ-value">${formatNumberEU(v.annual_savings_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          ${v.savings_breakdown ? `
+          <div class="savings-breakdown-section">
+            <div class="breakdown-row">
+              <span class="breakdown-label">⚡ Autokonsumpcja / redukcja importu</span>
+              <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.energy_savings_pln, 0)} PLN</span>
+            </div>
+            ${v.savings_breakdown.demand_charge_savings_pln > 0 ? `
+            <div class="breakdown-row">
+              <span class="breakdown-label">📉 Peak shaving (opłata za moc)</span>
+              <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.demand_charge_savings_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
+            ${v.savings_breakdown.capacity_fee_savings_pln > 0 ? `
+            <div class="breakdown-row">
+              <span class="breakdown-label">🧾 Opłata mocowa PL</span>
+              <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.capacity_fee_savings_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
+            ${v.savings_breakdown.arbitrage_savings_pln > 0 ? `
+            <div class="breakdown-row">
+              <span class="breakdown-label">🕐 Arbitraż ToU</span>
+              <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.arbitrage_savings_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
+            ${v.savings_breakdown.degradation_cost_pln > 0 ? `
+            <div class="breakdown-row degradation">
+              <span class="breakdown-label">🔋 Koszt degradacji</span>
+              <span class="breakdown-value negative">-${formatNumberEU(v.savings_breakdown.degradation_cost_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
+          </div>
+          ` : ''}
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">NPV:</span>
+            <span class="variant-econ-value ${v.npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(v.npv_pln / 1000, 0)} tys. PLN</span>
+          </div>
+          <div class="variant-econ-row">
+            <span class="variant-econ-label">Payback:</span>
+            <span class="variant-econ-value">${v.simple_payback_years < 100 ? formatNumberEU(v.simple_payback_years, 1) + ' lat' : '> 25 lat'}</span>
+          </div>
+          ${v.prices_summary ? `
+          <div class="prices-info-section">
+            ${v.prices_summary.baseline ? `
+            <!-- ToU pricing breakdown -->
+            <div class="tou-breakdown">
+              <div class="tou-row baseline">
+                <span class="tou-label">Baseline (PV-only):</span>
+                <span class="tou-value">${formatNumberEU(v.prices_summary.baseline.total_cost_pln / 1000, 1)} tys. PLN/rok</span>
+              </div>
+              <div class="tou-row project">
+                <span class="tou-label">Projekt (PV+BESS):</span>
+                <span class="tou-value">${formatNumberEU(v.prices_summary.project.total_cost_pln / 1000, 1)} tys. PLN/rok</span>
+              </div>
+              <div class="tou-row savings">
+                <span class="tou-label">Oszczędność całkowita:</span>
+                <span class="tou-value positive">${formatNumberEU(v.prices_summary.savings.total_savings_pln / 1000, 1)} tys. PLN/rok</span>
+              </div>
+              ${v.prices_summary.config?.tariff_id ? `
+              <div class="tou-row config">
+                <span class="tou-label">Taryfa:</span>
+                <span class="tou-value">${v.prices_summary.config.tariff_id}</span>
+              </div>
+              ` : ''}
+            </div>
+            ` : `
+            <!-- Legacy flat pricing display -->
+            <span class="prices-label">💰 Ceny:</span>
+            <span class="prices-value">${formatNumberEU(v.prices_summary.import_price_pln_mwh, 0)} PLN/MWh</span>
+            ${v.prices_summary.demand_charge_pln_kw_month > 0 ? `
+            <span class="prices-value">${formatNumberEU(v.prices_summary.demand_charge_pln_kw_month, 0)} PLN/kW/mies.</span>
+            ` : ''}
+            `}
+          </div>
+          ` : ''}
+        </div>
+
+        <div class="variant-degradation">
+          <div class="variant-degradation-title">Metryki degradacji</div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">Throughput:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.throughput_total_mwh || 0, 1)} MWh/rok</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">EFC łącznie:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_total || 0, 0)} cykli/rok</span>
+          </div>
+          ${v.degradation?.efc_pv > 0 || v.degradation?.efc_peak > 0 ? `
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ EFC PV surplus:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_pv || 0, 0)} cykli</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ EFC Peak Shaving:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_peak || 0, 0)} cykli</span>
+          </div>
+          ` : ''}
+          ${v.degradation?.peak_events_count > 0 ? `
+          <div class="variant-deg-row peak-shaving-info">
+            <span class="variant-deg-label">Peak Shaving zdarzenia:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.peak_events_count || 0, 0)} h/rok</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ Energia Peak:</span>
+            <span class="variant-deg-value">${formatNumberEU((v.degradation?.peak_events_energy_kwh || 0) / 1000, 1)} MWh</span>
+          </div>
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ Max moc Peak:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.peak_max_discharge_kw || 0, 0)} kW</span>
+          </div>
+          ` : ''}
+          ${v.degradation?.charge_from_pv_kwh > 0 || v.degradation?.charge_from_grid_kwh > 0 ? `
+          <div class="variant-deg-row charge-source-info">
+            <span class="variant-deg-label">Ładowanie z PV:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.charge_pv_pct || 0, 0)}% (${formatNumberEU((v.degradation?.charge_from_pv_kwh || 0) / 1000, 1)} MWh)</span>
+          </div>
+          ${v.degradation?.charge_from_grid_kwh > 0 ? `
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">Ładowanie z sieci:</span>
+            <span class="variant-deg-value">${formatNumberEU((v.degradation?.charge_from_grid_kwh || 0) / 1000, 1)} MWh</span>
+          </div>
+          ` : ''}
+          ` : ''}
+        </div>
+
+        <div class="variant-status ${statusClass}">
+          ${statusIcon} ${statusLabel}
+        </div>
+      </div>
+    `;
+  }
+
+  grid.innerHTML = html;
+  console.log('✅ Sizing variants displayed:', sizingResult.variants.length);
+}
+
+/**
+ * Display degradation budget status
+ * @param {Object} degradation - Degradation metrics from dispatch result
+ * @param {Object} budget - Budget limits (optional)
+ */
+function displayDegradationBudget(degradation, budget) {
+  const section = document.getElementById('degradationBudgetSection');
+
+  if (!section) {
+    console.log('⚠️ Degradation budget section not found');
+    return;
+  }
+
+  if (!degradation) {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Show section
+  section.style.display = 'block';
+
+  // Update values
+  setElementText('budgetThroughput', formatNumberEU(degradation.throughput_total_mwh || 0, 1));
+  setElementText('budgetEFC', formatNumberEU(degradation.efc_total || 0, 0));
+
+  // Budget limits
+  if (budget) {
+    setElementText('budgetThroughputLimit', budget.max_throughput_mwh_per_year
+      ? `Limit: ${formatNumberEU(budget.max_throughput_mwh_per_year, 0)} MWh`
+      : 'Limit: brak');
+    setElementText('budgetEFCLimit', budget.max_efc_per_year
+      ? `Limit: ${formatNumberEU(budget.max_efc_per_year, 0)} cykli`
+      : 'Limit: brak');
+  }
+
+  // Status
+  const status = degradation.budget_status || 'ok';
+  const statusCard = document.getElementById('budgetStatusCard');
+
+  setElementText('budgetStatusIcon', getStatusIcon(status));
+  setElementText('budgetStatus', getStatusLabel(status));
+  setElementText('budgetUtilization', `Wykorzystanie: ${formatNumberEU(degradation.budget_utilization_pct || 0, 0)}%`);
+
+  // Update card class
+  if (statusCard) {
+    statusCard.className = 'stat-card bess-budget-' + status;
+  }
+
+  // Breakdown (for STACKED mode)
+  if (degradation.throughput_pv_mwh > 0 || degradation.throughput_peak_mwh > 0) {
+    setElementText('budgetBreakdown', 'STACKED');
+    setElementText('budgetBreakdownDetail',
+      `PV: ${formatNumberEU(degradation.throughput_pv_mwh, 1)} MWh | Peak: ${formatNumberEU(degradation.throughput_peak_mwh, 1)} MWh`);
+  } else {
+    setElementText('budgetBreakdown', 'PV Surplus');
+    setElementText('budgetBreakdownDetail', `Total: ${formatNumberEU(degradation.throughput_total_mwh, 1)} MWh`);
+  }
+}
+
+/**
+ * Display STACKED mode info banner
+ * @param {Object} stackedInfo - Stacked mode parameters
+ * @param {Object} arbitrageInfo - Optional arbitrage info from dispatch result
+ */
+function displayStackedModeInfo(stackedInfo, arbitrageInfo = null) {
+  const banner = document.getElementById('stackedModeInfo');
+
+  if (!banner) return;
+
+  if (!stackedInfo || !stackedInfo.peak_limit_kw) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  banner.style.display = 'block';
+
+  // Check if arbitrage is enabled
+  const arbitrageConfig = collectArbitrageConfig();
+  const hasArbitrage = arbitrageConfig !== null || (arbitrageInfo && arbitrageInfo.enabled);
+
+  if (hasArbitrage) {
+    banner.classList.add('with-arbitrage');
+    // Update banner text to include arbitrage
+    const bannerText = banner.querySelector('.banner-text');
+    if (bannerText) {
+      // Determine arbitrage type and display name
+      const isOsdArbitrage = arbitrageConfig?.type === 'osd_tariff';
+      const isRdnArbitrage = arbitrageConfig?.type === 'rdn_spot';
+
+      let arbitrageLabel = 'ToU';
+      if (isOsdArbitrage) {
+        const settings = window.systemSettings || systemSettings || {};
+        const operator = (settings.bessOsdOperator || 'pge').toUpperCase();
+        const group = settings.bessOsdTariffGroup || 'C12a';
+        arbitrageLabel = `OSD ${operator} ${group}`;
+      } else if (isRdnArbitrage) {
+        arbitrageLabel = 'RDN Spot';
+      }
+
+      bannerText.innerHTML = `
+        <strong>Tryb STACKED + Arbitraż:</strong> Bateria świadczy trzy usługi - Peak Shaving (priorytet 1), PV Shifting (priorytet 2) i Arbitraż ${isOsdArbitrage ? 'Taryfowy' : 'Cenowy'} (priorytet 3).
+        <span id="stackedReserveInfo">Rezerwa SOC: ${(stackedInfo.reserve_fraction * 100).toFixed(0)}% dla peak shaving.</span>
+        <span id="stackedPeakLimit">Limit importu: ${formatNumberEU(stackedInfo.peak_limit_kw, 0)} kW.</span>
+        <span class="arbitrage-savings-highlight">⚡ Arbitraż aktywny (${arbitrageLabel})</span>
+      `;
+    }
+  } else {
+    banner.classList.remove('with-arbitrage');
+    setElementText('stackedReserveInfo', `Rezerwa SOC: ${(stackedInfo.reserve_fraction * 100).toFixed(0)}% dla peak shaving.`);
+    setElementText('stackedPeakLimit', `Limit importu: ${formatNumberEU(stackedInfo.peak_limit_kw, 0)} kW.`);
+  }
+}
+
+// Helper functions
+function getStatusClass(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return 'ok';
+    case 'warning': return 'warning';
+    case 'exceeded': return 'exceeded';
+    default: return 'ok';
+  }
+}
+
+function getStatusIcon(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return '✅';
+    case 'warning': return '⚠️';
+    case 'exceeded': return '🚫';
+    default: return '✅';
+  }
+}
+
+function getStatusLabel(status) {
+  switch (status?.toLowerCase()) {
+    case 'ok': return 'OK - w budżecie';
+    case 'warning': return 'Uwaga - zbliża się do limitu';
+    case 'exceeded': return 'Przekroczono budżet!';
+    default: return 'OK';
+  }
+}
+
+function setElementText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/**
+ * Fetch sizing variants from bess-dispatch service
+ * Uses unified BESS Request Builder for consistent parameters
+ * This is now a WHAT-IF function - main sizing comes from pv-calculation/config
+ */
+async function fetchSizingVariants(pvData, loadData, bessConfig) {
+  // Skip if no data or BESS disabled
+  if (!pvData || !loadData || !bessConfig || !bessConfig.enabled) {
+    console.log('⚠️ Cannot fetch sizing variants - missing data or BESS disabled');
+    return;
+  }
+
+  // Use relative URL to go through nginx proxy
+  const bessDispatchUrl = '/api/bess-dispatch';
+
+  try {
+    console.log('🔬 Fetching sizing variants (what-if mode)...');
+
+    // =========================================================================
+    // Use unified BESS Request Builder (Single Source of Truth)
+    // =========================================================================
+    let requestBody;
+    const parentWindow = window.parent !== window ? window.parent : window;
+
+    // Collect arbitrage configuration from UI
+    const arbitrageConfig = collectArbitrageConfig();
+
+    if (parentWindow.buildBessRequest) {
+      // Use unified builder with what-if overrides from bessConfig
+      const overrides = {
+        mode: bessConfig.stacked_mode ? 'stacked' : 'pv_surplus',
+        peak_limit_kw: bessConfig.peak_limit_kw || null,
+        reserve_fraction: bessConfig.reserve_fraction || 0.3,
+        roundtrip_efficiency: bessConfig.roundtrip_efficiency || 0.90,
+        soc_min: bessConfig.soc_min || 0.10,
+        soc_max: bessConfig.soc_max || 0.90,
+        max_efc_per_year: bessConfig.max_efc_per_year || null,
+        max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
+      };
+
+      // Add arbitrage if enabled
+      if (arbitrageConfig && bessConfig.stacked_mode) {
+        overrides.arbitrage_config = {
+          enabled: true,
+          tariff_id: arbitrageConfig.tariff_id,
+          strategy: arbitrageConfig.strategy,
+          charge_below_percentile: arbitrageConfig.charge_below_percentile,
+          discharge_above_percentile: arbitrageConfig.discharge_above_percentile,
+          arbitrage_soc_min: arbitrageConfig.arbitrage_soc_min,
+        };
+        console.log('⚡ Arbitrage enabled for sizing:', arbitrageConfig);
+      }
+
+      requestBody = parentWindow.buildBessRequest({
+        load_kw: loadData,
+        pv_generation_kw: pvData,
+        overrides: overrides
+      });
+
+      // Validate
+      const validation = parentWindow.validateBessRequest(requestBody);
+      if (!validation.valid) {
+        console.error('❌ Invalid BESS request:', validation.errors);
+        throw new Error('Cannot build valid BESS request: ' + validation.errors.join(', '));
+      }
+      if (validation.warnings.length > 0) {
+        console.warn('⚠️ BESS request warnings:', validation.warnings);
+      }
+
+      // Mark as what-if
+      requestBody._isWhatIf = true;
+
+    } else {
+      // Fallback: legacy inline request
+      console.warn('⚠️ BESS Request Builder not available - using legacy inline request');
+      requestBody = {
+        pv_generation_kw: pvData,
+        load_kw: loadData,
+        interval_minutes: 60,
+        mode: bessConfig.stacked_mode ? 'stacked' : 'pv_surplus',
+        peak_limit_kw: bessConfig.peak_limit_kw || null,
+        reserve_fraction: bessConfig.reserve_fraction || 0.3,
+        durations_h: [1.0, 2.0, 4.0],
+        roundtrip_efficiency: bessConfig.roundtrip_efficiency || 0.90,
+        soc_min: bessConfig.soc_min || 0.10,
+        soc_max: bessConfig.soc_max || 0.90,
+        capex_per_kwh: bessConfig.capex_per_kwh || 1500,
+        capex_per_kw: bessConfig.capex_per_kw || 300,
+        import_price_pln_mwh: 800,
+        max_efc_per_year: bessConfig.max_efc_per_year || null,
+        max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
+      };
+
+      // Add arbitrage config if enabled
+      if (arbitrageConfig && bessConfig.stacked_mode) {
+        requestBody.arbitrage_config = {
+          enabled: true,
+          tariff_id: arbitrageConfig.tariff_id,
+          strategy: arbitrageConfig.strategy,
+          charge_below_percentile: arbitrageConfig.charge_below_percentile,
+          discharge_above_percentile: arbitrageConfig.discharge_above_percentile,
+          arbitrage_soc_min: arbitrageConfig.arbitrage_soc_min,
+        };
+        requestBody.start_date = arbitrageConfig.start_date;
+        console.log('⚡ Arbitrage enabled for sizing:', arbitrageConfig);
+      }
+    }
+
+    const response = await fetch(`${bessDispatchUrl}/sizing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    result._isWhatIf = true;  // Mark result as what-if
+    console.log('✅ Sizing variants received (what-if):', result);
+
+    // Display results
+    displaySizingVariants(result);
+
+    // Display degradation for recommended variant
+    if (result.variants && result.variants.length > 0) {
+      const recommended = result.variants.find(v => v.is_recommended) || result.variants[0];
+      if (recommended.degradation) {
+        displayDegradationBudget(recommended.degradation, {
+          max_efc_per_year: bessConfig.max_efc_per_year,
+          max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year,
+        });
+      }
+    }
+
+    // Display STACKED mode info if active
+    if (bessConfig.stacked_mode && bessConfig.peak_limit_kw) {
+      displayStackedModeInfo({
+        peak_limit_kw: bessConfig.peak_limit_kw,
+        reserve_fraction: bessConfig.reserve_fraction || 0.3,
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error fetching sizing variants:', error);
+    // Hide sections on error
+    const section = document.getElementById('sizingVariantsSection');
+    if (section) section.style.display = 'none';
+  }
+}
+
+/**
+ * Try to fetch sizing variants using existing variant data
+ * Generates simulated hourly profile from variant statistics
+ */
+async function tryFetchSizingVariants(variant) {
+  // Re-enabled for S/M/L grid display (what-if analysis, does not override SSoT)
+  console.log('🔋 tryFetchSizingVariants: checking if we can show S/M/L grid...');
+
+  if (!variant || variant.bess_power_kw <= 0) {
+    console.log('⚠️ No BESS data in variant, skipping S/M/L grid');
+    return;
+  }
+
+  // Check if we already have bessResult with variants from shell
+  if (window.bessResult?.variants?.length > 0) {
+    console.log('✅ Using existing bessResult variants from shell');
+    displaySizingVariants({ variants: window.bessResult.variants });
+    return;
+  }
+
+  // Try to get hourly data from shell
+  const hourlyData = window.sharedData?.hourlyData || window.hourlyData;
+  const consumptionValues = hourlyData?.values || hourlyData;
+  const pvData = window.sharedData?.pvData;
+
+  if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
+    console.log('⚠️ No hourly data available for S/M/L sizing. Use "Zastosuj konfigurację" button to run sizing manually.');
+    // Show the advanced config section so user can trigger sizing manually
+    const advSection = document.getElementById('advancedConfigSection');
+    if (advSection) {
+      advSection.style.display = 'block';
+    }
+    return;
+  }
+
+  // Build BESS config from current variant and settings
+  const settings = systemSettings || {};
+  const bessConfig = {
+    enabled: true,
+    power_kw: variant.bess_power_kw,
+    energy_kwh: variant.bess_energy_kwh,
+    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.90,
+    soc_min: settings.bessSocMin || 0.10,
+    soc_max: settings.bessSocMax || 0.90,
+    durations_h: [1, 2, 4],  // S/M/L grid
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    discount_rate: (settings.discountRate || 7) / 100,
+    analysis_years: settings.analysisYears || 15,
+    stacked_mode: settings.bessPeakShavingEnabled || false,
+    peak_limit_kw: settings.bessPeakShavingTargetKw || null,
+    reserve_fraction: settings.bessReserveFraction || 0.30,
+    max_efc_per_year: settings.bessMaxEfcPerYear || null,
+  };
+
+  console.log('🔋 Calling fetchSizingVariants for S/M/L grid...');
+  try {
+    await fetchSizingVariants(pvData || [], consumptionValues, bessConfig);
+  } catch (error) {
+    console.error('❌ tryFetchSizingVariants error:', error);
+  }
+}
+
+// Export new functions
+window.displaySizingVariants = displaySizingVariants;
+window.displayDegradationBudget = displayDegradationBudget;
+window.displayStackedModeInfo = displayStackedModeInfo;
+window.fetchSizingVariants = fetchSizingVariants;
+window.tryFetchSizingVariants = tryFetchSizingVariants;
+
+// ============================================
+// SENSITIVITY ANALYSIS (TORNADO CHART)
+// ============================================
+
+let tornadoChart = null;
+let sensitivityData = null;
+
+/**
+ * Run sensitivity analysis for current BESS configuration
+ */
+async function runSensitivityAnalysis() {
+  console.log('📊 Running sensitivity analysis...');
+
+  const statusEl = document.getElementById('sensitivityStatus');
+  const btnEl = document.getElementById('runSensitivityBtn');
+
+  if (statusEl) statusEl.textContent = 'Obliczanie...';
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    // Get current variant data
+    const variantData = variants[currentVariant];
+    if (!variantData) {
+      throw new Error('Brak danych dla bieżącego wariantu');
+    }
+
+    // Check for BESS data (flat properties, not nested object)
+    const bessPowerKw = variantData.bess_power_kw || 0;
+    const bessEnergyKwh = variantData.bess_energy_kwh || 0;
+
+    if (bessPowerKw <= 0 || bessEnergyKwh <= 0) {
+      throw new Error('Brak konfiguracji BESS - najpierw wybierz wariant z BESS');
+    }
+
+    const settings = systemSettings || {};
+
+    // Generate 8760 hourly profiles from variant statistics (same as buildSizingRequest)
+    const hours = 8760;
+    const pvData = [];
+    const loadData = [];
+
+    const totalProduction = variantData.production || 500000; // kWh/year
+    const totalLoad = variantData.consumption || variantData.load || totalProduction * 1.2;
+
+    // Scale factors to match annual totals
+    const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+    const loadScaleFactor = totalLoad / 8760 / 50; // Base load ~50 kW avg
+
+    for (let h = 0; h < hours; h++) {
+      const dayOfYear = Math.floor(h / 24);
+      const hourOfDay = h % 24;
+
+      // PV profile: bell curve during daylight, seasonal variation
+      const seasonFactor = 1 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
+      let pvHour = 0;
+      if (hourOfDay >= 6 && hourOfDay <= 20) {
+        const solarAngle = (hourOfDay - 6) / 14 * Math.PI;
+        pvHour = Math.sin(solarAngle) * seasonFactor * 1000 * pvScaleFactor;
+      }
+      pvData.push(Math.max(0, pvHour));
+
+      // Load profile: base load + daily pattern + some randomness
+      const workdayFactor = (dayOfYear % 7 < 5) ? 1.2 : 0.6;
+      let loadHour = 30 * loadScaleFactor; // base load
+      if (hourOfDay >= 8 && hourOfDay <= 18) {
+        loadHour += 40 * loadScaleFactor * workdayFactor;
+      } else if (hourOfDay >= 6 && hourOfDay <= 22) {
+        loadHour += 15 * loadScaleFactor;
+      }
+      loadData.push(Math.max(10, loadHour));
+    }
+
+    console.log('📊 Sensitivity: Generated profiles - PV sum:', pvData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh, Load sum:', loadData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh');
+
+    // Build request
+    const request = {
+      pv_generation_kw: pvData,
+      load_kw: loadData,
+      interval_minutes: 60,
+      battery_power_kw: bessPowerKw,
+      battery_energy_kwh: bessEnergyKwh,
+      roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
+      soc_min: settings.bessSocMin || 0.1,
+      soc_max: settings.bessSocMax || 0.9,
+      mode: settings.bessPeakShavingEnabled ? 'stacked' : 'pv_surplus',
+      capex_per_kwh: settings.bessCapexPerKwh || 1500,
+      capex_per_kw: settings.bessCapexPerKw || 300,
+      opex_pct_per_year: 0.015,
+      discount_rate: 0.07,
+      analysis_years: settings.bessLifetimeYears || 15,
+      import_price_pln_mwh: settings.energyPurchasePrice || 800,
+    };
+
+    // Call API via nginx proxy
+    const response = await fetch('/api/bess-dispatch/sensitivity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API error: ${response.status} - ${err}`);
+    }
+
+    sensitivityData = await response.json();
+    console.log('📊 Sensitivity result:', sensitivityData);
+
+    // Display results
+    displaySensitivityResults(sensitivityData);
+
+    if (statusEl) statusEl.textContent = '✅ Gotowe';
+
+  } catch (error) {
+    console.error('❌ Sensitivity analysis error:', error);
+    if (statusEl) statusEl.textContent = '❌ Błąd: ' + error.message;
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+/**
+ * Display sensitivity analysis results
+ */
+function displaySensitivityResults(data) {
+  const section = document.getElementById('sensitivitySection');
+  if (section) section.style.display = 'block';
+
+  // Base case summary
+  document.getElementById('sensBaseNpv').textContent =
+    formatNumberEU(data.base_npv_pln / 1000, 0) + ' tys. PLN';
+  document.getElementById('sensBasePayback').textContent =
+    data.base_payback_years < 100 ? formatNumberEU(data.base_payback_years, 1) + ' lat' : '> 25 lat';
+  document.getElementById('sensBaseCapex').textContent =
+    formatNumberEU(data.base_capex_pln / 1000, 0) + ' tys. PLN';
+
+  // Build table
+  const tbody = document.getElementById('sensitivityTableBody');
+  if (tbody) {
+    let html = '';
+    for (const p of data.parameters) {
+      html += `
+        <tr>
+          <td><strong>${p.parameter_label}</strong></td>
+          <td>${formatNumberEU(p.base_value, 1)} ${p.unit}</td>
+          <td>${formatNumberEU(p.low_value, 1)}</td>
+          <td class="${p.low_npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(p.low_npv_pln / 1000, 0)} tys.</td>
+          <td>${formatNumberEU(p.high_value, 1)}</td>
+          <td class="${p.high_npv_pln < 0 ? 'negative' : ''}">${formatNumberEU(p.high_npv_pln / 1000, 0)} tys.</td>
+          <td><strong>${formatNumberEU(p.npv_swing_pct, 0)}%</strong></td>
+        </tr>
+      `;
+    }
+    tbody.innerHTML = html;
+  }
+
+  // Breakeven warnings
+  const warningsDiv = document.getElementById('breakevenWarnings');
+  const warningsText = document.getElementById('breakevenText');
+  if (data.breakeven_scenarios && data.breakeven_scenarios.length > 0) {
+    warningsDiv.style.display = 'flex';
+    warningsText.innerHTML = data.breakeven_scenarios.join('<br>');
+  } else {
+    warningsDiv.style.display = 'none';
+  }
+
+  // Draw tornado chart
+  drawTornadoChart(data);
+}
+
+/**
+ * Draw tornado chart using Chart.js
+ */
+function drawTornadoChart(data) {
+  const canvas = document.getElementById('tornadoChart');
+  if (!canvas) return;
+
+  // Destroy existing chart
+  if (tornadoChart) {
+    tornadoChart.destroy();
+    tornadoChart = null;
+  }
+
+  const ctx = canvas.getContext('2d');
+
+  // Prepare data - sorted by swing (already sorted from API)
+  const labels = data.parameters.map(p => p.parameter_label);
+  const baseNpv = data.base_npv_pln / 1000;
+
+  // For each parameter: negative side (low NPV - base) and positive side (high NPV - base)
+  const lowDeltas = data.parameters.map(p => (p.low_npv_pln - data.base_npv_pln) / 1000);
+  const highDeltas = data.parameters.map(p => (p.high_npv_pln - data.base_npv_pln) / 1000);
+
+  tornadoChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '-20%',
+          data: lowDeltas,
+          backgroundColor: lowDeltas.map(d => d < 0 ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)'),
+          borderColor: lowDeltas.map(d => d < 0 ? 'rgb(239, 68, 68)' : 'rgb(34, 197, 94)'),
+          borderWidth: 1
+        },
+        {
+          label: '+20%',
+          data: highDeltas,
+          backgroundColor: highDeltas.map(d => d < 0 ? 'rgba(239, 68, 68, 0.8)' : 'rgba(34, 197, 94, 0.8)'),
+          borderColor: highDeltas.map(d => d < 0 ? 'rgb(239, 68, 68)' : 'rgb(34, 197, 94)'),
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        title: {
+          display: true,
+          text: `Wpływ na NPV (baza: ${formatNumberEU(baseNpv, 0)} tys. PLN)`,
+          font: { size: 14 }
+        },
+        legend: {
+          display: true,
+          position: 'top'
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const value = context.raw;
+              return `${context.dataset.label}: ${value > 0 ? '+' : ''}${formatNumberEU(value, 0)} tys. PLN`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: 'Zmiana NPV [tys. PLN]'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        y: {
+          grid: {
+            display: false
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Show sensitivity section if BESS data is available
+ */
+function showSensitivitySectionIfAvailable() {
+  const section = document.getElementById('sensitivitySection');
+  const variantData = variants[currentVariant];
+
+  if (section && variantData && variantData.bess && variantData.bess.enabled) {
+    section.style.display = 'block';
+  }
+}
+
+// Export sensitivity functions
+window.runSensitivityAnalysis = runSensitivityAnalysis;
+window.displaySensitivityResults = displaySensitivityResults;
+window.drawTornadoChart = drawTornadoChart;
+window.showSensitivitySectionIfAvailable = showSensitivitySectionIfAvailable;
+
+// ============================================
+// ADVANCED CONFIGURATION (Topology, Objective, Constraints)
+// v3.12 - Multi-topology and Multi-objective support
+// ============================================
+
+// Current configuration state
+let advancedConfig = {
+  topology: 'pv_load',           // 'pv_load', 'load_only', 'pv_only'
+  objective: 'npv',              // 'npv', 'payback', 'self_consumption', 'peak_reduction', 'efc_utilization'
+  constraints: []                // Array of {type, value, hard}
+};
+
+// Objective descriptions for info display
+const objectiveDescriptions = {
+  npv: 'NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji',
+  payback: 'Minimalizuj okres zwrotu - szybszy zwrot inwestycji',
+  self_consumption: 'Maksymalizuj wykorzystanie własnej energii z PV',
+  peak_reduction: 'Maksymalizuj redukcję szczytów mocy z sieci',
+  efc_utilization: 'Optymalizuj wykorzystanie cykli baterii w budżecie degradacji'
+};
+
+/**
+ * Update topology selection
+ */
+function updateTopology(value) {
+  console.log('🔌 Topology changed to:', value);
+  advancedConfig.topology = value;
+
+  // Update UI based on topology
+  const pvSections = document.querySelectorAll('.pv-dependent');
+  const bessSections = document.querySelectorAll('.bess-dependent');
+
+  if (value === 'pv_only') {
+    // PV only - hide BESS sections, show warning
+    document.getElementById('configStatus').textContent = '⚠️ Tryb PV-only - BESS wyłączony';
+    document.getElementById('configStatus').className = 'config-status warning';
+  } else if (value === 'load_only') {
+    // BESS only - adjust available modes
+    document.getElementById('configStatus').textContent = 'ℹ️ Tryb BESS bez PV - peak shaving/arbitraż';
+    document.getElementById('configStatus').className = 'config-status';
+  } else {
+    document.getElementById('configStatus').textContent = '';
+  }
+
+  // Store in localStorage for persistence
+  localStorage.setItem('bessTopology', value);
+}
+
+/**
+ * Update optimization objective
+ */
+function updateOptimizationObjective(value) {
+  console.log('🎯 Objective changed to:', value);
+  advancedConfig.objective = value;
+
+  // Update info text
+  const infoEl = document.getElementById('objectiveInfo');
+  if (infoEl && objectiveDescriptions[value]) {
+    infoEl.innerHTML = `<span class="info-icon">ℹ️</span><span>${objectiveDescriptions[value]}</span>`;
+  }
+
+  // Store in localStorage
+  localStorage.setItem('bessObjective', value);
+}
+
+/**
+ * Toggle constraint enabled/disabled
+ */
+function toggleConstraint(constraintType) {
+  const checkboxMap = {
+    'max_capex': 'constraintCapex',
+    'max_payback': 'constraintPayback',
+    'min_npv': 'constraintNpv',
+    'max_efc': 'constraintEfc',
+    'min_self_consumption': 'constraintSelfConsumption'
+  };
+
+  const checkboxId = checkboxMap[constraintType];
+  if (!checkboxId) return;
+
+  const checkbox = document.getElementById(checkboxId);
+  const valueInput = document.getElementById(checkboxId + 'Value');
+  const typeSelect = document.getElementById(checkboxId + 'Type');
+
+  if (checkbox && valueInput && typeSelect) {
+    const isChecked = checkbox.checked;
+    valueInput.disabled = !isChecked;
+    typeSelect.disabled = !isChecked;
+
+    if (isChecked) {
+      valueInput.focus();
+    }
+  }
+
+  console.log(`🚧 Constraint ${constraintType} toggled:`, checkbox?.checked);
+}
+
+// v3.15: toggleArbitrage() and updateArbitrageTariff() removed
+// Arbitrage configuration is now in Settings module (USTAWIENIA > BESS Advanced Features)
+
+/**
+ * v3.15: Collect arbitrage configuration from systemSettings (Settings module)
+ * Returns OSD tariff arbitrage config if enabled, or RDN arbitrage config, or null
+ */
+function collectArbitrageConfig() {
+  const settings = window.systemSettings || systemSettings || {};
+
+  // Check OSD Tariff Arbitrage first (higher priority - predictable zones)
+  if (settings.bessOsdArbitrageEnabled) {
+    // Build tariff_id from OSD operator and tariff group
+    const operator = settings.bessOsdOperator || 'pge';
+    const group = settings.bessOsdTariffGroup || 'C12a';
+    const year = new Date().getFullYear();
+
+    // Map operator to full name for tariff_id
+    const operatorMap = {
+      'pge': 'pge_dystrybucja',
+      'tauron': 'tauron_dystrybucja',
+      'energa': 'energa-operator',
+      'enea': 'enea_operator',
+      'innogy': 'stoen_operator'
+    };
+
+    const tariffId = `${operatorMap[operator] || operator}_${group.toLowerCase()}_${year}`;
+
+    console.log('⚡ OSD Tariff Arbitrage enabled:', {
+      operator, group, tariffId,
+      peakRate: settings.bessOsdPeakRate,
+      offPeakRate: settings.bessOsdOffPeakRate,
+      minSpread: settings.bessOsdMinSpread
+    });
+
+    return {
+      enabled: true,
+      type: 'osd_tariff',
+      tariff_id: tariffId,
+      strategy: 'tou_zones',  // Time-of-Use zones strategy
+      peak_rate_pln_kwh: settings.bessOsdPeakRate || 0.75,
+      offpeak_rate_pln_kwh: settings.bessOsdOffPeakRate || 0.45,
+      min_spread_pln_kwh: settings.bessOsdMinSpread || 0.15,
+      // Default percentiles for zone-based strategy
+      charge_below_percentile: 25,
+      discharge_above_percentile: 75,
+      arbitrage_soc_min: 0.20,
+      start_date: `${year}-01-01`,
+    };
+  }
+
+  // Check RDN Price Arbitrage (spot market)
+  if (settings.bessPriceArbitrageEnabled) {
+    const year = new Date().getFullYear();
+
+    console.log('💹 RDN Price Arbitrage enabled:', {
+      source: settings.bessPriceArbitrageSource,
+      buyThreshold: settings.bessPriceArbitrageBuyThreshold,
+      sellThreshold: settings.bessPriceArbitrageSellThreshold,
+      spread: settings.bessPriceArbitrageSpread
+    });
+
+    return {
+      enabled: true,
+      type: 'rdn_spot',
+      tariff_id: 'rdn_spot_' + year,
+      strategy: 'percentile',  // Price percentile strategy
+      price_source: settings.bessPriceArbitrageSource || 'manual',
+      buy_threshold_pln_mwh: settings.bessPriceArbitrageBuyThreshold || 300,
+      sell_threshold_pln_mwh: settings.bessPriceArbitrageSellThreshold || 600,
+      min_spread_pln_mwh: settings.bessPriceArbitrageSpread || 100,
+      flat_price_pln_mwh: settings.bessRdnPriceFlat || 500,
+      price_multiplier: settings.bessRdnPriceMultiplier || 1.0,
+      // Percentiles calculated from thresholds (approximation)
+      charge_below_percentile: 25,
+      discharge_above_percentile: 75,
+      arbitrage_soc_min: 0.20,
+      start_date: `${year}-01-01`,
+    };
+  }
+
+  // No arbitrage enabled
+  return null;
+}
+
+/**
+ * Collect all active constraints from UI
+ */
+function collectConstraints() {
+  const constraints = [];
+
+  const constraintConfigs = [
+    { id: 'constraintCapex', type: 'max_capex' },
+    { id: 'constraintPayback', type: 'max_payback' },
+    { id: 'constraintNpv', type: 'min_npv' },
+    { id: 'constraintEfc', type: 'max_efc' },
+    { id: 'constraintSelfConsumption', type: 'min_self_consumption' }
+  ];
+
+  for (const cfg of constraintConfigs) {
+    const checkbox = document.getElementById(cfg.id);
+    const valueInput = document.getElementById(cfg.id + 'Value');
+    const typeSelect = document.getElementById(cfg.id + 'Type');
+
+    if (checkbox?.checked && valueInput?.value) {
+      constraints.push({
+        constraint_type: cfg.type,
+        value: parseFloat(valueInput.value),
+        hard: typeSelect?.value === 'hard'
+      });
+    }
+  }
+
+  return constraints;
+}
+
+/**
+ * Apply advanced configuration and re-run analysis
+ */
+async function applyAdvancedConfig() {
+  console.log('✅ Applying advanced configuration...');
+
+  const statusEl = document.getElementById('configStatus');
+  const btnEl = document.getElementById('applyConfigBtn');
+
+  if (statusEl) statusEl.textContent = 'Przetwarzanie...';
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    // Collect current config
+    advancedConfig.constraints = collectConstraints();
+
+    console.log('📊 Advanced config:', advancedConfig);
+
+    // Get current variant data - for load_only we can work without PV variant
+    let variantData = variants[currentVariant];
+
+    // For LOAD_ONLY topology, we don't require PV variant data
+    if (!variantData && advancedConfig.topology === 'load_only') {
+      // First try window.loadOnlyConsumptionData (set by showLoadOnlyMode)
+      let consumptionData = window.loadOnlyConsumptionData;
+
+      // Fallback: try to load consumption data from localStorage
+      if (!consumptionData) {
+        const consumptionDataStr = localStorage.getItem('consumptionData');
+        if (consumptionDataStr) {
+          try {
+            consumptionData = JSON.parse(consumptionDataStr);
+          } catch (e) {
+            console.warn('Failed to parse consumptionData:', e);
+          }
+        }
+      }
+
+      if (consumptionData) {
+        // Create a minimal variant-like object with just consumption data
+        variantData = {
+          consumption: consumptionData.totalConsumption || consumptionData.sum || 500000,
+          production: 0, // No PV production in load_only mode
+          hourlyLoad: consumptionData.hourlyData?.values || null
+        };
+        console.log('📊 LOAD_ONLY mode: Using consumption data:', variantData.consumption, 'kWh/year, hourly points:', variantData.hourlyLoad?.length || 0);
+      }
+
+      // If still no data, use defaults for demonstration
+      if (!variantData) {
+        variantData = {
+          consumption: 500000, // Default 500 MWh/year
+          production: 0,
+          hourlyLoad: null
+        };
+        console.log('📊 LOAD_ONLY mode: Using default consumption (500 MWh/year)');
+      }
+    } else if (!variantData) {
+      throw new Error('Brak danych dla bieżącego wariantu. Dla trybu LOAD_ONLY wybierz topologię "BESS + Load (bez PV)".');
+    }
+
+    // Handle different topologies
+    if (advancedConfig.topology === 'pv_only') {
+      // PV-only mode - no BESS analysis needed
+      if (statusEl) {
+        statusEl.textContent = '✅ Tryb PV-only aktywny';
+        statusEl.className = 'config-status success';
+      }
+      // Hide BESS-specific sections
+      hideBessSpecificSections();
+      return;
+    }
+
+    // For pv_load and load_only, call the sizing/dispatch API
+    const request = buildSizingRequest(variantData);
+
+    if (!request) {
+      throw new Error('Nie można zbudować żądania - brak danych');
+    }
+
+    // Call bess-dispatch service via nginx proxy
+    const response = await fetch('/api/bess-dispatch/sizing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API error: ${response.status} - ${err}`);
+    }
+
+    const result = await response.json();
+    console.log('📊 Sizing result with new config:', result);
+
+    // Update display with new results
+    updateDisplayWithSizingResult(result);
+
+    if (statusEl) {
+      statusEl.textContent = '✅ Konfiguracja zastosowana';
+      statusEl.className = 'config-status success';
+    }
+
+    // Auto-scroll to results summary panel
+    setTimeout(() => {
+      const summaryPanel = document.getElementById('configResultsSummary');
+      if (summaryPanel && summaryPanel.style.display !== 'none') {
+        summaryPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 100);
+
+  } catch (error) {
+    console.error('❌ Config apply error:', error);
+    if (statusEl) {
+      statusEl.textContent = '❌ Błąd: ' + error.message;
+      statusEl.className = 'config-status error';
+    }
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+/**
+ * Build sizing request with current config
+ */
+/**
+ * Build price configuration for sizing request
+ * Supports ToU pricing (Opcja B - OSD_ALL_IN) or legacy flat pricing
+ *
+ * @param {object} settings - System settings
+ * @returns {object} - Price config for API
+ */
+function buildPriceConfig(settings) {
+  // Check if OSD tariff arbitrage is enabled (this means ToU pricing is active)
+  if (settings.bessOsdArbitrageEnabled) {
+    const operator = settings.bessOsdOperator || 'pge';
+    const group = settings.bessOsdTariffGroup || 'C12a';
+    const year = new Date().getFullYear();
+
+    // Map operator to tariff_id format
+    const operatorMap = {
+      'pge': 'pge',
+      'tauron': 'tauron',
+      'energa': 'energa',
+      'enea': 'enea',
+      'innogy': 'stoen'
+    };
+
+    const tariffId = `${operatorMap[operator] || operator}_${group.toLowerCase()}_${year}`;
+
+    console.log('📊 ToU pricing enabled:', { tariffId, operator, group, year });
+
+    return {
+      tariff_id: tariffId,
+      other_fees_pln_mwh: settings.totalFixedCharges || 451,  // Suma opłat stałych (OSD, OZE, kog, jakość, mocowa, akcyza)
+      capacity_fee_method: settings.bessCapacityFeeMethod || 'dynamic',
+      capacity_fee_som_pln_kwh: settings.bessCapacityFeeSom || 0.2194,
+      analysis_year: year,
+      // Keep legacy fields for compatibility
+      import_price_pln_mwh: settings.energyPurchasePrice || 800,
+      export_price_pln_mwh: 0
+    };
+  }
+
+  // Check tariffConfig from settings module (new format)
+  if (settings.tariffConfig && settings.tariffConfig.type !== 'flat') {
+    const year = new Date().getFullYear();
+
+    // Build tariff_id from tariffConfig
+    const operator = settings.tariffConfig.osdOperator || 'pge';
+    const group = settings.tariffConfig.type === 'two_zone' ? 'c12a' :
+                  settings.tariffConfig.type === 'three_zone' ? 'c12b' : 'c11';
+
+    const tariffId = `${operator}_${group}_${year}`;
+
+    console.log('📊 ToU pricing from tariffConfig:', { tariffId, type: settings.tariffConfig.type });
+
+    return {
+      tariff_id: tariffId,
+      other_fees_pln_mwh: settings.totalFixedCharges || 451,  // Suma opłat stałych
+      capacity_fee_method: 'dynamic',
+      capacity_fee_som_pln_kwh: 0.2194,
+      analysis_year: year,
+      import_price_pln_mwh: settings.energyPurchasePrice || 800,
+      export_price_pln_mwh: 0
+    };
+  }
+
+  // Legacy flat pricing
+  console.log('📊 Flat pricing (no ToU)');
+  return {
+    import_price_pln_mwh: settings.energyPurchasePrice || 800,
+    export_price_pln_mwh: 0
+  };
+}
+
+function buildSizingRequest(variantData) {
+  const settings = systemSettings || {};
+
+  // Generate 8760 hourly profile from variant statistics (same as tryFetchSizingVariants)
+  const hours = 8760;
+  let pvData = [];
+  let loadData = [];
+
+  const totalProduction = variantData.production || 0; // For LOAD_ONLY, production is 0
+  const totalLoad = variantData.consumption || variantData.load || 500000; // Default 500 MWh
+
+  // Check if we have real hourly load data (from consumption module)
+  if (variantData.hourlyLoad && Array.isArray(variantData.hourlyLoad) && variantData.hourlyLoad.length > 0) {
+    const rawData = variantData.hourlyLoad;
+
+    if (rawData.length >= 35040) {
+      // 15-min data (35040 points/year) - aggregate to hourly by summing groups of 4
+      // For power data: take average of 4 readings (average power over the hour)
+      console.log('📊 buildSizingRequest - Converting 15-min data to hourly:', rawData.length, 'points');
+      loadData = [];
+      for (let h = 0; h < 8760; h++) {
+        const startIdx = h * 4;
+        const endIdx = Math.min(startIdx + 4, rawData.length);
+        let sum = 0;
+        let count = 0;
+        for (let i = startIdx; i < endIdx; i++) {
+          sum += rawData[i] || 0;
+          count++;
+        }
+        // For 15-min power readings, hourly power = average power (kW)
+        // Energy in kWh = average power * 1 hour
+        loadData.push(count > 0 ? sum / count : 0);
+      }
+      console.log('📊 buildSizingRequest - Aggregated to hourly:', loadData.length, 'points, sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+    } else if (rawData.length >= 8760) {
+      // Already hourly data (8760 points/year)
+      loadData = rawData.slice(0, 8760);
+      console.log('📊 buildSizingRequest - Using REAL hourly load data:', loadData.length, 'points, sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+    } else {
+      // Less than 8760 points - extrapolate to full year
+      console.log('📊 buildSizingRequest - Extrapolating partial data:', rawData.length, 'points');
+      const multiplier = Math.ceil(8760 / rawData.length);
+      const extendedData = [];
+      for (let m = 0; m < multiplier && extendedData.length < 8760; m++) {
+        for (let i = 0; i < rawData.length && extendedData.length < 8760; i++) {
+          extendedData.push(rawData[i] || 0);
+        }
+      }
+      loadData = extendedData.slice(0, 8760);
+      console.log('📊 buildSizingRequest - Extrapolated to:', loadData.length, 'points');
+    }
+  } else {
+    // Generate synthetic profile based on annual total
+    const loadScaleFactor = totalLoad / 8760 / 50; // Base load ~50 kW avg
+
+    console.log('📊 buildSizingRequest - Generating synthetic 8760h load profile:', { totalLoad, loadScaleFactor });
+
+    for (let h = 0; h < hours; h++) {
+      const hourOfDay = h % 24;
+
+      // Load: industrial profile with evening peak (for peak shaving scenarios)
+      let loadPower = 30 * loadScaleFactor;
+
+      if (hourOfDay >= 6 && hourOfDay <= 22) {
+        // Working hours - higher load
+        loadPower = (60 + 20 * Math.sin((hourOfDay - 6) * Math.PI / 16)) * loadScaleFactor;
+      }
+
+      // Evening peak (17:00-21:00) - when PV is low but consumption high
+      if (hourOfDay >= 17 && hourOfDay <= 21) {
+        const peakHourFactor = 1 - Math.abs(hourOfDay - 19) / 3; // Peak at 19:00
+        loadPower = (80 + 40 * peakHourFactor) * loadScaleFactor;
+      }
+
+      loadData.push(Math.max(10, loadPower));
+    }
+  }
+
+  // For load_only topology, PV should be empty array
+  if (advancedConfig.topology === 'load_only' || totalProduction === 0) {
+    pvData = new Array(hours).fill(0);
+    console.log('📊 LOAD_ONLY mode: PV array set to zeros');
+  } else {
+    // Generate PV profile for PV+BESS mode
+    const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+
+    for (let h = 0; h < hours; h++) {
+      const hourOfDay = h % 24;
+      const dayOfYear = Math.floor(h / 24);
+
+      // PV: realistic profile with daytime production and seasonal variation
+      let pvPower = 0;
+      if (hourOfDay >= 6 && hourOfDay <= 18) {
+        const solarFactor = Math.sin((hourOfDay - 6) * Math.PI / 12);
+        // Seasonal: peak in June (day 172), min in December
+        const seasonFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos((dayOfYear - 172) * 2 * Math.PI / 365));
+        // Peak power for 1 MWp ~800-1000 kW
+        pvPower = 900 * solarFactor * seasonFactor * pvScaleFactor;
+      }
+      pvData.push(Math.max(0, pvPower));
+    }
+  }
+
+  console.log('📊 Final profiles - PV sum:', (pvData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh, Load sum:', (loadData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+
+  // For load_only topology, PV should be empty
+  const effectivePv = advancedConfig.topology === 'load_only' ? [] : pvData;
+
+  // Determine dispatch mode based on topology
+  let mode = 'pv_surplus';
+  if (advancedConfig.topology === 'load_only') {
+    mode = 'load_only';
+  } else if (settings.bessPeakShavingEnabled) {
+    mode = 'stacked';
+  }
+
+  const request = {
+    pv_generation_kw: effectivePv,
+    load_kw: loadData,
+    interval_minutes: 60,
+    mode: mode,
+
+    // Battery constraints
+    min_power_kw: 10,
+    max_power_kw: 1000,
+    power_steps: 15,
+    durations_h: [1.0, 2.0, 4.0],
+
+    // Battery params
+    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
+    soc_min: settings.bessSocMin || 0.1,
+    soc_max: settings.bessSocMax || 0.9,
+
+    // Economics
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    opex_pct_per_year: 0.015,
+    discount_rate: 0.07,
+    analysis_years: settings.bessLifetimeYears || 15,
+
+    // Pricing - check if ToU tariff is configured
+    prices: buildPriceConfig(settings),
+
+    // Optimization config
+    optimization: {
+      objective: advancedConfig.objective,
+      constraints: advancedConfig.constraints,
+      constraint_penalty_weight: 0.3
+    }
+  };
+
+  // Add peak limit for load_only or stacked
+  if (mode === 'load_only' || mode === 'stacked') {
+    request.peak_limit_kw = settings.bessPeakLimitKw || Math.max(...loadData) * 0.7;
+  }
+
+  // Add stacked params
+  if (mode === 'stacked') {
+    request.stacked_params = {
+      peak_limit_kw: settings.bessPeakLimitKw || Math.max(...loadData) * 0.7,
+      reserve_fraction: settings.bessReserveFraction || 0.3,
+      allow_reserve_breach: false
+    };
+  }
+
+  return request;
+}
+
+/**
+ * Hide BESS-specific sections for PV-only mode
+ */
+function hideBessSpecificSections() {
+  const sectionsToHide = [
+    'bessContent',
+    'sizingVariantsSection',
+    'degradationBudgetSection',
+    'sensitivitySection',
+    'advancedConfigSection'
+  ];
+
+  // Actually just show a message instead of hiding everything
+  const banner = document.getElementById('bessDisabledBanner');
+  if (banner) {
+    banner.style.display = 'flex';
+    banner.querySelector('h3').textContent = 'Tryb tylko PV';
+    banner.querySelector('p').textContent = 'BESS nie jest analizowany w trybie PV-only. Przełącz topologię aby włączyć analizę BESS.';
+  }
+
+  const content = document.getElementById('bessContent');
+  if (content) content.style.display = 'none';
+}
+
+/**
+ * Update display with sizing result from API
+ */
+function updateDisplayWithSizingResult(result) {
+  // This function updates the UI with results from the /sizing endpoint
+  // when using multi-objective optimization
+
+  if (!result || !result.variants) return;
+
+  // Show sizing variants section
+  const section = document.getElementById('sizingVariantsSection');
+  if (section) section.style.display = 'block';
+
+  // Display sizing variants
+  displaySizingVariants(result);
+
+  // Update recommended variant info
+  if (result.recommended_variant) {
+    console.log('📊 Recommended variant:', result.recommended_variant);
+  }
+
+  // Find and display warning about constraints
+  if (result.warnings && result.warnings.length > 0) {
+    console.warn('⚠️ Sizing warnings:', result.warnings);
+  }
+
+  // Update quick results summary panel
+  updateConfigResultsSummary(result);
+}
+
+/**
+ * Update the quick results summary panel below advanced config
+ */
+function updateConfigResultsSummary(result) {
+  const summaryPanel = document.getElementById('configResultsSummary');
+  if (!summaryPanel) return;
+
+  // Find recommended variant
+  const recommended = result.variants?.find(v => v.is_recommended) || result.variants?.[0];
+
+  if (!recommended) {
+    summaryPanel.style.display = 'none';
+    return;
+  }
+
+  // Show panel
+  summaryPanel.style.display = 'block';
+
+  // Update values
+  const variantLabels = {
+    'small': 'Small (1h)',
+    'medium': 'Medium (2h)',
+    'large': 'Large (4h)'
+  };
+
+  setElementText('summaryRecommended', variantLabels[result.recommended_variant] || result.recommended_variant || '-');
+  setElementText('summaryPowerEnergy', `${formatNumberEU(recommended.power_kw, 0)} kW / ${formatNumberEU(recommended.energy_kwh, 0)} kWh`);
+
+  // NPV with color
+  const npvEl = document.getElementById('summaryNpv');
+  if (npvEl) {
+    npvEl.textContent = `${formatNumberEU(recommended.npv_pln / 1000, 0)} tys. PLN`;
+    npvEl.className = 'summary-value ' + (recommended.npv_pln >= 0 ? 'positive' : 'negative');
+  }
+
+  setElementText('summaryPayback', recommended.simple_payback_years < 100 ? `${formatNumberEU(recommended.simple_payback_years, 1)} lat` : '> 25 lat');
+  setElementText('summaryCapex', `${formatNumberEU(recommended.capex_pln / 1000, 0)} tys. PLN`);
+  setElementText('summaryEfc', `${formatNumberEU(recommended.degradation?.efc_total || 0, 0)} cykli`);
+
+  // Handle constraint warnings
+  const warningsPanel = document.getElementById('constraintWarnings');
+  const warningsList = document.getElementById('warningsList');
+
+  if (result.warnings && result.warnings.length > 0) {
+    warningsPanel.style.display = 'block';
+    warningsList.innerHTML = result.warnings.map(w => {
+      // Parse warning to determine if hard or soft (backend sends [TWARDE] or [MIĘKKIE])
+      const isHard = w.includes('[TWARDE]');
+      const isSoft = w.includes('[MIĘKKIE]');
+      let className = '';
+      let icon = '⚠️';
+      if (isHard) {
+        className = 'hard';
+        icon = '🚫';
+      } else if (isSoft) {
+        className = 'soft';
+        icon = '⚠️';
+      }
+      // Clean up the message for display
+      const cleanMsg = w.replace('[TWARDE]', '').replace('[MIĘKKIE]', '').trim();
+      return `<li class="${className}">${icon} <span class="warning-detail">${cleanMsg}</span></li>`;
+    }).join('');
+  } else {
+    warningsPanel.style.display = 'none';
+  }
+
+  console.log('📊 Results summary updated:', {
+    variant: result.recommended_variant,
+    npv: recommended.npv_pln,
+    payback: recommended.simple_payback_years,
+    warnings: result.warnings?.length || 0
+  });
+}
+
+/**
+ * Reset advanced configuration to defaults
+ */
+function resetAdvancedConfig() {
+  console.log('🔄 Resetting advanced configuration...');
+
+  // Reset config object
+  advancedConfig = {
+    topology: 'pv_load',
+    objective: 'npv',
+    constraints: []
+  };
+
+  // Reset UI elements
+  document.querySelector('input[name="topology"][value="pv_load"]').checked = true;
+  document.getElementById('optimizationObjective').value = 'npv';
+  document.getElementById('objectiveInfo').innerHTML =
+    '<span class="info-icon">ℹ️</span><span>NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji</span>';
+
+  // Reset all constraints
+  const constraintCheckboxes = [
+    'constraintCapex', 'constraintPayback', 'constraintNpv',
+    'constraintEfc', 'constraintSelfConsumption'
+  ];
+
+  for (const id of constraintCheckboxes) {
+    const checkbox = document.getElementById(id);
+    const valueInput = document.getElementById(id + 'Value');
+    const typeSelect = document.getElementById(id + 'Type');
+
+    if (checkbox) checkbox.checked = false;
+    if (valueInput) {
+      valueInput.value = '';
+      valueInput.disabled = true;
+    }
+    if (typeSelect) {
+      typeSelect.value = 'hard';
+      typeSelect.disabled = true;
+    }
+  }
+
+  // Clear localStorage
+  localStorage.removeItem('bessTopology');
+  localStorage.removeItem('bessObjective');
+
+  // Update status
+  const statusEl = document.getElementById('configStatus');
+  if (statusEl) {
+    statusEl.textContent = '🔄 Zresetowano do ustawień domyślnych';
+    statusEl.className = 'config-status';
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  }
+}
+
+/**
+ * Load saved configuration from localStorage
+ */
+function loadSavedConfig() {
+  const savedTopology = localStorage.getItem('bessTopology');
+  const savedObjective = localStorage.getItem('bessObjective');
+
+  if (savedTopology) {
+    advancedConfig.topology = savedTopology;
+    const radioBtn = document.querySelector(`input[name="topology"][value="${savedTopology}"]`);
+    if (radioBtn) radioBtn.checked = true;
+  }
+
+  if (savedObjective) {
+    advancedConfig.objective = savedObjective;
+    const selectEl = document.getElementById('optimizationObjective');
+    if (selectEl) selectEl.value = savedObjective;
+    updateOptimizationObjective(savedObjective);
+  }
+}
+
+// Initialize advanced config on load
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(loadSavedConfig, 100);
+});
+
+// Export advanced config functions
+window.updateTopology = updateTopology;
+window.updateOptimizationObjective = updateOptimizationObjective;
+window.toggleConstraint = toggleConstraint;
+window.applyAdvancedConfig = applyAdvancedConfig;
+window.resetAdvancedConfig = resetAdvancedConfig;
+window.advancedConfig = advancedConfig;
+
+// ============================================================================
+// ToU COST ANALYSIS (FE-only) - MVP v3.17 (PR3)
+// ============================================================================
+
+/**
+ * Fetch OSD tariff presets from backend
+ * @returns {Promise<Array>} - List of available tariff presets
+ */
+async function fetchTariffPresets() {
+  try {
+    const response = await fetch('/api/bess-dispatch/osd-tariffs/presets');
+    if (!response.ok) {
+      console.warn('Failed to fetch tariff presets:', response.status);
+      return getHardcodedTariffPresets(); // Fallback
+    }
+    return await response.json();
+  } catch (e) {
+    console.warn('Error fetching tariff presets:', e);
+    return getHardcodedTariffPresets();
+  }
+}
+
+/**
+ * Hardcoded tariff presets (fallback if API unavailable)
+ */
+function getHardcodedTariffPresets() {
+  return [
+    { id: 'pge_c11_2025', name: 'PGE C11 2025', group: 'C11', zones: ['flat'], osd: 'PGE' },
+    { id: 'pge_c12a_2025', name: 'PGE C12a 2025', group: 'C12a', zones: ['peak', 'offpeak'], osd: 'PGE' },
+    { id: 'pge_c12b_2025', name: 'PGE C12b 2025', group: 'C12b', zones: ['peak', 'day', 'night'], osd: 'PGE' },
+    { id: 'tauron_c12a_2025', name: 'TAURON C12a 2025', group: 'C12a', zones: ['peak', 'offpeak'], osd: 'TAURON' },
+    { id: 'energa_c12a_2025', name: 'ENERGA C12a 2025', group: 'C12a', zones: ['peak', 'offpeak'], osd: 'ENERGA' },
+  ];
+}
+
+/**
+ * Calculate ToU costs for a dispatch result (FE-only analysis)
+ * Uses tariff rates from settings and hourly grid import from dispatch result
+ *
+ * @param {object} dispatchResult - Dispatch result with hourly_grid_import_kw
+ * @param {object} settings - System settings with tariffConfig
+ * @returns {object} - Cost analysis by zone
+ */
+function calculateToUCosts(dispatchResult, settings) {
+  const tariffConfig = settings?.tariffConfig || {};
+  const tariffType = tariffConfig.type || 'two_zone';
+  const intervalHours = (dispatchResult.interval_minutes || 60) / 60;
+
+  // Get hourly import data - may be from dispatch result or baseline
+  const hourlyImportKw = dispatchResult.hourly_grid_import_kw || [];
+  if (hourlyImportKw.length === 0) {
+    console.warn('No hourly import data for ToU cost calculation');
+    return null;
+  }
+
+  // Initialize cost accumulators
+  let totalCost = 0;
+  const costByZone = {};
+  const energyByZone = {};
+
+  // Get rates based on tariff type
+  let rates = {};
+  if (tariffType === 'flat') {
+    rates = { flat: tariffConfig.flatRate || 750 };
+  } else if (tariffType === 'two_zone') {
+    rates = {
+      day: tariffConfig.twoZone?.dayRate || 850,
+      night: tariffConfig.twoZone?.nightRate || 450
+    };
+  } else if (tariffType === 'three_zone') {
+    rates = {
+      peak: tariffConfig.threeZone?.peakRate || 950,
+      partial: tariffConfig.threeZone?.partialRate || 700,
+      offpeak: tariffConfig.threeZone?.offPeakRate || 400
+    };
+  }
+
+  // Initialize zone accumulators
+  Object.keys(rates).forEach(zone => {
+    costByZone[zone] = 0;
+    energyByZone[zone] = 0;
+  });
+
+  // Calculate costs per hour
+  hourlyImportKw.forEach((importKw, hourIndex) => {
+    const hour = hourIndex % 24;
+    const dayOfYear = Math.floor(hourIndex / 24);
+    const dayOfWeek = (dayOfYear + 1) % 7; // Assume year starts on Monday
+    const isWeekend = dayOfWeek === 5 || dayOfWeek === 6; // Sat/Sun
+
+    const energyKwh = importKw * intervalHours;
+    const zone = getZoneForHour(hour, isWeekend, tariffType, tariffConfig);
+    const rate = rates[zone] || rates.flat || 750;
+
+    const cost = energyKwh * rate / 1000; // PLN/MWh -> PLN/kWh
+    totalCost += cost;
+    costByZone[zone] = (costByZone[zone] || 0) + cost;
+    energyByZone[zone] = (energyByZone[zone] || 0) + energyKwh;
+  });
+
+  return {
+    totalCost,
+    costByZone,
+    energyByZone,
+    tariffType,
+    tariffName: tariffConfig.name || 'Custom',
+    rates
+  };
+}
+
+/**
+ * Get zone for a given hour based on tariff configuration
+ */
+function getZoneForHour(hour, isWeekend, tariffType, config) {
+  if (tariffType === 'flat') {
+    return 'flat';
+  }
+
+  if (tariffType === 'two_zone') {
+    const twoZone = config.twoZone || {};
+    if (isWeekend) {
+      const start = twoZone.weekend?.start || 6;
+      const end = twoZone.weekend?.end || 13;
+      return (hour >= start && hour < end) ? 'day' : 'night';
+    } else {
+      const start = twoZone.weekday?.start || 6;
+      const end = twoZone.weekday?.end || 22;
+      return (hour >= start && hour < end) ? 'day' : 'night';
+    }
+  }
+
+  if (tariffType === 'three_zone') {
+    const threeZone = config.threeZone || {};
+    // Night zone (22:00-6:00)
+    if (hour >= 22 || hour < 6) return 'offpeak';
+    if (isWeekend) return 'offpeak';
+
+    // Check peak periods
+    const peak1 = threeZone.peak1 || { start: 7, end: 13 };
+    const peak2 = threeZone.peak2 || { start: 17, end: 21 };
+
+    if ((hour >= peak1.start && hour < peak1.end) ||
+        (hour >= peak2.start && hour < peak2.end)) {
+      return 'peak';
+    }
+
+    // Partial period (between peaks)
+    return 'partial';
+  }
+
+  return 'flat';
+}
+
+/**
+ * Display ToU cost analysis in UI
+ * @param {object} costAnalysis - Result from calculateToUCosts
+ * @param {object} baselineCostAnalysis - Baseline (without BESS) for comparison
+ */
+function displayToUCostAnalysis(costAnalysis, baselineCostAnalysis) {
+  const container = document.getElementById('touCostAnalysis');
+  if (!container) {
+    console.warn('ToU cost analysis container not found');
+    return;
+  }
+
+  if (!costAnalysis) {
+    container.innerHTML = '<div class="info-box">Brak danych do analizy kosztów ToU</div>';
+    return;
+  }
+
+  const savings = baselineCostAnalysis ?
+    (baselineCostAnalysis.totalCost - costAnalysis.totalCost) : 0;
+  const savingsPct = baselineCostAnalysis && baselineCostAnalysis.totalCost > 0 ?
+    (savings / baselineCostAnalysis.totalCost * 100) : 0;
+
+  let html = `
+    <div class="tou-analysis-card">
+      <div class="tou-header">
+        <span class="tou-title">📊 Analiza kosztów wg taryfy ${costAnalysis.tariffName}</span>
+        <span class="tou-type">${costAnalysis.tariffType.replace('_', ' ')}</span>
+      </div>
+
+      <div class="tou-summary">
+        <div class="tou-metric">
+          <div class="tou-value">${formatNumberEU(costAnalysis.totalCost, 0)}</div>
+          <div class="tou-label">Koszt roczny [PLN]</div>
+        </div>
+        ${baselineCostAnalysis ? `
+        <div class="tou-metric savings">
+          <div class="tou-value">${formatNumberEU(savings, 0)}</div>
+          <div class="tou-label">Oszczędność z BESS [PLN]</div>
+          <div class="tou-pct">${savingsPct.toFixed(1)}%</div>
+        </div>
+        ` : ''}
+      </div>
+
+      <div class="tou-breakdown">
+        <table class="tou-table">
+          <thead>
+            <tr>
+              <th>Strefa</th>
+              <th>Stawka [PLN/MWh]</th>
+              <th>Energia [MWh]</th>
+              <th>Koszt [PLN]</th>
+            </tr>
+          </thead>
+          <tbody>
+  `;
+
+  Object.entries(costAnalysis.costByZone).forEach(([zone, cost]) => {
+    const rate = costAnalysis.rates[zone] || 0;
+    const energy = costAnalysis.energyByZone[zone] || 0;
+    const zoneLabel = getZoneLabel(zone);
+
+    html += `
+      <tr>
+        <td><span class="zone-badge zone-${zone}">${zoneLabel}</span></td>
+        <td>${formatNumberEU(rate, 0)}</td>
+        <td>${formatNumberEU(energy / 1000, 1)}</td>
+        <td>${formatNumberEU(cost, 0)}</td>
+      </tr>
+    `;
+  });
+
+  html += `
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+  container.style.display = 'block';
+}
+
+function getZoneLabel(zone) {
+  const labels = {
+    flat: 'Jednolita',
+    day: 'Dzień (szczyt)',
+    night: 'Noc (pozaszczyt)',
+    peak: 'Szczyt',
+    partial: 'Dzień (częściowy)',
+    offpeak: 'Noc'
+  };
+  return labels[zone] || zone;
+}
+
+// ============================================================================
+// CAPACITY FEE OVERLAY (PR4) - MVP v3.17
+// ============================================================================
+
+/**
+ * Fetch capacity fee savings from backend
+ *
+ * @param {Array} gridImportKwhBefore - Baseline grid import (without BESS)
+ * @param {Array} gridImportKwhAfter - Grid import with BESS
+ * @param {object} settings - System settings
+ * @returns {Promise<object>} - Capacity fee savings analysis
+ */
+async function fetchCapacityFeeSavings(gridImportKwhBefore, gridImportKwhAfter, settings) {
+  const year = settings?.capacityFeeConfig?.year || 2026;
+  const intervalMinutes = 60; // Default hourly
+
+  const request = {
+    grid_import_kwh_before: gridImportKwhBefore,
+    grid_import_kwh_after: gridImportKwhAfter,
+    interval_minutes: intervalMinutes,
+    year: year,
+    start_date: `${year}-01-01`,
+    som_rate_pln_kwh: settings?.capacityFeeConfig?.somRate || 0.2194
+  };
+
+  try {
+    const response = await fetch('/api/bess-dispatch/capacity-fee/savings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      console.warn('Capacity fee savings API failed:', response.status);
+      return null;
+    }
+
+    return await response.json();
+  } catch (e) {
+    console.warn('Error fetching capacity fee savings:', e);
+    return null;
+  }
+}
+
+/**
+ * Calculate baseline grid import from load and PV profiles
+ * Baseline = max(0, load - pv) for pv_bess topology
+ * Baseline = load for bess_only topology
+ *
+ * @param {object} variant - Current variant data
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ * @returns {Array} - Hourly baseline grid import [kWh]
+ */
+function calculateBaselineGridImport(variant, topology) {
+  // Try to get hourly data from variant or localStorage
+  const hourlyLoad = variant.hourly_load_kw ||
+                     JSON.parse(localStorage.getItem('hourlyConsumption') || '[]');
+  const hourlyPv = variant.hourly_pv_kw ||
+                   JSON.parse(localStorage.getItem('hourlyPvProduction') || '[]');
+
+  if (hourlyLoad.length === 0) {
+    console.warn('No hourly load data for baseline calculation');
+    return [];
+  }
+
+  const intervalHours = 1; // Assuming hourly data
+
+  if (topology === 'bess_only') {
+    // BESS-only: baseline = full load
+    return hourlyLoad.map(kw => kw * intervalHours);
+  }
+
+  // PV+BESS: baseline = max(0, load - pv)
+  return hourlyLoad.map((loadKw, i) => {
+    const pvKw = hourlyPv[i] || 0;
+    return Math.max(0, loadKw - pvKw) * intervalHours;
+  });
+}
+
+/**
+ * Display capacity fee savings overlay
+ * @param {object} savings - Savings data from API
+ */
+function displayCapacityFeeOverlay(savings) {
+  const container = document.getElementById('capacityFeeOverlay');
+  if (!container) {
+    console.warn('Capacity fee overlay container not found');
+    return;
+  }
+
+  if (!savings) {
+    container.style.display = 'none';
+    return;
+  }
+
+  const feeBefore = savings.fee_before_pln || 0;
+  const feeAfter = savings.fee_after_pln || 0;
+  const savingsAmount = savings.savings_pln || (feeBefore - feeAfter);
+  const savingsPct = feeBefore > 0 ? (savingsAmount / feeBefore * 100) : 0;
+  const kClassBefore = savings.k_class_before || 'K4';
+  const kClassAfter = savings.k_class_after || 'K4';
+
+  const html = `
+    <div class="capacity-fee-overlay-card">
+      <div class="overlay-header">
+        <span class="overlay-title">⚡ Oszczędności Opłaty Mocowej</span>
+        <button class="overlay-close" onclick="hideCapacityFeeOverlay()">×</button>
+      </div>
+
+      <div class="overlay-comparison">
+        <div class="comparison-item before">
+          <div class="comparison-label">Bez BESS</div>
+          <div class="comparison-value">${formatNumberEU(feeBefore, 0)} PLN</div>
+          <div class="comparison-kclass">Klasa ${kClassBefore}</div>
+        </div>
+        <div class="comparison-arrow">→</div>
+        <div class="comparison-item after">
+          <div class="comparison-label">Z BESS</div>
+          <div class="comparison-value">${formatNumberEU(feeAfter, 0)} PLN</div>
+          <div class="comparison-kclass">Klasa ${kClassAfter}</div>
+        </div>
+      </div>
+
+      <div class="overlay-savings">
+        <div class="savings-amount">${formatNumberEU(savingsAmount, 0)} PLN</div>
+        <div class="savings-label">Roczna oszczędność (${savingsPct.toFixed(1)}%)</div>
+      </div>
+
+      ${savings.peak_power_before_kw ? `
+      <div class="overlay-details">
+        <div class="detail-row">
+          <span>Moc szczytowa przed:</span>
+          <span>${formatNumberEU(savings.peak_power_before_kw, 1)} kW</span>
+        </div>
+        <div class="detail-row">
+          <span>Moc szczytowa po:</span>
+          <span>${formatNumberEU(savings.peak_power_after_kw, 1)} kW</span>
+        </div>
+        <div class="detail-row">
+          <span>Redukcja:</span>
+          <span>${formatNumberEU(savings.peak_reduction_pct || 0, 1)}%</span>
+        </div>
+      </div>
+      ` : ''}
+    </div>
+  `;
+
+  container.innerHTML = html;
+  container.style.display = 'block';
+}
+
+function hideCapacityFeeOverlay() {
+  const container = document.getElementById('capacityFeeOverlay');
+  if (container) container.style.display = 'none';
+}
+
+/**
+ * Run capacity fee analysis if enabled in settings
+ * @param {object} variant - Current variant data
+ */
+async function runCapacityFeeAnalysisIfEnabled(variant) {
+  const settings = systemSettings || {};
+  if (!settings.bessCapacityFeeOverlay) {
+    hideCapacityFeeOverlay();
+    return;
+  }
+
+  console.log('📊 Running capacity fee analysis...');
+
+  const topology = settings.bessTopology || 'pv_bess';
+
+  // Calculate baseline (without BESS)
+  const baselineImportKwh = calculateBaselineGridImport(variant, topology);
+  if (baselineImportKwh.length === 0) {
+    console.warn('Cannot calculate baseline - no load data');
+    return;
+  }
+
+  // Get "after BESS" import from dispatch result
+  // Convert kW to kWh (assuming 1h intervals)
+  const afterImportKwh = variant.hourly_grid_import_kw?.map(kw => kw * 1) || [];
+
+  if (afterImportKwh.length === 0) {
+    // Fallback: estimate from annual values
+    const annualImportBefore = baselineImportKwh.reduce((a, b) => a + b, 0);
+    const annualImportAfter = variant.bess_grid_import_kwh || annualImportBefore * 0.85;
+    console.log('Using estimated annual values for capacity fee analysis');
+
+    // Show simplified overlay
+    displayCapacityFeeOverlay({
+      fee_before_pln: annualImportBefore * 0.00022 * 1000, // Rough estimate
+      fee_after_pln: annualImportAfter * 0.00022 * 1000,
+      savings_pln: (annualImportBefore - annualImportAfter) * 0.00022 * 1000
+    });
+    return;
+  }
+
+  // Fetch savings from API
+  const savings = await fetchCapacityFeeSavings(baselineImportKwh, afterImportKwh, settings);
+  displayCapacityFeeOverlay(savings);
+}
+
+// Export ToU and Capacity Fee functions
+window.fetchTariffPresets = fetchTariffPresets;
+window.calculateToUCosts = calculateToUCosts;
+window.displayToUCostAnalysis = displayToUCostAnalysis;
+window.fetchCapacityFeeSavings = fetchCapacityFeeSavings;
+window.displayCapacityFeeOverlay = displayCapacityFeeOverlay;
+window.hideCapacityFeeOverlay = hideCapacityFeeOverlay;
+window.runCapacityFeeAnalysisIfEnabled = runCapacityFeeAnalysisIfEnabled;
+
+console.log('📦 bess.js v3.17 - added ToU cost analysis + capacity fee overlay');

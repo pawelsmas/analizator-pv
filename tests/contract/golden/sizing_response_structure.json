@@ -1,0 +1,52 @@
+{
+  "top_level_keys": [
+    "annual_surplus_mwh",
+    "mode",
+    "pareto_points",
+    "period_info",
+    "recommended_energy_kwh",
+    "recommended_power_kw",
+    "recommended_variant",
+    "total_load_mwh",
+    "total_pv_mwh",
+    "variants",
+    "warnings"
+  ],
+  "variant_keys": [
+    "annual_opex_pln",
+    "annual_savings_pln",
+    "c_rate",
+    "capex_pln",
+    "degradation",
+    "degradation_status",
+    "dispatch_summary",
+    "duration_h",
+    "energy_kwh",
+    "irr_pct",
+    "is_recommended",
+    "npv_pln",
+    "power_kw",
+    "prices_summary",
+    "savings_breakdown",
+    "score",
+    "simple_payback_years",
+    "variant",
+    "variant_label"
+  ],
+  "savings_breakdown_keys": [
+    "arbitrage_savings_pln",
+    "capacity_fee_savings_pln",
+    "degradation_cost_pln",
+    "demand_charge_savings_pln",
+    "energy_savings_pln",
+    "net_savings_pln"
+  ],
+  "period_info_keys": [
+    "annualization_factor",
+    "end_datetime",
+    "is_full_year",
+    "period_days",
+    "period_hours",
+    "start_datetime"
+  ]
+}

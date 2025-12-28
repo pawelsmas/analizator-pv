@@ -11,11 +11,17 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 import database
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="PV Optimizer Projects API",
     description="Project storage and management for PV Optimizer",
     version="1.8.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(

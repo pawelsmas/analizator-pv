@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY main.py .
+COPY polish_localities.py .
+COPY european_cities.py .
 
 # Expose port
 EXPOSE 8021

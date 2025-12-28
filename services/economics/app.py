@@ -1,12 +1,32 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Literal
+from typing import List, Dict, Optional, Literal, Any
 import numpy as np
 import io
 import csv
 
-app = FastAPI(title="Economics Service", version="1.1.0")
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
+# Monte Carlo module
+from monte_carlo import (
+    MonteCarloEngine,
+    MonteCarloRequest,
+    QuickMonteCarloRequest,
+    MonteCarloResult,
+    ParameterPreset,
+    ParameterDistribution,
+    CorrelationPair,
+    DistributionType,
+    get_default_distributions,
+)
+from monte_carlo.distributions import DISTRIBUTION_PRESETS
+
+app = FastAPI(title="Economics Service", version="1.2.0")
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration
 app.add_middleware(
@@ -939,6 +959,451 @@ async def comprehensive_sensitivity_analysis(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== SCORING ENGINE ENDPOINTS ==============
+
+from scoring import (
+    ScoringEngine,
+    ScoringRequest,
+    ScoringResponse,
+    OfferInputs,
+    ScoringParameters,
+    WeightProfile,
+    ProfileType,
+    WEIGHT_PROFILES,
+)
+
+
+@app.post("/scoring/analyze", response_model=ScoringResponse)
+async def analyze_scoring(request: ScoringRequest):
+    """
+    Multi-criteria scoring for PV offers.
+
+    Scores offers based on savings vs baseline energy costs.
+    Uses 4 buckets: Value (NPV, Year1), Robustness (conservative scenario),
+    Tech (auto-consumption, coverage), ESG (CO2 reduction).
+
+    Normalization is done to baseline costs (not min-max across offers).
+    Piecewise threshold scoring with linear interpolation.
+    """
+    try:
+        engine = ScoringEngine(request.parameters)
+        return engine.score_offers(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scoring/profiles")
+async def get_weight_profiles():
+    """Get available weight profiles (CFO, ESG, Operations, Custom)"""
+    return {
+        profile_type.value: {
+            "name": profile_type.value.upper(),
+            "value_weight": profile.value_weight,
+            "robustness_weight": profile.robustness_weight,
+            "tech_weight": profile.tech_weight,
+            "esg_weight": profile.esg_weight,
+        }
+        for profile_type, profile in WEIGHT_PROFILES.items()
+    }
+
+
+@app.get("/scoring/thresholds")
+async def get_default_thresholds():
+    """Get default threshold configuration for scoring rules"""
+    from scoring.models import ThresholdConfig
+    config = ThresholdConfig()
+    return {
+        "npv_mln": {
+            "thresholds": config.npv_mln.thresholds,
+            "points": config.npv_mln.points,
+            "higher_is_better": config.npv_mln.higher_is_better,
+            "description": "NPV w milionach PLN",
+        },
+        "payback_years": {
+            "thresholds": config.payback_years.thresholds,
+            "points": config.payback_years.points,
+            "higher_is_better": config.payback_years.higher_is_better,
+            "description": "Okres zwrotu w latach",
+        },
+        "irr_pct": {
+            "thresholds": config.irr_pct.thresholds,
+            "points": config.irr_pct.points,
+            "higher_is_better": config.irr_pct.higher_is_better,
+            "description": "IRR w %",
+        },
+        "lcoe_pln_mwh": {
+            "thresholds": config.lcoe_pln_mwh.thresholds,
+            "points": config.lcoe_pln_mwh.points,
+            "higher_is_better": config.lcoe_pln_mwh.higher_is_better,
+            "description": "LCOE w PLN/MWh",
+        },
+        "auto_consumption_pct": {
+            "thresholds": config.auto_consumption_pct.thresholds,
+            "points": config.auto_consumption_pct.points,
+            "higher_is_better": config.auto_consumption_pct.higher_is_better,
+            "description": "Autokonsumpcja (0-1)",
+        },
+        "coverage_pct": {
+            "thresholds": config.coverage_pct.thresholds,
+            "points": config.coverage_pct.points,
+            "higher_is_better": config.coverage_pct.higher_is_better,
+            "description": "Pokrycie zużycia (0-1)",
+        },
+        "co2_reduction_tons": {
+            "thresholds": config.co2_reduction_tons.thresholds,
+            "points": config.co2_reduction_tons.points,
+            "higher_is_better": config.co2_reduction_tons.higher_is_better,
+            "description": "Redukcja CO2 w tonach/rok",
+        },
+    }
+
+
+# ============== BESS OPTIMIZER ENDPOINTS ==============
+
+from bess_optimizer import (
+    BESSOptimizationRequest,
+    BESSOptimizationResult,
+    OptimizationMethod,
+    optimize_bess,
+)
+
+
+@app.post("/bess/optimize", response_model=BESSOptimizationResult)
+async def optimize_bess_sizing(request: BESSOptimizationRequest):
+    """
+    Optymalny dobór magazynu energii (BESS) do peak shavingu.
+
+    Wykorzystuje PyPSA + HiGHS do rozwiązania problemu LP/MIP.
+
+    Metody optymalizacji:
+    - heuristic: Szybka heurystyka (największy blok / DOD * margines)
+    - lp_relaxed: Optymalizacja LP przez PyPSA+HiGHS (zalecana)
+    - mip_full: Pełna optymalizacja MIP (dokładniejsza, wolniejsza)
+
+    Biblioteki:
+    - PyPSA: Python for Power System Analysis - modelowanie systemów energetycznych
+    - HiGHS: High-performance LP/MIP solver (open source, szybki, MIT license)
+
+    Parametry wejściowe:
+    - load_profile_kw: Profil obciążenia godzinowy [kW]
+    - peak_shaving_threshold_kw: Próg peak shaving [kW]
+    - bess_capex_per_kwh: Koszt pojemności [PLN/kWh]
+    - bess_capex_per_kw: Koszt mocy [PLN/kW]
+    - depth_of_discharge: DOD (0.5-1.0)
+    - round_trip_efficiency: Sprawność cyklu (0.7-1.0)
+    - max_c_rate: Max C-rate (moc/pojemność)
+
+    Wynik:
+    - optimal_capacity_kwh: Optymalna pojemność [kWh]
+    - optimal_power_kw: Optymalna moc [kW]
+    - capex_total_pln: Całkowity CAPEX
+    - sizing_rationale: Uzasadnienie doboru
+    """
+    try:
+        return optimize_bess(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/bess/methods")
+async def get_bess_optimization_methods():
+    """
+    Dostępne metody optymalizacji BESS.
+
+    Returns:
+        Słownik z opisami metod
+    """
+    return {
+        "heuristic": {
+            "name": "Heurystyka",
+            "description": "Szybka metoda bazująca na największym bloku przeciążenia",
+            "pros": ["Bardzo szybka (<1ms)", "Nie wymaga solvera"],
+            "cons": ["Może dawać przewymiarowane wyniki"],
+            "recommended_for": "Szybkie oszacowanie, prototypowanie"
+        },
+        "lp_relaxed": {
+            "name": "LP (PyPSA+HiGHS)",
+            "description": "Optymalizacja liniowa z PyPSA i solverem HiGHS",
+            "pros": ["Optymalne rozwiązanie", "Szybka (10-100ms)", "Dokładna"],
+            "cons": ["Wymaga PyPSA i HiGHS"],
+            "recommended_for": "Produkcyjne dobory BESS"
+        },
+        "mip_full": {
+            "name": "MIP (PyPSA+HiGHS)",
+            "description": "Pełna optymalizacja mieszana całkowitoliczbowa",
+            "pros": ["Najbardziej dokładna", "Uwzględnia dyskretyzację"],
+            "cons": ["Wolniejsza (100ms-1s)", "Może nie zbiec dla dużych problemów"],
+            "recommended_for": "Finalne projekty wymagające precyzji"
+        },
+        "libraries": {
+            "pypsa": {
+                "name": "PyPSA",
+                "version": "0.27.1",
+                "description": "Python for Power System Analysis",
+                "url": "https://pypsa.org",
+                "license": "MIT"
+            },
+            "highs": {
+                "name": "HiGHS",
+                "version": "1.7.1",
+                "description": "High-performance LP/MIP solver",
+                "url": "https://highs.dev",
+                "license": "MIT"
+            }
+        }
+    }
+
+
+# ============== MONTE CARLO SIMULATION ENDPOINTS ==============
+
+@app.post("/monte-carlo", response_model=MonteCarloResult)
+async def run_monte_carlo(request: MonteCarloRequest):
+    """
+    Pełna symulacja Monte Carlo dla analizy ryzyka finansowego.
+
+    Wykonuje N symulacji z określonymi rozkładami parametrów
+    i opcjonalnymi korelacjami między nimi.
+
+    Zwraca:
+    - Rozkłady NPV, IRR, Payback
+    - Percentyle (P5-P95)
+    - Metryki ryzyka (VaR, CVaR, prawdopodobieństwo zysku)
+    - Automatyczne wnioski (insights)
+    - Histogram do wizualizacji
+
+    Przykład użycia:
+    ```json
+    {
+        "n_simulations": 10000,
+        "parameters": [
+            {
+                "name": "electricity_price",
+                "dist_type": "normal",
+                "base_value": 450.0,
+                "std_dev_pct": 15.0
+            },
+            {
+                "name": "production_factor",
+                "dist_type": "normal",
+                "base_value": 1.0,
+                "std_dev_pct": 10.0
+            }
+        ],
+        "correlations": [
+            {"param1": "electricity_price", "param2": "inflation_rate", "correlation": 0.6}
+        ],
+        "base_economics": {
+            "variant": {"capacity": 100, "production": 100000, "self_consumed": 70000},
+            "parameters": {"energy_price": 450, "investment_cost": 3500, "discount_rate": 0.07}
+        }
+    }
+    ```
+    """
+    try:
+        engine = MonteCarloEngine(
+            n_simulations=request.n_simulations,
+            random_seed=request.random_seed,
+        )
+        return engine.run_simulation(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/monte-carlo/quick", response_model=MonteCarloResult)
+async def run_quick_monte_carlo(request: QuickMonteCarloRequest):
+    """
+    Szybka symulacja Monte Carlo z uproszczonymi parametrami.
+
+    Używa domyślnych rozkładów i korelacji.
+    Idealna dla szybkiej oceny ryzyka bez szczegółowej konfiguracji.
+
+    Parametry wejściowe:
+    - n_simulations: Liczba symulacji (domyślnie 5000)
+    - electricity_price_uncertainty_pct: Niepewność ceny energii [%]
+    - production_uncertainty_pct: Niepewność produkcji PV [%]
+    - capex_uncertainty_pct: Niepewność CAPEX [%]
+    - inflation_uncertainty_pct: Niepewność inflacji [pp]
+
+    Przykład:
+    ```json
+    {
+        "n_simulations": 5000,
+        "electricity_price_uncertainty_pct": 15,
+        "production_uncertainty_pct": 10,
+        "base_economics": {
+            "variant": {"capacity": 100, "production": 100000, "self_consumed": 70000},
+            "parameters": {"energy_price": 450, "investment_cost": 3500}
+        }
+    }
+    ```
+    """
+    try:
+        engine = MonteCarloEngine(n_simulations=request.n_simulations)
+        return engine.run_quick_simulation(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/monte-carlo/presets")
+async def get_monte_carlo_presets():
+    """
+    Zwraca dostępne presety konfiguracji Monte Carlo.
+
+    Presety:
+    - conservative: Konserwatywne założenia (wyższa niepewność, gorsze wartości bazowe)
+    - moderate: Umiarkowane założenia (domyślne)
+    - optimistic: Optymistyczne założenia (niższa niepewność, lepsze wartości bazowe)
+    """
+    presets = {}
+
+    for preset_name, preset_func in DISTRIBUTION_PRESETS.items():
+        params, correlations = preset_func()
+
+        presets[preset_name] = {
+            "name": preset_name,
+            "description": {
+                "conservative": "Konserwatywne założenia - wyższa niepewność, gorsze wartości bazowe",
+                "moderate": "Umiarkowane założenia - domyślna konfiguracja",
+                "optimistic": "Optymistyczne założenia - niższa niepewność, lepsze wartości bazowe",
+            }.get(preset_name, preset_name),
+            "parameters": [
+                {
+                    "name": p.name,
+                    "dist_type": p.dist_type.value,
+                    "base_value": p.base_value,
+                    "std_dev": p.std_dev,
+                    "std_dev_pct": p.std_dev_pct,
+                    "min_val": p.min_val,
+                    "max_val": p.max_val,
+                }
+                for p in params
+            ],
+            "correlations": [
+                {
+                    "param1": c.param1,
+                    "param2": c.param2,
+                    "correlation": c.correlation,
+                }
+                for c in correlations
+            ],
+        }
+
+    return presets
+
+
+@app.get("/monte-carlo/parameters")
+async def get_monte_carlo_parameters():
+    """
+    Zwraca listę obsługiwanych parametrów dla symulacji Monte Carlo.
+
+    Każdy parametr zawiera:
+    - name: Nazwa parametru
+    - description: Opis
+    - typical_range: Typowy zakres wartości
+    - default_uncertainty: Domyślna niepewność [%]
+    - recommended_distribution: Zalecany typ rozkładu
+    """
+    return {
+        "electricity_price": {
+            "name": "electricity_price",
+            "display_name": "Cena energii elektrycznej",
+            "unit": "PLN/MWh",
+            "description": "Cena zakupu energii z sieci",
+            "typical_range": [300, 800],
+            "default_uncertainty_pct": 15,
+            "recommended_distribution": "normal",
+        },
+        "production_factor": {
+            "name": "production_factor",
+            "display_name": "Współczynnik produkcji",
+            "unit": "-",
+            "description": "Mnożnik produkcji PV względem wartości bazowej (1.0 = 100%)",
+            "typical_range": [0.8, 1.2],
+            "default_uncertainty_pct": 10,
+            "recommended_distribution": "normal",
+        },
+        "investment_cost": {
+            "name": "investment_cost",
+            "display_name": "Koszt inwestycji",
+            "unit": "PLN/kWp",
+            "description": "Jednostkowy koszt instalacji PV",
+            "typical_range": [2500, 5000],
+            "default_uncertainty_pct": 10,
+            "recommended_distribution": "lognormal",
+        },
+        "degradation_rate": {
+            "name": "degradation_rate",
+            "display_name": "Degradacja paneli",
+            "unit": "%/rok",
+            "description": "Roczna degradacja mocy paneli PV",
+            "typical_range": [0.003, 0.008],
+            "default_uncertainty_pct": 30,
+            "recommended_distribution": "triangular",
+        },
+        "inflation_rate": {
+            "name": "inflation_rate",
+            "display_name": "Stopa inflacji",
+            "unit": "%/rok",
+            "description": "Roczna stopa inflacji",
+            "typical_range": [0.01, 0.05],
+            "default_uncertainty_pct": 50,
+            "recommended_distribution": "normal",
+        },
+        "discount_rate": {
+            "name": "discount_rate",
+            "display_name": "Stopa dyskontowa",
+            "unit": "%/rok",
+            "description": "Stopa dyskontowa dla obliczeń NPV",
+            "typical_range": [0.05, 0.12],
+            "default_uncertainty_pct": 20,
+            "recommended_distribution": "triangular",
+        },
+        "feed_in_tariff": {
+            "name": "feed_in_tariff",
+            "display_name": "Taryfa sprzedaży",
+            "unit": "PLN/MWh",
+            "description": "Cena sprzedaży nadwyżek do sieci",
+            "typical_range": [0, 400],
+            "default_uncertainty_pct": 25,
+            "recommended_distribution": "normal",
+        },
+    }
+
+
+@app.get("/monte-carlo/distributions")
+async def get_distribution_types():
+    """
+    Zwraca informacje o dostępnych typach rozkładów prawdopodobieństwa.
+    """
+    return {
+        "normal": {
+            "name": "Rozkład normalny (Gaussa)",
+            "description": "Symetryczny rozkład wokół średniej. Dobry dla cen, produkcji.",
+            "parameters": ["base_value (średnia)", "std_dev lub std_dev_pct (odchylenie standardowe)"],
+            "use_cases": ["Ceny energii", "Produkcja PV", "Inflacja"],
+        },
+        "lognormal": {
+            "name": "Rozkład log-normalny",
+            "description": "Asymetryczny rozkład dla wartości tylko dodatnich. Dobry dla kosztów.",
+            "parameters": ["base_value (mediana)", "std_dev lub std_dev_pct"],
+            "use_cases": ["CAPEX", "Koszty operacyjne", "Ceny (gdy asymetryczne)"],
+        },
+        "triangular": {
+            "name": "Rozkład trójkątny",
+            "description": "Rozkład z określonym minimum, maksimum i wartością najbardziej prawdopodobną.",
+            "parameters": ["min_val", "max_val", "mode_val (lub base_value)"],
+            "use_cases": ["Szacunki ekspertowe", "Degradacja", "Stopa dyskontowa"],
+        },
+        "uniform": {
+            "name": "Rozkład jednostajny",
+            "description": "Wszystkie wartości w przedziale równie prawdopodobne. Gdy brak wiedzy.",
+            "parameters": ["min_val", "max_val"],
+            "use_cases": ["Brak wiedzy o rozkładzie", "Scenariusze skrajne"],
+        },
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

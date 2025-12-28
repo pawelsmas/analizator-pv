@@ -13,7 +13,7 @@ const API_URLS = USE_PROXY ? {
 };
 
 // Chart.js instances
-let dailyProductionChart, monthlyProductionChart, energyBalanceChart, hourlyProfileChart, daylightProfileChart;
+let dailyProductionChart, monthlyProductionChart, energyBalanceChart, hourlyProfileChart, daylightProfileChart, horizonChart;
 
 // Data storage
 let productionData = null;
@@ -809,6 +809,9 @@ function performAnalysis() {
   generateMonthlyProduction();
   generateDailyProductionProfile();
   generateEnergyBalance();
+
+  // Initialize Daily Explorer
+  initDailyExplorer();
 }
 
 // Calculate statistics
@@ -2739,4 +2742,926 @@ function updateVariantDescriptions() {
       descElement.textContent = `${(variant.capacity / 1000).toFixed(1)} MWp • ${variant.threshold}% pokrycia`;
     }
   });
+}
+
+// ============================================
+// PVGIS HORIZON DIAGRAM
+// ============================================
+
+/**
+ * Fetch horizon data from PVGIS via proxy
+ */
+async function fetchHorizonData() {
+  console.log('🏔️ Fetching horizon data...');
+
+  // Get location from settings - check per-type fields first, then legacy fields
+  const lat = systemSettings?.latitude_ground_s ||
+              systemSettings?.latitude_roof_ew ||
+              systemSettings?.latitude_ground_ew ||
+              systemSettings?.pvgis?.latitude ||
+              systemSettings?.location?.latitude;
+  const lon = systemSettings?.longitude_ground_s ||
+              systemSettings?.longitude_roof_ew ||
+              systemSettings?.longitude_ground_ew ||
+              systemSettings?.pvgis?.longitude ||
+              systemSettings?.location?.longitude;
+
+  console.log('📍 Horizon location:', { lat, lon, settings: systemSettings });
+
+  if (!lat || !lon) {
+    alert('Brak ustawionej lokalizacji. Przejdź do modułu USTAWIENIA i ustaw współrzędne lat/lon.');
+    return;
+  }
+
+  // Update button state
+  const btn = document.getElementById('btnFetchHorizon');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Pobieranie...';
+  }
+
+  try {
+    const response = await fetch('/api/pvgis/horizon', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ lat, lon })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log('✅ Horizon data received:', data);
+
+    // Update chart
+    updateHorizonChart(data.horizon, lat, lon);
+
+    // Show chart, hide no-data message
+    document.getElementById('horizonNoData').style.display = 'none';
+    document.getElementById('horizonChartContainer').style.display = 'block';
+
+  } catch (error) {
+    console.error('❌ Error fetching horizon data:', error);
+    alert(`Błąd pobierania danych horyzontu: ${error.message}`);
+  } finally {
+    // Reset button
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🔄 Pobierz dane';
+    }
+  }
+}
+
+/**
+ * Update horizon chart with data
+ */
+function updateHorizonChart(horizonData, lat, lon) {
+  const ctx = document.getElementById('horizonChart');
+  if (!ctx) {
+    console.warn('Horizon chart canvas not found');
+    return;
+  }
+
+  // Destroy existing chart
+  if (horizonChart) {
+    horizonChart.destroy();
+  }
+
+  // Prepare data for polar chart
+  const labels = [];
+  const elevations = [];
+
+  // PVGIS returns data starting from North (0°), going clockwise
+  for (const point of horizonData) {
+    const azimuth = point.azimuth;
+    const elevation = point.elevation;
+
+    // Convert azimuth to compass label
+    let label = `${azimuth}°`;
+    if (azimuth === 0 || azimuth === 360) label = 'N';
+    else if (azimuth === 90) label = 'E';
+    else if (azimuth === 180) label = 'S';
+    else if (azimuth === 270) label = 'W';
+
+    labels.push(label);
+    elevations.push(elevation);
+  }
+
+  // Create polar area chart (radar-like for horizon)
+  horizonChart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Wysokość horyzontu [°]',
+        data: elevations,
+        backgroundColor: 'rgba(52, 152, 219, 0.3)',
+        borderColor: 'rgba(52, 152, 219, 1)',
+        borderWidth: 2,
+        pointBackgroundColor: 'rgba(52, 152, 219, 1)',
+        pointBorderColor: '#fff',
+        pointHoverBackgroundColor: '#fff',
+        pointHoverBorderColor: 'rgba(52, 152, 219, 1)',
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return `Horyzont: ${context.raw.toFixed(1)}°`;
+            },
+            title: function(context) {
+              return `Azymut: ${context[0].label}`;
+            }
+          }
+        }
+      },
+      scales: {
+        r: {
+          beginAtZero: true,
+          max: Math.max(15, Math.ceil(Math.max(...elevations) / 5) * 5 + 5),
+          ticks: {
+            stepSize: 5,
+            callback: function(value) {
+              return value + '°';
+            }
+          },
+          pointLabels: {
+            font: {
+              size: 12,
+              weight: 'bold'
+            }
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          },
+          angleLines: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        }
+      }
+    }
+  });
+
+  // Update location info
+  const locationEl = document.getElementById('horizonLocation');
+  if (locationEl) {
+    locationEl.textContent = `Lokalizacja: ${lat.toFixed(4)}°N, ${lon.toFixed(4)}°E | Źródło: PVGIS 5.3 DEM`;
+  }
+
+  console.log('📊 Horizon chart updated');
+}
+
+// ============================================
+// DAILY PROFILE EXPLORER
+// ============================================
+
+// Explorer state
+let dailyExplorerChart = null;
+let dailyExplorerStartDate = null;
+let dailyExplorerDays = 7;
+let dailyExplorerDateRange = { min: null, max: null };
+let dailyExplorerPlayInterval = null;
+let dailyExplorerIsPlaying = false;
+let dailyExplorerHoursMode = '24h'; // '24h' or 'daylight'
+
+/**
+ * Calculate sunrise/sunset hours for a given date and latitude
+ * Uses simplified solar position calculation
+ * @param {Date} date - The date to calculate for
+ * @param {number} latitude - Latitude in degrees (default: 52° for Poland)
+ * @returns {object} { sunrise: hour, sunset: hour }
+ */
+function calculateDaylightHours(date, latitude = 52) {
+  const dayOfYear = Math.floor((date - new Date(date.getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24));
+
+  // Solar declination (simplified)
+  const declination = 23.45 * Math.sin((360 / 365) * (dayOfYear - 81) * Math.PI / 180);
+
+  // Hour angle at sunrise/sunset
+  const latRad = latitude * Math.PI / 180;
+  const declRad = declination * Math.PI / 180;
+
+  const cosHourAngle = -Math.tan(latRad) * Math.tan(declRad);
+
+  // Handle polar day/night
+  if (cosHourAngle < -1) {
+    // Polar day - sun never sets
+    return { sunrise: 0, sunset: 24 };
+  } else if (cosHourAngle > 1) {
+    // Polar night - sun never rises
+    return { sunrise: 12, sunset: 12 };
+  }
+
+  const hourAngle = Math.acos(cosHourAngle) * 180 / Math.PI;
+  const daylightHours = 2 * hourAngle / 15; // Convert to hours
+
+  const solarNoon = 12; // Simplified, ignoring longitude
+  const sunrise = solarNoon - daylightHours / 2;
+  const sunset = solarNoon + daylightHours / 2;
+
+  // Add buffer for PV production (PV starts ~30min after sunrise, ends ~30min before sunset)
+  // But also account for diffuse radiation which starts earlier
+  return {
+    sunrise: Math.max(0, Math.floor(sunrise - 0.5)),  // Round down, add 30min buffer
+    sunset: Math.min(24, Math.ceil(sunset + 0.5))     // Round up, add 30min buffer
+  };
+}
+
+/**
+ * Check if hour is within PV production window for given date
+ * @param {Date} timestamp - The timestamp to check
+ * @param {number} latitude - Latitude in degrees
+ * @returns {boolean} True if hour is during daylight/PV production
+ */
+function isDaylightHour(timestamp, latitude = 52) {
+  const hour = timestamp.getHours();
+  const { sunrise, sunset } = calculateDaylightHours(timestamp, latitude);
+  return hour >= sunrise && hour < sunset;
+}
+
+/**
+ * Update explorer hours mode and refresh chart
+ */
+function updateExplorerHoursMode() {
+  const mode24h = document.getElementById('explorerMode24h');
+  dailyExplorerHoursMode = mode24h?.checked ? '24h' : 'daylight';
+
+  // Update visual feedback
+  const label24h = document.getElementById('explorerModeLabel24h');
+  const labelDaylight = document.getElementById('explorerModeLabelDaylight');
+  const info = document.getElementById('explorerHoursModeInfo');
+
+  if (label24h && labelDaylight) {
+    if (dailyExplorerHoursMode === '24h') {
+      label24h.style.borderColor = '#3498db';
+      label24h.style.background = '#e8f4fc';
+      labelDaylight.style.borderColor = 'transparent';
+      labelDaylight.style.background = 'white';
+    } else {
+      labelDaylight.style.borderColor = '#f39c12';
+      labelDaylight.style.background = '#fef9e7';
+      label24h.style.borderColor = 'transparent';
+      label24h.style.background = 'white';
+    }
+  }
+
+  // Update info text
+  if (info) {
+    if (dailyExplorerHoursMode === '24h') {
+      info.textContent = '(wszystkie godziny doby)';
+    } else {
+      // Calculate typical daylight range for current date
+      const currentDate = dailyExplorerStartDate || new Date();
+      const { sunrise, sunset } = calculateDaylightHours(currentDate);
+      info.textContent = `(~${sunrise}:00 - ${sunset}:00 dla wybranej daty)`;
+    }
+  }
+
+  console.log(`⏰ Explorer hours mode: ${dailyExplorerHoursMode}`);
+  updateDailyExplorerChart();
+}
+
+/**
+ * Initialize Daily Explorer with data range
+ */
+function initDailyExplorer() {
+  console.log('📅 Initializing Daily Explorer...');
+
+  // Get timestamps from consumptionData
+  const timestamps = consumptionData?.hourlyData?.timestamps;
+  if (!timestamps || !Array.isArray(timestamps) || timestamps.length === 0) {
+    console.warn('No timestamp data for Daily Explorer');
+    return;
+  }
+
+  // Find date range from timestamps
+  const dates = timestamps
+    .map(ts => new Date(ts))
+    .filter(d => d && !isNaN(d.getTime()));
+
+  if (dates.length === 0) {
+    console.warn('No valid dates in timestamp data');
+    return;
+  }
+
+  dailyExplorerDateRange.min = new Date(Math.min(...dates));
+  dailyExplorerDateRange.max = new Date(Math.max(...dates));
+
+  console.log(`📅 Date range: ${dailyExplorerDateRange.min.toISOString()} to ${dailyExplorerDateRange.max.toISOString()}`);
+
+  // Set date picker constraints
+  const datePicker = document.getElementById('dailyExplorerDate');
+  if (datePicker) {
+    datePicker.min = dailyExplorerDateRange.min.toISOString().split('T')[0];
+    datePicker.max = dailyExplorerDateRange.max.toISOString().split('T')[0];
+    datePicker.value = dailyExplorerDateRange.min.toISOString().split('T')[0];
+  }
+
+  // Start at first date
+  dailyExplorerStartDate = new Date(dailyExplorerDateRange.min);
+  dailyExplorerDays = parseInt(document.getElementById('dailyExplorerPeriod')?.value || '7');
+
+  // Update chart
+  updateDailyExplorerChart();
+}
+
+/**
+ * Navigate Daily Explorer
+ */
+function navigateDailyExplorer(direction) {
+  if (!dailyExplorerStartDate || !dailyExplorerDateRange.min) {
+    console.warn('Daily Explorer not initialized');
+    return;
+  }
+
+  const newDate = new Date(dailyExplorerStartDate);
+
+  switch (direction) {
+    case 'start':
+      newDate.setTime(dailyExplorerDateRange.min.getTime());
+      break;
+    case 'end':
+      // Go to last possible start date for current period
+      newDate.setTime(dailyExplorerDateRange.max.getTime());
+      newDate.setDate(newDate.getDate() - dailyExplorerDays + 1);
+      break;
+    case 'prev':
+      newDate.setDate(newDate.getDate() - 1);
+      break;
+    case 'next':
+      newDate.setDate(newDate.getDate() + 1);
+      break;
+    case 'prev-period':
+      newDate.setDate(newDate.getDate() - dailyExplorerDays);
+      break;
+    case 'next-period':
+      newDate.setDate(newDate.getDate() + dailyExplorerDays);
+      break;
+  }
+
+  // Clamp to valid range
+  if (newDate < dailyExplorerDateRange.min) {
+    newDate.setTime(dailyExplorerDateRange.min.getTime());
+  }
+  if (newDate > dailyExplorerDateRange.max) {
+    newDate.setTime(dailyExplorerDateRange.max.getTime());
+    newDate.setDate(newDate.getDate() - dailyExplorerDays + 1);
+    if (newDate < dailyExplorerDateRange.min) {
+      newDate.setTime(dailyExplorerDateRange.min.getTime());
+    }
+  }
+
+  dailyExplorerStartDate = newDate;
+
+  // Update date picker
+  const datePicker = document.getElementById('dailyExplorerDate');
+  if (datePicker) {
+    datePicker.value = dailyExplorerStartDate.toISOString().split('T')[0];
+  }
+
+  updateDailyExplorerChart();
+}
+
+/**
+ * Jump to specific date
+ */
+function jumpToDailyExplorerDate() {
+  const datePicker = document.getElementById('dailyExplorerDate');
+  if (!datePicker || !datePicker.value) return;
+
+  dailyExplorerStartDate = new Date(datePicker.value);
+  updateDailyExplorerChart();
+}
+
+/**
+ * Jump to specific month (first day)
+ */
+function jumpToMonth(month) {
+  if (!dailyExplorerDateRange.min) return;
+
+  const year = dailyExplorerDateRange.min.getFullYear();
+  dailyExplorerStartDate = new Date(year, parseInt(month) - 1, 1);
+
+  // Clamp
+  if (dailyExplorerStartDate < dailyExplorerDateRange.min) {
+    dailyExplorerStartDate = new Date(dailyExplorerDateRange.min);
+  }
+  if (dailyExplorerStartDate > dailyExplorerDateRange.max) {
+    dailyExplorerStartDate = new Date(dailyExplorerDateRange.max);
+  }
+
+  // Update date picker
+  const datePicker = document.getElementById('dailyExplorerDate');
+  if (datePicker) {
+    datePicker.value = dailyExplorerStartDate.toISOString().split('T')[0];
+  }
+
+  updateDailyExplorerChart();
+}
+
+/**
+ * Update period selector
+ */
+function updateDailyExplorerPeriod() {
+  dailyExplorerDays = parseInt(document.getElementById('dailyExplorerPeriod')?.value || '7');
+  updateDailyExplorerChart();
+}
+
+/**
+ * Get data for selected period
+ * Respects dailyExplorerHoursMode: '24h' or 'daylight'
+ */
+function getDailyExplorerData() {
+  const timestamps = consumptionData?.hourlyData?.timestamps;
+  const loadValues = consumptionData?.hourlyData?.values;
+  const pvValues = productionData?.hourlyProduction;
+
+  if (!timestamps || !loadValues || !dailyExplorerStartDate) return null;
+
+  const startDate = new Date(dailyExplorerStartDate);
+  startDate.setHours(0, 0, 0, 0);
+
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + dailyExplorerDays);
+
+  // Get latitude from PV config (default to Poland ~52°)
+  const latitude = pvConfig?.latitude || 52;
+
+  // Build hourly data array with filtered results
+  const filteredData = [];
+  let daylightHoursCount = 0;
+  let totalHoursCount = 0;
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const ts = new Date(timestamps[i]);
+    if (ts >= startDate && ts < endDate) {
+      totalHoursCount++;
+
+      // Apply daylight filter if in daylight mode
+      if (dailyExplorerHoursMode === 'daylight') {
+        if (!isDaylightHour(ts, latitude)) {
+          continue; // Skip non-daylight hours
+        }
+        daylightHoursCount++;
+      }
+
+      filteredData.push({
+        timestamp: timestamps[i],
+        load_kw: loadValues[i] || 0,
+        pv_production_kw: (pvValues && pvValues[i]) ? pvValues[i] : 0
+      });
+    }
+  }
+
+  // Sort by timestamp
+  filteredData.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+  // Log filtering stats
+  if (dailyExplorerHoursMode === 'daylight') {
+    console.log(`☀️ Daylight filter: ${filteredData.length} of ${totalHoursCount} hours (lat: ${latitude}°)`);
+  }
+
+  return {
+    data: filteredData,
+    startDate: startDate,
+    endDate: endDate,
+    days: dailyExplorerDays,
+    hoursMode: dailyExplorerHoursMode,
+    totalHours: totalHoursCount,
+    daylightHours: dailyExplorerHoursMode === 'daylight' ? filteredData.length : null
+  };
+}
+
+/**
+ * Update Daily Explorer Chart
+ * @param {boolean} fastMode - If true, disable animations for smooth playback
+ */
+function updateDailyExplorerChart(fastMode = false) {
+  const explorerData = getDailyExplorerData();
+
+  if (!explorerData || explorerData.data.length === 0) {
+    // Show no data message
+    document.getElementById('dailyExplorerNoData').style.display = 'block';
+    document.getElementById('dailyExplorerRange').textContent = 'Brak danych';
+    return;
+  }
+
+  document.getElementById('dailyExplorerNoData').style.display = 'none';
+
+  const { data, startDate, endDate, days } = explorerData;
+
+  // Update range display
+  const startStr = startDate.toLocaleDateString('pl-PL', { day: '2-digit', month: 'short', year: 'numeric' });
+  const endDateDisplay = new Date(endDate);
+  endDateDisplay.setDate(endDateDisplay.getDate() - 1);
+  const endStr = endDateDisplay.toLocaleDateString('pl-PL', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  if (days === 1) {
+    document.getElementById('dailyExplorerRange').textContent = startStr;
+  } else {
+    document.getElementById('dailyExplorerRange').textContent = `${startStr} - ${endStr}`;
+  }
+
+  // Prepare chart data
+  const labels = [];
+  const loadData = [];
+  const pvData = [];
+  const selfConsData = [];
+  const exportData = [];
+  const importData = [];
+
+  // Get visibility settings
+  const showLoad = document.getElementById('explorerToggleLoad')?.checked ?? true;
+  const showPV = document.getElementById('explorerTogglePV')?.checked ?? true;
+  const showSelfCons = document.getElementById('explorerToggleSelfCons')?.checked ?? true;
+  const showExport = document.getElementById('explorerToggleExport')?.checked ?? false;
+  const showImport = document.getElementById('explorerToggleImport')?.checked ?? false;
+
+  // Calculate statistics
+  let totalLoad = 0, totalPV = 0, totalSelfCons = 0;
+  let peakLoad = 0, peakPV = 0;
+
+  data.forEach((h, idx) => {
+    const d = new Date(h.timestamp);
+
+    // Label format depends on period length
+    let label;
+    if (days === 1) {
+      label = d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+    } else if (days <= 3) {
+      label = d.toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    } else {
+      // Show only hours, day separator added via day markers
+      label = d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+    }
+    labels.push(label);
+
+    const load = (h.load_kw || h.consumption_kw || 0) / 1000; // MW
+    const pv = (h.pv_production_kw || h.pv_ac_kw || 0) / 1000; // MW
+    const selfCons = Math.min(load, pv); // MW
+    const gridExport = Math.max(0, pv - load); // MW
+    const gridImport = Math.max(0, load - pv); // MW
+
+    loadData.push(load);
+    pvData.push(pv);
+    selfConsData.push(selfCons);
+    exportData.push(gridExport);
+    importData.push(gridImport);
+
+    // Statistics (in MWh, assuming hourly data)
+    totalLoad += load;
+    totalPV += pv;
+    totalSelfCons += selfCons;
+    peakLoad = Math.max(peakLoad, load);
+    peakPV = Math.max(peakPV, pv);
+  });
+
+  // Update stats display
+  document.getElementById('explorerStatLoad').textContent = totalLoad.toFixed(2);
+  document.getElementById('explorerStatPV').textContent = totalPV.toFixed(2);
+  document.getElementById('explorerStatSelfCons').textContent = totalSelfCons.toFixed(2);
+  document.getElementById('explorerStatAutoPct').textContent = totalPV > 0 ? ((totalSelfCons / totalPV) * 100).toFixed(1) + '%' : '-';
+  document.getElementById('explorerStatPeakLoad').textContent = peakLoad.toFixed(3);
+  document.getElementById('explorerStatPeakPV').textContent = peakPV.toFixed(3);
+
+  // Day markers for multi-day view
+  updateDayMarkers(data, days);
+
+  // Build datasets
+  const datasets = [];
+
+  if (showSelfCons) {
+    datasets.push({
+      label: 'Autokonsumpcja',
+      data: selfConsData,
+      backgroundColor: 'rgba(39, 174, 96, 0.7)',
+      borderColor: 'rgba(39, 174, 96, 1)',
+      borderWidth: 1,
+      fill: true,
+      tension: 0.3,
+      order: 3
+    });
+  }
+
+  if (showPV) {
+    datasets.push({
+      label: 'Produkcja PV',
+      data: pvData,
+      backgroundColor: 'rgba(243, 156, 18, 0.5)',
+      borderColor: 'rgba(243, 156, 18, 1)',
+      borderWidth: 2,
+      fill: true,
+      tension: 0.3,
+      order: 2
+    });
+  }
+
+  if (showLoad) {
+    datasets.push({
+      label: 'Zużycie (Load)',
+      data: loadData,
+      backgroundColor: 'rgba(231, 76, 60, 0.1)',
+      borderColor: 'rgba(231, 76, 60, 1)',
+      borderWidth: 2,
+      fill: false,
+      tension: 0.3,
+      order: 1
+    });
+  }
+
+  if (showExport) {
+    datasets.push({
+      label: 'Eksport do sieci',
+      data: exportData,
+      backgroundColor: 'rgba(52, 152, 219, 0.5)',
+      borderColor: 'rgba(52, 152, 219, 1)',
+      borderWidth: 1,
+      fill: true,
+      tension: 0.3,
+      order: 4
+    });
+  }
+
+  if (showImport) {
+    datasets.push({
+      label: 'Import z sieci',
+      data: importData,
+      backgroundColor: 'rgba(155, 89, 182, 0.5)',
+      borderColor: 'rgba(155, 89, 182, 1)',
+      borderWidth: 1,
+      fill: true,
+      tension: 0.3,
+      order: 5
+    });
+  }
+
+  // Destroy existing chart
+  if (dailyExplorerChart) {
+    dailyExplorerChart.destroy();
+  }
+
+  // Create chart
+  const ctx = document.getElementById('dailyExplorerChart');
+  if (!ctx) return;
+
+  dailyExplorerChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: fastMode ? false : {
+        duration: 300,
+        easing: 'easeOutQuart'
+      },
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: {
+            usePointStyle: true,
+            padding: 15
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return `${context.dataset.label}: ${context.raw.toFixed(3)} MW`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          display: true,
+          title: {
+            display: true,
+            text: days === 1 ? 'Godzina' : 'Data/Godzina'
+          },
+          ticks: {
+            maxRotation: 45,
+            minRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: days <= 3 ? 24 : 48
+          }
+        },
+        y: {
+          display: true,
+          title: {
+            display: true,
+            text: 'Moc [MW]'
+          },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+
+  if (!fastMode) {
+    console.log(`📅 Daily Explorer updated: ${data.length} data points for ${days} days`);
+  }
+}
+
+/**
+ * Update day markers for multi-day view
+ */
+function updateDayMarkers(data, days) {
+  const container = document.getElementById('dailyExplorerDayMarkers');
+  if (!container) return;
+
+  if (days <= 1) {
+    container.innerHTML = '';
+    return;
+  }
+
+  // Find day boundaries
+  const dayStarts = [];
+  let currentDay = null;
+
+  data.forEach((h, idx) => {
+    const d = new Date(h.timestamp);
+    const dayStr = d.toLocaleDateString('pl-PL', { weekday: 'short', day: '2-digit', month: '2-digit' });
+
+    if (dayStr !== currentDay) {
+      dayStarts.push({ day: dayStr, idx: idx });
+      currentDay = dayStr;
+    }
+  });
+
+  container.innerHTML = dayStarts.map(d => `<span style="padding: 4px 8px; background: #e9ecef; border-radius: 4px;">${d.day}</span>`).join('');
+}
+
+/**
+ * Export Daily Explorer data to Excel
+ */
+function exportDailyExplorerToExcel() {
+  const explorerData = getDailyExplorerData();
+
+  if (!explorerData || explorerData.data.length === 0) {
+    alert('Brak danych do eksportu');
+    return;
+  }
+
+  const { data, startDate, endDate, days } = explorerData;
+
+  // Prepare data for Excel
+  const excelData = data.map(h => {
+    const d = new Date(h.timestamp);
+    const load = (h.load_kw || h.consumption_kw || 0);
+    const pv = (h.pv_production_kw || h.pv_ac_kw || 0);
+    const selfCons = Math.min(load, pv);
+
+    return {
+      'Data': d.toLocaleDateString('pl-PL'),
+      'Godzina': d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+      'Timestamp': h.timestamp,
+      'Zużycie [kW]': load.toFixed(2),
+      'Produkcja PV [kW]': pv.toFixed(2),
+      'Autokonsumpcja [kW]': selfCons.toFixed(2),
+      'Eksport do sieci [kW]': Math.max(0, pv - load).toFixed(2),
+      'Import z sieci [kW]': Math.max(0, load - pv).toFixed(2)
+    };
+  });
+
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(excelData);
+
+  // Set column widths
+  ws['!cols'] = [
+    { wch: 12 }, { wch: 8 }, { wch: 20 },
+    { wch: 15 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 20 }
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Profil Dzienny');
+
+  // Generate filename
+  const startStr = startDate.toISOString().split('T')[0];
+  const endStr = new Date(endDate.getTime() - 86400000).toISOString().split('T')[0];
+  const filename = days === 1
+    ? `profil_dzienny_${startStr}.xlsx`
+    : `profil_dzienny_${startStr}_${endStr}.xlsx`;
+
+  XLSX.writeFile(wb, filename);
+
+  console.log(`📊 Exported ${data.length} rows to ${filename}`);
+}
+
+/**
+ * Toggle Play/Pause for automatic date scrolling
+ */
+function toggleDailyExplorerPlay() {
+  if (dailyExplorerIsPlaying) {
+    stopDailyExplorerPlay();
+  } else {
+    startDailyExplorerPlay();
+  }
+}
+
+/**
+ * Start automatic date scrolling
+ */
+function startDailyExplorerPlay() {
+  if (!dailyExplorerStartDate || !dailyExplorerDateRange.min) {
+    console.warn('Daily Explorer not initialized');
+    return;
+  }
+
+  // Get play speed from selector
+  const speedSelect = document.getElementById('explorerPlaySpeed');
+  const speed = parseInt(speedSelect?.value || '500');
+
+  // Start from beginning if at the end
+  const endDate = new Date(dailyExplorerDateRange.max);
+  endDate.setDate(endDate.getDate() - dailyExplorerDays + 1);
+  if (dailyExplorerStartDate >= endDate) {
+    dailyExplorerStartDate = new Date(dailyExplorerDateRange.min);
+    updateDailyExplorerChart();
+  }
+
+  dailyExplorerIsPlaying = true;
+  updatePlayButton();
+
+  console.log(`▶️ Starting Daily Explorer playback at ${speed}ms/day`);
+
+  // Start interval
+  dailyExplorerPlayInterval = setInterval(() => {
+    // Move to next day
+    const newDate = new Date(dailyExplorerStartDate);
+    newDate.setDate(newDate.getDate() + 1);
+
+    // Check if reached end
+    const maxStartDate = new Date(dailyExplorerDateRange.max);
+    maxStartDate.setDate(maxStartDate.getDate() - dailyExplorerDays + 1);
+
+    if (newDate > maxStartDate) {
+      // Reached the end - stop playback
+      stopDailyExplorerPlay();
+      console.log('⏹️ Playback finished - reached end of data');
+      return;
+    }
+
+    dailyExplorerStartDate = newDate;
+
+    // Update date picker
+    const datePicker = document.getElementById('dailyExplorerDate');
+    if (datePicker) {
+      datePicker.value = dailyExplorerStartDate.toISOString().split('T')[0];
+    }
+
+    // Update chart with animation disabled for smooth playback
+    updateDailyExplorerChart(true); // true = fast update mode
+  }, speed);
+}
+
+/**
+ * Stop automatic date scrolling
+ */
+function stopDailyExplorerPlay() {
+  if (dailyExplorerPlayInterval) {
+    clearInterval(dailyExplorerPlayInterval);
+    dailyExplorerPlayInterval = null;
+  }
+  dailyExplorerIsPlaying = false;
+  updatePlayButton();
+  console.log('⏸️ Daily Explorer playback stopped');
+}
+
+/**
+ * Update Play button appearance
+ */
+function updatePlayButton() {
+  const btn = document.getElementById('explorerPlayBtn');
+  if (!btn) return;
+
+  if (dailyExplorerIsPlaying) {
+    btn.innerHTML = '⏸️';
+    btn.title = 'Zatrzymaj';
+    btn.style.background = 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)';
+    btn.style.borderColor = '#e74c3c';
+    btn.classList.add('playing');
+  } else {
+    btn.innerHTML = '▶️';
+    btn.title = 'Automatyczne przewijanie';
+    btn.style.background = 'linear-gradient(135deg, #27ae60 0%, #2ecc71 100%)';
+    btn.style.borderColor = '#27ae60';
+    btn.classList.remove('playing');
+  }
 }

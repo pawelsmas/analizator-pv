@@ -18,11 +18,17 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics
+from prometheus_fastapi_instrumentator import Instrumentator
+
 app = FastAPI(
     title="PVGIS Proxy Service",
     description="Proxy for PVGIS API calls with Pxx factor calculation",
     version="1.0.0"
 )
+
+# Initialize Prometheus metrics
+Instrumentator().instrument(app).expose(app)
 
 # CORS configuration - allow all origins for local development
 app.add_middleware(
@@ -49,9 +55,9 @@ class PVCalcRequest(BaseModel):
     lon: float = Field(..., description="Longitude", ge=-180, le=180)
     peakpower: float = Field(default=1.0, description="Peak power [kWp]")
     loss: float = Field(default=14.0, description="System losses [%]")
-    pvtechchoice: str = Field(default="crystSi", description="PV technology")
+    pvtechchoice: str = Field(default="crystSi2025", description="PV technology: crystSi2025 (recommended), crystSi, CIS, CdTe")
     mountingplace: str = Field(default="free", description="Mounting type: free or building")
-    raddatabase: str = Field(default="PVGIS-SARAH3", description="Radiation database")
+    raddatabase: str = Field(default="PVGIS-SARAH3", description="Radiation database (SARAH3 data to 2023)")
     angle: Optional[float] = Field(default=None, description="Tilt angle (None=optimal)")
     aspect: float = Field(default=0, description="Azimuth: 0=south, -90=east, 90=west")
     model_uncertainty_pct: float = Field(default=3.0, description="Model uncertainty [%]")
@@ -64,9 +70,9 @@ class SeriesCalcRequest(BaseModel):
     lon: float = Field(..., description="Longitude", ge=-180, le=180)
     peakpower: float = Field(default=1.0, description="Peak power [kWp]")
     loss: float = Field(default=14.0, description="System losses [%]")
-    pvtechchoice: str = Field(default="crystSi", description="PV technology")
+    pvtechchoice: str = Field(default="crystSi2025", description="PV technology: crystSi2025 (recommended), crystSi, CIS, CdTe")
     mountingplace: str = Field(default="free", description="Mounting type: free or building")
-    raddatabase: str = Field(default="PVGIS-SARAH3", description="Radiation database")
+    raddatabase: str = Field(default="PVGIS-SARAH3", description="Radiation database (SARAH3 data to 2023)")
     angle: Optional[float] = Field(default=None, description="Tilt angle (None=optimal)")
     aspect: float = Field(default=0, description="Azimuth: 0=south, -90=east, 90=west")
     startyear: int = Field(default=2005, description="Start year for timeseries")
@@ -404,6 +410,93 @@ async def list_databases():
         "recommended_for_poland": "PVGIS-SARAH3",
         "note": "PVGIS 5.3 updated SARAH3 and ERA5 data to include years up to 2023"
     }
+
+
+class HorizonRequest(BaseModel):
+    """Request model for horizon profile endpoint"""
+    lat: float = Field(..., description="Latitude", ge=-90, le=90)
+    lon: float = Field(..., description="Longitude", ge=-180, le=180)
+    userhorizon: Optional[list] = Field(default=None, description="User-defined horizon heights in degrees")
+
+
+class HorizonResponse(BaseModel):
+    """Response model for horizon profile"""
+    horizon: list  # List of {azimuth, elevation} pairs
+    location: dict
+    source: str
+
+
+@app.post("/pvgis/horizon", response_model=HorizonResponse)
+async def pvgis_horizon(request: HorizonRequest):
+    """
+    Get horizon profile for a location using PVGIS printhorizon endpoint.
+
+    Returns horizon elevation angles at various azimuth points (clockwise from North).
+    The horizon data shows terrain obstructions that affect solar irradiance.
+    """
+    # Check cache
+    cache_key = get_cache_key("horizon", request.lat, request.lon)
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    # Build PVGIS request URL
+    params = {
+        "lat": request.lat,
+        "lon": request.lon,
+        "outputformat": "json"
+    }
+
+    if request.userhorizon:
+        params["userhorizon"] = ",".join(str(h) for h in request.userhorizon)
+
+    try:
+        logger.info(f"🏔️ PVGIS horizon request: lat={request.lat}, lon={request.lon}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(f"{PVGIS_BASE_URL}/printhorizon", params=params)
+            logger.info(f"📡 PVGIS horizon response status: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"✅ PVGIS horizon success for lat={request.lat}, lon={request.lon}")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ PVGIS horizon HTTP error: {e.response.status_code}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"PVGIS API error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ PVGIS horizon fetch failed: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch horizon from PVGIS: {str(e)}")
+
+    # Process horizon data
+    try:
+        outputs = data.get("outputs", {})
+        # PVGIS returns data in "horizon_profile" key
+        horizon_data = outputs.get("horizon_profile", outputs.get("horizon", []))
+
+        # Convert to list of {azimuth, elevation} pairs
+        horizon_points = []
+        for point in horizon_data:
+            azimuth = point.get("A", point.get("azimuth", 0))  # Azimuth in degrees
+            elevation = point.get("H_hor", point.get("elevation", 0))  # Horizon height in degrees
+            horizon_points.append({
+                "azimuth": azimuth,
+                "elevation": elevation
+            })
+
+        # Sort by azimuth
+        horizon_points.sort(key=lambda x: x["azimuth"])
+
+        result = HorizonResponse(
+            horizon=horizon_points,
+            location={"lat": request.lat, "lon": request.lon},
+            source="PVGIS 5.3 DEM"
+        )
+
+        # Cache result
+        set_cache(cache_key, result)
+
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing horizon data: {str(e)}")
 
 
 if __name__ == "__main__":

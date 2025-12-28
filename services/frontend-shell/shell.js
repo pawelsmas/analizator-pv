@@ -7,6 +7,7 @@ const USE_PROXY = true; // Production mode: use nginx reverse proxy
 
 // Module URLs
 const MODULES = USE_PROXY ? {
+  hub: '/modules/hub/',
   admin: '/modules/admin/',
   config: '/modules/config/',
   consumption: '/modules/consumption/',
@@ -15,6 +16,7 @@ const MODULES = USE_PROXY ? {
   profile: '/modules/profile/',
   comparison: '/modules/comparison/',
   economics: '/modules/economics/',
+  scoring: '/modules/scoring/',
   settings: '/modules/settings/',
   esg: '/modules/esg/',
   energyprices: '/modules/energyprices/',
@@ -22,6 +24,7 @@ const MODULES = USE_PROXY ? {
   projects: '/modules/projects/',
   estimator: '/modules/estimator/'
 } : {
+  hub: 'http://localhost:9015',
   admin: 'http://localhost:9001',
   config: 'http://localhost:9002',
   consumption: 'http://localhost:9003',
@@ -30,6 +33,7 @@ const MODULES = USE_PROXY ? {
   profile: 'http://localhost:9014',
   comparison: 'http://localhost:9005',
   economics: 'http://localhost:9006',
+  scoring: 'http://localhost:9016',
   settings: 'http://localhost:9007',
   esg: 'http://localhost:9008',
   energyprices: 'http://localhost:9009',
@@ -383,10 +387,14 @@ window.addEventListener('message', (event) => {
   // Handle different message types
   switch (event.data.type) {
     case 'NAVIGATE':
-      // Extract module name from data
+    case 'NAVIGATE_TO_MODULE':
+      // Extract module name from data (support both formats)
       const targetModule = event.data.data?.module || event.data.module;
       if (targetModule && MODULES[targetModule]) {
+        console.log('🧭 Navigating to module:', targetModule);
         loadModule(targetModule);
+      } else {
+        console.warn('⚠️ Unknown module requested:', targetModule);
       }
       break;
     case 'DATA_UPLOADED':

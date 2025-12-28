@@ -18,6 +18,25 @@
     </div>
   </div>
 
+  <!-- Cross-Module Navigation -->
+  <div class="cross-module-nav" style="background:linear-gradient(135deg,#e8f5e9 0%,#c8e6c9 100%);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;border:1px solid #a5d6a7;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button onclick="navigateToModule('hub')" class="cross-link-btn" style="background:#ff5722;color:white;border:none;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:4px;transition:all 0.2s;">
+        <span>🎯</span> HUB
+      </button>
+      <span style="color:#a5d6a7;">|</span>
+      <button onclick="navigateToModule('profile')" class="cross-link-btn" style="background:#00897b;color:white;border:none;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s;">
+        <span>📊</span> Analiza Profilu PyPSA
+      </button>
+      <button onclick="navigateToModule('economics')" class="cross-link-btn" style="background:#1565c0;color:white;border:none;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.2s;">
+        <span>💰</span> Ekonomia
+      </button>
+    </div>
+    <div style="font-size:11px;color:#558b2f;">
+      <span id="sharedBessConfig" style="background:#fff;padding:4px 10px;border-radius:4px;font-weight:500;">BESS: - kW / - kWh</span>
+    </div>
+  </div>
+
   <!-- Variant Selector -->
   <div class="variant-selector">
     <div class="selector-label">Wybierz wariant instalacji:</div>
@@ -133,6 +152,171 @@
           <span class="flow-icon">↻</span>
           <span class="flow-label">Sprawność RT</span>
           <span class="flow-value" id="bessEfficiency">- %</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- BESS Cycle Animation Section -->
+    <div class="chart-section full-width bess-animation-section">
+      <h2>🔄 Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
+      <div class="bess-animation-container">
+        <!-- Visual Energy Flow Diagram -->
+        <div class="bess-flow-diagram">
+          <!-- PV Panel -->
+          <div class="flow-node pv-node">
+            <div class="node-icon">☀️</div>
+            <div class="node-label">PV</div>
+            <div class="node-value" id="animPvPower">0 kW</div>
+          </div>
+
+          <!-- Flow arrows container -->
+          <div class="flow-arrows">
+            <!-- PV to Battery -->
+            <div class="flow-arrow arrow-pv-battery" id="arrowPvBattery">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesPvBattery"></div>
+              </div>
+              <div class="arrow-value" id="flowPvBattery">0</div>
+            </div>
+
+            <!-- PV to Load -->
+            <div class="flow-arrow arrow-pv-load" id="arrowPvLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesPvLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowPvLoad">0</div>
+            </div>
+
+            <!-- Battery to Load -->
+            <div class="flow-arrow arrow-battery-load" id="arrowBatteryLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesBatteryLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowBatteryLoad">0</div>
+            </div>
+
+            <!-- Grid to Load -->
+            <div class="flow-arrow arrow-grid-load" id="arrowGridLoad">
+              <div class="arrow-line">
+                <div class="arrow-particles" id="particlesGridLoad"></div>
+              </div>
+              <div class="arrow-value" id="flowGridLoad">0</div>
+            </div>
+
+            <!-- Curtailment -->
+            <div class="flow-arrow arrow-curtailment" id="arrowCurtailment">
+              <div class="arrow-line">
+                <div class="arrow-particles curtailment-particles" id="particlesCurtailment"></div>
+              </div>
+              <div class="arrow-value" id="flowCurtailment">0</div>
+            </div>
+          </div>
+
+          <!-- Battery -->
+          <div class="flow-node battery-node">
+            <div class="battery-visual">
+              <div class="battery-body">
+                <div class="battery-fill" id="batteryFill"></div>
+                <div class="battery-level" id="batteryLevel">0%</div>
+              </div>
+              <div class="battery-cap"></div>
+            </div>
+            <div class="node-label">BESS</div>
+            <div class="node-value" id="animBatteryKwh">0 kWh</div>
+          </div>
+
+          <!-- Load -->
+          <div class="flow-node load-node">
+            <div class="node-icon">🏭</div>
+            <div class="node-label">Zużycie</div>
+            <div class="node-value" id="animLoadPower">0 kW</div>
+          </div>
+
+          <!-- Grid -->
+          <div class="flow-node grid-node">
+            <div class="node-icon">⚡</div>
+            <div class="node-label">Sieć</div>
+            <div class="node-value" id="animGridPower">0 kW</div>
+          </div>
+
+          <!-- Curtailment indicator -->
+          <div class="flow-node curtailment-node" id="curtailmentNode" style="display: none;">
+            <div class="node-icon">🚫</div>
+            <div class="node-label">Strata</div>
+            <div class="node-value" id="animCurtailment">0 kW</div>
+          </div>
+        </div>
+
+        <!-- Time Display and Stats -->
+        <div class="bess-animation-stats">
+          <div class="anim-time-display">
+            <div class="anim-date" id="animDate">01 Styczeń</div>
+            <div class="anim-time" id="animTime">00:00</div>
+            <div class="anim-daynight" id="animDayNight">🌙</div>
+          </div>
+
+          <div class="anim-stats-grid">
+            <div class="anim-stat">
+              <span class="anim-stat-label">Energia PV dziś:</span>
+              <span class="anim-stat-value" id="animDailyPv">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Zużycie dziś:</span>
+              <span class="anim-stat-value" id="animDailyLoad">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Z baterii dziś:</span>
+              <span class="anim-stat-value" id="animDailyFromBess">0 kWh</span>
+            </div>
+            <div class="anim-stat">
+              <span class="anim-stat-label">Cykle dziś:</span>
+              <span class="anim-stat-value" id="animDailyCycles">0,0</span>
+            </div>
+          </div>
+
+          <!-- Progress bar for the year -->
+          <div class="anim-year-progress">
+            <div class="progress-label">
+              <span>Dzień roku:</span>
+              <span id="animDayOfYear">1 / 365</span>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-fill" id="animYearProgress"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animation Controls -->
+      <div class="bess-animation-controls">
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('start')" title="Początek roku">⏮️</button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('prev-day')" title="Poprzedni dzień">⏪</button>
+        <button class="anim-btn anim-btn-play" id="bessAnimPlayBtn" onclick="toggleBessAnimation()">
+          <span id="bessAnimPlayIcon">▶️</span>
+          <span id="bessAnimPlayText">Start</span>
+        </button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('next-day')" title="Następny dzień">⏩</button>
+        <button class="anim-btn anim-btn-nav" onclick="bessAnimJump('end')" title="Koniec roku">⏭️</button>
+
+        <div class="anim-speed-control">
+          <label>Prędkość:</label>
+          <select id="bessAnimSpeedSelect" onchange="updateBessAnimSpeed()">
+            <option value="1000">1 godz/sek</option>
+            <option value="500" selected>2 godz/sek</option>
+            <option value="250">4 godz/sek</option>
+            <option value="100">10 godz/sek</option>
+            <option value="50">20 godz/sek</option>
+          </select>
+        </div>
+
+        <button class="anim-btn anim-btn-secondary" onclick="resetBessAnimation()">🔄 Reset</button>
+      </div>
+
+      <div class="info-banner" style="margin-top: 16px;">
+        <div class="banner-icon">💡</div>
+        <div class="banner-text">
+          Animacja pokazuje godzinowy przepływ energii przez cały rok. Żółte cząsteczki = energia z PV,
+          zielone = energia z/do baterii, czerwone = pobór z sieci, szare = curtailment (strata).
         </div>
       </div>
     </div>
@@ -318,6 +502,30 @@
           </div>
         </div>
       </div>
+      <!-- Excel Export Button -->
+      <div class="excel-export-section" style="margin-top: 16px; text-align: center;">
+        <button class="btn btn-excel" id="exportExcelBtn" onclick="exportEconomicsToExcel()" style="
+          background: linear-gradient(135deg, #217346 0%, #1e6b3e 100%);
+          color: white;
+          border: none;
+          padding: 12px 24px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          box-shadow: 0 2px 8px rgba(33, 115, 70, 0.3);
+          transition: all 0.2s ease;
+        " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(33, 115, 70, 0.4)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(33, 115, 70, 0.3)';">
+          <span style="font-size: 18px;">📊</span>
+          Pobierz Excel z rozliczeniem godzinowym
+        </button>
+        <div style="margin-top: 8px; font-size: 12px; color: #666;">
+          Pełne rozliczenie: energia czynna, dystrybucja, jakość, OZE, kog, akcyza, mocowa - dla każdej godziny
+        </div>
+      </div>
     </div>
 
     <!-- Economic KPIs -->
@@ -409,6 +617,68 @@
       </div>
     </div>
 
+    <!-- NEW v3.3: BESS Sizing Variants (S/M/L) -->
+    <div class="stats-section full-width sizing-variants-section" id="sizingVariantsSection" style="display:none;">
+      <h2>📊 Warianty Doboru BESS (S/M/L)</h2>
+      <div class="chart-info">
+        Porównanie wariantów pojemności z metrykami degradacji i budżetem cykli
+      </div>
+      <div class="sizing-variants-grid" id="sizingVariantsGrid">
+        <!-- Dynamically filled by JS -->
+      </div>
+    </div>
+
+    <!-- NEW v3.3: Degradation Budget Status -->
+    <div class="stats-section full-width degradation-budget-section" id="degradationBudgetSection" style="display:none;">
+      <h2>📉 Budżet Degradacji</h2>
+      <div class="stats-cards">
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">🔄</div>
+          <div class="stat-content">
+            <div class="stat-label">Throughput Roczny</div>
+            <div class="stat-value" id="budgetThroughput">0</div>
+            <div class="stat-unit">MWh/rok</div>
+            <div class="stat-detail" id="budgetThroughputLimit">Limit: - MWh</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">♻️</div>
+          <div class="stat-content">
+            <div class="stat-label">EFC (Cykle Ekwiwalentne)</div>
+            <div class="stat-value" id="budgetEFC">0</div>
+            <div class="stat-unit">/rok</div>
+            <div class="stat-detail" id="budgetEFCLimit">Limit: - cykli</div>
+          </div>
+        </div>
+        <div class="stat-card" id="budgetStatusCard">
+          <div class="stat-icon" id="budgetStatusIcon">✅</div>
+          <div class="stat-content">
+            <div class="stat-label">Status Budżetu</div>
+            <div class="stat-value" id="budgetStatus">OK</div>
+            <div class="stat-detail" id="budgetUtilization">Wykorzystanie: 0%</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-content">
+            <div class="stat-label">Rozbicie Throughput</div>
+            <div class="stat-value" id="budgetBreakdown">-</div>
+            <div class="stat-detail" id="budgetBreakdownDetail">PV: - | Peak: -</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEW v3.3: STACKED Mode Info (if active) -->
+    <div class="info-banner full-width stacked-mode-info" id="stackedModeInfo" style="display:none;">
+      <div class="banner-icon">🔋⚡</div>
+      <div class="banner-text">
+        <strong>Tryb STACKED:</strong> Bateria świadczy dwie usługi - Peak Shaving (priorytet 1) i PV Shifting (priorytet 2).
+        <span id="stackedReserveInfo">Rezerwa SOC: 30% dla peak shaving.</span>
+        <span id="stackedPeakLimit">Limit importu: - kW.</span>
+      </div>
+    </div>
+
     <!-- Technical Parameters -->
     <div class="details-section full-width">
       <h2>Parametry Techniczne BESS</h2>
@@ -464,6 +734,246 @@
       </div>
     </div>
 
+    <!-- NEW v3.5: Advanced Configuration Section -->
+    <div class="config-section full-width advanced-config-section" id="advancedConfigSection">
+      <h2>⚙️ Konfiguracja Zaawansowana BESS</h2>
+      <div class="chart-info">
+        Wybierz topologię systemu, cel optymalizacji i ograniczenia dla analizy BESS
+      </div>
+
+      <div class="advanced-config-grid">
+        <!-- Topology Selector -->
+        <div class="config-card">
+          <h3>🔌 Topologia Systemu</h3>
+          <div class="config-description">
+            Określa jakie komponenty są obecne w systemie
+          </div>
+          <div class="topology-selector">
+            <label class="topology-option">
+              <input type="radio" name="topology" value="pv_load" checked onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">☀️🔋🏭</span>
+                <span class="topology-name">PV + BESS + Load</span>
+                <span class="topology-desc">Standardowa konfiguracja z PV</span>
+              </div>
+            </label>
+            <label class="topology-option">
+              <input type="radio" name="topology" value="load_only" onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">🔋🏭⚡</span>
+                <span class="topology-name">BESS + Load (bez PV)</span>
+                <span class="topology-desc">Peak shaving / arbitraż bez PV</span>
+              </div>
+            </label>
+            <label class="topology-option">
+              <input type="radio" name="topology" value="pv_only" onchange="updateTopology(this.value)">
+              <div class="topology-content">
+                <span class="topology-icon">☀️🏭</span>
+                <span class="topology-name">Tylko PV (bez BESS)</span>
+                <span class="topology-desc">Scenariusz bazowy - tylko PV</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Optimization Objective -->
+        <div class="config-card">
+          <h3>🎯 Cel Optymalizacji</h3>
+          <div class="config-description">
+            Metryka do optymalizacji przy doborze BESS
+          </div>
+          <div class="objective-selector">
+            <select id="optimizationObjective" onchange="updateOptimizationObjective(this.value)">
+              <option value="npv" selected>📈 Maksymalizuj NPV</option>
+              <option value="payback">⏱️ Minimalizuj Payback</option>
+              <option value="self_consumption">🔋 Maksymalizuj Autokonsumpcję</option>
+              <option value="peak_reduction">⚡ Maksymalizuj Redukcję Szczytów</option>
+              <option value="efc_utilization">🔄 Optymalizuj Wykorzystanie Cykli</option>
+            </select>
+          </div>
+          <div class="objective-info" id="objectiveInfo">
+            <span class="info-icon">ℹ️</span>
+            <span>NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji</span>
+          </div>
+        </div>
+
+        <!-- Constraints -->
+        <div class="config-card constraints-card">
+          <h3>🚧 Ograniczenia (Constraints)</h3>
+          <div class="config-description">
+            Definiuj twarde/miękkie limity dla optymalizacji
+          </div>
+          <div class="constraints-list" id="constraintsList">
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintCapex" onchange="toggleConstraint('max_capex')">
+              <label for="constraintCapex">💰 Max CAPEX</label>
+              <input type="number" id="constraintCapexValue" placeholder="np. 500000" disabled>
+              <span class="constraint-unit">PLN</span>
+              <select id="constraintCapexType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintPayback" onchange="toggleConstraint('max_payback')">
+              <label for="constraintPayback">⏱️ Max Payback</label>
+              <input type="number" id="constraintPaybackValue" placeholder="np. 8" disabled>
+              <span class="constraint-unit">lat</span>
+              <select id="constraintPaybackType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintNpv" onchange="toggleConstraint('min_npv')">
+              <label for="constraintNpv">📈 Min NPV</label>
+              <input type="number" id="constraintNpvValue" placeholder="np. 100000" disabled>
+              <span class="constraint-unit">PLN</span>
+              <select id="constraintNpvType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintEfc" onchange="toggleConstraint('max_efc')">
+              <label for="constraintEfc">🔄 Max EFC/rok</label>
+              <input type="number" id="constraintEfcValue" placeholder="np. 300" disabled>
+              <span class="constraint-unit">cykli</span>
+              <select id="constraintEfcType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+            <div class="constraint-row">
+              <input type="checkbox" id="constraintSelfConsumption" onchange="toggleConstraint('min_self_consumption')">
+              <label for="constraintSelfConsumption">🔋 Min Autokonsumpcja</label>
+              <input type="number" id="constraintSelfConsumptionValue" placeholder="np. 80" disabled>
+              <span class="constraint-unit">%</span>
+              <select id="constraintSelfConsumptionType" disabled>
+                <option value="hard">Twarde</option>
+                <option value="soft">Miękkie</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Arbitrage config is now in Settings module -->
+        <!-- Use USTAWIENIA > BESS Advanced Features > Arbitraż Taryfowy OSD / Arbitraż RDN -->
+      </div>
+
+      <!-- Apply Configuration Button -->
+      <div class="config-actions">
+        <button class="btn btn-primary" onclick="applyAdvancedConfig()" id="applyConfigBtn">
+          ✅ Zastosuj konfigurację i przelicz
+        </button>
+        <button class="btn btn-secondary" onclick="resetAdvancedConfig()">
+          🔄 Resetuj do domyślnych
+        </button>
+        <span class="config-status" id="configStatus"></span>
+      </div>
+
+      <!-- NEW v3.13: Quick Results Summary Panel -->
+      <div class="config-results-summary" id="configResultsSummary" style="display: none;">
+        <h4>📊 Wyniki Optymalizacji</h4>
+        <div class="results-summary-grid">
+          <div class="summary-item recommended">
+            <span class="summary-label">Rekomendowany wariant</span>
+            <span class="summary-value" id="summaryRecommended">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Moc / Pojemność</span>
+            <span class="summary-value" id="summaryPowerEnergy">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">NPV</span>
+            <span class="summary-value" id="summaryNpv">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Payback</span>
+            <span class="summary-value" id="summaryPayback">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">CAPEX</span>
+            <span class="summary-value" id="summaryCapex">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">EFC/rok</span>
+            <span class="summary-value" id="summaryEfc">-</span>
+          </div>
+        </div>
+        <!-- Constraint Warnings -->
+        <div class="constraint-warnings" id="constraintWarnings" style="display: none;">
+          <div class="warnings-header">⚠️ Naruszenia Ograniczeń</div>
+          <ul class="warnings-list" id="warningsList"></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- NEW v3.4: Sensitivity Analysis (Tornado Chart) -->
+    <div class="chart-section full-width sensitivity-section" id="sensitivitySection">
+      <h2>📊 Analiza Wrażliwości (Tornado Chart)</h2>
+      <div class="chart-info">
+        Wpływ zmian parametrów (±20%) na NPV inwestycji BESS. Posortowane od najbardziej wrażliwego.
+      </div>
+
+      <!-- Base Case Summary -->
+      <div class="sensitivity-base-case" id="sensitivityBaseCase">
+        <div class="base-case-item">
+          <span class="base-label">NPV bazowe:</span>
+          <span class="base-value" id="sensBaseNpv">-</span>
+        </div>
+        <div class="base-case-item">
+          <span class="base-label">Payback:</span>
+          <span class="base-value" id="sensBasePayback">-</span>
+        </div>
+        <div class="base-case-item">
+          <span class="base-label">CAPEX:</span>
+          <span class="base-value" id="sensBaseCapex">-</span>
+        </div>
+      </div>
+
+      <!-- Tornado Chart -->
+      <div class="tornado-chart-container">
+        <canvas id="tornadoChart"></canvas>
+      </div>
+
+      <!-- Sensitivity Table -->
+      <div class="table-wrapper" style="margin-top: 20px;">
+        <table class="sensitivity-table" id="sensitivityTable">
+          <thead>
+            <tr>
+              <th>Parametr</th>
+              <th>Wartość bazowa</th>
+              <th>-20%</th>
+              <th>NPV (-20%)</th>
+              <th>+20%</th>
+              <th>NPV (+20%)</th>
+              <th>Swing NPV</th>
+            </tr>
+          </thead>
+          <tbody id="sensitivityTableBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Breakeven Warnings -->
+      <div class="breakeven-warnings" id="breakevenWarnings" style="display:none;">
+        <div class="warning-icon">⚠️</div>
+        <div class="warning-text" id="breakevenText">
+          <!-- Dynamically filled -->
+        </div>
+      </div>
+
+      <!-- Run Sensitivity Button -->
+      <div class="sensitivity-actions">
+        <button class="btn btn-primary" onclick="runSensitivityAnalysis()" id="runSensitivityBtn">
+          🔄 Uruchom analizę wrażliwości
+        </button>
+        <span class="sensitivity-status" id="sensitivityStatus"></span>
+      </div>
+    </div>
+
     <!-- Footer Info -->
     <div class="info-banner full-width">
       <div class="banner-icon">ℹ️</div>
@@ -471,6 +981,16 @@
         <strong>Tryb 0-Export:</strong> Energia PV nie jest eksportowana do sieci. Nadwyżka najpierw ładuje baterię,
         a gdy jest pełna - energia jest curtailowana (stracona). Bateria rozładowuje się gdy produkcja PV nie pokrywa zapotrzebowania.
       </div>
+    </div>
+
+    <!-- ToU Cost Analysis (MVP v3.17 - PR3) -->
+    <div id="touCostAnalysis" class="full-width" style="display:none;">
+      <!-- Content generated by displayToUCostAnalysis() -->
+    </div>
+
+    <!-- Capacity Fee Overlay (MVP v3.17 - PR4) -->
+    <div id="capacityFeeOverlay" class="full-width" style="display:none;">
+      <!-- Content generated by displayCapacityFeeOverlay() -->
     </div>
 
     <!-- Actions -->
@@ -490,6 +1010,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-<script src="bess.js?v=3.2.3"></script>
+<script src="bess.js?v=3.16-BESS-V2"></script>
 </body>
 </html>

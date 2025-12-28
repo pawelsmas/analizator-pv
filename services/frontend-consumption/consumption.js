@@ -3,21 +3,57 @@ const USE_PROXY = true;
 
 // Backend API URLs
 const API_URLS = USE_PROXY ? {
-  dataAnalysis: '/api/data'
+  dataAnalysis: '/api/data',
+  economics: '/api/economics'
 } : {
-  dataAnalysis: 'http://localhost:8001'
+  dataAnalysis: 'http://localhost:8001',
+  economics: 'http://localhost:8003'
 };
 
 // Chart.js instances
 let dailyChart, weeklyChart, monthlyChart, loadDurationChart, seasonalityChart;
 
+/**
+ * Format number in European style
+ * - Decimal separator: comma (,)
+ * - Thousands separator: non-breaking space
+ */
+function formatNumberEU(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) {
+    return '-';
+  }
+  const fixed = Number(value).toFixed(decimals);
+  const parts = fixed.split('.');
+  let integerPart = parts[0];
+  const decimalPart = parts[1];
+  integerPart = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00A0');
+  if (decimals > 0 && decimalPart) {
+    return integerPart + ',' + decimalPart;
+  }
+  return integerPart;
+}
+
 // Data storage
 let consumptionData = null;
+let peakShavingExportData = null; // Store for BESS optimization
+let currentLoadProfile = null; // Load profile for BESS optimization (hourly or 15-min)
+let currentTimestamps = null; // Timestamps for BESS optimization
+let currentIntervalMinutes = 60; // Data interval: 15 for quarter-hourly, 60 for hourly
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
-  loadConsumptionData();
+  // Request settings from shell first
+  console.log('📊 Consumption: Requesting settings from shell on load');
+  window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+
+  // Load data after short delay to allow settings to arrive
+  setTimeout(() => {
+    loadConsumptionData();
+  }, 100);
 });
+
+// Cache for system settings received from shell
+let cachedSystemSettings = null;
 
 // Listen for messages from shell
 window.addEventListener('message', (event) => {
@@ -33,6 +69,24 @@ window.addEventListener('message', (event) => {
       // Project was loaded - reload consumption data
       console.log('📂 Consumption: Project loaded, reloading data');
       loadConsumptionData();
+      break;
+    case 'SETTINGS_UPDATED':
+      // Settings updated from shell - cache them
+      if (event.data.data) {
+        cachedSystemSettings = event.data.data;
+        console.log('📊 Consumption: Settings received from shell:', cachedSystemSettings.tariffConfig);
+        // Re-run tariff analysis with new settings
+        if (consumptionData && consumptionData.hourlyData) {
+          performTariffAnalysis();
+        }
+      }
+      break;
+    case 'SHARED_DATA_RESPONSE':
+      // Shared data response - may contain settings
+      if (event.data.data && event.data.data.settings) {
+        cachedSystemSettings = event.data.data.settings;
+        console.log('📊 Consumption: Settings from SHARED_DATA_RESPONSE:', cachedSystemSettings.tariffConfig);
+      }
       break;
   }
 });
@@ -134,7 +188,25 @@ async function performAnalysis() {
     generateDailyProfileFromBackend(backendStats.daily_profile_mw);
     generateWeeklyProfileFromBackend(backendStats.weekly_profile_mwh);
     generateMonthlyProfileFromBackend(backendStats.monthly_consumption);
-    generateLoadDurationCurve(consumptionData.hourlyData.values);
+
+    // Fetch 15-minute data for Peak Shaving analysis (more accurate for BESS sizing)
+    let peakShavingData = null;
+    try {
+      const quarterHourResponse = await fetch(`${API_URLS.dataAnalysis}/quarter-hour-data`);
+      if (quarterHourResponse.ok) {
+        peakShavingData = await quarterHourResponse.json();
+        console.log(`📊 Loaded 15-min data: ${peakShavingData.total_intervals} intervals`);
+      }
+    } catch (e) {
+      console.warn('⚠️ Could not load 15-min data, falling back to hourly:', e);
+    }
+
+    // Use 15-min data for Peak Shaving if available, otherwise fall back to hourly
+    if (peakShavingData && peakShavingData.values?.length > 0) {
+      generateLoadDurationCurve(peakShavingData.values, peakShavingData.timestamps, 15);
+    } else {
+      generateLoadDurationCurve(consumptionData.hourlyData.values, consumptionData.hourlyData.timestamps, 60);
+    }
 
     // Fetch and display seasonality analysis
     await loadSeasonalityAnalysis();
@@ -150,7 +222,7 @@ async function performAnalysis() {
     generateDailyProfile(hourlyData);
     generateWeeklyProfile(hourlyData);
     generateMonthlyProfile(hourlyData);
-    generateLoadDurationCurve(values);
+    generateLoadDurationCurve(values, consumptionData.hourlyData?.timestamps, 60);
   }
 }
 
@@ -216,8 +288,17 @@ function updateStatisticsFromBackend(stats) {
   document.getElementById('stdDev').textContent = `${stats.std_dev_mw.toFixed(2)} MW`;
   document.getElementById('variationCoef').textContent = `${stats.variation_coef_pct.toFixed(1)}%`;
   document.getElementById('loadFactor').textContent = `${stats.load_factor_pct.toFixed(1)}%`;
-  document.getElementById('dataPoints').textContent = stats.hours.toLocaleString('pl-PL');
+
+  // Show measurements count with resolution info
+  const measurements = stats.measurements || stats.hours;
+  const resolution = stats.data_resolution || 'hourly';
+  const resolutionLabel = resolution === '15-min' ? ' (15-min)' : '';
+  document.getElementById('dataPoints').textContent = measurements.toLocaleString('pl-PL') + resolutionLabel;
+
   document.getElementById('dataPeriod').textContent = `${stats.days} dni (${stats.date_start} - ${stats.date_end})`;
+
+  // Log data resolution for debugging
+  console.log(`📊 Statistics resolution: ${resolution}, measurements: ${measurements}`);
 }
 
 // Update data info
@@ -494,51 +575,952 @@ function generateMonthlyProfile(hourlyData) {
   });
 }
 
-// Generate load duration curve
-function generateLoadDurationCurve(values) {
-  // Sort values descending
-  const sorted = [...values].sort((a, b) => b - a);
+// Generate load duration curve with peak shaving analysis
+// intervalMinutes: 15 for quarter-hourly data, 60 for hourly data
+function generateLoadDurationCurve(values, timestamps = null, intervalMinutes = 60) {
+  // Store for BESS optimization API
+  currentLoadProfile = values;
+  currentTimestamps = timestamps;
+  currentIntervalMinutes = intervalMinutes;
 
-  // Convert to MW and sample every 100th point for performance
-  const sampleRate = Math.max(1, Math.floor(sorted.length / 500));
-  const sampled = sorted.filter((_, i) => i % sampleRate === 0).map(v => (v / 1000).toFixed(2));
+  // Create indexed data with original positions
+  const indexedData = values.map((val, idx) => ({
+    value: val,
+    originalIndex: idx,
+    timestamp: timestamps ? timestamps[idx] : null
+  }));
+
+  // Sort by value descending
+  const sortedData = [...indexedData].sort((a, b) => b.value - a.value);
+  const totalIntervals = sortedData.length;
+  const intervalsPerHour = 60 / intervalMinutes;  // 4 for 15-min, 1 for hourly
+  const totalHours = totalIntervals / intervalsPerHour;  // Equivalent hours for display
+
+  // Calculate percentiles and peak shaving metrics with timestamps
+  // Pass interval info for proper energy/hours calculation
+  const peakShavingAnalysis = calculatePeakShavingAnalysis(sortedData, timestamps, intervalMinutes);
+
+  // Store for export
+  peakShavingExportData = peakShavingAnalysis;
+
+  // Convert to MW and sample for chart performance
+  const sampleRate = Math.max(1, Math.floor(sortedData.length / 500));
+  const sampled = sortedData.filter((_, i) => i % sampleRate === 0);
+  const sampledMW = sampled.map(d => d.value / 1000);
 
   const ctx = document.getElementById('loadDurationCurve').getContext('2d');
 
   if (loadDurationChart) loadDurationChart.destroy();
 
+  // Prepare threshold lines for visualization
+  const thresholdDatasets = peakShavingAnalysis.thresholds.map(t => ({
+    label: t.label,
+    data: Array(sampled.length).fill(t.powerKW / 1000),
+    borderColor: t.color,
+    borderWidth: 2,
+    borderDash: [5, 5],
+    pointRadius: 0,
+    fill: false
+  }));
+
   loadDurationChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: Array.from({ length: sampled.length }, (_, i) => i),
-      datasets: [{
-        label: 'Moc [MW]',
-        data: sampled,
-        borderColor: '#e74c3c',
-        backgroundColor: 'rgba(231, 76, 60, 0.1)',
-        borderWidth: 2,
-        fill: true,
-        pointRadius: 0
-      }]
+      labels: sampled.map((_, i) => Math.round(i * sampleRate)),
+      datasets: [
+        {
+          label: 'Moc obciążenia [MW]',
+          data: sampledMW,
+          borderColor: '#e74c3c',
+          backgroundColor: 'rgba(231, 76, 60, 0.15)',
+          borderWidth: 2.5,
+          fill: true,
+          pointRadius: 0,
+          order: 1
+        },
+        ...thresholdDatasets.map((ds, i) => ({ ...ds, order: i + 2 }))
+      ]
     },
     options: {
       responsive: true,
-      maintainAspectRatio: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
       plugins: {
-        legend: { display: true }
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: {
+            usePointStyle: true,
+            padding: 15,
+            font: { size: 11 }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const intervalIdx = parseInt(items[0].label);
+              const hourEquiv = intervalIdx / intervalsPerHour;
+              return `Interwał ${intervalIdx} (~${formatNumberEU(hourEquiv, 0)}h z ${formatNumberEU(totalHours, 0)}h)`;
+            },
+            label: (ctx) => {
+              const value = ctx.raw;
+              return `${ctx.dataset.label}: ${formatNumberEU(value, 3)} MW (${formatNumberEU(value * 1000, 0)} kW)`;
+            }
+          }
+        }
       },
       scales: {
         y: {
           beginAtZero: true,
-          title: { display: true, text: 'Moc [MW]' }
+          title: { display: true, text: 'Moc [MW]', font: { weight: 'bold' } },
+          grid: { color: 'rgba(0,0,0,0.08)' }
         },
         x: {
-          title: { display: true, text: 'Uporządkowane godziny' },
-          ticks: { display: false }
+          title: { display: true, text: `Uporządkowane interwały (${formatNumberEU(totalHours, 0)}h ekw. w roku, dane ${intervalMinutes}-min)`, font: { weight: 'bold' } },
+          ticks: {
+            callback: function(value, index) {
+              const interval = Math.round(index * sampleRate);
+              const hourEquiv = interval / intervalsPerHour;
+              if (interval === 0) return '0h';
+              if (hourEquiv % 1000 === 0 || index === sampled.length - 1) return `${formatNumberEU(hourEquiv, 0)}h`;
+              return '';
+            },
+            maxRotation: 0
+          },
+          grid: { display: false }
         }
       }
     }
   });
+
+  // Update peak shaving table
+  updatePeakShavingTable(peakShavingAnalysis);
+}
+
+/**
+ * Calculate peak shaving analysis with multiple threshold levels
+ * @param {Array} sortedData - Array of {value, originalIndex, timestamp} sorted by value descending
+ * @param {Array} timestamps - Original timestamps array (for reference)
+ * @param {Number} intervalMinutes - Data interval in minutes (15 for quarter-hourly, 60 for hourly)
+ */
+function calculatePeakShavingAnalysis(sortedData, timestamps, intervalMinutes = 60) {
+  const totalIntervals = sortedData.length;
+  const intervalsPerHour = 60 / intervalMinutes; // 4 for 15-min, 1 for hourly
+  const totalHoursEquivalent = totalIntervals / intervalsPerHour;
+  const peakPower = sortedData[0]?.value || 0;
+  const avgPower = sortedData.reduce((sum, d) => sum + d.value, 0) / totalIntervals;
+
+  // Info about data resolution
+  const resolutionInfo = intervalMinutes === 15
+    ? `Analiza 15-min (${totalIntervals} interwałów = ${formatNumberEU(totalHoursEquivalent, 0)} godz.)`
+    : `Analiza godzinowa (${totalIntervals} godz.)`;
+
+  console.log(`📊 Peak Shaving: ${resolutionInfo}`);
+
+  // Define percentile thresholds for analysis
+  const percentileConfigs = [
+    { name: 'P100 (Szczyt)', percentile: 100, color: '#e74c3c' },
+    { name: 'P99.5', percentile: 99.5, color: '#c0392b' },
+    { name: 'P99', percentile: 99, color: '#e67e22' },
+    { name: 'P98', percentile: 98, color: '#f39c12' },
+    { name: 'P97', percentile: 97, color: '#f1c40f' },
+    { name: 'P95', percentile: 95, color: '#27ae60' },
+    { name: 'P90', percentile: 90, color: '#2ecc71' },
+    { name: 'P85', percentile: 85, color: '#1abc9c' },
+    { name: 'P80', percentile: 80, color: '#3498db' }
+  ];
+
+  const thresholds = [];
+  const tableRows = [];
+
+  for (const config of percentileConfigs) {
+    // Calculate index for percentile (sorted descending, so P99 = top 1%)
+    const exceedancePercent = 100 - config.percentile;
+    const exactIntervalsAbove = totalIntervals * exceedancePercent / 100;
+    const exactHoursAbove = exactIntervalsAbove / intervalsPerHour; // Convert to hours
+    const index = Math.min(Math.ceil(exactIntervalsAbove), totalIntervals - 1);
+    const powerAtPercentile = sortedData[index]?.value || 0;
+
+    // Calculate energy above threshold and collect timestamps
+    // For 15-min data: each interval = 0.25h of energy (power * 0.25)
+    let energyToShave = 0;
+    let intervalsToShave = 0;
+    const exceedanceEvents = [];
+
+    for (let i = 0; i < sortedData.length; i++) {
+      const d = sortedData[i];
+      if (d.value > powerAtPercentile) {
+        const excess = d.value - powerAtPercentile;
+        // Energy = Power * Time (in hours), for 15-min interval = 0.25h
+        energyToShave += excess * (intervalMinutes / 60);
+        intervalsToShave++;
+        exceedanceEvents.push({
+          rank: i + 1,
+          timestamp: d.timestamp,
+          powerKW: d.value,
+          excessKW: excess,
+          originalIndex: d.originalIndex
+        });
+      } else {
+        break; // sorted descending, so we can stop
+      }
+    }
+
+    // Convert intervals to hours for display
+    const hoursToShave = intervalsToShave / intervalsPerHour;
+
+    // Calculate peak reduction percentage
+    const peakReductionPct = peakPower > 0 ? ((peakPower - powerAtPercentile) / peakPower) * 100 : 0;
+
+    // Determine feasibility rating and code
+    let rating, ratingColor, ratingBg, ratingCode;
+    if (hoursToShave <= 50 && peakReductionPct >= 5) {
+      rating = '🟢 Bardzo opłacalne';
+      ratingCode = 'bardzo_oplacalne';
+      ratingColor = '#27ae60';
+      ratingBg = '#d5f4e6';
+    } else if (hoursToShave <= 200 && peakReductionPct >= 3) {
+      rating = '🟡 Opłacalne';
+      ratingCode = 'oplacalne';
+      ratingColor = '#f39c12';
+      ratingBg = '#fef9e7';
+    } else if (hoursToShave <= 500) {
+      rating = '🟠 Możliwe';
+      ratingCode = 'mozliwe';
+      ratingColor = '#e67e22';
+      ratingBg = '#fdebd0';
+    } else {
+      rating = '🔴 Nieopłacalne';
+      ratingCode = 'nieoplacalne';
+      ratingColor = '#e74c3c';
+      ratingBg = '#fadbd8';
+    }
+
+    // Skip P100 from threshold lines but include in table
+    if (config.percentile < 100) {
+      thresholds.push({
+        label: `${config.name} (${formatNumberEU(powerAtPercentile, 0)} kW)`,
+        powerKW: powerAtPercentile,
+        color: config.color
+      });
+    }
+
+    tableRows.push({
+      name: config.name,
+      percentile: config.percentile,
+      powerKW: powerAtPercentile,
+      hoursAbove: hoursToShave,
+      exactHours: exactHoursAbove,
+      energyToShave: energyToShave,
+      peakReductionPct: peakReductionPct,
+      rating: rating,
+      ratingCode: ratingCode,
+      ratingColor: ratingColor,
+      ratingBg: ratingBg,
+      color: config.color,
+      exceedanceEvents: exceedanceEvents
+    });
+  }
+
+  // Find best recommendation (first "opłacalne" or "bardzo opłacalne")
+  const recommended = tableRows.find(r => r.ratingCode === 'bardzo_oplacalne')
+    || tableRows.find(r => r.ratingCode === 'oplacalne');
+
+  // Find cutoff level for export (include up to "możliwe")
+  const exportableLevels = tableRows.filter(r =>
+    r.ratingCode === 'bardzo_oplacalne' ||
+    r.ratingCode === 'oplacalne' ||
+    r.ratingCode === 'mozliwe'
+  );
+
+  // Calculate BESS sizing based on grouped blocks for recommended level
+  let bessRecommendation = null;
+  if (recommended && recommended.exceedanceEvents.length > 0) {
+    const blocks = groupConsecutiveEventsForBESS(recommended.exceedanceEvents, intervalMinutes);
+    if (blocks.length > 0) {
+      // Find the largest block by energy
+      const largestBlock = blocks.reduce((max, b) => b.totalExcessKWh > max.totalExcessKWh ? b : max, blocks[0]);
+      // Find max power deficit (for C-rate)
+      const maxPowerDeficit = recommended.exceedanceEvents.reduce((max, e) => Math.max(max, e.excessKW || 0), 0);
+
+      // BESS sizing:
+      // - Capacity based on largest single block energy need (with DOD margin)
+      // - Power based on max instantaneous deficit
+      const DOD = 0.8; // 80% usable depth of discharge
+      const safetyMargin = 1.2; // 20% safety margin
+
+      const requiredCapacityKWh = (largestBlock.totalExcessKWh / DOD) * safetyMargin;
+      const requiredPowerKW = maxPowerDeficit * safetyMargin;
+
+      bessRecommendation = {
+        capacityKWh: requiredCapacityKWh,
+        powerKW: requiredPowerKW,
+        largestBlockEnergyKWh: largestBlock.totalExcessKWh,
+        largestBlockDurationH: largestBlock.durationHours,
+        maxPowerDeficitKW: maxPowerDeficit,
+        totalBlocks: blocks.length,
+        dod: DOD * 100,
+        safetyMargin: (safetyMargin - 1) * 100
+      };
+    }
+  }
+
+  return {
+    peakPower,
+    avgPower,
+    totalHours: totalHoursEquivalent,
+    totalIntervals,
+    intervalMinutes,
+    resolutionInfo,
+    thresholds: thresholds.slice(0, 4), // Show top 4 thresholds on chart
+    tableRows,
+    recommended,
+    exportableLevels,
+    bessRecommendation
+  };
+}
+
+/**
+ * Group consecutive events for BESS sizing (simplified version for analysis)
+ * @param {Array} events - Array of exceedance events
+ * @param {Number} intervalMinutes - Interval in minutes (15 or 60), default 60 for backward compatibility
+ */
+function groupConsecutiveEventsForBESS(events, intervalMinutes = 60) {
+  if (!events || events.length === 0) return [];
+
+  const hoursPerInterval = intervalMinutes / 60; // 0.25 for 15-min, 1 for hourly
+
+  // Sort events by original index (chronological order)
+  const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
+
+  const groups = [];
+  let currentGroup = null;
+
+  for (const event of sortedByTime) {
+    if (!currentGroup) {
+      currentGroup = {
+        events: [event],
+        // For 15-min data: energy = excess_kW * 0.25h
+        totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
+        maxPowerKW: event.powerKW || 0
+      };
+    } else {
+      const lastEvent = currentGroup.events[currentGroup.events.length - 1];
+      // Check if consecutive (indices differ by 1)
+      const isConsecutive = (event.originalIndex - lastEvent.originalIndex) <= 1;
+
+      if (isConsecutive) {
+        currentGroup.events.push(event);
+        currentGroup.totalExcessKWh += (event.excessKW || 0) * hoursPerInterval;
+        currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
+      } else {
+        // Close current group - calculate duration in hours
+        currentGroup.durationHours = currentGroup.events.length * hoursPerInterval;
+        groups.push(currentGroup);
+        currentGroup = {
+          events: [event],
+          totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
+          maxPowerKW: event.powerKW || 0
+        };
+      }
+    }
+  }
+
+  if (currentGroup) {
+    currentGroup.durationHours = currentGroup.events.length * hoursPerInterval;
+    groups.push(currentGroup);
+  }
+
+  return groups;
+}
+
+/**
+ * Update peak shaving analysis table
+ */
+function updatePeakShavingTable(analysis) {
+  const tbody = document.getElementById('peakShavingTableBody');
+  if (!tbody) return;
+
+  const rows = analysis.tableRows.map(row => {
+    const rowStyle = row.percentile === 100
+      ? 'background: #f8f9fa; font-weight: 600;'
+      : '';
+
+    // Format hours - show decimal for partial hours
+    const formatHours = (exact, actual) => {
+      if (actual === 0) return '-';
+      if (exact === actual) return formatNumberEU(actual, 0);
+      return `${formatNumberEU(actual, 0)} <span style="color:#95a5a6;font-size:10px;">(~${formatNumberEU(exact, 1)})</span>`;
+    };
+
+    return `
+      <tr style="${rowStyle}">
+        <td style="padding: 10px 8px; border-bottom: 1px solid #eee;">
+          <span style="display: inline-block; width: 12px; height: 12px; background: ${row.color}; border-radius: 3px; margin-right: 8px;"></span>
+          ${row.name}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee; font-weight: 500;">
+          ${formatNumberEU(row.powerKW, 0)}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee;">
+          ${formatHours(row.exactHours, row.hoursAbove)}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee;">
+          ${row.energyToShave > 0 ? formatNumberEU(row.energyToShave, 0) : '-'}
+        </td>
+        <td style="padding: 10px 8px; text-align: right; border-bottom: 1px solid #eee; font-weight: 500; color: ${row.peakReductionPct > 0 ? '#27ae60' : '#95a5a6'};">
+          ${row.peakReductionPct > 0 ? `-${formatNumberEU(row.peakReductionPct, 1)}%` : '-'}
+        </td>
+        <td style="padding: 10px 8px; text-align: center; border-bottom: 1px solid #eee;">
+          <span style="padding: 4px 8px; border-radius: 4px; font-size: 11px; background: ${row.ratingBg}; color: ${row.ratingColor};">
+            ${row.rating}
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.innerHTML = rows;
+
+  // Update recommendation with export button
+  const recDiv = document.getElementById('peakShavingRecommendation');
+  if (recDiv && analysis.recommended) {
+    const rec = analysis.recommended;
+    const exportLevelsCount = analysis.exportableLevels?.length || 0;
+    const totalEvents = analysis.exportableLevels?.reduce((sum, l) => sum + l.exceedanceEvents.length, 0) || 0;
+
+    recDiv.style.display = 'block';
+    recDiv.style.background = 'linear-gradient(135deg, #d5f4e6 0%, #c3f0db 100%)';
+    recDiv.style.border = '2px solid #27ae60';
+    recDiv.innerHTML = `
+      <div style="display: flex; align-items: flex-start; gap: 12px;">
+        <span style="font-size: 24px;">💡</span>
+        <div style="flex: 1;">
+          <strong style="color: #1e8449; font-size: 14px;">Rekomendacja Peak Shaving:</strong>
+          <p style="margin: 8px 0 0 0; color: #2c3e50; font-size: 13px;">
+            Ścięcie szczytów do poziomu <strong>${rec.name}</strong> (${formatNumberEU(rec.powerKW, 0)} kW)
+            pozwoli obniżyć moc szczytową o <strong>${formatNumberEU(rec.peakReductionPct, 1)}%</strong>.
+          </p>
+          <p style="margin: 6px 0 0 0; color: #495057; font-size: 12px;">
+            Wymaga pokrycia <strong>${formatNumberEU(rec.hoursAbove, 0)} godzin/rok</strong>
+            i dostarczenia <strong>${formatNumberEU(rec.energyToShave, 0)} kWh</strong> z magazynu lub redukcji obciążenia.
+          </p>
+          ${analysis.bessRecommendation ? `
+          <div id="bessRecommendationSection" style="margin-top: 12px; padding: 12px; background: rgba(255,255,255,0.7); border-radius: 8px; border-left: 4px solid #3498db;">
+            <div style="margin-bottom: 10px;">
+              <strong style="color: #2980b9; font-size: 13px;">🔋 Orientacyjny dobór BESS (heurystyka):</strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+              <select id="bessLevelSelect" style="
+                padding: 6px 10px;
+                border-radius: 4px;
+                border: 1px solid #3498db;
+                font-size: 12px;
+                background: white;
+                cursor: pointer;
+                min-width: 220px;
+              ">
+                ${analysis.tableRows.filter(r => r.ratingCode !== 'nieoplacalne').map(row =>
+                  `<option value="${row.name}" ${row.name === rec.name ? 'selected' : ''}>
+                    ${row.name} (${formatNumberEU(row.powerKW, 0)} kW) - ${row.rating}
+                  </option>`
+                ).join('')}
+              </select>
+              <button onclick="runBESSOptimization()" id="bessOptimizeBtn" style="
+                background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 600;
+                white-space: nowrap;
+              ">⚡ Optymalizuj (PyPSA+HiGHS)</button>
+            </div>
+            <div style="display: flex; gap: 24px; margin-bottom: 8px;">
+              <div style="font-size: 13px; color: #2c3e50;">
+                <span style="color: #7f8c8d;">Pojemność:</span>
+                <strong id="bessCapacityValue" style="margin-left: 6px;">${formatNumberEU(analysis.bessRecommendation.capacityKWh, 0)} kWh</strong>
+              </div>
+              <div style="font-size: 13px; color: #2c3e50;">
+                <span style="color: #7f8c8d;">Moc:</span>
+                <strong id="bessPowerValue" style="margin-left: 6px;">${formatNumberEU(analysis.bessRecommendation.powerKW, 0)} kW</strong>
+              </div>
+            </div>
+            <p id="bessRationale" style="margin: 0; color: #7f8c8d; font-size: 11px;">
+              Na podstawie największego bloku: ${formatNumberEU(analysis.bessRecommendation.largestBlockEnergyKWh, 1)} kWh
+              przez ${formatNumberEU(analysis.bessRecommendation.largestBlockDurationH, 2)}h
+              (${analysis.bessRecommendation.totalBlocks} bloków/rok, DOD ${analysis.bessRecommendation.dod}%, margines +${analysis.bessRecommendation.safetyMargin}%)
+            </p>
+            <div id="bessOptimizationDetails" style="display: none;"></div>
+          </div>
+          ` : `
+          <p style="margin: 8px 0 0 0; color: #7f8c8d; font-size: 11px; font-style: italic;">
+            Brak danych do wyliczenia rozmiaru BESS
+          </p>
+          `}
+        </div>
+      </div>
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(39, 174, 96, 0.3);">
+        <button onclick="exportPeakShavingAnalysis()" style="
+          background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-weight: 600;
+          font-size: 13px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+        ">
+          📥 Eksportuj szczegóły Peak Shaving (${exportLevelsCount} poziomów, ${totalEvents} zdarzeń)
+        </button>
+        <span style="display: block; margin-top: 8px; font-size: 11px; color: #7f8c8d;">
+          Excel z timestampami wszystkich przekroczeń dla poziomów: Bardzo opłacalne, Opłacalne, Możliwe
+        </span>
+      </div>
+    `;
+  } else if (recDiv) {
+    recDiv.style.display = 'none';
+  }
+}
+
+/**
+ * Format number for Excel with European locale (comma as decimal separator)
+ * Returns number for Excel to handle properly
+ */
+function formatNumericForExcel(value, decimals = 2) {
+  if (value === null || value === undefined || isNaN(value)) return null;
+  return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
+}
+
+/**
+ * Format date/time for Excel as proper Date object
+ */
+function formatDateTimeForExcel(timestamp) {
+  if (!timestamp) return { date: null, time: null, dateTime: null };
+  try {
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return { date: null, time: null, dateTime: null };
+    return {
+      date: d,  // Excel will format as date
+      time: d,  // Excel will format as time
+      dateTime: d,
+      dateStr: d.toLocaleDateString('pl-PL'),
+      timeStr: d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+    };
+  } catch (e) {
+    return { date: null, time: null, dateTime: null };
+  }
+}
+
+/**
+ * Group consecutive intervals into peak events (blocks)
+ * @param {Array} events - Array of exceedance events sorted by timestamp
+ * @param {Number} intervalMinutes - Data interval in minutes (15 or 60), default 60
+ * @returns {Array} Array of grouped peak events with start/end times
+ */
+function groupConsecutiveEvents(events, intervalMinutes = 60) {
+  if (!events || events.length === 0) return [];
+
+  const intervalMs = intervalMinutes * 60 * 1000;  // Interval in milliseconds
+  const hoursPerInterval = intervalMinutes / 60;   // 0.25 for 15-min, 1.0 for hourly
+  const toleranceMs = intervalMs * 1.5;            // 1.5x interval tolerance for gaps
+
+  // Sort events by original index (chronological order)
+  const sortedByTime = [...events].sort((a, b) => a.originalIndex - b.originalIndex);
+
+  const groups = [];
+  let currentGroup = null;
+
+  for (const event of sortedByTime) {
+    const eventTime = event.timestamp ? new Date(event.timestamp) : null;
+
+    if (!currentGroup) {
+      // Start new group
+      currentGroup = {
+        startTime: eventTime,
+        endTime: eventTime ? new Date(eventTime.getTime() + intervalMs) : null,
+        events: [event],
+        totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,  // Energy = power * time
+        maxPowerKW: event.powerKW || 0,
+        avgPowerKW: event.powerKW || 0
+      };
+    } else {
+      // Check if this event is consecutive (within tolerance of last event)
+      const lastEvent = currentGroup.events[currentGroup.events.length - 1];
+      const lastEventTime = lastEvent.timestamp ? new Date(lastEvent.timestamp) : null;
+
+      const isConsecutive = eventTime && lastEventTime &&
+        (eventTime.getTime() - lastEventTime.getTime()) <= toleranceMs;
+
+      if (isConsecutive) {
+        // Add to current group
+        currentGroup.events.push(event);
+        currentGroup.endTime = new Date(eventTime.getTime() + intervalMs);
+        currentGroup.totalExcessKWh += (event.excessKW || 0) * hoursPerInterval;
+        currentGroup.maxPowerKW = Math.max(currentGroup.maxPowerKW, event.powerKW || 0);
+        currentGroup.avgPowerKW = currentGroup.events.reduce((sum, e) => sum + (e.powerKW || 0), 0) / currentGroup.events.length;
+      } else {
+        // Save current group and start new one
+        groups.push(currentGroup);
+        currentGroup = {
+          startTime: eventTime,
+          endTime: eventTime ? new Date(eventTime.getTime() + intervalMs) : null,
+          events: [event],
+          totalExcessKWh: (event.excessKW || 0) * hoursPerInterval,
+          maxPowerKW: event.powerKW || 0,
+          avgPowerKW: event.powerKW || 0
+        };
+      }
+    }
+  }
+
+  // Don't forget the last group
+  if (currentGroup) {
+    groups.push(currentGroup);
+  }
+
+  // Add duration to each group (in hours)
+  for (const group of groups) {
+    group.durationHours = group.events.length * hoursPerInterval;  // e.g., 4 intervals * 0.25h = 1h
+    if (group.startTime && group.endTime) {
+      group.durationMs = group.endTime.getTime() - group.startTime.getTime();
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * Export Peak Shaving analysis to Excel with timestamps
+ */
+function exportPeakShavingAnalysis() {
+  if (!peakShavingExportData) {
+    alert('Brak danych do eksportu. Odśwież analizę.');
+    return;
+  }
+
+  console.log('📥 Eksport Peak Shaving do Excel...');
+
+  try {
+    const wb = XLSX.utils.book_new();
+    const analysis = peakShavingExportData;
+
+    // ========== SHEET 1: PODSUMOWANIE PERCENTYLI ==========
+    const summaryData = [
+      ['ANALIZA PEAK SHAVING - PODSUMOWANIE'],
+      [''],
+      ['Data eksportu:', new Date().toLocaleString('pl-PL')],
+      ['Całkowita liczba godzin:', analysis.totalHours],
+      ['Moc szczytowa [kW]:', formatNumericForExcel(analysis.peakPower, 1)],
+      ['Moc średnia [kW]:', formatNumericForExcel(analysis.avgPower, 1)],
+      [''],
+      ['PERCENTYLE MOCY'],
+      ['Próg', 'Moc [kW]', 'Godz. teoretycznych', 'Godz. rzeczywistych', 'Energia [kWh]', '% redukcji Pmax', 'Ocena']
+    ];
+
+    for (const row of analysis.tableRows) {
+      summaryData.push([
+        row.name,
+        formatNumericForExcel(row.powerKW, 1),
+        formatNumericForExcel(row.exactHours, 2),
+        row.hoursAbove,
+        formatNumericForExcel(row.energyToShave, 1),
+        row.peakReductionPct > 0 ? formatNumericForExcel(-row.peakReductionPct, 2) : null,
+        row.rating.replace(/[🟢🟡🟠🔴]/g, '').trim()
+      ]);
+    }
+
+    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+    ws1['!cols'] = [{ wch: 15 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Podsumowanie');
+
+    // ========== SHEET 2: ZGRUPOWANE ZDARZENIA (główna tabela) ==========
+    const intervalMin = analysis.intervalMinutes || 60;  // Get interval from analysis
+    const intervalLabel = intervalMin === 15 ? '15-min' : 'godz.';
+    const groupedData = [
+      ['ZDARZENIA PEAK SHAVING - ZGRUPOWANE W BLOKI'],
+      [''],
+      [`Bloki czasowe przekroczeń - kolejne interwały (${intervalMin} min) połączone w jedno zdarzenie`],
+      [''],
+      ['Poziom', 'Nr bloku', 'Start (data)', 'Start (godz.)', 'Stop (data)', 'Stop (godz.)',
+       'Czas trwania [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Próg [kW]', 'Suma nadwyżki [kWh]', `Liczba int. (${intervalLabel})`]
+    ];
+
+    let globalBlockNum = 0;
+    for (const level of analysis.exportableLevels || []) {
+      if (level.exceedanceEvents.length === 0) continue;
+
+      const groups = groupConsecutiveEvents(level.exceedanceEvents, intervalMin);
+      let blockNum = 0;
+
+      for (const group of groups) {
+        blockNum++;
+        globalBlockNum++;
+
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        groupedData.push([
+          level.name,
+          globalBlockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(group.maxPowerKW, 1),
+          formatNumericForExcel(group.avgPowerKW, 1),
+          formatNumericForExcel(level.powerKW, 1),
+          formatNumericForExcel(group.totalExcessKWh, 2),
+          group.events.length
+        ]);
+      }
+    }
+
+    const wsGrouped = XLSX.utils.aoa_to_sheet(groupedData);
+    wsGrouped['!cols'] = [
+      { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 12 }
+    ];
+    // Format date columns
+    XLSX.utils.book_append_sheet(wb, wsGrouped, 'Bloki czasowe');
+
+    // ========== SHEET 3+: SZCZEGÓŁY DLA KAŻDEGO POZIOMU ==========
+    for (const level of analysis.exportableLevels || []) {
+      if (level.exceedanceEvents.length === 0) continue;
+
+      const sheetName = level.name.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 28);
+      const groups = groupConsecutiveEvents(level.exceedanceEvents, intervalMin);
+
+      const detailData = [
+        [`ZDARZENIA: ${level.name}`],
+        [''],
+        ['Próg mocy [kW]:', formatNumericForExcel(level.powerKW, 1)],
+        ['Liczba bloków:', groups.length],
+        ['Łączna liczba godzin:', level.exceedanceEvents.length],
+        ['Energia do ścięcia [kWh]:', formatNumericForExcel(level.energyToShave, 1)],
+        ['Redukcja Pmax [%]:', formatNumericForExcel(-level.peakReductionPct, 2)],
+        ['Ocena:', level.rating.replace(/[🟢🟡🟠🔴]/g, '').trim()],
+        [''],
+        ['BLOKI CZASOWE'],
+        ['Nr bloku', 'Start (data)', 'Start (godz.)', 'Stop (data)', 'Stop (godz.)',
+         'Czas [h]', 'Moc max [kW]', 'Moc śr. [kW]', 'Suma [kWh]']
+      ];
+
+      let blockNum = 0;
+      for (const group of groups) {
+        blockNum++;
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        detailData.push([
+          blockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(group.maxPowerKW, 1),
+          formatNumericForExcel(group.avgPowerKW, 1),
+          formatNumericForExcel(group.totalExcessKWh, 2)
+        ]);
+      }
+
+      // Add detailed hourly breakdown
+      detailData.push(['']);
+      detailData.push(['SZCZEGÓŁY GODZINOWE']);
+      detailData.push(['Nr', 'Data', 'Godzina', 'Moc [kW]', 'Nadwyżka [kW]']);
+
+      // Sort by time for detailed view
+      const sortedEvents = [...level.exceedanceEvents].sort((a, b) => a.originalIndex - b.originalIndex);
+      let eventNum = 0;
+      for (const event of sortedEvents) {
+        eventNum++;
+        const dt = formatDateTimeForExcel(event.timestamp);
+        detailData.push([
+          eventNum,
+          dt.date,
+          dt.timeStr || '-',
+          formatNumericForExcel(event.powerKW, 1),
+          formatNumericForExcel(event.excessKW, 2)
+        ]);
+      }
+
+      const wsDetail = XLSX.utils.aoa_to_sheet(detailData);
+      wsDetail['!cols'] = [
+        { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+        { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+      ];
+      XLSX.utils.book_append_sheet(wb, wsDetail, sheetName);
+    }
+
+    // ========== SHEET: WSZYSTKIE GODZINY (surowe dane) ==========
+    const allHoursData = [
+      ['WSZYSTKIE GODZINY PRZEKROCZENIA (surowe dane)'],
+      [''],
+      ['Poziom', 'Nr', 'Data', 'Godzina', 'Moc [kW]', 'Próg [kW]', 'Nadwyżka [kW]']
+    ];
+
+    for (const level of analysis.exportableLevels || []) {
+      const sortedEvents = [...level.exceedanceEvents].sort((a, b) => a.originalIndex - b.originalIndex);
+      let eventNum = 0;
+      for (const event of sortedEvents) {
+        eventNum++;
+        const dt = formatDateTimeForExcel(event.timestamp);
+        allHoursData.push([
+          level.name,
+          eventNum,
+          dt.date,
+          dt.timeStr || '-',
+          formatNumericForExcel(event.powerKW, 1),
+          formatNumericForExcel(level.powerKW, 1),
+          formatNumericForExcel(event.excessKW, 2)
+        ]);
+      }
+    }
+
+    const wsAll = XLSX.utils.aoa_to_sheet(allHoursData);
+    wsAll['!cols'] = [
+      { wch: 12 }, { wch: 6 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }
+    ];
+    XLSX.utils.book_append_sheet(wb, wsAll, 'Wszystkie godziny');
+
+    // ========== SHEET: HARMONOGRAM BESS ==========
+    // Get recommended level or first available
+    const bessLevel = analysis.recommended || analysis.tableRows.find(r => r.ratingCode !== 'nieoplacalne');
+
+    if (bessLevel && bessLevel.exceedanceEvents?.length > 0) {
+      const bessData = [
+        ['HARMONOGRAM PRACY MAGAZYNU BESS'],
+        [''],
+        ['Poziom peak shaving:', bessLevel.name],
+        ['Próg mocy [kW]:', formatNumericForExcel(bessLevel.powerKW, 1)],
+        [''],
+        ['Założenia BESS:'],
+        ['DOD (głębokość rozładowania):', '80%'],
+        ['Sprawność cyklu (round-trip):', '90%'],
+        ['Margines bezpieczeństwa:', '20%'],
+        [''],
+        ['KIEDY BESS SIĘ ZAŁĄCZA (rozładowanie):'],
+        ['']
+      ];
+
+      // Calculate BESS parameters based on recommendation
+      const dod = 0.8;
+      const efficiency = 0.9;
+      const safetyMargin = 1.2;
+
+      // Group events into blocks for BESS simulation
+      const groups = groupConsecutiveEvents(bessLevel.exceedanceEvents, intervalMin);
+
+      // Find largest block to size BESS
+      let maxBlockEnergy = 0;
+      let maxBlockPower = 0;
+      for (const group of groups) {
+        if (group.totalExcessKWh > maxBlockEnergy) {
+          maxBlockEnergy = group.totalExcessKWh;
+          maxBlockPower = group.maxPowerKW - bessLevel.powerKW; // Excess above threshold
+        }
+      }
+
+      // BESS sizing
+      const bessCapacity = (maxBlockEnergy / dod) * safetyMargin;
+      const bessPower = maxBlockPower * safetyMargin;
+
+      bessData.push(['REKOMENDOWANY ROZMIAR BESS:']);
+      bessData.push(['Pojemność [kWh]:', formatNumericForExcel(bessCapacity, 0)]);
+      bessData.push(['Moc [kW]:', formatNumericForExcel(bessPower, 0)]);
+      bessData.push(['']);
+
+      // Header for schedule
+      bessData.push([
+        'Nr bloku', 'Data start', 'Godz. start', 'Data stop', 'Godz. stop',
+        'Czas pracy [h]', 'Moc max rozład. [kW]', 'Moc śr. rozład. [kW]',
+        'Energia rozład. [kWh]', 'SOC przed [%]', 'SOC po [%]', 'Uwagi'
+      ]);
+
+      let blockNum = 0;
+      let annualCycles = 0;
+
+      for (const group of groups) {
+        blockNum++;
+        const startDT = formatDateTimeForExcel(group.startTime);
+        const endDT = formatDateTimeForExcel(group.endTime);
+
+        // Calculate discharge power (excess above threshold)
+        const dischargePowerMax = group.maxPowerKW - bessLevel.powerKW;
+        const dischargePowerAvg = group.avgPowerKW - bessLevel.powerKW;
+        const dischargeEnergy = group.totalExcessKWh;
+
+        // SOC calculation (assuming starts at 100%)
+        const socBefore = 100;
+        const socAfter = Math.max(0, socBefore - (dischargeEnergy / bessCapacity * 100));
+
+        // Cycle counting
+        annualCycles += dischargeEnergy / bessCapacity;
+
+        // Notes
+        let notes = '';
+        if (dischargeEnergy > bessCapacity * dod) {
+          notes = '⚠️ Przekracza DOD!';
+        } else if (group.durationHours >= 4) {
+          notes = 'Długi blok';
+        }
+
+        bessData.push([
+          blockNum,
+          startDT.date,
+          startDT.timeStr || '-',
+          endDT.date,
+          endDT.timeStr || '-',
+          group.durationHours,
+          formatNumericForExcel(dischargePowerMax, 1),
+          formatNumericForExcel(dischargePowerAvg, 1),
+          formatNumericForExcel(dischargeEnergy, 2),
+          formatNumericForExcel(socBefore, 0),
+          formatNumericForExcel(socAfter, 0),
+          notes
+        ]);
+      }
+
+      // Summary
+      bessData.push(['']);
+      bessData.push(['PODSUMOWANIE ROCZNE:']);
+      bessData.push(['Liczba cykli rozładowania:', blockNum]);
+      bessData.push(['Ekwiwalent pełnych cykli:', formatNumericForExcel(annualCycles, 1)]);
+      bessData.push(['Szacowana żywotność [lat]:', formatNumericForExcel(Math.min(15, 6000 / annualCycles), 1)]);
+      bessData.push(['']);
+      bessData.push(['KIEDY ŁADOWAĆ BESS:']);
+      bessData.push(['Zalecenie:', 'Ładować w godzinach niskiej taryfy (np. 22:00-06:00) lub z nadwyżki PV']);
+      bessData.push(['Min. czas ładowania [h]:', formatNumericForExcel(bessCapacity / bessPower, 1)]);
+
+      const wsBess = XLSX.utils.aoa_to_sheet(bessData);
+      wsBess['!cols'] = [
+        { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 10 },
+        { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 16 },
+        { wch: 12 }, { wch: 10 }, { wch: 20 }
+      ];
+      XLSX.utils.book_append_sheet(wb, wsBess, 'Harmonogram BESS');
+    }
+
+    // Save file
+    const fileName = `peak_shaving_analysis_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    console.log(`✅ Eksport zakończony: ${fileName}`);
+
+  } catch (error) {
+    console.error('Błąd eksportu:', error);
+    alert('Błąd podczas eksportu: ' + error.message);
+  }
 }
 
 // Export analysis to Excel
@@ -873,6 +1855,146 @@ async function exportAnalysis() {
   }
 }
 
+/**
+ * Run BESS optimization using PyPSA+HiGHS backend
+ * Calls /api/economics/bess/optimize endpoint
+ */
+async function runBESSOptimization() {
+  const btn = document.getElementById('bessOptimizeBtn');
+  const detailsDiv = document.getElementById('bessOptimizationDetails');
+  const capacityEl = document.getElementById('bessCapacityValue');
+  const powerEl = document.getElementById('bessPowerValue');
+  const rationaleEl = document.getElementById('bessRationale');
+  const levelSelect = document.getElementById('bessLevelSelect');
+
+  if (!currentLoadProfile || !peakShavingExportData?.tableRows) {
+    alert('Brak danych do optymalizacji BESS');
+    return;
+  }
+
+  // Get selected level from dropdown
+  const selectedLevelName = levelSelect?.value || peakShavingExportData.recommended?.name;
+  const selectedLevel = peakShavingExportData.tableRows.find(r => r.name === selectedLevelName);
+
+  if (!selectedLevel) {
+    alert('Nie wybrano poziomu peak shaving');
+    return;
+  }
+
+  // Update button state
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Optymalizuję...';
+  btn.style.background = '#95a5a6';
+
+  try {
+    const threshold = selectedLevel.powerKW;
+
+    const requestBody = {
+      load_profile_kw: currentLoadProfile,
+      timestamps: currentTimestamps,
+      interval_minutes: currentIntervalMinutes,  // 15 for quarter-hourly, 60 for hourly
+      peak_shaving_threshold_kw: threshold,
+      bess_capex_per_kwh: 1500,
+      bess_capex_per_kw: 300,
+      depth_of_discharge: 0.8,
+      round_trip_efficiency: 0.9,
+      max_c_rate: 1.0,
+      method: 'lp_relaxed'  // Use PyPSA+HiGHS LP optimization
+    };
+
+    console.log('🔋 Calling BESS optimization API:', {
+      intervals: currentLoadProfile.length,
+      intervalMinutes: currentIntervalMinutes,
+      level: selectedLevelName,
+      threshold: threshold,
+      rating: selectedLevel.rating,
+      method: 'lp_relaxed'
+    });
+
+    const response = await fetch(`${API_URLS.economics}/bess/optimize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('🔋 BESS optimization result:', result);
+
+    // Update UI with optimization results
+    capacityEl.innerHTML = `${formatNumberEU(result.optimal_capacity_kwh, 0)} kWh`;
+    powerEl.innerHTML = `${formatNumberEU(result.optimal_power_kw, 0)} kW`;
+
+    // Update rationale with optimization details
+    const resolutionLabel = currentIntervalMinutes === 15 ? '15-min' : 'godzinowa';
+    rationaleEl.innerHTML = `
+      <strong style="color: #27ae60;">✓ Zoptymalizowano dla ${selectedLevelName} (${result.method_used.toUpperCase()}, ${resolutionLabel})</strong><br>
+      ${result.sizing_rationale}<br>
+      <span style="font-size: 9px;">
+        C-rate: ${formatNumberEU(result.c_rate_actual, 2)} |
+        Cykle/rok: ${formatNumberEU(result.total_annual_cycles, 0)} |
+        Żywotność: ${formatNumberEU(result.expected_lifetime_years, 1)} lat |
+        Czas: ${formatNumberEU(result.optimization_time_ms, 0)}ms
+      </span>
+    `;
+
+    // Show detailed breakdown
+    detailsDiv.style.display = 'block';
+    detailsDiv.innerHTML = `
+      <div style="margin-top: 10px; padding: 8px; background: rgba(39, 174, 96, 0.1); border-radius: 4px; font-size: 11px;">
+        <strong>📊 Szczegóły optymalizacji (PyPSA+HiGHS):</strong>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 6px;">
+          <div>
+            <span style="color: #7f8c8d;">CAPEX:</span><br>
+            <strong>${formatNumberEU(result.capex_total_pln, 0)} PLN</strong>
+          </div>
+          <div>
+            <span style="color: #7f8c8d;">Koszt efektywny:</span><br>
+            <strong>${formatNumberEU(result.capex_per_kwh_effective, 0)} PLN/kWh</strong>
+          </div>
+          <div>
+            <span style="color: #7f8c8d;">OPEX roczny:</span><br>
+            <strong>${formatNumberEU(result.annual_opex_pln, 0)} PLN/rok</strong>
+          </div>
+        </div>
+        <div style="margin-top: 8px;">
+          <span style="color: #7f8c8d;">Największy blok:</span>
+          ${formatNumberEU(result.largest_block?.total_energy_kwh || 0, 1)} kWh
+          przez ${formatNumberEU(result.largest_block?.duration_hours || 0, 2)}h
+          (${result.blocks_analyzed} bloków/rok)
+        </div>
+        ${result.warnings?.length > 0 ? `
+        <div style="margin-top: 6px; color: #e67e22;">
+          ⚠️ ${result.warnings.join(' | ')}
+        </div>
+        ` : ''}
+      </div>
+    `;
+
+    // Update button
+    btn.innerHTML = '✓ Zoptymalizowano';
+    btn.style.background = 'linear-gradient(135deg, #27ae60 0%, #2ecc71 100%)';
+    btn.disabled = false;
+
+  } catch (error) {
+    console.error('BESS optimization error:', error);
+    btn.innerHTML = '❌ Błąd';
+    btn.style.background = '#e74c3c';
+
+    rationaleEl.innerHTML += `<br><span style="color: #e74c3c;">Błąd: ${error.message}</span>`;
+
+    // Re-enable after delay
+    setTimeout(() => {
+      btn.innerHTML = '⚡ Optymalizuj (PyPSA+HiGHS)';
+      btn.style.background = 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)';
+      btn.disabled = false;
+    }, 3000);
+  }
+}
+
 // Refresh data
 function refreshData() {
   loadConsumptionData();
@@ -1103,4 +2225,827 @@ function generateSeasonalityChart(dailyBands) {
     }
   });
 }
+
+// ===========================================
+// TARIFF ANALYSIS SECTION
+// ===========================================
+
+// Chart instances for tariff analysis
+let tariffEnergyChart = null;
+let tariffCostChart = null;
+let tariffMonthlyChart = null;
+
+/**
+ * Get tariff configuration from settings (cached from shell or localStorage)
+ */
+function getTariffConfig() {
+  // FIRST: Try cached settings from shell (most reliable in iframe context)
+  if (cachedSystemSettings && cachedSystemSettings.tariffConfig) {
+    return cachedSystemSettings.tariffConfig;
+  }
+
+  // Try to get from parent window (shell's settings)
+  if (window.parent && window.parent.getSettings) {
+    try {
+      const settings = window.parent.getSettings();
+      if (settings && settings.tariffConfig) {
+        console.log('📊 Tariff config from parent window:', settings.tariffConfig);
+        cachedSystemSettings = settings; // Cache for future use
+        return settings.tariffConfig;
+      }
+    } catch (e) {
+      // Cross-origin error expected in iframe
+    }
+  }
+
+  // Try pv_system_settings (main settings storage - may not work in iframe)
+  try {
+    const pvSettings = localStorage.getItem('pv_system_settings');
+    if (pvSettings) {
+      const settings = JSON.parse(pvSettings);
+      if (settings && settings.tariffConfig) {
+        console.log('📊 Tariff config from pv_system_settings:', settings.tariffConfig);
+        cachedSystemSettings = settings;
+        return settings.tariffConfig;
+      }
+    }
+  } catch (e) {
+    // localStorage may not be accessible
+  }
+
+  // Request settings from shell if not cached
+  if (!cachedSystemSettings) {
+    console.log('📊 Requesting settings from shell...');
+    window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+  }
+
+  console.warn('📊 Using DEFAULT tariff config - no settings found!');
+
+  // Default configuration (C12a two-zone)
+  return {
+    type: 'two_zone',
+    name: 'C12a',
+    flatRate: 750,
+    twoZone: {
+      dayRate: 850,
+      nightRate: 450,
+      weekday: { start: 6, end: 22 },
+      weekend: { start: 6, end: 13 }
+    },
+    threeZone: {
+      peakRate: 950,
+      partialRate: 700,
+      offPeakRate: 400,
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      partial: { start: 6, end: 22 }
+    }
+  };
+}
+
+/**
+ * Get hourly rates for a specific day type (weekday or weekend)
+ * Returns array of 24 rates (PLN/MWh)
+ */
+function getTariffHourlyRates(dayType = 'weekday') {
+  const config = getTariffConfig();
+  const rates = new Array(24).fill(0);
+
+  if (config.type === 'flat') {
+    rates.fill(config.flatRate || 750);
+  } else if (config.type === 'two_zone') {
+    const zone = config.twoZone || {};
+    const nightRate = zone.nightRate || 450;
+    const dayRate = zone.dayRate || 850;
+
+    const schedule = dayType === 'weekend' ? zone.weekend : zone.weekday;
+    const start = schedule?.start || 6;
+    const end = schedule?.end || 22;
+
+    for (let h = 0; h < 24; h++) {
+      rates[h] = (h >= start && h < end) ? dayRate : nightRate;
+    }
+  } else if (config.type === 'three_zone') {
+    const zone = config.threeZone || {};
+    const offPeakRate = zone.offPeakRate || 400;
+    const partialRate = zone.partialRate || 700;
+    const peakRate = zone.peakRate || 950;
+
+    const peak1 = zone.peak1 || { start: 7, end: 13 };
+    const peak2 = zone.peak2 || { start: 16, end: 21 };
+    const partial = zone.partial || { start: 6, end: 22 };
+
+    for (let h = 0; h < 24; h++) {
+      if ((h >= peak1.start && h < peak1.end) || (h >= peak2.start && h < peak2.end)) {
+        rates[h] = peakRate;
+      } else if (h >= partial.start && h < partial.end) {
+        rates[h] = partialRate;
+      } else {
+        rates[h] = offPeakRate;
+      }
+    }
+  }
+
+  return rates;
+}
+
+/**
+ * Get zone name for a specific hour and day type
+ */
+function getZoneForHour(hour, dayType = 'weekday') {
+  const config = getTariffConfig();
+
+  if (config.type === 'flat') {
+    return 'flat';
+  } else if (config.type === 'two_zone') {
+    const zone = config.twoZone || {};
+    const schedule = dayType === 'weekend' ? zone.weekend : zone.weekday;
+    const start = schedule?.start || 6;
+    const end = schedule?.end || 22;
+    return (hour >= start && hour < end) ? 'day' : 'night';
+  } else if (config.type === 'three_zone') {
+    const zone = config.threeZone || {};
+    const peak1 = zone.peak1 || { start: 7, end: 13 };
+    const peak2 = zone.peak2 || { start: 16, end: 21 };
+    const partial = zone.partial || { start: 6, end: 22 };
+
+    if ((hour >= peak1.start && hour < peak1.end) || (hour >= peak2.start && hour < peak2.end)) {
+      return 'peak';
+    } else if (hour >= partial.start && hour < partial.end) {
+      return 'partial';
+    } else {
+      return 'off-peak';
+    }
+  }
+  return 'flat';
+}
+
+/**
+ * Perform tariff analysis on consumption data
+ */
+async function performTariffAnalysis() {
+  const config = getTariffConfig();
+
+  // Update info banner
+  updateTariffInfoBanner(config);
+
+  // Generate 24h visualization bar
+  generate24hVisualizationBar(config);
+
+  // Get 15-min or hourly data
+  let dataValues = [];
+  let dataTimestamps = [];
+  let intervalMinutes = 60;
+
+  try {
+    // Try 15-min data first
+    const quarterHourResponse = await fetch(`${API_URLS.dataAnalysis}/quarter-hour-data`);
+    if (quarterHourResponse.ok) {
+      const data = await quarterHourResponse.json();
+      if (data.values && data.values.length > 0) {
+        dataValues = data.values;
+        dataTimestamps = data.timestamps;
+        intervalMinutes = 15;
+        console.log(`📊 Tariff analysis using 15-min data: ${dataValues.length} intervals`);
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load 15-min data for tariff analysis:', e);
+  }
+
+  // Fallback to hourly
+  if (dataValues.length === 0 && consumptionData?.hourlyData) {
+    dataValues = consumptionData.hourlyData.values;
+    dataTimestamps = consumptionData.hourlyData.timestamps;
+    intervalMinutes = 60;
+    console.log(`📊 Tariff analysis using hourly data: ${dataValues.length} intervals`);
+  }
+
+  if (dataValues.length === 0) {
+    console.warn('No data available for tariff analysis');
+    return;
+  }
+
+  // Calculate zone statistics
+  const zoneStats = calculateZoneStatistics(dataValues, dataTimestamps, intervalMinutes, config);
+
+  // Update UI
+  updateTariffZonesGrid(zoneStats, config);
+  updateTariffSummary(zoneStats);
+  updateTariffDetailsTable(zoneStats);
+  generateTariffCharts(zoneStats);
+
+  // Calculate monthly breakdown
+  const monthlyStats = calculateMonthlyTariffStats(dataValues, dataTimestamps, intervalMinutes, config);
+  generateTariffMonthlyChart(monthlyStats, config);
+
+  // Generate optimization tips
+  generateTariffTips(zoneStats, config);
+}
+
+/**
+ * Calculate statistics for each tariff zone
+ */
+function calculateZoneStatistics(values, timestamps, intervalMinutes, config) {
+  const hoursPerInterval = intervalMinutes / 60;
+  const zones = {};
+
+  // Initialize zones based on tariff type
+  if (config.type === 'flat') {
+    zones.flat = { energy: 0, hours: 0, rate: config.flatRate || 750, intervals: 0 };
+  } else if (config.type === 'two_zone') {
+    zones.day = { energy: 0, hours: 0, rate: config.twoZone?.dayRate || 850, intervals: 0 };
+    zones.night = { energy: 0, hours: 0, rate: config.twoZone?.nightRate || 450, intervals: 0 };
+  } else if (config.type === 'three_zone') {
+    zones.peak = { energy: 0, hours: 0, rate: config.threeZone?.peakRate || 950, intervals: 0 };
+    zones.partial = { energy: 0, hours: 0, rate: config.threeZone?.partialRate || 700, intervals: 0 };
+    zones['off-peak'] = { energy: 0, hours: 0, rate: config.threeZone?.offPeakRate || 400, intervals: 0 };
+  }
+
+  // Process each interval
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    const timestamp = timestamps[i];
+    const date = new Date(timestamp);
+    const hour = date.getHours();
+    const dayOfWeek = date.getDay(); // 0 = Sunday
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const dayType = isWeekend ? 'weekend' : 'weekday';
+
+    const zoneName = getZoneForHour(hour, dayType);
+    const energyKWh = value * hoursPerInterval; // value is in kW
+
+    if (zones[zoneName]) {
+      zones[zoneName].energy += energyKWh;
+      zones[zoneName].intervals += 1;
+    }
+  }
+
+  // Calculate hours and costs
+  const totalIntervals = values.length;
+  const totalHours = totalIntervals * hoursPerInterval;
+  let totalEnergy = 0;
+  let totalCost = 0;
+
+  Object.keys(zones).forEach(key => {
+    const zone = zones[key];
+    zone.hours = zone.intervals * hoursPerInterval;
+    zone.cost = (zone.energy / 1000) * zone.rate; // energy in kWh, rate in PLN/MWh
+    zone.pctTime = (zone.hours / totalHours) * 100;
+    totalEnergy += zone.energy;
+    totalCost += zone.cost;
+  });
+
+  // Calculate percentages
+  Object.keys(zones).forEach(key => {
+    const zone = zones[key];
+    zone.pctEnergy = totalEnergy > 0 ? (zone.energy / totalEnergy) * 100 : 0;
+    zone.pctCost = totalCost > 0 ? (zone.cost / totalCost) * 100 : 0;
+  });
+
+  return {
+    zones,
+    totalEnergy,
+    totalCost,
+    totalHours,
+    avgPrice: totalEnergy > 0 ? (totalCost / (totalEnergy / 1000)) : 0 // PLN/MWh
+  };
+}
+
+/**
+ * Calculate monthly tariff statistics
+ */
+function calculateMonthlyTariffStats(values, timestamps, intervalMinutes, config) {
+  const hoursPerInterval = intervalMinutes / 60;
+  const months = {};
+
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    const timestamp = timestamps[i];
+    const date = new Date(timestamp);
+    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const hour = date.getHours();
+    const dayOfWeek = date.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const dayType = isWeekend ? 'weekend' : 'weekday';
+
+    const zoneName = getZoneForHour(hour, dayType);
+    const energyKWh = value * hoursPerInterval;
+
+    if (!months[monthKey]) {
+      months[monthKey] = {};
+    }
+    if (!months[monthKey][zoneName]) {
+      months[monthKey][zoneName] = { energy: 0, cost: 0 };
+    }
+
+    const rate = getTariffRateForZone(zoneName, config);
+    months[monthKey][zoneName].energy += energyKWh;
+    months[monthKey][zoneName].cost += (energyKWh / 1000) * rate;
+  }
+
+  return months;
+}
+
+/**
+ * Get tariff rate for a specific zone
+ */
+function getTariffRateForZone(zoneName, config) {
+  if (config.type === 'flat') {
+    return config.flatRate || 750;
+  } else if (config.type === 'two_zone') {
+    return zoneName === 'day' ? (config.twoZone?.dayRate || 850) : (config.twoZone?.nightRate || 450);
+  } else if (config.type === 'three_zone') {
+    if (zoneName === 'peak') return config.threeZone?.peakRate || 950;
+    if (zoneName === 'partial') return config.threeZone?.partialRate || 700;
+    return config.threeZone?.offPeakRate || 400;
+  }
+  return 750;
+}
+
+/**
+ * Update tariff info banner
+ */
+function updateTariffInfoBanner(config) {
+  const typeBadge = document.getElementById('tariffTypeBadge');
+  const nameDisplay = document.getElementById('tariffNameDisplay');
+
+  const typeNames = {
+    flat: 'Jednostrefowa',
+    two_zone: 'Dwustrefowa',
+    three_zone: 'Trzystrefowa'
+  };
+
+  if (typeBadge) {
+    typeBadge.textContent = typeNames[config.type] || config.type;
+  }
+
+  if (nameDisplay) {
+    nameDisplay.textContent = `Taryfa: ${config.name || 'Nieokreślona'}`;
+  }
+}
+
+/**
+ * Generate 24h visualization bar
+ */
+function generate24hVisualizationBar(config) {
+  const bar = document.getElementById('tariff24hBarConsumption');
+  if (!bar) return;
+
+  let html = '';
+  for (let h = 0; h < 24; h++) {
+    const zone = getZoneForHour(h, 'weekday');
+    html += `<div class="hour-block ${zone}" title="${h}:00 - ${zone}">${h}</div>`;
+  }
+  bar.innerHTML = html;
+}
+
+/**
+ * Update tariff zones grid with cards
+ */
+function updateTariffZonesGrid(stats, config) {
+  const grid = document.getElementById('tariffZonesGrid');
+  if (!grid) return;
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Strefa dzienna',
+    night: 'Strefa nocna',
+    peak: 'Szczyt',
+    partial: 'Strefa pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  let html = '';
+  Object.keys(stats.zones).forEach(key => {
+    const zone = stats.zones[key];
+    const label = zoneLabels[key] || key;
+    const energyMWh = (zone.energy / 1000).toFixed(1);
+    const costPLN = formatNumberEU(zone.cost, 0);
+
+    html += `
+      <div class="tariff-zone-card ${key}">
+        <div class="zone-header">
+          <span class="zone-name">${label}</span>
+          <span class="zone-rate">${zone.rate} PLN/MWh</span>
+        </div>
+        <div class="zone-stats">
+          <div class="zone-stat">
+            <div class="stat-value">${energyMWh}</div>
+            <div class="stat-label">MWh</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${costPLN}</div>
+            <div class="stat-label">PLN</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${zone.pctEnergy.toFixed(1)}%</div>
+            <div class="stat-label">Zużycia</div>
+          </div>
+          <div class="zone-stat">
+            <div class="stat-value">${zone.pctCost.toFixed(1)}%</div>
+            <div class="stat-label">Kosztu</div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  grid.innerHTML = html;
+}
+
+/**
+ * Update tariff summary
+ */
+function updateTariffSummary(stats) {
+  const totalCostEl = document.getElementById('tariffTotalCost');
+  const avgPriceEl = document.getElementById('tariffAvgPrice');
+  const savingsEl = document.getElementById('tariffSavingsPotential');
+
+  if (totalCostEl) {
+    totalCostEl.textContent = `${formatNumberEU(stats.totalCost, 0)} PLN`;
+  }
+
+  if (avgPriceEl) {
+    avgPriceEl.textContent = `${formatNumberEU(stats.avgPrice, 1)} PLN/MWh`;
+  }
+
+  // Calculate potential savings (shift 10% from peak to off-peak)
+  if (savingsEl) {
+    const zones = stats.zones;
+    let potentialSavings = 0;
+
+    if (zones.peak && zones['off-peak']) {
+      // 10% of peak energy moved to off-peak
+      const shiftableEnergy = zones.peak.energy * 0.1;
+      const peakRate = zones.peak.rate;
+      const offPeakRate = zones['off-peak'].rate;
+      potentialSavings = (shiftableEnergy / 1000) * (peakRate - offPeakRate);
+    } else if (zones.day && zones.night) {
+      const shiftableEnergy = zones.day.energy * 0.1;
+      const dayRate = zones.day.rate;
+      const nightRate = zones.night.rate;
+      potentialSavings = (shiftableEnergy / 1000) * (dayRate - nightRate);
+    }
+
+    if (potentialSavings > 0) {
+      savingsEl.textContent = `~${formatNumberEU(potentialSavings, 0)} PLN/rok (przesunięcie 10% zużycia)`;
+    } else {
+      savingsEl.textContent = '-';
+    }
+  }
+}
+
+/**
+ * Update tariff details table
+ */
+function updateTariffDetailsTable(stats) {
+  const tbody = document.getElementById('tariffDetailsTableBody');
+  if (!tbody) return;
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Strefa dzienna',
+    night: 'Strefa nocna',
+    peak: 'Szczyt',
+    partial: 'Strefa pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  const zoneHoursLabels = {
+    flat: 'Całą dobę',
+    day: '6:00-22:00 (roboczy)',
+    night: '22:00-6:00',
+    peak: '7:00-13:00, 16:00-21:00',
+    partial: '6:00-22:00 (bez szczytu)',
+    'off-peak': '22:00-6:00'
+  };
+
+  let html = '';
+  Object.keys(stats.zones).forEach(key => {
+    const zone = stats.zones[key];
+    const label = zoneLabels[key] || key;
+    const hoursLabel = zoneHoursLabels[key] || '-';
+
+    html += `
+      <tr>
+        <td>
+          <span class="zone-badge">
+            <span class="zone-dot ${key}"></span>
+            ${label}
+          </span>
+        </td>
+        <td>${hoursLabel}</td>
+        <td>${formatNumberEU(zone.hours, 0)}</td>
+        <td>${formatNumberEU(zone.pctTime, 1)}%</td>
+        <td>${formatNumberEU(zone.energy / 1000, 1)}</td>
+        <td>${formatNumberEU(zone.pctEnergy, 1)}%</td>
+        <td>${formatNumberEU(zone.rate, 0)}</td>
+        <td>${formatNumberEU(zone.cost, 0)}</td>
+        <td>${formatNumberEU(zone.pctCost, 1)}%</td>
+      </tr>
+    `;
+  });
+
+  // Total row
+  html += `
+    <tr class="total-row">
+      <td><strong>RAZEM</strong></td>
+      <td>-</td>
+      <td>${formatNumberEU(stats.totalHours, 0)}</td>
+      <td>100%</td>
+      <td>${formatNumberEU(stats.totalEnergy / 1000, 1)}</td>
+      <td>100%</td>
+      <td>${formatNumberEU(stats.avgPrice, 0)}</td>
+      <td>${formatNumberEU(stats.totalCost, 0)}</td>
+      <td>100%</td>
+    </tr>
+  `;
+
+  tbody.innerHTML = html;
+}
+
+/**
+ * Generate tariff pie charts
+ */
+function generateTariffCharts(stats) {
+  const zoneColors = {
+    flat: '#3498db',
+    day: '#f39c12',
+    night: '#27ae60',
+    peak: '#e74c3c',
+    partial: '#f39c12',
+    'off-peak': '#27ae60'
+  };
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Dzień',
+    night: 'Noc',
+    peak: 'Szczyt',
+    partial: 'Pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  const labels = Object.keys(stats.zones).map(k => zoneLabels[k] || k);
+  const colors = Object.keys(stats.zones).map(k => zoneColors[k] || '#95a5a6');
+  const energyData = Object.values(stats.zones).map(z => z.energy / 1000); // MWh
+  const costData = Object.values(stats.zones).map(z => z.cost);
+
+  // Energy chart
+  const energyCtx = document.getElementById('tariffEnergyChart');
+  if (energyCtx) {
+    if (tariffEnergyChart) tariffEnergyChart.destroy();
+    tariffEnergyChart = new Chart(energyCtx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: energyData,
+          backgroundColor: colors,
+          borderWidth: 2,
+          borderColor: 'white'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { font: { size: 11 } }
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.label}: ${formatNumberEU(ctx.raw, 1)} MWh`
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Cost chart
+  const costCtx = document.getElementById('tariffCostChart');
+  if (costCtx) {
+    if (tariffCostChart) tariffCostChart.destroy();
+    tariffCostChart = new Chart(costCtx, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: costData,
+          backgroundColor: colors,
+          borderWidth: 2,
+          borderColor: 'white'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { font: { size: 11 } }
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.label}: ${formatNumberEU(ctx.raw, 0)} PLN`
+            }
+          }
+        }
+      }
+    });
+  }
+}
+
+/**
+ * Generate monthly stacked bar chart for tariff zones
+ */
+function generateTariffMonthlyChart(monthlyStats, config) {
+  const ctx = document.getElementById('tariffMonthlyChart');
+  if (!ctx) return;
+
+  if (tariffMonthlyChart) tariffMonthlyChart.destroy();
+
+  const monthLabels = Object.keys(monthlyStats).sort();
+  const monthNames = monthLabels.map(m => {
+    const [year, month] = m.split('-');
+    const months = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru'];
+    return months[parseInt(month) - 1] + ' ' + year.slice(2);
+  });
+
+  const zoneColors = {
+    flat: '#3498db',
+    day: '#f39c12',
+    night: '#27ae60',
+    peak: '#e74c3c',
+    partial: '#f39c12',
+    'off-peak': '#27ae60'
+  };
+
+  const zoneLabels = {
+    flat: 'Strefa jednolita',
+    day: 'Dzień',
+    night: 'Noc',
+    peak: 'Szczyt',
+    partial: 'Pośrednia',
+    'off-peak': 'Pozaszczyt'
+  };
+
+  // Get all zone keys
+  const allZones = new Set();
+  Object.values(monthlyStats).forEach(month => {
+    Object.keys(month).forEach(z => allZones.add(z));
+  });
+
+  const datasets = Array.from(allZones).map(zone => ({
+    label: zoneLabels[zone] || zone,
+    data: monthLabels.map(m => (monthlyStats[m][zone]?.cost || 0)),
+    backgroundColor: zoneColors[zone] || '#95a5a6',
+    borderWidth: 0
+  }));
+
+  tariffMonthlyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: monthNames,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { font: { size: 11 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${formatNumberEU(ctx.raw, 0)} PLN`
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          title: { display: false }
+        },
+        y: {
+          stacked: true,
+          title: { display: true, text: 'Koszt [PLN]' },
+          ticks: {
+            callback: (val) => formatNumberEU(val, 0)
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Generate optimization tips based on tariff analysis
+ */
+function generateTariffTips(stats, config) {
+  const tipsList = document.getElementById('tariffTipsList');
+  if (!tipsList) return;
+
+  const tips = [];
+  const zones = stats.zones;
+
+  if (config.type === 'flat') {
+    tips.push({
+      icon: '💡',
+      text: 'Taryfa jednostrefowa nie daje możliwości optymalizacji czasowej. Rozważ przejście na taryfę dwu- lub trzystrefową.',
+      type: 'warning'
+    });
+  } else if (zones.peak && zones['off-peak']) {
+    // Three-zone tips
+    if (zones.peak.pctEnergy > 40) {
+      tips.push({
+        icon: '⚠️',
+        text: `Wysokie zużycie w szczycie (${zones.peak.pctEnergy.toFixed(1)}%). Rozważ przesunięcie procesów produkcyjnych na godziny pozaszczytowe.`,
+        type: 'warning'
+      });
+    }
+
+    if (zones['off-peak'].pctEnergy < 20) {
+      tips.push({
+        icon: '🔋',
+        text: 'Niskie wykorzystanie taniej strefy nocnej. Magazyn energii BESS mógłby ładować się w nocy i rozładowywać w szczycie.',
+        type: 'success'
+      });
+    }
+
+    const rateDiff = zones.peak.rate - zones['off-peak'].rate;
+    if (rateDiff > 300) {
+      const savingsPerMWh = rateDiff;
+      tips.push({
+        icon: '💰',
+        text: `Różnica cen szczyt/pozaszczyt: ${savingsPerMWh} PLN/MWh. Każda MWh przesunięta z szczytu do nocy to oszczędność ${savingsPerMWh} PLN.`,
+        type: 'success'
+      });
+    }
+  } else if (zones.day && zones.night) {
+    // Two-zone tips
+    if (zones.day.pctEnergy > 80) {
+      tips.push({
+        icon: '⚠️',
+        text: `Aż ${zones.day.pctEnergy.toFixed(1)}% zużycia w droższej strefie dziennej. Rozważ przesunięcie niektórych procesów na noc.`,
+        type: 'warning'
+      });
+    }
+
+    if (zones.night.pctEnergy > 30) {
+      tips.push({
+        icon: '✅',
+        text: `Dobre wykorzystanie tańszej strefy nocnej (${zones.night.pctEnergy.toFixed(1)}%). Utrzymuj tę strategię.`,
+        type: 'success'
+      });
+    }
+  }
+
+  // BESS recommendation
+  if (stats.totalEnergy > 100000) { // > 100 MWh/rok
+    tips.push({
+      icon: '🔋',
+      text: 'Przy tym wolumenie zużycia magazyn energii BESS może przynieść znaczące oszczędności poprzez arbitraż taryfowy.',
+      type: 'success'
+    });
+  }
+
+  let html = '';
+  tips.forEach(tip => {
+    html += `
+      <div class="tariff-tip ${tip.type}">
+        <span class="tip-icon">${tip.icon}</span>
+        <span>${tip.text}</span>
+      </div>
+    `;
+  });
+
+  if (tips.length === 0) {
+    html = '<div class="tariff-tip success"><span class="tip-icon">✅</span><span>Profil zużycia jest dobrze zoptymalizowany pod obecną taryfę.</span></div>';
+  }
+
+  tipsList.innerHTML = html;
+}
+
+/**
+ * Navigate to tariff settings
+ */
+function goToTariffSettings() {
+  // Send message to parent (shell) to switch to Settings module
+  if (window.parent && window.parent.postMessage) {
+    window.parent.postMessage({ type: 'NAVIGATE_TO', module: 'settings', section: 'tariff' }, '*');
+  }
+}
+
+// Call tariff analysis after main analysis
+const originalPerformAnalysis = performAnalysis;
+performAnalysis = async function() {
+  await originalPerformAnalysis();
+  // Run tariff analysis after main analysis completes
+  await performTariffAnalysis();
+};
 

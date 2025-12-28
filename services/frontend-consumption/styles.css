@@ -431,6 +431,381 @@ canvas {
   border: 2px solid #27ae60;
 }
 
+/* ===========================================
+   ANALIZA TARYFOWA - Sekcja zużycia wg stref
+   =========================================== */
+
+/* Info banner */
+.tariff-info-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  border-left: 4px solid #667eea;
+}
+
+.tariff-type-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.tariff-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: white;
+  color: #667eea;
+  border: 1px solid #667eea;
+  transition: all 0.2s;
+}
+
+.btn-small:hover {
+  background: #667eea;
+  color: white;
+}
+
+/* 24h Bar visualization */
+.tariff-24h-wrapper {
+  margin-bottom: 20px;
+}
+
+.tariff-24h-bar-consumption {
+  display: flex;
+  height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.tariff-24h-bar-consumption .hour-block {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: white;
+  border-right: 1px solid rgba(255,255,255,0.2);
+  transition: all 0.2s;
+}
+
+.tariff-24h-bar-consumption .hour-block:last-child {
+  border-right: none;
+}
+
+.tariff-24h-bar-consumption .hour-block:hover {
+  transform: scaleY(1.1);
+}
+
+.tariff-24h-bar-consumption .hour-block.peak {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.tariff-24h-bar-consumption .hour-block.partial,
+.tariff-24h-bar-consumption .hour-block.day {
+  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+}
+
+.tariff-24h-bar-consumption .hour-block.off-peak,
+.tariff-24h-bar-consumption .hour-block.night {
+  background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+}
+
+.tariff-24h-bar-consumption .hour-block.flat {
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+}
+
+.tariff-hours-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #7f8c8d;
+  padding: 0 2px;
+}
+
+/* Zones Grid */
+.tariff-zones-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.tariff-zone-card {
+  padding: 16px;
+  border-radius: 12px;
+  color: white;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.tariff-zone-card.peak {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.tariff-zone-card.partial,
+.tariff-zone-card.day {
+  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+}
+
+.tariff-zone-card.off-peak,
+.tariff-zone-card.night {
+  background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+}
+
+.tariff-zone-card.flat {
+  background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+}
+
+.tariff-zone-card .zone-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tariff-zone-card .zone-name {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tariff-zone-card .zone-rate {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-left: auto;
+}
+
+.tariff-zone-card .zone-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tariff-zone-card .zone-stat {
+  background: rgba(255,255,255,0.15);
+  padding: 8px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.tariff-zone-card .zone-stat .stat-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.tariff-zone-card .zone-stat .stat-label {
+  font-size: 10px;
+  opacity: 0.85;
+  text-transform: uppercase;
+}
+
+/* Summary Box */
+.tariff-summary-box {
+  display: flex;
+  gap: 20px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.tariff-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tariff-summary-item .label {
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+.tariff-summary-item .value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #2c3e50;
+}
+
+.tariff-summary-item.highlight {
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #d5f4e6 0%, #c3f0db 100%);
+  border-radius: 8px;
+  border: 2px solid #27ae60;
+}
+
+.tariff-summary-item.highlight .value {
+  color: #1e8449;
+}
+
+/* Charts Row */
+.tariff-charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.tariff-chart-container {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+.tariff-chart-container h4 {
+  font-size: 13px;
+  color: #2c3e50;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.tariff-chart-container canvas {
+  max-height: 200px;
+}
+
+/* Monthly Section */
+.tariff-monthly-section {
+  background: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+}
+
+/* Details Table */
+.tariff-details-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.tariff-details-table thead tr {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.tariff-details-table th {
+  padding: 12px 10px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.tariff-details-table th:first-child {
+  text-align: left;
+  border-radius: 8px 0 0 0;
+}
+
+.tariff-details-table th:last-child {
+  border-radius: 0 8px 0 0;
+}
+
+.tariff-details-table tbody tr {
+  border-bottom: 1px solid #eee;
+  transition: background 0.2s;
+}
+
+.tariff-details-table tbody tr:hover {
+  background: #f8f9fa;
+}
+
+.tariff-details-table tbody td {
+  padding: 10px;
+  text-align: center;
+}
+
+.tariff-details-table tbody td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+.tariff-details-table tbody tr.total-row {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-weight: 700;
+}
+
+.zone-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zone-badge .zone-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.zone-badge .zone-dot.peak { background: #e74c3c; }
+.zone-badge .zone-dot.partial, .zone-badge .zone-dot.day { background: #f39c12; }
+.zone-badge .zone-dot.off-peak, .zone-badge .zone-dot.night { background: #27ae60; }
+.zone-badge .zone-dot.flat { background: #3498db; }
+
+/* Tips Section */
+.tariff-tips-section {
+  margin-top: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  border-radius: 8px;
+  border-left: 4px solid #27ae60;
+}
+
+.tariff-tips-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tariff-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: #2c3e50;
+}
+
+.tariff-tip .tip-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.tariff-tip.warning {
+  background: #fff3e0;
+  padding: 8px;
+  border-radius: 6px;
+  border-left: 3px solid #f39c12;
+}
+
+.tariff-tip.success {
+  background: rgba(255,255,255,0.5);
+  padding: 8px;
+  border-radius: 6px;
+}
+
 /* Responsywność */
 @media (max-width: 768px) {
   .content-grid {

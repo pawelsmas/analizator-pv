@@ -5,7 +5,6 @@ RUN apk add --no-cache curl
 
 # Copy module files
 COPY index.html /usr/share/nginx/html/
-COPY config.js /usr/share/nginx/html/
 COPY config-v2.js /usr/share/nginx/html/
 COPY styles.css /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf

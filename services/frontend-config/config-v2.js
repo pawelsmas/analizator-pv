@@ -717,6 +717,14 @@ async function runAnalysis() {
     if (!hourlyDataResponse.ok) throw new Error('Failed to get hourly data');
     const hourlyData = await hourlyDataResponse.json();
 
+    // Check if BESS-only mode (no PV)
+    const bessTopology = systemSettings?.bessTopology || 'pv_bess';
+    if (bessTopology === 'bess_only') {
+      console.log('🔋 BESS-only mode detected - running BESS sizing without PV');
+      await runBessOnlyAnalysis(hourlyData, updateProgress);
+      return;
+    }
+
     updateProgress(2, 'Przygotowanie konfiguracji PV', 15);
 
     // Save consumption data to localStorage for other modules
@@ -1094,27 +1102,56 @@ async function runAnalysis() {
 
     updateProgress(8, 'Zapisywanie wyników', 95);
 
-    // Save results to localStorage
-    localStorage.setItem('pv_analysis_results', JSON.stringify(results));
-    localStorage.setItem('pv_analysis_config', JSON.stringify(pvConfig));
+    // Save results to localStorage (with quota error handling)
+    try {
+      // Clear old data first to free up space
+      localStorage.removeItem('pv_analysis_results');
+      localStorage.removeItem('pv_analysis_config');
+      localStorage.removeItem('pvConfig');
+      localStorage.removeItem('analysisResults');
+      localStorage.removeItem('pvProductionData');
 
-    // Save PV config for other modules
-    localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
+      localStorage.setItem('pv_analysis_results', JSON.stringify(results));
+      localStorage.setItem('pv_analysis_config', JSON.stringify(pvConfig));
 
-    // Save analysis results in format expected by other modules
-    localStorage.setItem('analysisResults', JSON.stringify(results));
+      // Save PV config for other modules
+      localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
 
-    // Generate and save PV production data for Production module
-    if (results.key_variants && Object.keys(results.key_variants).length > 0) {
-      const firstVariant = results.key_variants[Object.keys(results.key_variants)[0]];
-      localStorage.setItem('pvProductionData', JSON.stringify({
-        capacity: firstVariant.capacity,
-        production: firstVariant.production,
-        self_consumed: firstVariant.self_consumed,
-        exported: firstVariant.exported,
-        variants: results.key_variants,
-        scenarios: results.scenarios
-      }));
+      // Save analysis results in format expected by other modules
+      localStorage.setItem('analysisResults', JSON.stringify(results));
+
+      // Generate and save PV production data for Production module
+      if (results.key_variants && Object.keys(results.key_variants).length > 0) {
+        const firstVariant = results.key_variants[Object.keys(results.key_variants)[0]];
+        localStorage.setItem('pvProductionData', JSON.stringify({
+          capacity: firstVariant.capacity,
+          production: firstVariant.production,
+          self_consumed: firstVariant.self_consumed,
+          exported: firstVariant.exported,
+          variants: results.key_variants,
+          scenarios: results.scenarios
+        }));
+      }
+    } catch (storageError) {
+      console.warn('⚠️ localStorage quota exceeded, clearing old data and retrying...');
+      // Clear all app-related localStorage and retry
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('pv_') || key.startsWith('analysis') || key.startsWith('pvConfig') || key.startsWith('pvProduction'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+
+      // Retry saving essential data only
+      try {
+        localStorage.setItem('pv_analysis_results', JSON.stringify(results));
+        localStorage.setItem('pvConfig', JSON.stringify(pvConfig));
+        console.log('✅ Saved essential data after clearing old storage');
+      } catch (retryError) {
+        console.warn('⚠️ Could not save to localStorage, continuing without persistence');
+      }
     }
 
     // Show analysis results with variant selector
@@ -1629,3 +1666,294 @@ window.addEventListener('message', (event) => {
       break;
   }
 });
+
+/**
+ * Run BESS-only analysis without PV (for bess_only topology)
+ * Calls bess-dispatch /sizing API directly with consumption data
+ */
+async function runBessOnlyAnalysis(hourlyData, updateProgress) {
+  try {
+    updateProgress(2, 'Przygotowanie analizy BESS (bez PV)', 20);
+
+    // Save consumption data to localStorage
+    const dataInfo = JSON.parse(localStorage.getItem('pv_data_info') || '{}');
+    localStorage.setItem('consumptionData', JSON.stringify({
+      filename: dataInfo.filename || 'uploaded_data',
+      dataPoints: hourlyData.values.length,
+      year: dataInfo.year || new Date().getFullYear(),
+      hourlyData: hourlyData,
+      sum: hourlyData.values.reduce((a, b) => a + b, 0),
+      totalConsumption: hourlyData.values.reduce((a, b) => a + b, 0)
+    }));
+
+    updateProgress(3, 'Uruchamianie doboru magazynu BESS', 40);
+
+    // Prepare load data (aggregate to hourly if 15-min data)
+    let loadData = hourlyData.values;
+    if (loadData.length >= 35040) {
+      // 15-min data - aggregate to hourly
+      console.log('📊 Converting 15-min data to hourly:', loadData.length, 'points');
+      const hourlyLoad = [];
+      for (let h = 0; h < 8760; h++) {
+        const startIdx = h * 4;
+        const endIdx = Math.min(startIdx + 4, loadData.length);
+        let sum = 0;
+        for (let i = startIdx; i < endIdx; i++) {
+          sum += loadData[i] || 0;
+        }
+        hourlyLoad.push(sum / 4); // Average power
+      }
+      loadData = hourlyLoad;
+    } else if (loadData.length < 8760) {
+      // Extend data to 8760 hours
+      const multiplier = Math.ceil(8760 / loadData.length);
+      const extendedData = [];
+      for (let m = 0; m < multiplier && extendedData.length < 8760; m++) {
+        for (let i = 0; i < loadData.length && extendedData.length < 8760; i++) {
+          extendedData.push(loadData[i] || 0);
+        }
+      }
+      loadData = extendedData.slice(0, 8760);
+    }
+
+    // Get BESS settings
+    const bessMode = systemSettings?.bessMode || 'light';
+    const sizingRequest = {
+      load_kw: loadData,
+      pv_generation_kw: [], // Empty - no PV
+      interval_minutes: 60,
+      mode: 'load_only',
+      topology: 'load_only',
+
+      // Battery constraints
+      min_power_kw: systemSettings?.bessProMinPowerKw || 20,
+      max_power_kw: systemSettings?.bessProMaxPowerKw || 10000,
+      power_steps: 15,
+      durations_h: [1.0, 2.0, 4.0],
+
+      // Battery params
+      roundtrip_efficiency: systemSettings?.bessRoundtripEfficiency || 0.9,
+      soc_min: systemSettings?.bessSocMin || 0.1,
+      soc_max: systemSettings?.bessSocMax || 0.9,
+
+      // Peak shaving limit (if enabled)
+      peak_limit_kw: systemSettings?.bessPeakShavingEnabled
+        ? (systemSettings?.bessPeakShavingTargetKw || Math.max(...loadData) * 0.8)
+        : null,
+
+      // Economics
+      bess_capex_per_kwh: systemSettings?.bessCapexPerKwh || 1500,
+      bess_capex_per_kw: systemSettings?.bessCapexPerKw || 300,
+      opex_pct_per_year: (systemSettings?.bessOpexPctPerYear || 1.5) / 100,
+      discount_rate: (systemSettings?.discountRate || 7) / 100,
+      lifetime_years: systemSettings?.bessLifetimeYears || 15,
+
+      // Pricing
+      prices: {
+        import_price_pln_mwh: systemSettings?.totalEnergyPrice || 800
+      }
+    };
+
+    console.log('🔋 BESS-only sizing request:', {
+      loadPoints: loadData.length,
+      loadSum: (loadData.reduce((a, b) => a + b, 0) / 1000).toFixed(0) + ' MWh',
+      peakLimit: sizingRequest.peak_limit_kw,
+      mode: sizingRequest.mode
+    });
+
+    // Call bess-dispatch sizing API
+    const response = await fetch('/api/bess-dispatch/sizing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sizingRequest)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`BESS sizing failed: ${response.status} - ${errorText}`);
+    }
+
+    const sizingResult = await response.json();
+    console.log('🔋 BESS sizing result:', sizingResult);
+
+    updateProgress(4, 'Zapisywanie wyników', 80);
+
+    // Save results to localStorage for BESS and Economics modules
+    const bessResults = {
+      topology: 'bess_only',
+      mode: 'load_only',
+      timestamp: new Date().toISOString(),
+      totalLoadMwh: sizingResult.total_load_mwh,
+      variants: sizingResult.variants,
+      recommendedVariant: sizingResult.recommended_variant,
+      warnings: sizingResult.warnings || []
+    };
+
+    localStorage.setItem('bessOnlyResults', JSON.stringify(bessResults));
+
+    // Also save as variants for BESS module
+    const variantsData = {};
+    if (sizingResult.variants) {
+      sizingResult.variants.forEach((v, idx) => {
+        const variantKey = String.fromCharCode(65 + idx); // A, B, C
+        variantsData[variantKey] = {
+          name: v.variant_label || `BESS ${v.power_kw}kW/${v.energy_kwh}kWh`,
+          capacity: 0, // No PV
+          production: 0,
+          consumption: sizingResult.total_load_mwh * 1000,
+          self_consumed: 0,
+          exported: 0,
+          grid_import: sizingResult.total_load_mwh * 1000,
+          auto_consumption_pct: 0,
+          bess_power_kw: v.power_kw,
+          bess_energy_kwh: v.energy_kwh,
+          bess_charged_kwh: v.dispatch_summary?.total_charge_kwh || 0,
+          bess_discharged_kwh: v.dispatch_summary?.total_discharge_kwh || 0,
+          bess_curtailed_kwh: 0,
+          bess_cycles_equivalent: v.degradation?.efc_total || 0,
+          npv_pln: v.npv_pln,
+          simple_payback_years: v.simple_payback_years,
+          capex_pln: v.capex_pln,
+          annual_savings_pln: v.annual_savings_pln,
+          peak_reduction_kw: v.dispatch_summary?.peak_reduction_kw || 0,
+          peak_reduction_pct: v.dispatch_summary?.peak_reduction_pct || 0,
+          topology: 'bess_only'
+        };
+      });
+    }
+    localStorage.setItem('pvAnalysisVariants', JSON.stringify(variantsData));
+
+    updateProgress(5, 'Gotowe!', 100);
+
+    // Display results
+    displayBessOnlyResults(sizingResult);
+
+    // Notify other modules
+    window.parent.postMessage({
+      type: 'ANALYSIS_COMPLETE',
+      source: 'config',
+      data: {
+        topology: 'bess_only',
+        variants: variantsData,
+        bessResults: bessResults
+      }
+    }, '*');
+
+  } catch (error) {
+    console.error('❌ BESS-only analysis failed:', error);
+    document.getElementById('configResults').innerHTML = `
+      <div style="text-align:center;padding:40px;color:#ff4444">
+        <div style="font-size:36px;margin-bottom:10px">❌</div>
+        <div style="font-size:16px;font-weight:600">Błąd analizy BESS</div>
+        <div style="font-size:14px;margin-top:10px;color:#ff6666">${error.message}</div>
+      </div>
+    `;
+  } finally {
+    analysisInProgress = false;
+  }
+}
+
+/**
+ * Display BESS-only analysis results
+ */
+function displayBessOnlyResults(sizingResult) {
+  const resultsDiv = document.getElementById('configResults');
+  if (!resultsDiv) return;
+
+  const totalLoadMwh = (sizingResult.total_load_mwh || 0).toFixed(1);
+  const variants = sizingResult.variants || [];
+  const recommended = sizingResult.recommended_variant;
+
+  let html = `
+    <div style="padding:20px;background:#1a1a2e;border-radius:12px;margin-bottom:20px">
+      <h3 style="color:#ff9800;margin:0 0 15px 0;display:flex;align-items:center;gap:10px">
+        🔋 Analiza BESS (bez PV) - Tryb LOAD_ONLY
+      </h3>
+      <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:15px;margin-bottom:20px">
+        <div style="background:#252545;padding:15px;border-radius:8px;text-align:center">
+          <div style="font-size:11px;color:#888;text-transform:uppercase">Zużycie roczne</div>
+          <div style="font-size:24px;color:#4fc3f7;font-weight:600">${totalLoadMwh}</div>
+          <div style="font-size:11px;color:#666">MWh/rok</div>
+        </div>
+        <div style="background:#252545;padding:15px;border-radius:8px;text-align:center">
+          <div style="font-size:11px;color:#888;text-transform:uppercase">Wariantów BESS</div>
+          <div style="font-size:24px;color:#81c784;font-weight:600">${variants.length}</div>
+          <div style="font-size:11px;color:#666">do wyboru</div>
+        </div>
+        <div style="background:#252545;padding:15px;border-radius:8px;text-align:center">
+          <div style="font-size:11px;color:#888;text-transform:uppercase">Rekomendowany</div>
+          <div style="font-size:24px;color:#ffb74d;font-weight:600">${recommended || '-'}</div>
+          <div style="font-size:11px;color:#666">wariant</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(${Math.min(variants.length, 3)}, 1fr);gap:15px">
+  `;
+
+  variants.forEach((v, idx) => {
+    const isRec = v.is_recommended;
+    const npvColor = v.npv_pln >= 0 ? '#81c784' : '#ef5350';
+    const paybackText = v.simple_payback_years < 100 ? v.simple_payback_years.toFixed(1) + ' lat' : '> 25 lat';
+
+    html += `
+      <div style="background:${isRec ? 'linear-gradient(135deg, #1a3a1a 0%, #1a2a1a 100%)' : '#1a1a2e'};
+                  border:2px solid ${isRec ? '#4caf50' : '#333'};border-radius:12px;padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+          <span style="font-size:18px;font-weight:700;color:${isRec ? '#4caf50' : '#fff'}">${v.variant_label}</span>
+          ${isRec ? '<span style="background:#4caf50;color:#000;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">REKOMENDOWANY</span>' : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px">
+          <div style="text-align:center;background:#252545;padding:10px;border-radius:6px">
+            <div style="font-size:20px;color:#4fc3f7;font-weight:600">${v.power_kw}</div>
+            <div style="font-size:10px;color:#888">kW</div>
+          </div>
+          <div style="text-align:center;background:#252545;padding:10px;border-radius:6px">
+            <div style="font-size:20px;color:#ba68c8;font-weight:600">${v.energy_kwh}</div>
+            <div style="font-size:10px;color:#888">kWh</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#bbb;line-height:1.8">
+          <div style="display:flex;justify-content:space-between">
+            <span>CAPEX:</span>
+            <span style="color:#fff">${(v.capex_pln / 1000).toFixed(0)} tys. PLN</span>
+          </div>
+          <div style="display:flex;justify-content:space-between">
+            <span>NPV:</span>
+            <span style="color:${npvColor};font-weight:600">${(v.npv_pln / 1000).toFixed(0)} tys. PLN</span>
+          </div>
+          <div style="display:flex;justify-content:space-between">
+            <span>Payback:</span>
+            <span style="color:#fff">${paybackText}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between">
+            <span>Cykle/rok:</span>
+            <span style="color:#fff">${(v.degradation?.efc_total || 0).toFixed(0)}</span>
+          </div>
+          ${v.dispatch_summary?.peak_reduction_kw > 0 ? `
+          <div style="display:flex;justify-content:space-between;margin-top:5px;padding-top:5px;border-top:1px solid #333">
+            <span>Peak reduction:</span>
+            <span style="color:#ff9800">${v.dispatch_summary.peak_reduction_kw.toFixed(0)} kW (${(v.dispatch_summary.peak_reduction_pct || 0).toFixed(1)}%)</span>
+          </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+
+  // Add navigation hint
+  html += `
+    <div style="margin-top:20px;padding:15px;background:#252545;border-radius:8px;border-left:4px solid #ff9800">
+      <div style="font-size:13px;color:#bbb">
+        <strong style="color:#ff9800">➡️ Następne kroki:</strong><br>
+        • Przejdź do modułu <strong>BESS</strong> aby zobaczyć szczegółową wizualizację<br>
+        • Przejdź do modułu <strong>EKONOMIA</strong> aby zobaczyć analizę finansową
+      </div>
+    </div>
+  `;
+
+  resultsDiv.innerHTML = html;
+}
+
