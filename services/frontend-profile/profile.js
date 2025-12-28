@@ -171,7 +171,13 @@ function loadSharedBessConfig() {
 
         const variantComparison = result.variant_comparison;
 
+        // ================================================================
+        // BESS Economics Payload v2 - structured for EKONOMIA module
+        // ================================================================
         const bessData = {
+            // Schema version for backward compatibility
+            schema_version: 'bess_economics_v2',
+
             // Recommended BESS sizing (BEST NPV) - from backend or fallback
             bess_power_kw: result.recommended_bess_power_kw || fallbackPower,
             bess_energy_kwh: result.recommended_bess_energy_kwh || fallbackEnergy,
@@ -205,14 +211,73 @@ function loadSharedBessConfig() {
 
             // Full recommendations array for reference
             all_recommendations: result.bess_recommendations,
-            pareto_frontier: result.pareto_frontier
+            pareto_frontier: result.pareto_frontier,
+
+            // ================================================================
+            // NEW v2: Dispatch metadata (for EKONOMIA transparency)
+            // ================================================================
+            dispatch_metadata: {
+                dispatch_mode: result.dispatch_mode || 'pv_surplus',  // pv_surplus, peak_shaving, stacked, arbitrage, load_only
+                topology: result.topology || 'pv_load',              // pv_load, load_only
+                interval_minutes: result.interval_minutes || 60,
+                start_date: result.start_date || null,
+                export_policy: result.export_policy || 'zero_export',
+                peak_shaving_enabled: result.peak_shaving_enabled || false,
+                price_arbitrage_enabled: result.price_arbitrage_enabled || false,
+            },
+
+            // ================================================================
+            // NEW v2: Savings breakdown (detailed source of savings)
+            // NOTE: Currently profile-analysis calculates only total savings.
+            // When backend returns savings_breakdown, use it directly here.
+            // For now, we estimate components from available data.
+            // ================================================================
+            savings_breakdown: {
+                // Energy savings (self-consumption increase + import reduction)
+                energy_savings_pln: variantComparison?.recommended?.annual_savings_pln || 0,
+
+                // Demand charge savings (peak shaving - opłata za moc umowną)
+                // Calculated if peak_shaving is enabled
+                demand_charge_savings_pln: result.peak_shaving_annual_savings_pln || 0,
+
+                // Capacity fee savings (opłata mocowa PL - rynek mocy)
+                // Requires dynamic K-class calculation from bess-dispatch
+                capacity_fee_savings_pln: result.capacity_fee_savings_pln || 0,
+
+                // Arbitrage savings (price spread profit)
+                arbitrage_savings_pln: result.price_arbitrage_annual_profit_pln || 0,
+
+                // Degradation cost (negative - battery wear)
+                degradation_cost_pln: result.degradation_cost_pln || 0,
+
+                // Net savings = sum of all components
+                net_savings_pln: variantComparison?.recommended?.annual_savings_pln || 0,
+
+                // Flag: is this breakdown from bess-dispatch (accurate) or estimated?
+                source: 'profile_analysis_estimated',
+            },
+
+            // ================================================================
+            // NEW v2: Prices summary (for audit - what prices were used)
+            // ================================================================
+            prices_summary: {
+                import_price_pln_mwh: result.energy_price_pln_mwh || (cachedSettings?.energyPrice * 1000) || 800,
+                export_price_pln_mwh: 0,  // zero_export policy
+                demand_charge_pln_kw_month: cachedSettings?.demandChargePlnKwMonth || 0,
+                tariff_type: 'flat',  // Profile analysis uses flat pricing currently
+                tariff_id: null,      // No ToU tariff in profile-analysis yet
+                zone_rates: null,     // ToU zone rates (when enabled)
+            },
         };
 
-        console.log('📤 Profile: Sending PROFILE_ANALYSIS_COMPLETE to shell:', {
+        console.log('📤 Profile: Sending PROFILE_ANALYSIS_COMPLETE v2 to shell:', {
+            schema_version: bessData.schema_version,
             bess_power_kw: bessData.bess_power_kw,
             bess_energy_kwh: bessData.bess_energy_kwh,
             annual_discharge_mwh: bessData.annual_discharge_mwh,
-            annual_load_mwh: bessData.annual_load_mwh,  // CRITICAL: Total plant consumption
+            annual_load_mwh: bessData.annual_load_mwh,
+            dispatch_mode: bessData.dispatch_metadata?.dispatch_mode,
+            savings_breakdown_source: bessData.savings_breakdown?.source,
             has_hourly_data: !!bessData.recommended_hourly_bess_discharge?.length
         });
 

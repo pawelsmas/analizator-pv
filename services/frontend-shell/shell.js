@@ -78,8 +78,39 @@ let sharedData = {
   economics: null, // Economics calculation results
   currentScenario: 'P50', // Current production scenario (P50/P75/P90)
   currentProject: null, // Current project info { id, name, client }
-  // Data coverage metadata - indicates actual data range (may be <8760h)
-  analyticalYear: null // { start_date, end_date, total_hours, total_days, is_complete }
+
+  // =========================================================================
+  // ANALYTICAL PERIOD - Single Source of Truth for Time Axis
+  // =========================================================================
+  // This object defines the analysis time window. ALL modules must use this
+  // for time-related calculations. DO NOT use new Date().getFullYear() or
+  // hardcoded 8760/365 values - always reference analyticalPeriod.
+  //
+  // Structure:
+  // {
+  //   start_datetime: "2024-10-01T00:00:00",  // ISO 8601 - analysis start
+  //   end_datetime: "2025-03-31T23:00:00",    // ISO 8601 - analysis end (calculated)
+  //   interval_minutes: 60,                    // Data resolution: 15 or 60
+  //   n_points: 4380,                          // Actual number of data points
+  //   timezone: "Europe/Warsaw",               // Timezone for ToU/capacity fee
+  //   clock_mode: "CET_FIXED",                 // CET_FIXED or LOCAL_TZ
+  //   is_full_year: false,                     // true if n_points >= 8760 (hourly)
+  //   annualization_factor: 2.0,               // 8760 / period_hours (for scaling)
+  //   period_hours: 4380,                      // Total hours in analysis period
+  //   period_days: 182.5,                      // Total days in analysis period
+  //   source: "data_file"                      // 'data_file' | 'user_input' | 'fallback' | 'emergency_fallback'
+  // }
+  analyticalPeriod: null,
+
+  // DEPRECATED: Use analyticalPeriod instead
+  analyticalYear: null, // Kept for backward compatibility
+
+  // BESS sizing result from pv-calculation (Single Source of Truth)
+  bessResult: null,
+
+  // Raw data arrays for BESS calculations
+  loadData: null,  // Load profile array [kW]
+  pvData: null     // PV generation array [kW]
 };
 
 // Also save settings to shell's localStorage as central storage
@@ -407,10 +438,44 @@ window.addEventListener('message', (event) => {
           total_consumption_gwh: event.data.data.total_consumption_gwh
         });
 
-        // Store analytical year metadata if present
-        if (event.data.data.analytical_year) {
-          sharedData.analyticalYear = event.data.data.analytical_year;
-          console.log('📅 Analytical year stored:', sharedData.analyticalYear);
+        // Store analytical period if present (new format)
+        if (event.data.data.analyticalPeriod) {
+          sharedData.analyticalPeriod = event.data.data.analyticalPeriod;
+          // Also set deprecated analyticalYear for backward compatibility
+          sharedData.analyticalYear = {
+            start_date: event.data.data.analyticalPeriod.start_datetime?.split('T')[0],
+            end_date: event.data.data.analyticalPeriod.end_datetime?.split('T')[0],
+            total_hours: event.data.data.analyticalPeriod.period_hours,
+            total_days: event.data.data.analyticalPeriod.period_days,
+            is_complete: event.data.data.analyticalPeriod.is_full_year
+          };
+          console.log('📅 AnalyticalPeriod stored (Single Source of Truth):', sharedData.analyticalPeriod);
+        }
+        // Backward compatibility: convert old analytical_year to new format
+        else if (event.data.data.analytical_year) {
+          const oldFormat = event.data.data.analytical_year;
+          sharedData.analyticalYear = oldFormat;
+          // Convert to new format
+          sharedData.analyticalPeriod = {
+            start_datetime: oldFormat.start_date ? `${oldFormat.start_date}T00:00:00` : null,
+            end_datetime: oldFormat.end_date ? `${oldFormat.end_date}T23:00:00` : null,
+            interval_minutes: 60,
+            n_points: oldFormat.total_hours || 8760,
+            timezone: 'Europe/Warsaw',
+            clock_mode: 'CET_FIXED',
+            is_full_year: oldFormat.is_complete !== false,
+            annualization_factor: oldFormat.is_complete !== false ? 1.0 : (8760 / (oldFormat.total_hours || 8760)),
+            period_hours: oldFormat.total_hours || 8760,
+            period_days: oldFormat.total_days || 365,
+            source: 'legacy_conversion'
+          };
+          console.log('📅 Converted legacy analytical_year to analyticalPeriod:', sharedData.analyticalPeriod);
+        }
+
+        // Store raw load data for BESS calculations
+        if (event.data.data.hourlyData?.values) {
+          sharedData.loadData = event.data.data.hourlyData.values;
+          console.log('📊 Shell: loadData stored:', sharedData.loadData.length, 'points');
         }
 
         // Fetch full hourly data from data-analysis for project storage
@@ -418,6 +483,49 @@ window.addEventListener('message', (event) => {
       }
       // Broadcast to all modules
       broadcastToModules({ type: 'DATA_AVAILABLE', data: event.data.data });
+      break;
+
+    case 'ANALYTICAL_PERIOD_SET':
+      // Config module has extracted/set the analytical period
+      if (event.data.data) {
+        sharedData.analyticalPeriod = event.data.data;
+        // Also update deprecated analyticalYear for backward compatibility
+        sharedData.analyticalYear = {
+          start_date: event.data.data.start_datetime?.split('T')[0],
+          end_date: event.data.data.end_datetime?.split('T')[0],
+          total_hours: event.data.data.period_hours,
+          total_days: event.data.data.period_days,
+          is_complete: event.data.data.is_full_year
+        };
+        console.log('📅 AnalyticalPeriod updated from module:', {
+          start: sharedData.analyticalPeriod.start_datetime,
+          n_points: sharedData.analyticalPeriod.n_points,
+          is_full_year: sharedData.analyticalPeriod.is_full_year,
+          source: sharedData.analyticalPeriod.source
+        });
+        // Broadcast to all modules so they can update their time context
+        broadcastToModules({
+          type: 'ANALYTICAL_PERIOD_CHANGED',
+          data: sharedData.analyticalPeriod
+        });
+      }
+      break;
+
+    case 'BESS_RESULT_SET':
+      // Config module has received BESS sizing result - store as single source of truth
+      if (event.data.data) {
+        sharedData.bessResult = event.data.data;
+        console.log('🔋 Shell: bessResult stored (Single Source of Truth):', {
+          recommended_power_kw: event.data.data.recommended_power_kw,
+          recommended_energy_kwh: event.data.data.recommended_energy_kwh,
+          variants: event.data.data.variants?.length
+        });
+        // Broadcast to all modules
+        broadcastToModules({
+          type: 'BESS_RESULT_UPDATED',
+          data: sharedData.bessResult
+        });
+      }
       break;
     case 'ANALYSIS_COMPLETE':
       // Store full analysis results
@@ -474,13 +582,17 @@ window.addEventListener('message', (event) => {
       // Store BESS analysis results from Profile Analysis module
       if (event.data.data) {
         sharedData.profileAnalysis = event.data.data;
-        console.log('📊 Profile analysis stored:', {
-          bess_power_kw: event.data.data.bessData?.bess_power_kw,
-          bess_energy_kwh: event.data.data.bessData?.bess_energy_kwh,
-          annual_cycles: event.data.data.bessData?.annual_cycles,
-          annual_discharge_mwh: event.data.data.bessData?.annual_discharge_mwh,  // <-- SINGLE SOURCE OF TRUTH!
-          strategy: event.data.data.bessData?.strategy,
-          annual_load_mwh: event.data.data.bessData?.annual_load_mwh  // CRITICAL: Total plant consumption for economics!
+        const bd = event.data.data.bessData;
+        console.log('📊 Profile analysis stored (v2):', {
+          schema_version: bd?.schema_version,
+          bess_power_kw: bd?.bess_power_kw,
+          bess_energy_kwh: bd?.bess_energy_kwh,
+          annual_cycles: bd?.annual_cycles,
+          annual_discharge_mwh: bd?.annual_discharge_mwh,
+          strategy: bd?.strategy,
+          annual_load_mwh: bd?.annual_load_mwh,
+          dispatch_mode: bd?.dispatch_metadata?.dispatch_mode,
+          savings_breakdown_source: bd?.savings_breakdown?.source,
         });
         // Auto-save to current project
         autoSaveToProject('profileAnalysis', event.data.data);
@@ -489,6 +601,28 @@ window.addEventListener('message', (event) => {
       broadcastToModules({
         type: 'PROFILE_ANALYSIS_UPDATED',
         data: sharedData.profileAnalysis
+      });
+      break;
+
+    case 'BESS_SIZING_COMPLETE':
+      // BESS PRO sizing complete - store and forward to Economics
+      if (event.data.data) {
+        sharedData.bessSizing = event.data.data;
+        const bd = event.data.data.bessData;
+        console.log('📊 BESS sizing stored (v2):', {
+          schema_version: bd?.schema_version,
+          bess_power_kw: bd?.bess_power_kw,
+          bess_energy_kwh: bd?.bess_energy_kwh,
+          savings_source: bd?.savings_breakdown?.source,
+          dispatch_mode: bd?.dispatch_metadata?.dispatch_mode,
+        });
+        // Auto-save to current project
+        autoSaveToProject('bessSizing', event.data.data);
+      }
+      // Broadcast to Economics (same format as PROFILE_ANALYSIS_UPDATED)
+      broadcastToModules({
+        type: 'BESS_SIZING_UPDATED',
+        data: sharedData.bessSizing
       });
       break;
 
