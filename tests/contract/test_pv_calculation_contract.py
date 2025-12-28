@@ -159,3 +159,37 @@ class TestSSoTContract:
                 assert (
                     component in sb
                 ), f"Variant {i} savings_breakdown missing '{component}'"
+
+
+class TestAnnualSavingsAlignment:
+    """Test that annual_savings_pln matches savings_breakdown.net_savings_pln (BUG-002)."""
+
+    def test_annual_savings_equals_net_savings(
+        self, wait_for_services, bess_dispatch_url, minimal_sizing_request
+    ):
+        """Contract: annual_savings_pln == savings_breakdown.net_savings_pln (SSoT)."""
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=minimal_sizing_request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        for i, variant in enumerate(data["variants"]):
+            annual_savings = variant.get("annual_savings_pln", 0)
+            net_savings = variant.get("savings_breakdown", {}).get("net_savings_pln", 0)
+
+            # They should be equal (with small tolerance for floating point)
+            if abs(net_savings) > 1:
+                diff = abs(annual_savings - net_savings) / abs(net_savings)
+                assert diff < 0.001, (
+                    f"Variant {i}: annual_savings_pln ({annual_savings:.2f}) != "
+                    f"savings_breakdown.net_savings_pln ({net_savings:.2f})"
+                )
+            else:
+                assert abs(annual_savings - net_savings) < 1.0, (
+                    f"Variant {i}: annual_savings_pln ({annual_savings}) != "
+                    f"savings_breakdown.net_savings_pln ({net_savings})"
+                )

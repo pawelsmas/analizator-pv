@@ -637,9 +637,10 @@ def run_sizing_for_variant(
     # Always attach savings_breakdown to result for transparency
     result.savings_breakdown = savings_breakdown
 
-    # Update annual_savings based on calculation method
-    if request.prices.is_tou_enabled or arb_enabled:
-        result.annual_savings_pln = savings_breakdown.net_savings_pln
+    # SSoT: annual_savings_pln ALWAYS equals savings_breakdown.net_savings_pln
+    # This ensures consistency between frontend display (uses annual_savings_pln)
+    # and economics calculations (uses savings_breakdown components)
+    result.annual_savings_pln = savings_breakdown.net_savings_pln
 
     # ==========================================================================
     # Calculate Economics (CAPEX, NPV)
