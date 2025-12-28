@@ -24,6 +24,7 @@ COPY excel_export.py .
 COPY capacity_fee_pl/ ./capacity_fee_pl/
 COPY common/ ./common/
 COPY osd_tariffs/ ./osd_tariffs/
+COPY observability/ ./observability/
 
 # Copy main app (last - changes most often)
 COPY app.py .
