@@ -1,0 +1,533 @@
+{
+  "$defs": {
+    "AnalyticalPeriodConfig": {
+      "description": "Time axis definition for analysis.\n\nThis is the SINGLE SOURCE OF TRUTH for time-related calculations.\nAll modules must use this instead of hardcoded 8760/365 or date(year, 1, 1).\n\nThe time axis is defined by:\n- start_datetime: When the analysis period begins\n- interval_minutes: Data resolution (15 or 60)\n- n_points: Number of data points (determines period length)\n\nThe end_datetime is calculated as: start + (n_points - 1) * interval\n\nUsage:\n- ToU pricing: Use time_index derived from this for zone lookup\n- Capacity fee: Use time_index for working day determination\n- Daily metrics: Use groupby(date) on time_index, NOT hardcoded 365 days",
+      "properties": {
+        "start_datetime": {
+          "description": "Analysis start datetime (ISO 8601: YYYY-MM-DDTHH:MM:SS)",
+          "title": "Start Datetime",
+          "type": "string"
+        },
+        "interval_minutes": {
+          "default": 60,
+          "description": "Time resolution: 15 or 60 minutes",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Interval Minutes",
+          "type": "integer"
+        },
+        "n_points": {
+          "description": "Number of data points (determines period length)",
+          "minimum": 1,
+          "title": "N Points",
+          "type": "integer"
+        },
+        "timezone": {
+          "default": "Europe/Warsaw",
+          "description": "Timezone for ToU/capacity fee calculations",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "clock_mode": {
+          "default": "CET_FIXED",
+          "description": "Clock mode: CET_FIXED (ignore DST) or LOCAL_TZ (honor DST)",
+          "title": "Clock Mode",
+          "type": "string"
+        },
+        "timestamps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "If provided, use these timestamps 1:1 instead of generating from start_datetime",
+          "title": "Timestamps"
+        }
+      },
+      "required": [
+        "start_datetime",
+        "n_points"
+      ],
+      "title": "AnalyticalPeriodConfig",
+      "type": "object"
+    },
+    "ArbitrageConfig": {
+      "description": "Configuration for Time-of-Use (ToU) arbitrage dispatch.\n\nArbitrage exploits price differences between tariff zones:\n- Charge from grid when price is low (below threshold)\n- Discharge when price is high (above threshold)\n\nIMPORTANT: For NPV calculations, capacity fee (opłata mocowa) is NOT\nincluded in price thresholds. It's calculated post-dispatch using\nthe capacity_fee_pl module based on the actual import profile.\n\nIntegration with STACKED mode:\n- Peak shaving has priority 1 (can use full SOC range)\n- PV surplus charging has priority 2 (always before grid charging)\n- Arbitrage grid-charge has priority 3 (only if spare charging capacity)\n- Arbitrage discharge has priority 4 (when price high and SOC > floor)",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Enable ToU arbitrage in dispatch",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "tariff_id": {
+          "default": "pge_c12a_2025",
+          "description": "OSD tariff preset ID (from /osd-tariffs/presets)",
+          "title": "Tariff Id",
+          "type": "string"
+        },
+        "strategy": {
+          "$ref": "#/$defs/ArbitrageStrategy",
+          "default": "percentile",
+          "description": "How to calculate charge/discharge thresholds"
+        },
+        "charge_below_percentile": {
+          "default": 25.0,
+          "description": "Charge from grid when price below this percentile [%]",
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Charge Below Percentile",
+          "type": "number"
+        },
+        "discharge_above_percentile": {
+          "default": 75.0,
+          "description": "Discharge when price above this percentile [%]",
+          "maximum": 100,
+          "minimum": 50,
+          "title": "Discharge Above Percentile",
+          "type": "number"
+        },
+        "min_spread_pln_kwh": {
+          "default": 0.1,
+          "description": "Minimum price spread to act [PLN/kWh]",
+          "minimum": 0,
+          "title": "Min Spread Pln Kwh",
+          "type": "number"
+        },
+        "arbitrage_soc_min": {
+          "default": 0.2,
+          "description": "Minimum SOC for arbitrage discharge [0-1]",
+          "maximum": 0.5,
+          "minimum": 0.0,
+          "title": "Arbitrage Soc Min",
+          "type": "number"
+        },
+        "max_grid_charge_kw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum power for grid charging [kW]. None = use battery power.",
+          "title": "Max Grid Charge Kw"
+        },
+        "degradation_cost_pln_kwh": {
+          "default": 0.05,
+          "description": "Degradation cost per kWh throughput [PLN/kWh]",
+          "minimum": 0,
+          "title": "Degradation Cost Pln Kwh",
+          "type": "number"
+        },
+        "capacity_fee_pln_kwh": {
+          "default": 0.0,
+          "description": "Capacity fee in steering prices [PLN/kWh]. Keep 0 for accurate NPV.",
+          "minimum": 0,
+          "title": "Capacity Fee Pln Kwh",
+          "type": "number"
+        },
+        "other_components_pln_kwh": {
+          "default": 0.0,
+          "description": "Other components (akcyza, OZE, etc.) [PLN/kWh]",
+          "minimum": 0,
+          "title": "Other Components Pln Kwh",
+          "type": "number"
+        }
+      },
+      "title": "ArbitrageConfig",
+      "type": "object"
+    },
+    "ArbitrageStrategy": {
+      "description": "Arbitrage strategy for price-driven dispatch.\n\nDetermines how charge/discharge thresholds are calculated.",
+      "enum": [
+        "percentile",
+        "zone_based",
+        "spread"
+      ],
+      "title": "ArbitrageStrategy",
+      "type": "string"
+    },
+    "BatteryParams": {
+      "description": "Core battery parameters",
+      "properties": {
+        "power_kw": {
+          "description": "Nominal power [kW]",
+          "exclusiveMinimum": 0,
+          "title": "Power Kw",
+          "type": "number"
+        },
+        "energy_kwh": {
+          "description": "Nominal capacity [kWh]",
+          "exclusiveMinimum": 0,
+          "title": "Energy Kwh",
+          "type": "number"
+        },
+        "eta_charge": {
+          "default": 0.9487,
+          "description": "Charging efficiency (one-way)",
+          "maximum": 1.0,
+          "minimum": 0.7,
+          "title": "Eta Charge",
+          "type": "number"
+        },
+        "eta_discharge": {
+          "default": 0.9487,
+          "description": "Discharging efficiency (one-way)",
+          "maximum": 1.0,
+          "minimum": 0.7,
+          "title": "Eta Discharge",
+          "type": "number"
+        },
+        "soc_min": {
+          "default": 0.1,
+          "description": "Minimum SOC [0-1]",
+          "maximum": 0.5,
+          "minimum": 0.0,
+          "title": "Soc Min",
+          "type": "number"
+        },
+        "soc_max": {
+          "default": 0.9,
+          "description": "Maximum SOC [0-1]",
+          "maximum": 1.0,
+          "minimum": 0.5,
+          "title": "Soc Max",
+          "type": "number"
+        },
+        "soc_initial": {
+          "default": 0.5,
+          "description": "Initial SOC [0-1]",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Soc Initial",
+          "type": "number"
+        }
+      },
+      "required": [
+        "power_kw",
+        "energy_kwh"
+      ],
+      "title": "BatteryParams",
+      "type": "object"
+    },
+    "DegradationBudget": {
+      "description": "Degradation budget constraints",
+      "properties": {
+        "max_efc_per_year": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max equivalent full cycles per year",
+          "title": "Max Efc Per Year"
+        },
+        "max_throughput_mwh_per_year": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max throughput MWh per year",
+          "title": "Max Throughput Mwh Per Year"
+        }
+      },
+      "title": "DegradationBudget",
+      "type": "object"
+    },
+    "DispatchMode": {
+      "description": "BESS dispatch modes",
+      "enum": [
+        "pv_surplus",
+        "peak_shaving",
+        "stacked",
+        "arbitrage",
+        "load_only"
+      ],
+      "title": "DispatchMode",
+      "type": "string"
+    },
+    "PriceConfig": {
+      "description": "Energy price configuration.\n\nSupports two pricing modes:\n1. Flat pricing (legacy): Single import/export rate\n2. ToU pricing (Opcja B): OSD tariff + OTHER fees + capacity fee separately\n\nWhen tariff_id is set, ToU pricing is used with:\n- OSD rates = energia czynna + dystrybucja (combined from preset)\n- other_fees = OZE + kog + jakość + akcyza (added on top)\n- capacity_fee = calculated separately via capacity_fee_pl module",
+      "properties": {
+        "import_price_pln_mwh": {
+          "default": 800.0,
+          "description": "Import price [PLN/MWh]",
+          "minimum": 0,
+          "title": "Import Price Pln Mwh",
+          "type": "number"
+        },
+        "export_price_pln_mwh": {
+          "default": 0.0,
+          "description": "Export price [PLN/MWh] (0 for 0-export)",
+          "minimum": 0,
+          "title": "Export Price Pln Mwh",
+          "type": "number"
+        },
+        "demand_charge_pln_kw_month": {
+          "default": 0.0,
+          "description": "Monthly demand charge [PLN/kW/month] based on peak import",
+          "minimum": 0,
+          "title": "Demand Charge Pln Kw Month",
+          "type": "number"
+        },
+        "demand_charge_pln_kw_year": {
+          "default": 0.0,
+          "description": "Annual demand charge [PLN/kW/year] based on peak import",
+          "minimum": 0,
+          "title": "Demand Charge Pln Kw Year",
+          "type": "number"
+        },
+        "tariff_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OSD tariff preset ID. If set, uses ToU pricing instead of flat.",
+          "title": "Tariff Id"
+        },
+        "other_fees_pln_mwh": {
+          "default": 451.0,
+          "description": "Suma opłat stałych [PLN/MWh]",
+          "minimum": 0,
+          "title": "Other Fees Pln Mwh",
+          "type": "number"
+        },
+        "capacity_fee_method": {
+          "default": "dynamic",
+          "description": "'dynamic' (A×SOM×ZS) or 'fixed' (simple per-MWh)",
+          "title": "Capacity Fee Method",
+          "type": "string"
+        },
+        "capacity_fee_som_pln_kwh": {
+          "default": 0.2194,
+          "description": "SOM rate for dynamic capacity fee [PLN/kWh]",
+          "minimum": 0,
+          "title": "Capacity Fee Som Pln Kwh",
+          "type": "number"
+        },
+        "capacity_fee_fixed_pln_mwh": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fixed capacity fee rate [PLN/MWh] - only for 'fixed' method",
+          "title": "Capacity Fee Fixed Pln Mwh"
+        },
+        "analysis_year": {
+          "default": 2025,
+          "description": "Year for calendar calculations (holidays, weekends)",
+          "maximum": 2035,
+          "minimum": 2020,
+          "title": "Analysis Year",
+          "type": "integer"
+        }
+      },
+      "title": "PriceConfig",
+      "type": "object"
+    },
+    "ProfileUnit": {
+      "description": "Units for input power profiles.\n\nAll profiles should be in kW_avg (average power over interval).\nThis enum enables explicit declaration and validation.",
+      "enum": [
+        "kW_avg",
+        "kW_peak",
+        "kWh"
+      ],
+      "title": "ProfileUnit",
+      "type": "string"
+    },
+    "StackedModeParams": {
+      "description": "Parameters for STACKED (PV+Peak) mode",
+      "properties": {
+        "peak_limit_kw": {
+          "description": "Grid import limit [kW]",
+          "exclusiveMinimum": 0,
+          "title": "Peak Limit Kw",
+          "type": "number"
+        },
+        "reserve_fraction": {
+          "default": 0.3,
+          "description": "SOC fraction reserved for peak shaving [0-1]",
+          "maximum": 0.8,
+          "minimum": 0.0,
+          "title": "Reserve Fraction",
+          "type": "number"
+        },
+        "allow_reserve_breach": {
+          "default": false,
+          "description": "Allow using reserve in emergency (with warning)",
+          "title": "Allow Reserve Breach",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "peak_limit_kw"
+      ],
+      "title": "StackedModeParams",
+      "type": "object"
+    },
+    "TopologyType": {
+      "description": "System topology - defines which components are present.\n\nUsed to validate input profiles and select appropriate algorithms.",
+      "enum": [
+        "pv_load",
+        "load_only"
+      ],
+      "title": "TopologyType",
+      "type": "string"
+    }
+  },
+  "description": "Request for BESS dispatch simulation",
+  "properties": {
+    "topology": {
+      "$ref": "#/$defs/TopologyType",
+      "default": "pv_load",
+      "description": "System topology (pv_load or load_only)"
+    },
+    "pv_generation_kw": {
+      "description": "PV generation [kW_avg]. Can be empty for LOAD_ONLY topology.",
+      "items": {
+        "type": "number"
+      },
+      "title": "Pv Generation Kw",
+      "type": "array"
+    },
+    "load_kw": {
+      "description": "Load consumption [kW_avg]",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 24,
+      "title": "Load Kw",
+      "type": "array"
+    },
+    "analytical_period": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticalPeriodConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Time axis configuration. If provided, is the single source of truth for time calculations."
+    },
+    "profile_unit": {
+      "$ref": "#/$defs/ProfileUnit",
+      "default": "kW_avg",
+      "description": "Unit of input profiles (must be kW_avg for dispatch)"
+    },
+    "interval_minutes": {
+      "default": 60,
+      "description": "Interval duration (15 or 60)",
+      "title": "Interval Minutes",
+      "type": "integer"
+    },
+    "battery": {
+      "$ref": "#/$defs/BatteryParams"
+    },
+    "mode": {
+      "$ref": "#/$defs/DispatchMode",
+      "default": "pv_surplus"
+    },
+    "stacked_params": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StackedModeParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "peak_limit_kw": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Peak Limit Kw"
+    },
+    "arbitrage_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArbitrageConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ToU arbitrage configuration. If enabled, adds arbitrage to STACKED mode."
+    },
+    "start_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled.",
+      "title": "Start Date"
+    },
+    "degradation_budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DegradationBudget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "prices": {
+      "$ref": "#/$defs/PriceConfig"
+    }
+  },
+  "required": [
+    "load_kw",
+    "battery"
+  ],
+  "title": "DispatchRequest",
+  "type": "object"
+}

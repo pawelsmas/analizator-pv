@@ -1,0 +1,45 @@
+{
+  "description": "Period information included in responses.\n\nHelps UI understand whether results are for a full year or partial period,\nand whether annualization was applied.",
+  "properties": {
+    "period_hours": {
+      "description": "Total hours in analysis period",
+      "title": "Period Hours",
+      "type": "number"
+    },
+    "period_days": {
+      "description": "Total days in analysis period",
+      "title": "Period Days",
+      "type": "number"
+    },
+    "is_full_year": {
+      "description": "True if period >= 8760 hours",
+      "title": "Is Full Year",
+      "type": "boolean"
+    },
+    "annualization_factor": {
+      "description": "8760 / period_hours. Use to scale to annual if needed.",
+      "title": "Annualization Factor",
+      "type": "number"
+    },
+    "start_datetime": {
+      "description": "Analysis start (ISO 8601)",
+      "title": "Start Datetime",
+      "type": "string"
+    },
+    "end_datetime": {
+      "description": "Analysis end (ISO 8601)",
+      "title": "End Datetime",
+      "type": "string"
+    }
+  },
+  "required": [
+    "period_hours",
+    "period_days",
+    "is_full_year",
+    "annualization_factor",
+    "start_datetime",
+    "end_datetime"
+  ],
+  "title": "PeriodInfo",
+  "type": "object"
+}

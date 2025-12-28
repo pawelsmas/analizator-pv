@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "ArbitrageStrategy": {
+      "description": "Arbitrage strategy for price-driven dispatch.\n\nDetermines how charge/discharge thresholds are calculated.",
+      "enum": [
+        "percentile",
+        "zone_based",
+        "spread"
+      ],
+      "title": "ArbitrageStrategy",
+      "type": "string"
+    }
+  },
+  "description": "Configuration for Time-of-Use (ToU) arbitrage dispatch.\n\nArbitrage exploits price differences between tariff zones:\n- Charge from grid when price is low (below threshold)\n- Discharge when price is high (above threshold)\n\nIMPORTANT: For NPV calculations, capacity fee (opłata mocowa) is NOT\nincluded in price thresholds. It's calculated post-dispatch using\nthe capacity_fee_pl module based on the actual import profile.\n\nIntegration with STACKED mode:\n- Peak shaving has priority 1 (can use full SOC range)\n- PV surplus charging has priority 2 (always before grid charging)\n- Arbitrage grid-charge has priority 3 (only if spare charging capacity)\n- Arbitrage discharge has priority 4 (when price high and SOC > floor)",
+  "properties": {
+    "enabled": {
+      "default": false,
+      "description": "Enable ToU arbitrage in dispatch",
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "tariff_id": {
+      "default": "pge_c12a_2025",
+      "description": "OSD tariff preset ID (from /osd-tariffs/presets)",
+      "title": "Tariff Id",
+      "type": "string"
+    },
+    "strategy": {
+      "$ref": "#/$defs/ArbitrageStrategy",
+      "default": "percentile",
+      "description": "How to calculate charge/discharge thresholds"
+    },
+    "charge_below_percentile": {
+      "default": 25.0,
+      "description": "Charge from grid when price below this percentile [%]",
+      "maximum": 50,
+      "minimum": 0,
+      "title": "Charge Below Percentile",
+      "type": "number"
+    },
+    "discharge_above_percentile": {
+      "default": 75.0,
+      "description": "Discharge when price above this percentile [%]",
+      "maximum": 100,
+      "minimum": 50,
+      "title": "Discharge Above Percentile",
+      "type": "number"
+    },
+    "min_spread_pln_kwh": {
+      "default": 0.1,
+      "description": "Minimum price spread to act [PLN/kWh]",
+      "minimum": 0,
+      "title": "Min Spread Pln Kwh",
+      "type": "number"
+    },
+    "arbitrage_soc_min": {
+      "default": 0.2,
+      "description": "Minimum SOC for arbitrage discharge [0-1]",
+      "maximum": 0.5,
+      "minimum": 0.0,
+      "title": "Arbitrage Soc Min",
+      "type": "number"
+    },
+    "max_grid_charge_kw": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Maximum power for grid charging [kW]. None = use battery power.",
+      "title": "Max Grid Charge Kw"
+    },
+    "degradation_cost_pln_kwh": {
+      "default": 0.05,
+      "description": "Degradation cost per kWh throughput [PLN/kWh]",
+      "minimum": 0,
+      "title": "Degradation Cost Pln Kwh",
+      "type": "number"
+    },
+    "capacity_fee_pln_kwh": {
+      "default": 0.0,
+      "description": "Capacity fee in steering prices [PLN/kWh]. Keep 0 for accurate NPV.",
+      "minimum": 0,
+      "title": "Capacity Fee Pln Kwh",
+      "type": "number"
+    },
+    "other_components_pln_kwh": {
+      "default": 0.0,
+      "description": "Other components (akcyza, OZE, etc.) [PLN/kWh]",
+      "minimum": 0,
+      "title": "Other Components Pln Kwh",
+      "type": "number"
+    }
+  },
+  "title": "ArbitrageConfig",
+  "type": "object"
+}
