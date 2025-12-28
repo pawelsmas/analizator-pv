@@ -660,8 +660,8 @@ class SavingsBreakdown(BaseModel):
     - capacity_fee_savings_pln = opłata mocowa PL (rynek mocy) - osobny moduł
     """
     # Positive savings
-    energy_savings_pln: float = Field(0.0, description="Savings from self-consumption and reduced grid import")
-    arbitrage_savings_pln: float = Field(0.0, description="Incremental savings from ToU price arbitrage (vs no-arb)")
+    energy_savings_pln: float = Field(0.0, description="Savings from reduced grid import at flat price (volume × flat_rate)")
+    arbitrage_savings_pln: float = Field(0.0, description="ADDITIONAL savings from ToU price spread (tou_total - flat_savings)")
     capacity_fee_savings_pln: float = Field(0.0, description="Savings from reduced capacity fee (opłata mocowa PL)")
     demand_charge_savings_pln: float = Field(0.0, description="Savings from peak shaving (opłata za moc / demand charge)")
 

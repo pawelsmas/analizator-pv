@@ -578,20 +578,25 @@ def run_sizing_for_variant(
     # Legacy path: Flat pricing or arbitrage-specific calculations
     # =========================================================================
     elif arb_enabled and import_prices is not None:
-        # Use time-varying prices for accurate arbitrage savings
-        savings_breakdown.energy_savings_pln = calculate_arbitrage_energy_savings(
+        # Calculate total ToU savings (price-weighted)
+        tou_total_savings = calculate_arbitrage_energy_savings(
             baseline_grid_import_kw,
             actual_grid_import_kw,
             import_prices,
             dt_hours
         )
 
-        # Arbitrage-specific savings (from grid charging in cheap hours, discharging in expensive)
-        # This is already included in energy_savings when using time-varying prices
-        # The arbitrage component is the additional savings beyond flat-price PV shifting
+        # Calculate flat-price savings (volume-based, no ToU benefit)
         flat_price = request.prices.import_price_pln_mwh / 1000.0  # PLN/kWh
-        flat_savings = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours * flat_price
-        savings_breakdown.arbitrage_savings_pln = max(0, savings_breakdown.energy_savings_pln - flat_savings)
+        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
+        flat_savings = import_reduction_kwh * flat_price
+
+        # Split into components to avoid double counting in calculate_net():
+        # - energy_savings_pln: base savings at flat price (from reduced consumption)
+        # - arbitrage_savings_pln: ADDITIONAL savings from ToU price spread
+        # Total = energy_savings + arbitrage_savings = tou_total_savings
+        savings_breakdown.energy_savings_pln = flat_savings
+        savings_breakdown.arbitrage_savings_pln = max(0.0, tou_total_savings - flat_savings)
 
         # Capacity fee savings for arbitrage mode
         savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
