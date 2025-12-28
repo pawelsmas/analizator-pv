@@ -20,6 +20,251 @@ let analysisInProgress = false;
 let fileUploadedThisSession = false;
 let systemSettings = null; // Settings from pv_system_settings
 
+// ============================================================================
+// ANALYTICAL PERIOD - Single Source of Truth for Time Axis
+// ============================================================================
+
+/**
+ * Extract AnalyticalPeriod from data file info.
+ *
+ * This function creates the AnalyticalPeriod object which defines the analysis
+ * time window. ALL modules MUST use this for time-related calculations.
+ *
+ * NEVER uses new Date().getFullYear() for calculations (except emergency fallback).
+ *
+ * @param {Object} dataInfo - Data file metadata (from data-analysis service)
+ * @param {Array} loadData - Load profile array
+ * @returns {Object} AnalyticalPeriod object
+ */
+function extractAnalyticalPeriod(dataInfo, loadData) {
+  const n_points = loadData?.length || 8760;
+  const interval_minutes = dataInfo?.interval_minutes || 60;
+  const period_hours = (n_points * interval_minutes) / 60;
+  const period_days = period_hours / 24;
+  const is_full_year = period_hours >= 8760;
+  const annualization_factor = is_full_year ? 1.0 : (8760 / period_hours);
+
+  // Priority 1: explicit start_datetime from file (best case)
+  if (dataInfo?.start_datetime || dataInfo?.first_timestamp) {
+    const start_datetime = dataInfo.start_datetime || dataInfo.first_timestamp;
+    const analyticalPeriod = {
+      start_datetime: start_datetime,
+      end_datetime: calculateEndDatetime(start_datetime, n_points, interval_minutes),
+      interval_minutes: interval_minutes,
+      n_points: n_points,
+      timezone: dataInfo.timezone || 'Europe/Warsaw',
+      clock_mode: 'CET_FIXED',
+      is_full_year: is_full_year,
+      annualization_factor: annualization_factor,
+      period_hours: period_hours,
+      period_days: period_days,
+      source: 'data_file'
+    };
+    console.log('📅 AnalyticalPeriod extracted from data file:', analyticalPeriod);
+    return analyticalPeriod;
+  }
+
+  // Priority 2: year from file + assume Jan 1 (with WARNING)
+  if (dataInfo?.year) {
+    console.warn(
+      `⚠️ No start_datetime in data file, assuming ${dataInfo.year}-01-01. ` +
+      `ToU/capacity fee calculations may be incorrect for non-January start dates.`
+    );
+    const start_datetime = `${dataInfo.year}-01-01T00:00:00`;
+    const analyticalPeriod = {
+      start_datetime: start_datetime,
+      end_datetime: calculateEndDatetime(start_datetime, n_points, interval_minutes),
+      interval_minutes: interval_minutes,
+      n_points: n_points,
+      timezone: 'Europe/Warsaw',
+      clock_mode: 'CET_FIXED',
+      is_full_year: is_full_year,
+      annualization_factor: annualization_factor,
+      period_hours: period_hours,
+      period_days: period_days,
+      source: 'fallback'
+    };
+    console.log('📅 AnalyticalPeriod from year fallback:', analyticalPeriod);
+    return analyticalPeriod;
+  }
+
+  // Priority 3: EMERGENCY fallback - use current year (with ERROR)
+  console.error(
+    `❌ CRITICAL: No year information in data file. ` +
+    `Using current year as emergency fallback. ` +
+    `This may cause incorrect calculations!`
+  );
+  const currentYear = new Date().getFullYear();
+  const start_datetime = `${currentYear}-01-01T00:00:00`;
+  const analyticalPeriod = {
+    start_datetime: start_datetime,
+    end_datetime: calculateEndDatetime(start_datetime, n_points, interval_minutes),
+    interval_minutes: interval_minutes,
+    n_points: n_points,
+    timezone: 'Europe/Warsaw',
+    clock_mode: 'CET_FIXED',
+    is_full_year: is_full_year,
+    annualization_factor: annualization_factor,
+    period_hours: period_hours,
+    period_days: period_days,
+    source: 'emergency_fallback'
+  };
+  console.log('📅 AnalyticalPeriod from EMERGENCY fallback:', analyticalPeriod);
+  return analyticalPeriod;
+}
+
+/**
+ * Calculate end datetime from start, n_points, and interval.
+ * @param {string} start_datetime - ISO 8601 start datetime
+ * @param {number} n_points - Number of data points
+ * @param {number} interval_minutes - Minutes per interval
+ * @returns {string} ISO 8601 end datetime
+ */
+function calculateEndDatetime(start_datetime, n_points, interval_minutes) {
+  const start = new Date(start_datetime);
+  const totalMinutes = (n_points - 1) * interval_minutes;
+  const end = new Date(start.getTime() + totalMinutes * 60 * 1000);
+  return end.toISOString().slice(0, 19);  // Remove milliseconds and Z
+}
+
+/**
+ * Send AnalyticalPeriod to shell for storage as single source of truth.
+ * @param {Object} analyticalPeriod - The analytical period object
+ */
+function sendAnalyticalPeriodToShell(analyticalPeriod) {
+  if (window.parent !== window) {
+    window.parent.postMessage({
+      type: 'ANALYTICAL_PERIOD_SET',
+      data: analyticalPeriod
+    }, '*');
+    console.log('📤 Sent AnalyticalPeriod to shell');
+  }
+}
+
+/**
+ * Send BESS result to shell for storage as single source of truth.
+ * @param {Object} bessResult - The BESS sizing result from bess-dispatch
+ */
+function sendBessResultToShell(bessResult) {
+  if (window.parent !== window) {
+    window.parent.postMessage({
+      type: 'BESS_RESULT_SET',
+      data: bessResult
+    }, '*');
+    console.log('📤 Sent BESS result to shell');
+  }
+}
+
+// ============================================================================
+// BESS SCENARIOS - Request Configuration (MVP v3.17)
+// ============================================================================
+
+/**
+ * Map scenario ID to dispatch request configuration
+ * This function translates UI scenario selection into backend API parameters
+ *
+ * @param {object} settings - System settings from localStorage
+ * @returns {object} - Configuration for bess_config in request
+ */
+function getScenarioConfigForRequest(settings) {
+  const topology = settings?.bessTopology || 'pv_bess';
+  const scenarioId = settings?.bessScenarioId || getDefaultScenarioIdForTopology(topology);
+
+  // Map UI topology to backend topology
+  const backendTopology = topology === 'pv_bess' ? 'pv_load' : 'load_only';
+
+  // Default configuration
+  const config = {
+    scenarioId: scenarioId,
+    topology: backendTopology,
+    dispatchMode: 'stacked',  // default
+    stackedParams: null,
+    peakLimitKw: null,
+    reserveFraction: 0.30
+  };
+
+  // Scenario-specific mapping
+  switch (scenarioId) {
+    case 1:
+      // Autokonsumpcja PV (0-export)
+      config.dispatchMode = 'pv_surplus';
+      config.stackedParams = null;
+      break;
+
+    case 2:
+      // PV + Peak Shaving (STACKED) - RECOMMENDED for pv_bess
+      config.dispatchMode = 'stacked';
+      config.stackedParams = {
+        peak_limit_kw: settings?.bessPeakShavingTargetKw || null,  // null = auto P95
+        reserve_fraction: 0.30
+      };
+      break;
+
+    case 3:
+      // Peak Shaving (BESS-only)
+      config.dispatchMode = 'load_only';
+      config.topology = 'load_only';
+      config.peakLimitKw = settings?.bessPeakShavingTargetKw || null;
+      break;
+
+    case 4:
+      // ToU + Analiza kosztów (FE-only analysis)
+      config.dispatchMode = 'stacked';
+      config.stackedParams = {
+        peak_limit_kw: settings?.bessPeakShavingTargetKw || null,
+        reserve_fraction: 0.30
+      };
+      // Note: tariff_id is NOT sent to backend - FE calculates costs post-dispatch
+      config.feAnalysis = true;
+      config.tariffId = settings?.bessOsdTariffGroup || 'C12a';
+      break;
+
+    case 5:
+      // ToU Arbitrage (BETA - not implemented in /dispatch)
+      config.dispatchMode = null;  // Indicates BETA/not available
+      config.beta = true;
+      break;
+
+    case 7:
+      // Backup/UPS (wysoka rezerwa SOC)
+      // baseMode depends on topology
+      config.dispatchMode = topology === 'pv_bess' ? 'stacked' : 'load_only';
+      config.reserveFraction = 0.70;
+      config.stackedParams = {
+        peak_limit_kw: settings?.bessPeakShavingTargetKw || null,
+        reserve_fraction: 0.70  // High reserve for backup
+      };
+      break;
+
+    case 8:
+      // Duże piki (EV hub / rozruchy)
+      config.dispatchMode = 'stacked';
+      config.stackedParams = {
+        peak_limit_kw: settings?.bessPeakShavingTargetKw,  // REQUIRED
+        reserve_fraction: 0.30
+      };
+      // Force 1h duration for high-power scenarios
+      config.forceDuration = '1';
+      break;
+
+    default:
+      // Fallback to stacked mode
+      config.dispatchMode = topology === 'pv_bess' ? 'stacked' : 'load_only';
+  }
+
+  return config;
+}
+
+/**
+ * Get default scenario ID based on topology
+ * @param {string} topology - 'pv_bess' | 'bess_only'
+ * @returns {number} - Default scenario ID
+ */
+function getDefaultScenarioIdForTopology(topology) {
+  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 3 (LOAD_ONLY)
+  return topology === 'pv_bess' ? 2 : 3;
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   setupEventListeners();
@@ -76,9 +321,63 @@ function setupEventListeners() {
 // Apply settings received from shell
 function applySettingsFromShell(settings) {
   if (settings) {
-    systemSettings = settings;
+    // Merge with defaults to ensure BESS and other new fields have values
+    const defaults = {
+      bessMode: 'off',
+      bessEnabled: false,
+      bessTopology: 'pv_bess',
+      bessDuration: 'auto',
+      bessRoundtripEfficiency: 0.90,
+      bessSocMin: 0.10,
+      bessSocMax: 0.90,
+      bessSocInitial: 0.50,
+      bessCapexPerKwh: 1500,
+      bessCapexPerKw: 300,
+      bessOpexPctPerYear: 1.5,
+      bessLifetimeYears: 15,
+      bessDegradationPctPerYear: 2.0,
+      // BESS Peak Shaving & Economic params
+      bessPeakShavingEnabled: false,
+      bessPeakShavingMode: 'auto',
+      bessPeakShavingTargetKw: 0,
+      bessPowerChargePlnPerKwMonth: 50,
+      // Capacity Fee Config (opłata mocowa)
+      capacityFeeConfig: {
+        year: 2026,
+        somRate: 0.2194,
+        qualificationPeriod: 'daily',
+        selectedHours: { Q1: {start: 7, end: 22}, Q2: {start: 7, end: 22}, Q3: {start: 7, end: 22}, Q4: {start: 7, end: 22} }
+      },
+      // ToU Tariff Config (strefy czasowe)
+      tariffConfig: {
+        type: 'two_zone',
+        name: 'C12a',
+        flatRate: 750,
+        twoZone: { dayRate: 850, nightRate: 450, weekday: {start: 6, end: 22}, weekend: {start: 6, end: 13} },
+        threeZone: { peakRate: 950, partialRate: 700, offPeakRate: 400, peak1: {start: 7, end: 13}, peak2: {start: 17, end: 21}, partial: {start: 13, end: 17} }
+      }
+    };
+    // Deep merge for nested objects
+    systemSettings = { ...defaults, ...settings };
+    // Ensure nested objects are properly merged (not replaced with undefined/null)
+    if (!systemSettings.capacityFeeConfig || !systemSettings.capacityFeeConfig.somRate) {
+      systemSettings.capacityFeeConfig = defaults.capacityFeeConfig;
+    }
+    if (!systemSettings.tariffConfig || !systemSettings.tariffConfig.type) {
+      systemSettings.tariffConfig = defaults.tariffConfig;
+    }
+    // Ensure bessPowerChargePlnPerKwMonth has valid value (0 means "not configured" - use default)
+    if (!systemSettings.bessPowerChargePlnPerKwMonth || systemSettings.bessPowerChargePlnPerKwMonth <= 0) {
+      systemSettings.bessPowerChargePlnPerKwMonth = defaults.bessPowerChargePlnPerKwMonth;
+      console.log('⚠️ bessPowerChargePlnPerKwMonth was 0 or missing, using default:', defaults.bessPowerChargePlnPerKwMonth);
+    }
     applySystemSettingsToUI(systemSettings);
-    console.log('Applied settings from shell:', systemSettings.totalEnergyPrice);
+    console.log('💰 Applied settings from shell:', {
+      bessMode: systemSettings.bessMode,
+      bessPowerChargePlnPerKwMonth: systemSettings.bessPowerChargePlnPerKwMonth,
+      capacityFeeConfig: systemSettings.capacityFeeConfig,
+      tariffConfig: systemSettings.tariffConfig?.type
+    });
   } else {
     applyDefaultSettings();
   }
@@ -197,7 +496,41 @@ function applyDefaultSettings() {
       { min: 5001, max: 10000, capex: 3000 },
       { min: 10001, max: 15000, capex: 2850 },
       { min: 15001, max: 50000, capex: 2700 }
-    ]
+    ],
+    // BESS defaults (to ensure BESS works even without saved settings)
+    bessMode: 'off',
+    bessEnabled: false,
+    bessTopology: 'pv_bess',
+    bessDuration: 'auto',
+    bessRoundtripEfficiency: 0.90,
+    bessSocMin: 0.10,
+    bessSocMax: 0.90,
+    bessSocInitial: 0.50,
+    bessCapexPerKwh: 1500,
+    bessCapexPerKw: 300,
+    bessOpexPctPerYear: 1.5,
+    bessLifetimeYears: 15,
+    bessDegradationPctPerYear: 2.0,
+    // BESS Peak Shaving
+    bessPeakShavingEnabled: false,
+    bessPeakShavingMode: 'auto',
+    bessPeakShavingTargetKw: 0,
+    bessPowerChargePlnPerKwMonth: 50,
+    // Capacity Fee Config (opłata mocowa)
+    capacityFeeConfig: {
+      year: 2026,
+      somRate: 0.2194,
+      qualificationPeriod: 'daily',
+      selectedHours: { Q1: {start: 7, end: 22}, Q2: {start: 7, end: 22}, Q3: {start: 7, end: 22}, Q4: {start: 7, end: 22} }
+    },
+    // ToU Tariff Config (strefy czasowe)
+    tariffConfig: {
+      type: 'two_zone',
+      name: 'C12a',
+      flatRate: 750,
+      twoZone: { dayRate: 850, nightRate: 450, weekday: {start: 6, end: 22}, weekend: {start: 6, end: 13} },
+      threeZone: { peakRate: 950, partialRate: 700, offPeakRate: 400, peak1: {start: 7, end: 13}, peak2: {start: 17, end: 21}, partial: {start: 13, end: 17} }
+    }
   };
   applySystemSettingsToUI(systemSettings);
   console.log('Applied default settings (no pv_system_settings found in localStorage)');
@@ -729,11 +1062,19 @@ async function runAnalysis() {
 
     // Save consumption data to localStorage for other modules
     const dataInfo = JSON.parse(localStorage.getItem('pv_data_info') || '{}');
+
+    // Extract AnalyticalPeriod - Single Source of Truth for time axis
+    const analyticalPeriod = extractAnalyticalPeriod(dataInfo, hourlyData.values);
+    sendAnalyticalPeriodToShell(analyticalPeriod);
+
     localStorage.setItem('consumptionData', JSON.stringify({
       filename: dataInfo.filename || 'uploaded_data',
       dataPoints: hourlyData.values.length,
-      year: dataInfo.year || new Date().getFullYear(),
-      hourlyData: hourlyData
+      // Use analyticalPeriod instead of raw year fallback
+      year: parseInt(analyticalPeriod.start_datetime.substring(0, 4)),
+      hourlyData: hourlyData,
+      // Include analyticalPeriod for modules that read from localStorage
+      analyticalPeriod: analyticalPeriod
     }));
 
     // Get configuration from systemSettings - based on selected type
@@ -800,11 +1141,22 @@ async function runAnalysis() {
     // Add BESS configuration if enabled (LIGHT or PRO mode)
     const bessMode = systemSettings?.bessMode || 'off';
     const bessEnabled = bessMode !== 'off' || systemSettings?.bessEnabled;  // Support legacy bessEnabled
+    // bessTopology already defined at line 861
+
+    // Get scenario configuration (from settings.js)
+    const scenarioConfig = getScenarioConfigForRequest(systemSettings);
+    console.log('🔋 BESS debug:', {
+      bessMode,
+      bessEnabled,
+      bessTopology,
+      scenarioId: scenarioConfig.scenarioId,
+      dispatchMode: scenarioConfig.dispatchMode
+    });
 
     if (bessEnabled) {
       analysisRequest.bess_config = {
         enabled: true,
-        mode: bessMode === 'off' ? 'light' : bessMode,  // 'light' or 'pro'
+        mode: bessMode === 'off' ? 'pro' : bessMode,  // Always PRO (light deprecated)
         duration: systemSettings.bessDuration || 'auto',  // 'auto' | 1 | 2 | 4 hours (for LIGHT mode)
         // Technical parameters
         roundtrip_efficiency: systemSettings.bessRoundtripEfficiency || 0.90,
@@ -817,6 +1169,46 @@ async function runAnalysis() {
         opex_pct_per_year: systemSettings.bessOpexPctPerYear || 1.5,
         lifetime_years: systemSettings.bessLifetimeYears || 15,
         degradation_pct_per_year: systemSettings.bessDegradationPctPerYear || 2.0,
+
+        // Scenario-based dispatch configuration (MVP v3.17)
+        scenario_id: scenarioConfig.scenarioId,
+        dispatch_mode: scenarioConfig.dispatchMode,  // pv_surplus | stacked | load_only
+        topology: scenarioConfig.topology,           // pv_load | load_only
+
+        // Stacked mode params (for scenarios 2, 7, 8)
+        stacked_params: scenarioConfig.stackedParams,
+
+        // Peak shaving / demand charge params
+        // bessPowerChargePlnPerKwMonth from settings.js (50 PLN/kW/month default)
+        // NOTE: Use || instead of ?? because 0 means "not configured" and should use default
+        demand_charge_pln_kw_month: systemSettings.bessPowerChargePlnPerKwMonth || 50,
+        peak_limit_kw: systemSettings.bessPeakShavingTargetKw || scenarioConfig.peakLimitKw || null,
+
+        // Capacity fee configuration (opłata mocowa)
+        // ALWAYS enable capacity_fee_config with default values - let backend handle validation
+        capacity_fee_config: {
+          enabled: true,
+          som_rate_pln_kw: systemSettings.capacityFeeConfig?.somRate ?? 0.2194,
+          qualification_period: systemSettings.capacityFeeConfig?.qualificationPeriod || 'daily',
+          peak_hours: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        },
+
+        // Tariff configuration for ToU arbitrage
+        // ALWAYS send tariff_config - use defaults if not configured
+        tariff_config: {
+          type: systemSettings.tariffConfig?.type || 'two_zone',
+          flat_rate_pln_mwh: systemSettings.tariffConfig?.flatRate || 750,
+          day_rate_pln_mwh: systemSettings.tariffConfig?.twoZone?.dayRate || 850,
+          night_rate_pln_mwh: systemSettings.tariffConfig?.twoZone?.nightRate || 450,
+          day_hours_start: systemSettings.tariffConfig?.twoZone?.weekday?.start || 6,
+          day_hours_end: systemSettings.tariffConfig?.twoZone?.weekday?.end || 22,
+          peak_rate_pln_mwh: systemSettings.tariffConfig?.threeZone?.peakRate || 950,
+          peak_hours: [7, 8, 9, 10, 11, 12, 13, 17, 18, 19, 20, 21],
+          // Fixed charges (opłaty stałe) - added on top of ToU rates
+          // This includes: OSD dystrybucja, OZE, kog, jakość, mocowa, akcyza
+          other_fees_pln_mwh: systemSettings.totalFixedCharges || 451
+        },
+
         // PRO mode specific params (only when mode='pro')
         pro_config: bessMode === 'pro' ? {
           min_power_kw: systemSettings.bessProMinPowerKw || 50,
@@ -833,7 +1225,19 @@ async function runAnalysis() {
           export_penalty: systemSettings.bessProExportPenalty || 1000
         } : null
       };
-      console.log(`🔋 BESS ${bessMode.toUpperCase()} mode enabled:`, analysisRequest.bess_config);
+
+      // Debug logging for economic params
+      console.log(`💰 BESS Economic Params:`, {
+        demand_charge_pln_kw_month: analysisRequest.bess_config.demand_charge_pln_kw_month,
+        peak_limit_kw: analysisRequest.bess_config.peak_limit_kw,
+        capacity_fee_config: analysisRequest.bess_config.capacity_fee_config,
+        tariff_config: analysisRequest.bess_config.tariff_config ? {
+          type: analysisRequest.bess_config.tariff_config.type,
+          day_rate: analysisRequest.bess_config.tariff_config.day_rate_pln_mwh,
+          night_rate: analysisRequest.bess_config.tariff_config.night_rate_pln_mwh
+        } : null
+      });
+      console.log(`🔋 BESS ${bessMode.toUpperCase()} mode enabled (scenario ${scenarioConfig.scenarioId}):`, analysisRequest.bess_config);
     } else {
       console.log('🔋 BESS disabled - running PV-only analysis');
     }
@@ -1677,13 +2081,21 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
 
     // Save consumption data to localStorage
     const dataInfo = JSON.parse(localStorage.getItem('pv_data_info') || '{}');
+
+    // Extract AnalyticalPeriod - Single Source of Truth for time axis
+    const analyticalPeriod = extractAnalyticalPeriod(dataInfo, hourlyData.values);
+    sendAnalyticalPeriodToShell(analyticalPeriod);
+
     localStorage.setItem('consumptionData', JSON.stringify({
       filename: dataInfo.filename || 'uploaded_data',
       dataPoints: hourlyData.values.length,
-      year: dataInfo.year || new Date().getFullYear(),
+      // Use analyticalPeriod instead of raw year fallback
+      year: parseInt(analyticalPeriod.start_datetime.substring(0, 4)),
       hourlyData: hourlyData,
       sum: hourlyData.values.reduce((a, b) => a + b, 0),
-      totalConsumption: hourlyData.values.reduce((a, b) => a + b, 0)
+      totalConsumption: hourlyData.values.reduce((a, b) => a + b, 0),
+      // Include analyticalPeriod for modules that read from localStorage
+      analyticalPeriod: analyticalPeriod
     }));
 
     updateProgress(3, 'Uruchamianie doboru magazynu BESS', 40);
@@ -1716,49 +2128,88 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
       loadData = extendedData.slice(0, 8760);
     }
 
-    // Get BESS settings
-    const bessMode = systemSettings?.bessMode || 'light';
-    const sizingRequest = {
-      load_kw: loadData,
-      pv_generation_kw: [], // Empty - no PV
-      interval_minutes: 60,
-      mode: 'load_only',
-      topology: 'load_only',
+    // Get BESS settings and scenario configuration
+    const bessMode = systemSettings?.bessMode || 'pro';  // Always PRO (light deprecated)
+    const scenarioConfig = getScenarioConfigForRequest(systemSettings);
 
-      // Battery constraints
-      min_power_kw: systemSettings?.bessProMinPowerKw || 20,
-      max_power_kw: systemSettings?.bessProMaxPowerKw || 10000,
-      power_steps: 15,
-      durations_h: [1.0, 2.0, 4.0],
+    // Determine peak_limit_kw from scenario or settings
+    let peakLimitKw = null;
+    if (systemSettings?.bessPeakShavingEnabled || scenarioConfig.peakLimitKw) {
+      peakLimitKw = scenarioConfig.peakLimitKw ||
+                   systemSettings?.bessPeakShavingTargetKw ||
+                   Math.max(...loadData) * 0.8;  // Default: 80% of max load
+    }
 
-      // Battery params
-      roundtrip_efficiency: systemSettings?.bessRoundtripEfficiency || 0.9,
-      soc_min: systemSettings?.bessSocMin || 0.1,
-      soc_max: systemSettings?.bessSocMax || 0.9,
+    // Determine reserve_fraction from scenario (default 0.30, or 0.70 for Backup scenario)
+    const reserveFraction = scenarioConfig.reserveFraction || 0.30;
 
-      // Peak shaving limit (if enabled)
-      peak_limit_kw: systemSettings?.bessPeakShavingEnabled
-        ? (systemSettings?.bessPeakShavingTargetKw || Math.max(...loadData) * 0.8)
-        : null,
+    // =========================================================================
+    // Use unified BESS Request Builder (Single Source of Truth)
+    // =========================================================================
+    let sizingRequest;
+    const parentWindow = window.parent !== window ? window.parent : window;
 
-      // Economics
-      bess_capex_per_kwh: systemSettings?.bessCapexPerKwh || 1500,
-      bess_capex_per_kw: systemSettings?.bessCapexPerKw || 300,
-      opex_pct_per_year: (systemSettings?.bessOpexPctPerYear || 1.5) / 100,
-      discount_rate: (systemSettings?.discountRate || 7) / 100,
-      lifetime_years: systemSettings?.bessLifetimeYears || 15,
+    if (parentWindow.buildBessRequest) {
+      // Use unified builder
+      sizingRequest = parentWindow.buildBessRequest({
+        load_kw: loadData,
+        pv_generation_kw: [],  // Empty - no PV
+        overrides: {
+          topology: 'load_only',
+          mode: scenarioConfig.dispatchMode || 'load_only',
+          peak_limit_kw: peakLimitKw,
+          reserve_fraction: reserveFraction,
+          durations_h: scenarioConfig.forceDuration ? [parseFloat(scenarioConfig.forceDuration)] : [1.0, 2.0, 4.0],
+          scenario_id: scenarioConfig.scenarioId  // For logging
+        }
+      });
 
-      // Pricing
-      prices: {
-        import_price_pln_mwh: systemSettings?.totalEnergyPrice || 800
+      // Validate request
+      const validation = parentWindow.validateBessRequest(sizingRequest);
+      if (!validation.valid) {
+        console.error('❌ Invalid BESS request:', validation.errors);
+        throw new Error('Cannot build valid BESS request: ' + validation.errors.join(', '));
       }
-    };
+      if (validation.warnings.length > 0) {
+        console.warn('⚠️ BESS request warnings:', validation.warnings);
+      }
+    } else {
+      // Fallback: build request manually (legacy mode)
+      console.warn('⚠️ BESS Request Builder not available - using legacy inline request');
+      sizingRequest = {
+        load_kw: loadData,
+        pv_generation_kw: [],
+        interval_minutes: 60,
+        mode: scenarioConfig.dispatchMode || 'load_only',
+        topology: 'load_only',
+        scenario_id: scenarioConfig.scenarioId,
+        min_power_kw: systemSettings?.bessProMinPowerKw || 20,
+        max_power_kw: systemSettings?.bessProMaxPowerKw || 10000,
+        power_steps: 15,
+        durations_h: scenarioConfig.forceDuration ? [parseFloat(scenarioConfig.forceDuration)] : [1.0, 2.0, 4.0],
+        roundtrip_efficiency: systemSettings?.bessRoundtripEfficiency || 0.9,
+        soc_min: systemSettings?.bessSocMin || 0.1,
+        soc_max: systemSettings?.bessSocMax || 0.9,
+        peak_limit_kw: peakLimitKw,
+        reserve_fraction: reserveFraction,
+        bess_capex_per_kwh: systemSettings?.bessCapexPerKwh || 1500,
+        bess_capex_per_kw: systemSettings?.bessCapexPerKw || 300,
+        opex_pct_per_year: (systemSettings?.bessOpexPctPerYear || 1.5) / 100,
+        discount_rate: (systemSettings?.discountRate || 7) / 100,
+        lifetime_years: systemSettings?.bessLifetimeYears || 15,
+        prices: {
+          import_price_pln_mwh: systemSettings?.totalEnergyPrice || 800
+        }
+      };
+    }
 
-    console.log('🔋 BESS-only sizing request:', {
+    console.log('🔋 BESS-only sizing request (scenario ' + scenarioConfig.scenarioId + '):', {
       loadPoints: loadData.length,
       loadSum: (loadData.reduce((a, b) => a + b, 0) / 1000).toFixed(0) + ' MWh',
       peakLimit: sizingRequest.peak_limit_kw,
-      mode: sizingRequest.mode
+      mode: sizingRequest.mode,
+      reserveFraction: sizingRequest.reserve_fraction,
+      durations: sizingRequest.durations_h
     });
 
     // Call bess-dispatch sizing API
@@ -1817,7 +2268,23 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
           annual_savings_pln: v.annual_savings_pln,
           peak_reduction_kw: v.dispatch_summary?.peak_reduction_kw || 0,
           peak_reduction_pct: v.dispatch_summary?.peak_reduction_pct || 0,
-          topology: 'bess_only'
+          topology: 'bess_only',
+          // v2: savings breakdown from bess-dispatch
+          schema_version: 'bess_economics_v2',
+          savings_breakdown: v.savings_breakdown || v.dispatch_summary?.savings_breakdown || {
+            energy_savings_pln: v.annual_savings_pln || 0,
+            demand_charge_savings_pln: 0,
+            capacity_fee_savings_pln: 0,
+            arbitrage_savings_pln: 0,
+            degradation_cost_pln: 0,
+            net_savings_pln: v.annual_savings_pln || 0,
+            source: 'config_bess_only',
+          },
+          dispatch_metadata: {
+            dispatch_mode: v.dispatch_summary?.mode || 'load_only',
+            topology: 'load_only',
+            peak_shaving_enabled: (v.dispatch_summary?.peak_reduction_kw || 0) > 0,
+          },
         };
       });
     }
@@ -1827,6 +2294,20 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
 
     // Display results
     displayBessOnlyResults(sizingResult);
+
+    // =========================================================================
+    // Send BESS result to shell as Single Source of Truth
+    // =========================================================================
+    sendBessResultToShell({
+      recommended_power_kw: sizingResult.recommended_variant?.power_kw || (variants[0]?.power_kw) || 0,
+      recommended_energy_kwh: sizingResult.recommended_variant?.energy_kwh || (variants[0]?.energy_kwh) || 0,
+      variants: sizingResult.variants,
+      total_load_mwh: sizingResult.total_load_mwh,
+      topology: 'load_only',
+      timestamp: new Date().toISOString(),
+      period_info: sizingResult.period_info,  // Include period info from backend
+      warnings: sizingResult.warnings || []
+    });
 
     // Notify other modules
     window.parent.postMessage({

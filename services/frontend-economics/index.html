@@ -119,6 +119,51 @@
       </div>
     </div>
 
+    <!-- BESS Savings Breakdown (v2) - shows when data available -->
+    <div id="bessSavingsBreakdownSection" class="savings-breakdown-section" style="display:none;background:#e8f5e9;border:1px solid #c8e6c9;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <span style="font-weight:600;color:#2e7d32;">📊 Struktura oszczędności BESS (rocznie)</span>
+        <span id="savingsBreakdownSource" style="font-size:11px;color:#666;background:#fff;padding:2px 8px;border-radius:10px;"></span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:8px;">
+        <div class="savings-item" style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+          <div style="font-size:11px;color:#666;">⚡ Energia (autokonsumpcja)</div>
+          <div id="sbEnergy" style="font-size:15px;font-weight:600;color:#2e7d32;">-</div>
+          <div style="font-size:10px;color:#888;">PLN/rok</div>
+        </div>
+        <div class="savings-item" style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+          <div style="font-size:11px;color:#666;">📉 Redukcja szczytów</div>
+          <div id="sbDemandCharge" style="font-size:15px;font-weight:600;color:#1976d2;">-</div>
+          <div style="font-size:10px;color:#888;">PLN/rok</div>
+        </div>
+        <div class="savings-item" style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+          <div style="font-size:11px;color:#666;">🔌 Opłata mocowa</div>
+          <div id="sbCapacityFee" style="font-size:15px;font-weight:600;color:#7b1fa2;">-</div>
+          <div style="font-size:10px;color:#888;">PLN/rok</div>
+        </div>
+        <div class="savings-item" style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+          <div style="font-size:11px;color:#666;">💹 Arbitraż</div>
+          <div id="sbArbitrage" style="font-size:15px;font-weight:600;color:#f57c00;">-</div>
+          <div style="font-size:10px;color:#888;">PLN/rok</div>
+        </div>
+        <div class="savings-item" style="background:#fff;padding:8px;border-radius:6px;text-align:center;">
+          <div style="font-size:11px;color:#666;">🔋 Degradacja</div>
+          <div id="sbDegradation" style="font-size:15px;font-weight:600;color:#c62828;">-</div>
+          <div style="font-size:10px;color:#888;">PLN/rok</div>
+        </div>
+        <div class="savings-item" style="background:#e3f2fd;padding:8px;border-radius:6px;text-align:center;border:2px solid #1976d2;">
+          <div style="font-size:11px;color:#1565c0;font-weight:500;">📈 NETTO</div>
+          <div id="sbNet" style="font-size:16px;font-weight:700;color:#0d47a1;">-</div>
+          <div style="font-size:10px;color:#1565c0;">PLN/rok</div>
+        </div>
+      </div>
+      <div id="savingsBreakdownDispatchInfo" style="margin-top:8px;font-size:11px;color:#666;display:flex;gap:16px;flex-wrap:wrap;">
+        <span>Tryb: <strong id="sbDispatchMode">-</strong></span>
+        <span>Topologia: <strong id="sbTopology">-</strong></span>
+        <span>Taryfa: <strong id="sbTariff">-</strong></span>
+      </div>
+    </div>
+
     <!-- Wskaźniki kluczowe -->
     <div class="stats-section">
       <h2>Kluczowe Wskaźniki Ekonomiczne</h2>
@@ -924,7 +969,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20251224-MONTE-CARLO"></script>
+<script src="economics.js?v=20251227-B1"></script>
 <script src="monte-carlo.js?v=20251224"></script>
 </body>
 </html>
