@@ -6330,11 +6330,22 @@ function displayBessSavingsBreakdown() {
     return val.toLocaleString('pl-PL', { maximumFractionDigits: 0 });
   };
 
-  // Update values
-  document.getElementById('sbEnergy').textContent = fmt(sb.energy_savings_pln);
-  document.getElementById('sbDemandCharge').textContent = fmt(sb.demand_charge_savings_pln);
-  document.getElementById('sbCapacityFee').textContent = fmt(sb.capacity_fee_savings_pln);
-  document.getElementById('sbArbitrage').textContent = fmt(sb.arbitrage_savings_pln);
+  // Update values with tooltips for clarity
+  const sbEnergyEl = document.getElementById('sbEnergy');
+  sbEnergyEl.textContent = fmt(sb.energy_savings_pln);
+  sbEnergyEl.title = 'Oszczędność z autokonsumpcji PV (przy cenie flat)';
+
+  const sbDemandEl = document.getElementById('sbDemandCharge');
+  sbDemandEl.textContent = fmt(sb.demand_charge_savings_pln);
+  sbDemandEl.title = 'Oszczędność z redukcji opłaty mocowej (peak shaving)';
+
+  const sbCapacityEl = document.getElementById('sbCapacityFee');
+  sbCapacityEl.textContent = fmt(sb.capacity_fee_savings_pln);
+  sbCapacityEl.title = 'Oszczędność z opłaty mocowej (SOM/capacity fee)';
+
+  const sbArbitrageEl = document.getElementById('sbArbitrage');
+  sbArbitrageEl.textContent = fmt(sb.arbitrage_savings_pln);
+  sbArbitrageEl.title = 'Premia ToU: DODATKOWA oszczędność z różnicy cen dzień/noc (ponad flat rate)';
 
   // Degradation is negative (cost)
   const degEl = document.getElementById('sbDegradation');
@@ -6345,8 +6356,11 @@ function displayBessSavingsBreakdown() {
     degEl.textContent = '-';
     degEl.style.color = '#666';
   }
+  degEl.title = 'Koszt degradacji baterii z tytułu przepustowości (throughput × degradation_cost_pln_kwh)';
 
-  document.getElementById('sbNet').textContent = fmt(sb.net_savings_pln);
+  const sbNetEl = document.getElementById('sbNet');
+  sbNetEl.textContent = fmt(sb.net_savings_pln);
+  sbNetEl.title = 'Oszczędność NETTO = energia + demand + capacity + arbitraż - degradacja (SSoT)';
 
   // Update source badge to reflect SSoT
   const sourceEl = document.getElementById('savingsBreakdownSource');

@@ -49,6 +49,11 @@ from models import (
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
 from sensitivity_runner import run_sensitivity_analysis
+from common.logging_structured import (
+    log_dispatch_request,
+    log_dispatch_response,
+    record_dispatch_metrics,
+)
 
 
 # =============================================================================
@@ -384,6 +389,19 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
                     constant_values=pad_value
                 )
 
+        # Structured log: dispatch request
+        n_hours = len(request.load_kw)
+        dt_hours = request.interval_minutes / 60.0
+        arbitrage_on = bool(request.arbitrage_config and request.arbitrage_config.enabled)
+
+        log_dispatch_request(
+            mode=request.mode.value,
+            period_hours=n_hours * dt_hours,
+            arbitrage_enabled=arbitrage_on,
+            battery_power_kw=request.battery_power_kw,
+            battery_energy_kwh=request.battery_energy_kwh,
+        )
+
         # Run dispatch
         result = run_dispatch(internal_request, import_prices=import_prices_array)
 
@@ -396,7 +414,19 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
             result.hourly_grid_export_kw = None
 
         # Add timing info
-        result.info["compute_time_ms"] = (time.time() - start_time) * 1000
+        compute_time_ms = (time.time() - start_time) * 1000
+        result.info["compute_time_ms"] = compute_time_ms
+
+        # Structured log: dispatch response
+        log_dispatch_response(
+            annual_savings_pln=result.annual_savings_pln,
+            self_consumption_pct=result.self_consumption_pct,
+            efc_total=result.degradation.efc_total,
+            compute_time_ms=compute_time_ms,
+        )
+
+        # Record Prometheus metrics (if available)
+        record_dispatch_metrics(mode=request.mode.value)
 
         return result
 

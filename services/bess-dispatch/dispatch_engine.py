@@ -647,12 +647,14 @@ def dispatch_stacked(
 
     # Arbitrage setup
     arb_enabled = (arb_config is not None and arb_config.enabled and import_prices is not None)
+    allow_grid_charging = arb_config.allow_grid_charging if arb_config else True
     if arb_enabled:
         # Calculate thresholds from price distribution
         charge_threshold = float(np.percentile(import_prices, arb_config.charge_below_percentile))
         discharge_threshold = float(np.percentile(import_prices, arb_config.discharge_above_percentile))
         arb_soc_min_kwh = battery.energy_kwh * arb_config.arbitrage_soc_min
-        max_grid_charge = arb_config.max_grid_charge_kw or battery.power_kw
+        # Grid charging only if allowed
+        max_grid_charge = (arb_config.max_grid_charge_kw or battery.power_kw) if allow_grid_charging else 0.0
     else:
         charge_threshold = 0.0
         discharge_threshold = float('inf')

@@ -18,7 +18,7 @@ Version: 1.3.0
 
 from enum import Enum
 from typing import List, Optional, Dict, Any, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 
 # Engine version for audit trail
 ENGINE_VERSION = "1.3.0"
@@ -263,6 +263,13 @@ class ArbitrageConfig(BaseModel):
     """
     enabled: bool = Field(False, description="Enable ToU arbitrage in dispatch")
 
+    # Grid charging control
+    allow_grid_charging: bool = Field(
+        True,
+        description="Allow charging battery from grid for arbitrage. "
+                    "If False, only PV surplus can charge battery."
+    )
+
     # Tariff selection (must match osd_tariffs/presets keys)
     tariff_id: str = Field(
         "pge_c12a_2025",
@@ -311,6 +318,19 @@ class ArbitrageConfig(BaseModel):
         description="Maximum power for grid charging [kW]. None = use battery power."
     )
 
+    # Cycle limits for degradation management
+    max_cycles_per_day: Optional[float] = Field(
+        None,
+        ge=0,
+        le=10,
+        description="Maximum EFC cycles per day for arbitrage. None = no limit."
+    )
+    max_throughput_mwh_per_day: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum throughput per day [MWh]. None = no limit."
+    )
+
     # Degradation cost for profitability calculation
     degradation_cost_pln_kwh: float = Field(
         0.05,
@@ -330,6 +350,30 @@ class ArbitrageConfig(BaseModel):
         ge=0,
         description="Other components (akcyza, OZE, etc.) [PLN/kWh]"
     )
+
+    @model_validator(mode='after')
+    def validate_arbitrage_config(self) -> 'ArbitrageConfig':
+        """Validate arbitrage configuration consistency."""
+        warnings = []
+
+        # Warn if enabled but allow_grid_charging is False
+        if self.enabled and not self.allow_grid_charging:
+            warnings.append(
+                "Arbitrage enabled but allow_grid_charging=False. "
+                "Only PV surplus can be used for charging - limited arbitrage potential."
+            )
+
+        # Warn if spread is too small (unlikely profitable)
+        min_profitable_spread = 0.05  # 50 PLN/MWh minimum
+        if self.enabled and self.min_spread_pln_kwh < min_profitable_spread:
+            warnings.append(
+                f"min_spread_pln_kwh={self.min_spread_pln_kwh} is very low. "
+                f"Consider at least {min_profitable_spread} PLN/kWh for profitability."
+            )
+
+        # Store warnings (for potential response inclusion)
+        object.__setattr__(self, '_validation_warnings', warnings)
+        return self
 
 
 # =============================================================================
@@ -927,6 +971,16 @@ class SizingVariantResult(BaseModel):
 
 class SizingResult(BaseModel):
     """Complete sizing result with all variants"""
+
+    # API versioning - for frontend/backend compatibility
+    schema_version: str = Field(
+        "1.0.0",
+        description="API schema version. Bump when response structure changes."
+    )
+    assumptions_version: str = Field(
+        "v1.0-unknown",
+        description="Assumptions version (hash of docs/assumptions.yaml)."
+    )
 
     # Input summary
     mode: DispatchMode

@@ -1,12 +1,14 @@
 {
   "top_level_keys": [
     "annual_surplus_mwh",
+    "assumptions_version",
     "mode",
     "pareto_points",
     "period_info",
     "recommended_energy_kwh",
     "recommended_power_kw",
     "recommended_variant",
+    "schema_version",
     "total_load_mwh",
     "total_pv_mwh",
     "variants",

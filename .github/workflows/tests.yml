@@ -1,0 +1,94 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contract-tests:
+    name: Contract Tests
+    runs-on: ubuntu-latest
+
+    services:
+      # Start bess-dispatch service for contract tests
+      bess-dispatch:
+        image: python:3.11-slim
+        ports:
+          - 8031:8031
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: |
+          pip install -r tests/requirements.txt
+
+      - name: Start services
+        run: |
+          docker compose up -d --build bess-dispatch bess-optimizer
+          # Wait for bess-dispatch to be ready
+          timeout 120 bash -c 'until curl -sf http://localhost:8031/health; do sleep 2; done'
+          # Wait for bess-optimizer (pv-calculation proxy on 8030) to be ready
+          timeout 120 bash -c 'until curl -sf http://localhost:8030/health; do sleep 2; done'
+
+      - name: Run contract tests
+        run: |
+          pytest tests/contract/ -v --tb=short
+        env:
+          BESS_DISPATCH_URL: http://localhost:8031
+          PV_CALCULATION_URL: http://localhost:8030
+          SERVICE_TIMEOUT: "120"
+
+      - name: Stop services
+        if: always()
+        run: docker compose down
+
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: contract-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start all services
+        run: |
+          docker compose up -d --build
+          # Wait for bess-dispatch
+          timeout 120 bash -c 'until curl -sf http://localhost:8031/health; do sleep 2; done'
+
+      - name: Smoke test - no arbitrage
+        run: |
+          curl -sS http://localhost:8031/sizing \
+            -H "Content-Type: application/json" \
+            --data-binary @scripts/smoke/sizing_stacked_no_arbitrage.json \
+            -o /tmp/smoke_no_arb.json
+
+          # Verify response has required fields
+          jq -e '.variants | length > 0' /tmp/smoke_no_arb.json
+          jq -e '.period_info.period_hours' /tmp/smoke_no_arb.json
+
+          # Verify SSoT: annual_savings == net_savings
+          jq -e '.variants[0] | (.annual_savings_pln - .savings_breakdown.net_savings_pln) | fabs < 1' /tmp/smoke_no_arb.json
+
+      - name: Smoke test - with arbitrage
+        run: |
+          curl -sS http://localhost:8031/sizing \
+            -H "Content-Type: application/json" \
+            --data-binary @scripts/smoke/sizing_stacked_with_arbitrage.json \
+            -o /tmp/smoke_with_arb.json
+
+          # Verify response
+          jq -e '.variants | length > 0' /tmp/smoke_with_arb.json
+
+      - name: Stop services
+        if: always()
+        run: docker compose down

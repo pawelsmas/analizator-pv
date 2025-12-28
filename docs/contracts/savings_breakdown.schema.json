@@ -1,0 +1,43 @@
+{
+  "description": "Detailed breakdown of annual savings by source.\n\nUsed for transparent NPV calculation and frontend display.\nSum of all components equals net_savings_pln.\n\nNOTE on terminology:\n- demand_charge_savings_pln = peak shaving (opłata za moc umowną / demand charge)\n- capacity_fee_savings_pln = opłata mocowa PL (rynek mocy) - osobny moduł",
+  "properties": {
+    "energy_savings_pln": {
+      "default": 0.0,
+      "description": "Savings from reduced grid import at flat price (volume × flat_rate)",
+      "title": "Energy Savings Pln",
+      "type": "number"
+    },
+    "arbitrage_savings_pln": {
+      "default": 0.0,
+      "description": "ADDITIONAL savings from ToU price spread (tou_total - flat_savings)",
+      "title": "Arbitrage Savings Pln",
+      "type": "number"
+    },
+    "capacity_fee_savings_pln": {
+      "default": 0.0,
+      "description": "Savings from reduced capacity fee (opłata mocowa PL)",
+      "title": "Capacity Fee Savings Pln",
+      "type": "number"
+    },
+    "demand_charge_savings_pln": {
+      "default": 0.0,
+      "description": "Savings from peak shaving (opłata za moc / demand charge)",
+      "title": "Demand Charge Savings Pln",
+      "type": "number"
+    },
+    "degradation_cost_pln": {
+      "default": 0.0,
+      "description": "Cost of battery degradation (throughput-based)",
+      "title": "Degradation Cost Pln",
+      "type": "number"
+    },
+    "net_savings_pln": {
+      "default": 0.0,
+      "description": "Net annual savings = energy + demand + arbitrage + capacity_fee - degradation",
+      "title": "Net Savings Pln",
+      "type": "number"
+    }
+  },
+  "title": "SavingsBreakdown",
+  "type": "object"
+}

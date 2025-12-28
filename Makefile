@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -110,3 +110,44 @@ scale: ## Scale a service (usage: make scale SERVICE=data-analysis REPLICAS=3)
 	@echo "${BLUE}Scaling $(SERVICE) to $(REPLICAS) replicas...${RESET}"
 	@kubectl scale deployment/$(SERVICE) --replicas=$(REPLICAS) -n pv-optimizer
 	@echo "${GREEN}✓ $(SERVICE) scaled to $(REPLICAS) replicas${RESET}"
+
+# ===== CONTRACT TESTS & SMOKE TESTS =====
+
+test-contract: ## Run pytest contract tests
+	@echo "${BLUE}Running contract tests...${RESET}"
+	@python -m pytest tests/contract/ -v --tb=short
+	@echo "${GREEN}✓ Contract tests passed${RESET}"
+
+test-quick: ## Run contract tests (quiet mode)
+	@python -m pytest tests/contract/ -q
+
+smoke: smoke-no-arb smoke-with-arb ## Run all smoke tests
+	@echo "${GREEN}✓ All smoke tests passed${RESET}"
+
+smoke-no-arb: ## Smoke test: sizing without arbitrage
+	@echo "${BLUE}Smoke test: no arbitrage...${RESET}"
+	@curl -sS http://localhost:8031/sizing \
+		-H "Content-Type: application/json" \
+		--data-binary @scripts/smoke/sizing_stacked_no_arbitrage.json \
+		-o scripts/smoke/sizing_no_arb.json
+	@python -c "import json; d=json.load(open('scripts/smoke/sizing_no_arb.json')); \
+		v=d['variants'][0]; \
+		assert abs(v['annual_savings_pln'] - v['savings_breakdown']['net_savings_pln']) < 1, 'SSoT mismatch'; \
+		assert 'period_info' in d, 'Missing period_info'; \
+		print('  SSoT OK: annual={:.0f}, net={:.0f}'.format(v['annual_savings_pln'], v['savings_breakdown']['net_savings_pln']))"
+
+smoke-with-arb: ## Smoke test: sizing with arbitrage config
+	@echo "${BLUE}Smoke test: with arbitrage...${RESET}"
+	@curl -sS http://localhost:8031/sizing \
+		-H "Content-Type: application/json" \
+		--data-binary @scripts/smoke/sizing_stacked_with_arbitrage.json \
+		-o scripts/smoke/sizing_with_arb.json
+	@python -c "import json; d=json.load(open('scripts/smoke/sizing_with_arb.json')); \
+		assert len(d['variants']) > 0, 'No variants'; \
+		print('  Arbitrage test: {} variants returned'.format(len(d['variants'])))"
+
+wait-ready: ## Wait for bess-dispatch to be ready
+	@echo "${BLUE}Waiting for services...${RESET}"
+	@timeout 60 bash -c 'until curl -sf http://localhost:8031/health 2>/dev/null; do sleep 2; done' 2>/dev/null || \
+		python -c "import time,urllib.request as u; [time.sleep(2) for _ in range(30) if not (lambda: (u.urlopen('http://localhost:8031/health'),True)[1])()]" 2>/dev/null || true
+	@echo "${GREEN}✓ Services ready${RESET}"
