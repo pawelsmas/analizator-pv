@@ -279,6 +279,41 @@ class TestRecommendedVariantLogic:
                 )
 
 
+class TestPeriodInfo:
+    """Test period_info in response (SSoT for time axis)."""
+
+    def test_period_info_returned(
+        self, wait_for_services, bess_dispatch_url, minimal_sizing_request
+    ):
+        """Contract: /sizing must return period_info with time axis metadata."""
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=minimal_sizing_request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # period_info should be present
+        assert "period_info" in data, "Response must include period_info"
+
+        pi = data["period_info"]
+        assert "period_hours" in pi, "period_info must have period_hours"
+        assert "period_days" in pi, "period_info must have period_days"
+        assert "is_full_year" in pi, "period_info must have is_full_year"
+        assert "annualization_factor" in pi, "period_info must have annualization_factor"
+
+        # Validate consistency
+        assert pi["period_hours"] > 0, "period_hours must be positive"
+        assert pi["period_days"] == pi["period_hours"] / 24.0, "period_days = period_hours / 24"
+
+        # For 168 hours (1 week), is_full_year should be False
+        if pi["period_hours"] < 8760:
+            assert not pi["is_full_year"], "is_full_year should be False for partial periods"
+            assert pi["annualization_factor"] > 1, "annualization_factor > 1 for partial periods"
+
+
 class TestHealthEndpoint:
     """Test service health endpoint."""
 

@@ -40,6 +40,7 @@ from models import (
     ArbitrageConfig,
     SavingsBreakdown,
     AnalyticalPeriodConfig,
+    PeriodInfo,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1135,11 +1136,40 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 if violated:
                     warnings.append(f"{v.variant_label}: {hard_or_soft} {violation_msg}")
 
+    # Build period_info for response (SSoT for time axis)
+    period_hours = n * dt_hours
+    period_days = period_hours / 24.0
+    is_full_year = period_hours >= 8760
+    annualization_factor = 1.0 if is_full_year else (8760 / period_hours)
+
+    # Determine start/end datetime
+    if request.analytical_period is not None:
+        start_dt = request.analytical_period.start_datetime
+        end_dt = request.analytical_period.end_datetime
+    elif request.start_date:
+        start_dt = f"{request.start_date}T00:00:00"
+        end_dt_obj = datetime.fromisoformat(start_dt) + timedelta(hours=period_hours)
+        end_dt = end_dt_obj.isoformat()
+    else:
+        # Fallback
+        start_dt = "2025-01-01T00:00:00"
+        end_dt = (datetime(2025, 1, 1) + timedelta(hours=period_hours)).isoformat()
+
+    period_info = PeriodInfo(
+        period_hours=period_hours,
+        period_days=period_days,
+        is_full_year=is_full_year,
+        annualization_factor=annualization_factor,
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+    )
+
     return SizingResult(
         mode=request.mode,
         total_pv_mwh=total_pv_mwh,
         total_load_mwh=total_load_mwh,
         annual_surplus_mwh=annual_surplus_mwh,
+        period_info=period_info,
         variants=variants,
         recommended_variant=recommended.variant if recommended else None,
         recommended_power_kw=recommended.power_kw if recommended else 0,

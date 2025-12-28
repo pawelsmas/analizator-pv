@@ -934,6 +934,12 @@ class SizingResult(BaseModel):
     total_load_mwh: float
     annual_surplus_mwh: float
 
+    # Analytical period - SSoT for time axis (replaces hardcoded 8760)
+    period_info: Optional[PeriodInfo] = Field(
+        None,
+        description="Time axis metadata. period_hours replaces hardcoded 8760."
+    )
+
     # Sizing variants
     variants: List[SizingVariantResult]
 
