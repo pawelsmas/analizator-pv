@@ -536,6 +536,13 @@ class DispatchRequest(BaseModel):
     # Pricing
     prices: PriceConfig = Field(default_factory=PriceConfig)
 
+    # Energy flows SSoT control (new in v0.3)
+    include_energy_flows_timeseries: bool = Field(
+        False,
+        description="Include per-timestep energy flows in response. "
+                    "False = only totals_mwh (small). True = also timeseries_kwh (large)."
+    )
+
     @validator('interval_minutes')
     def validate_interval(cls, v):
         if v not in [15, 60]:
@@ -726,6 +733,67 @@ class SavingsBreakdown(BaseModel):
         )
 
 
+# =============================================================================
+# Energy Flows SSoT
+# =============================================================================
+
+class EnergyFlowsTotalsMwh(BaseModel):
+    """
+    Total energy flows in MWh for the analysis period.
+
+    This is the SINGLE SOURCE OF TRUTH for energy accounting.
+    All values are in MWh and represent totals over the period.
+    """
+    grid_import_mwh: float = Field(0.0, description="Total grid import [MWh]")
+    grid_export_mwh: float = Field(0.0, description="Total grid export [MWh]")
+    pv_to_load_mwh: float = Field(0.0, description="PV energy directly consumed by load [MWh]")
+    pv_to_batt_mwh: float = Field(0.0, description="PV energy charged to battery [MWh]")
+    pv_curtail_mwh: float = Field(0.0, description="PV energy curtailed [MWh]")
+    batt_to_load_mwh: float = Field(0.0, description="Battery discharge to load [MWh]")
+    batt_charge_from_grid_mwh: float = Field(0.0, description="Battery charge from grid [MWh]")
+    batt_losses_mwh: float = Field(0.0, description="Battery round-trip losses [MWh]")
+
+
+class EnergyFlowsTimeseriesKwh(BaseModel):
+    """
+    Per-timestep energy flows in kWh.
+
+    Only included in response when include_energy_flows_timeseries=True.
+    Useful for debugging and detailed analysis.
+    """
+    grid_import_kwh: List[float] = Field(default_factory=list, description="Grid import per step [kWh]")
+    grid_export_kwh: List[float] = Field(default_factory=list, description="Grid export per step [kWh]")
+    pv_to_load_kwh: List[float] = Field(default_factory=list, description="PV to load per step [kWh]")
+    pv_to_batt_kwh: List[float] = Field(default_factory=list, description="PV to battery per step [kWh]")
+    pv_curtail_kwh: List[float] = Field(default_factory=list, description="PV curtailed per step [kWh]")
+    batt_to_load_kwh: List[float] = Field(default_factory=list, description="Battery to load per step [kWh]")
+    batt_charge_from_grid_kwh: List[float] = Field(default_factory=list, description="Battery charge from grid per step [kWh]")
+    batt_losses_kwh: List[float] = Field(default_factory=list, description="Battery losses per step [kWh]")
+    soc_kwh: List[float] = Field(default_factory=list, description="State of charge per step [kWh]")
+
+
+class EnergyFlows(BaseModel):
+    """
+    Complete energy flows structure.
+
+    Contains:
+    - totals_mwh: Always present (small, for UI and golden tests)
+    - timeseries_kwh: Only when requested via include_energy_flows_timeseries flag
+
+    Usage invariants:
+    - sum(timeseries_kwh) / 1000 ≈ totals_mwh (within floating point tolerance)
+    - Load balance: load_kwh[t] ≈ pv_to_load[t] + batt_to_load[t] + grid_import[t]
+    """
+    totals_mwh: EnergyFlowsTotalsMwh = Field(
+        default_factory=EnergyFlowsTotalsMwh,
+        description="Aggregate totals in MWh (always present)"
+    )
+    timeseries_kwh: Optional[EnergyFlowsTimeseriesKwh] = Field(
+        None,
+        description="Per-timestep values in kWh (only if include_energy_flows_timeseries=True)"
+    )
+
+
 class PricesSummary(BaseModel):
     """
     Summary of prices used in simulation.
@@ -794,6 +862,12 @@ class DispatchResult(BaseModel):
     prices_summary: Optional[Union[PricesSummary, Dict[str, Any]]] = Field(
         None,
         description="Summary of prices used in simulation (or ToU cost breakdown)"
+    )
+
+    # Energy flows SSoT (new in v0.3)
+    energy_flows: Optional[EnergyFlows] = Field(
+        None,
+        description="Detailed energy flows. totals_mwh always present, timeseries_kwh only on request."
     )
 
     # Hourly arrays (optional, for charts)
@@ -906,6 +980,13 @@ class SizingRequest(BaseModel):
     optimization: Optional["OptimizationConfig"] = Field(
         None,
         description="Optimization objective and constraints configuration"
+    )
+
+    # Energy flows SSoT control (new in v0.3)
+    include_energy_flows_timeseries: bool = Field(
+        False,
+        description="Include per-timestep energy flows in response. "
+                    "False = only totals_mwh (small). True = also timeseries_kwh (large)."
     )
 
     @property

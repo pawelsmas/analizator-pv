@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application modules
 COPY models.py .
 COPY dispatch_engine.py .
+COPY energy_flows_helper.py .
 COPY sizing_runner.py .
 COPY sensitivity_runner.py .
 COPY price_engine.py .

@@ -19,6 +19,8 @@ import numpy as np
 from typing import Tuple, List, Optional, Dict, Any
 from dataclasses import dataclass
 
+from energy_flows_helper import create_energy_flows
+
 from models import (
     BatteryParams,
     DispatchRequest,
@@ -37,6 +39,9 @@ from models import (
     ArbitrageConfig,
     SavingsBreakdown,
     PricesSummary,
+    EnergyFlows,
+    EnergyFlowsTotalsMwh,
+    EnergyFlowsTimeseriesKwh,
     ENGINE_VERSION,
 )
 
@@ -201,6 +206,7 @@ def dispatch_pv_surplus(
     grid_export = np.zeros(n)
     curtailment = np.zeros(n)
     soc = np.zeros(n + 1)
+    batt_losses_kwh = np.zeros(n)  # Track losses per step
 
     # Initial SOC
     soc[0] = battery.energy_kwh * battery.soc_initial
@@ -436,6 +442,7 @@ def dispatch_peak_shaving(
     grid_export = np.zeros(n)
     curtailment = np.zeros(n)
     soc = np.zeros(n + 1)
+    batt_losses_kwh = np.zeros(n)  # Track losses per step
 
     soc[0] = battery.energy_kwh * battery.soc_initial
     soc_min_kwh = battery.energy_kwh * battery.soc_min
@@ -602,6 +609,7 @@ def dispatch_stacked(
     # Arbitrage parameters (optional)
     import_prices: Optional[np.ndarray] = None,
     arb_config: Optional[ArbitrageConfig] = None,
+    include_energy_flows_timeseries: bool = False,
 ) -> DispatchResult:
     """
     STACKED Dispatch Algorithm (PV Shifting + Peak Shaving + Optional Arbitrage)
@@ -677,6 +685,7 @@ def dispatch_stacked(
     grid_export = np.zeros(n)
     curtailment = np.zeros(n)
     soc = np.zeros(n + 1)
+    batt_losses_kwh = np.zeros(n)  # Track losses per step
 
     soc[0] = battery.energy_kwh * battery.soc_initial
     soc_min_kwh = battery.energy_kwh * battery.soc_min
@@ -1054,6 +1063,41 @@ def dispatch_stacked(
         result.hourly_grid_import_kw = grid_import.tolist()
         result.hourly_grid_export_kw = grid_export.tolist()
 
+    # === ENERGY FLOWS SSoT ===
+    # Convert power arrays (kW) to energy arrays (kWh) for flows
+    pv_to_load_kwh_arr = direct_pv * dt_hours
+    pv_to_batt_kwh_arr = charge_from_pv * dt_hours
+    pv_curtail_kwh_arr = curtailment * dt_hours
+    batt_to_load_kwh_arr = discharge * dt_hours
+    batt_charge_grid_kwh_arr = charge_from_grid * dt_hours
+    grid_import_kwh_arr = grid_import * dt_hours
+    grid_export_kwh_arr = grid_export * dt_hours
+    soc_kwh_arr = soc[:-1]
+
+    # Calculate battery losses per step (proportional to throughput)
+    total_energy_in = np.sum(charge * dt_hours)
+    total_energy_out = np.sum(discharge * dt_hours)
+    total_loss = total_energy_in - total_energy_out + (soc[0] - soc[-1])
+    throughput_per_step = charge + discharge
+    total_throughput = np.sum(throughput_per_step)
+    if total_throughput > 0 and total_loss > 0:
+        batt_losses_kwh_arr = throughput_per_step / total_throughput * total_loss
+    else:
+        batt_losses_kwh_arr = np.zeros(n)
+
+    result.energy_flows = create_energy_flows(
+        grid_import_kwh=grid_import_kwh_arr,
+        grid_export_kwh=grid_export_kwh_arr,
+        pv_to_load_kwh=pv_to_load_kwh_arr,
+        pv_to_batt_kwh=pv_to_batt_kwh_arr,
+        pv_curtail_kwh=pv_curtail_kwh_arr,
+        batt_to_load_kwh=batt_to_load_kwh_arr,
+        batt_charge_from_grid_kwh=batt_charge_grid_kwh_arr,
+        batt_losses_kwh=batt_losses_kwh_arr,
+        soc_kwh=soc_kwh_arr,
+        include_timeseries=include_energy_flows_timeseries,
+    )
+
     return result
 
 
@@ -1293,6 +1337,7 @@ def dispatch_load_only(
     discharge = np.zeros(n)
     grid_import = np.zeros(n)
     soc = np.zeros(n + 1)
+    batt_losses_kwh = np.zeros(n)  # Track losses per step
 
     soc[0] = battery.energy_kwh * battery.soc_initial
     soc_min_kwh = battery.energy_kwh * battery.soc_min
@@ -1539,6 +1584,7 @@ def run_dispatch(
             request.stacked_params, request.prices,
             import_prices=import_prices,
             arb_config=arb_config,
+            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
         )
 
     elif request.mode == DispatchMode.LOAD_ONLY:
