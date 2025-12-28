@@ -1,0 +1,395 @@
+/**
+ * BESS Request Builder - Single Source of Truth
+ *
+ * All modules MUST use this builder to ensure consistent parameters.
+ * DO NOT build BESS requests manually - always use buildBessRequest().
+ *
+ * This file is loaded by shell/index.html BEFORE all modules.
+ *
+ * @version 1.0.0
+ * @author ANALIZATOR PV Team
+ */
+
+(function() {
+  'use strict';
+
+  /**
+   * Build BESS sizing/dispatch request with consistent parameters.
+   *
+   * Uses sharedData.analyticalPeriod as the SINGLE SOURCE OF TRUTH for time axis.
+   * Uses sharedData.settings (systemSettings) for all configuration.
+   *
+   * @param {Object} options - Request options
+   * @param {Array<number>} options.load_kw - Load profile [kW] (required)
+   * @param {Array<number>} [options.pv_generation_kw] - PV profile [kW] (optional)
+   * @param {Object} [options.overrides] - Parameter overrides for what-if scenarios
+   * @returns {Object} Request body for /sizing or /dispatch API
+   * @throws {Error} If analyticalPeriod is not set
+   */
+  function buildBessRequest(options = {}) {
+    // Get sharedData from shell (or parent window if in iframe)
+    const sharedData = window.sharedData || (window.parent !== window ? window.parent.sharedData : null);
+
+    if (!sharedData) {
+      throw new Error(
+        'sharedData not available. Ensure this script runs after shell.js loads. ' +
+        'buildBessRequest() requires sharedData to access analyticalPeriod and settings.'
+      );
+    }
+
+    const analyticalPeriod = sharedData.analyticalPeriod;
+    const settings = sharedData.settings || {};
+
+    // Validate: analyticalPeriod is required
+    if (!analyticalPeriod) {
+      throw new Error(
+        'AnalyticalPeriod not set. Load data in KONFIGURACJA first. ' +
+        'buildBessRequest() requires analyticalPeriod to ensure consistent time axis.'
+      );
+    }
+
+    // Determine topology and mode from settings
+    const topology = determineTopology(settings, options);
+    const mode = determineDispatchMode(settings, options, topology);
+
+    // Calculate peak_limit_kw from settings or data
+    const peakLimitKw = determinePeakLimit(settings, options);
+
+    // Base request with all required fields
+    const request = {
+      // ===== TIME AXIS (from analyticalPeriod - SINGLE SOURCE OF TRUTH) =====
+      analytical_period: {
+        start_datetime: analyticalPeriod.start_datetime,
+        interval_minutes: analyticalPeriod.interval_minutes,
+        n_points: analyticalPeriod.n_points,
+        timezone: analyticalPeriod.timezone || 'Europe/Warsaw',
+        clock_mode: analyticalPeriod.clock_mode || 'CET_FIXED'
+      },
+
+      // DEPRECATED but kept for backward compatibility with older backends
+      start_date: analyticalPeriod.start_datetime.split('T')[0],
+      interval_minutes: analyticalPeriod.interval_minutes,
+
+      // ===== TOPOLOGY & MODE =====
+      topology: topology,
+      mode: mode,
+
+      // ===== PEAK SHAVING =====
+      peak_limit_kw: peakLimitKw,
+      reserve_fraction: parseFloatSafe(settings.bessReserveFraction, 0.30),
+
+      // ===== SIZING CONSTRAINTS =====
+      min_power_kw: parseFloatSafe(settings.bessProMinPowerKw, 20),
+      max_power_kw: parseFloatSafe(settings.bessProMaxPowerKw, 10000),
+      power_steps: 15,
+      durations_h: parseDurations(settings.bessDurations) || [1.0, 2.0, 4.0],
+
+      // ===== BATTERY PARAMS =====
+      roundtrip_efficiency: parseFloatSafe(settings.bessRoundtripEfficiency, 0.90),
+      soc_min: parseFloatSafe(settings.bessSocMin, 0.10),
+      soc_max: parseFloatSafe(settings.bessSocMax, 0.90),
+
+      // ===== EOL SIZING =====
+      eol_capacity_factor: parseFloatSafe(settings.bessEolCapacityFactor, 0.70),
+      annual_degradation_pct: parseFloatSafe(settings.bessAnnualDegradationPct, 2.0),
+
+      // ===== CAPEX =====
+      capex_per_kwh: parseFloatSafe(settings.bessCapexPerKwh, 1500),
+      capex_per_kw: parseFloatSafe(settings.bessCapexPerKw, 300),
+      opex_pct_per_year: parseFloatSafe(settings.bessOpexPctPerYear, 1.5) / 100,
+
+      // ===== ANALYSIS =====
+      discount_rate: parseFloatSafe(settings.discountRate, 7) / 100,
+      analysis_years: parseInt(settings.analysisYears || settings.bessLifetimeYears, 10) || 15,
+
+      // ===== DEGRADATION BUDGET =====
+      max_efc_per_year: settings.bessMaxEfcPerYear || null,
+      max_throughput_mwh_per_year: settings.bessMaxThroughputMwhPerYear || null,
+
+      // ===== PRICING =====
+      prices: buildPricesConfig(settings, analyticalPeriod),
+
+      // ===== DEMAND CHARGE =====
+      demand_charge_pln_kw_month: parseFloatSafe(settings.bessPowerChargePlnPerKwMonth, 50)
+    };
+
+    // Add data arrays
+    if (options.load_kw) {
+      request.load_kw = options.load_kw;
+    }
+    if (options.pv_generation_kw) {
+      request.pv_generation_kw = options.pv_generation_kw;
+    } else if (topology === 'load_only') {
+      request.pv_generation_kw = [];  // Empty for load_only
+    }
+
+    // Add arbitrage config if either OSD or Price arbitrage is enabled
+    const osdArbitrageEnabled = settings.bessOsdArbitrageEnabled === true;
+    const priceArbitrageEnabled = settings.bessPriceArbitrageEnabled === true;
+
+    if (osdArbitrageEnabled || priceArbitrageEnabled) {
+      request.arbitrage_config = buildArbitrageConfig(settings, osdArbitrageEnabled, priceArbitrageEnabled);
+      console.log('💹 Arbitrage config added:', request.arbitrage_config);
+    }
+
+    // Apply overrides (for what-if scenarios)
+    if (options.overrides) {
+      applyOverrides(request, options.overrides);
+      console.log('🔬 Request built with overrides (what-if mode):', options.overrides);
+    }
+
+    // Log for debugging
+    console.log('📋 Built BESS request:', {
+      analytical_period: request.analytical_period,
+      mode: request.mode,
+      topology: request.topology,
+      peak_limit_kw: request.peak_limit_kw,
+      demand_charge: request.demand_charge_pln_kw_month,
+      eol_capacity_factor: request.eol_capacity_factor,
+      load_points: request.load_kw?.length,
+      pv_points: request.pv_generation_kw?.length,
+      arbitrage_config: request.arbitrage_config || null
+    });
+
+    return request;
+  }
+
+  /**
+   * Determine topology from settings.
+   */
+  function determineTopology(settings, options) {
+    if (options.topology) return options.topology;
+
+    const settingTopology = settings.bessTopology || settings.topology;
+
+    if (settingTopology === 'bess_only' || settingTopology === 'load_only') {
+      return 'load_only';
+    }
+    return 'pv_load';  // Default: PV + Load + BESS
+  }
+
+  /**
+   * Determine dispatch mode from settings and topology.
+   */
+  function determineDispatchMode(settings, options, topology) {
+    if (options.mode) return options.mode;
+
+    // load_only topology forces load_only mode
+    if (topology === 'load_only') {
+      return 'load_only';
+    }
+
+    // Check if stacked mode is enabled
+    if (settings.bessStackedMode || settings.bessPeakShavingEnabled) {
+      return 'stacked';
+    }
+
+    return settings.bessDispatchMode || 'pv_surplus';
+  }
+
+  /**
+   * Determine peak_limit_kw from settings or calculate from data.
+   */
+  function determinePeakLimit(settings, options) {
+    if (options.overrides?.peak_limit_kw !== undefined) {
+      return options.overrides.peak_limit_kw;
+    }
+
+    if (settings.bessPeakShavingEnabled && settings.bessPeakShavingTargetKw) {
+      return parseFloatSafe(settings.bessPeakShavingTargetKw, null);
+    }
+
+    // null means: backend will auto-calculate from data (e.g., P95)
+    return null;
+  }
+
+  /**
+   * Build prices configuration.
+   */
+  function buildPricesConfig(settings, analyticalPeriod) {
+    const analysisYear = parseInt(analyticalPeriod.start_datetime.substring(0, 4), 10);
+
+    return {
+      // Tariff
+      tariff_id: settings.bessOsdTariffGroup || settings.tariffGroup || 'C12a',
+      pricing_stack_mode: 'OSD_ALL_IN',
+
+      // Energy prices
+      import_price_pln_mwh: parseFloatSafe(settings.totalEnergyPrice, 800),
+      export_price_pln_mwh: 0,  // ZERO_EXPORT policy
+
+      // Fixed charges
+      other_fees_pln_mwh: parseFloatSafe(settings.otherFeesPln, 50),  // OZE + kog + quality + akcyza
+
+      // Demand charge
+      annual_demand_charge_pln_kw: parseFloatSafe(settings.bessPowerChargePlnPerKwMonth, 50) * 12,
+
+      // Capacity fee
+      capacity_fee_method: 'polish_som',
+
+      // Analysis year (from analytical period, not from settings!)
+      analysis_year: analysisYear,
+
+      // ToU enabled flag
+      is_tou_enabled: settings.bessOsdTariffGroup ? true : false
+    };
+  }
+
+  /**
+   * Build arbitrage configuration from settings flags.
+   *
+   * Supports two arbitrage modes:
+   * 1. OSD Tariff Arbitrage (ToU) - based on time zones (C12a, C22a, etc.)
+   * 2. RDN Price Arbitrage (Spot) - based on price thresholds
+   *
+   * @param {Object} settings - System settings
+   * @param {boolean} osdEnabled - OSD tariff arbitrage enabled
+   * @param {boolean} priceEnabled - RDN price arbitrage enabled
+   * @returns {Object} ArbitrageConfig for sizing request
+   */
+  function buildArbitrageConfig(settings, osdEnabled, priceEnabled) {
+    const config = {
+      enabled: true
+    };
+
+    // OSD Tariff Arbitrage (ToU zones)
+    if (osdEnabled) {
+      config.tariff_id = settings.bessOsdTariffGroup || 'C12a';
+      config.strategy = 'zone_based';  // Use OSD zone hours
+      config.osd_operator = settings.bessOsdOperator || 'pge';
+      config.peak_rate_pln_kwh = parseFloatSafe(settings.bessOsdPeakRate, 0.75);
+      config.offpeak_rate_pln_kwh = parseFloatSafe(settings.bessOsdOffPeakRate, 0.45);
+      config.min_spread_pln_kwh = parseFloatSafe(settings.bessOsdMinSpread, 0.15);
+    }
+
+    // RDN Price Arbitrage (Spot market)
+    if (priceEnabled) {
+      config.price_arbitrage_enabled = true;
+      config.price_source = settings.bessPriceArbitrageSource || 'manual';
+      config.buy_threshold_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageBuyThreshold, 300);
+      config.sell_threshold_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageSellThreshold, 600);
+      config.min_spread_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageSpread, 100);
+
+      // If both enabled, prefer percentile strategy with RDN prices
+      if (!osdEnabled) {
+        config.strategy = 'percentile';
+        config.charge_below_percentile = 25;  // Buy cheap (bottom 25%)
+        config.discharge_above_percentile = 75;  // Sell expensive (top 25%)
+      }
+    }
+
+    // Common arbitrage parameters
+    config.arbitrage_soc_min = parseFloatSafe(settings.bessArbitrageSocMin, 0.20);
+    config.degradation_cost_pln_kwh = parseFloatSafe(settings.bessArbitrageDegradationCost, 0.05);
+
+    return config;
+  }
+
+  /**
+   * Apply overrides to request (deep merge).
+   */
+  function applyOverrides(request, overrides) {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (key === 'prices' && typeof value === 'object') {
+        request.prices = { ...request.prices, ...value };
+      } else if (key === 'analytical_period' && typeof value === 'object') {
+        request.analytical_period = { ...request.analytical_period, ...value };
+      } else if (key === 'arbitrage_config' && typeof value === 'object') {
+        request.arbitrage_config = { ...(request.arbitrage_config || {}), ...value };
+      } else {
+        request[key] = value;
+      }
+    }
+  }
+
+  /**
+   * Validate request before sending.
+   * @param {Object} request - Built request object
+   * @returns {Object} { valid: boolean, errors: string[], warnings: string[] }
+   */
+  function validateBessRequest(request) {
+    const errors = [];
+    const warnings = [];
+
+    // Required fields
+    if (!request.analytical_period?.start_datetime) {
+      errors.push('Missing analytical_period.start_datetime');
+    }
+    if (!request.load_kw || request.load_kw.length === 0) {
+      errors.push('Missing or empty load_kw array');
+    }
+
+    // Consistency checks
+    if (request.load_kw && request.analytical_period) {
+      if (request.load_kw.length !== request.analytical_period.n_points) {
+        warnings.push(
+          `load_kw length (${request.load_kw.length}) != analytical_period.n_points (${request.analytical_period.n_points})`
+        );
+      }
+    }
+
+    // PV data consistency
+    if (request.pv_generation_kw && request.pv_generation_kw.length > 0) {
+      if (request.topology === 'load_only') {
+        warnings.push('pv_generation_kw provided but topology is load_only - PV data will be ignored');
+      }
+      if (request.pv_generation_kw.length !== request.load_kw?.length) {
+        warnings.push(
+          `pv_generation_kw length (${request.pv_generation_kw.length}) != load_kw length (${request.load_kw?.length})`
+        );
+      }
+    }
+
+    // Mode-specific checks
+    if (request.mode === 'stacked' && !request.peak_limit_kw) {
+      warnings.push('STACKED mode without peak_limit_kw - backend will auto-calculate from P95');
+    }
+
+    // Economic sanity checks
+    if (request.capex_per_kwh > 3000) {
+      warnings.push(`High CAPEX: ${request.capex_per_kwh} PLN/kWh - verify this is correct`);
+    }
+    if (request.discount_rate > 0.20) {
+      warnings.push(`High discount rate: ${(request.discount_rate * 100).toFixed(1)}% - verify this is correct`);
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings
+    };
+  }
+
+  // ===== HELPER FUNCTIONS =====
+
+  /**
+   * Parse float with fallback.
+   */
+  function parseFloatSafe(value, fallback) {
+    if (value === null || value === undefined || value === '') {
+      return fallback;
+    }
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? fallback : parsed;
+  }
+
+  /**
+   * Parse durations from settings (string "1,2,4" or array).
+   */
+  function parseDurations(value) {
+    if (!value) return null;
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      return value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+    }
+    return null;
+  }
+
+  // ===== EXPORT TO WINDOW =====
+
+  window.buildBessRequest = buildBessRequest;
+  window.validateBessRequest = validateBessRequest;
+
+  console.log('✅ BESS Request Builder loaded (v1.0.0)');
+
+})();
