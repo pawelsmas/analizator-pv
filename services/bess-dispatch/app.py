@@ -568,6 +568,12 @@ class SizingRequestAPI(BaseModel):
         description="Optimization config: {objective, constraints, constraint_penalty_weight}"
     )
 
+    # Energy flows timeseries (optional - off by default to reduce response size)
+    include_energy_flows_timeseries: bool = Field(
+        False,
+        description="If True, include per-timestep energy flows in response. Default: False to keep response small."
+    )
+
 
 @app.post("/sizing", response_model=SizingResult)
 async def run_sizing_optimization(request: SizingRequestAPI):
@@ -756,6 +762,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             prices=prices,
             degradation_budget=budget,
             optimization=optimization_config,
+            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
         )
 
         result = run_sizing(internal_request)

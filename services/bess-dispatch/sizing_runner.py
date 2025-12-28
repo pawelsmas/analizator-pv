@@ -480,14 +480,19 @@ def run_sizing_for_variant(
     )
 
     # Run dispatch based on mode
+    # Pass include_energy_flows_timeseries from request to dispatch functions
+    include_timeseries = request.include_energy_flows_timeseries
+
     if mode == DispatchMode.PV_SURPLUS:
         result = dispatch_pv_surplus(
-            pv_kw, load_kw, battery, dt_hours, request.prices, return_hourly=True
+            pv_kw, load_kw, battery, dt_hours, request.prices, return_hourly=True,
+            include_energy_flows_timeseries=include_timeseries,
         )
     elif mode == DispatchMode.PEAK_SHAVING:
         result = dispatch_peak_shaving(
             pv_kw, load_kw, battery, dt_hours,
-            request.peak_limit_kw, request.prices, return_hourly=True
+            request.peak_limit_kw, request.prices, return_hourly=True,
+            include_energy_flows_timeseries=include_timeseries,
         )
     elif mode == DispatchMode.STACKED:
         # Pass arbitrage parameters to dispatch_stacked
@@ -496,12 +501,14 @@ def run_sizing_for_variant(
             request.stacked_params, request.prices, return_hourly=True,
             import_prices=import_prices if arb_enabled else None,
             arb_config=request.arbitrage_config if arb_enabled else None,
+            include_energy_flows_timeseries=include_timeseries,
         )
     elif mode == DispatchMode.LOAD_ONLY:
         # LOAD_ONLY mode: peak shaving without PV
         peak_limit = request.peak_limit_kw or (np.max(load_kw) * 0.7)
         result = dispatch_load_only(
-            load_kw, battery, dt_hours, peak_limit, request.prices, return_hourly=True
+            load_kw, battery, dt_hours, peak_limit, request.prices, return_hourly=True,
+            include_energy_flows_timeseries=include_timeseries,
         )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
