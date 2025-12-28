@@ -1143,9 +1143,14 @@ function updateDeltaEconomics(variant) {
   document.getElementById('deltaSelfConsumedInfo').textContent = `${formatNumberEU(variant.bess_discharged_kwh || 0, 0)} kWh/rok`;
 
   document.getElementById('deltaSavings').textContent = formatNumberEU(deltaSavingsAnnualK, 1);
-  // Show source of savings (SSoT or local fallback)
-  const sourceLabel = savingsSource === 'local' ? 'lokalnie' : 'SSoT';
-  document.getElementById('deltaSavingsInfo').textContent = `źródło: ${sourceLabel}`;
+  // Show source of savings (SSoT or local fallback) with clear labeling
+  if (savingsSource === 'local') {
+    document.getElementById('deltaSavingsInfo').textContent = 'Estymacja brutto (flat)';
+    document.getElementById('deltaSavingsInfo').title = 'Kalkulacja lokalna bez uwzględnienia ToU/arbitrażu. Użyj danych z backendu dla dokładniejszych wyników.';
+  } else {
+    document.getElementById('deltaSavingsInfo').textContent = 'Oszczędność netto (SSoT)';
+    document.getElementById('deltaSavingsInfo').title = 'savings_breakdown.net_savings_pln - uwzględnia energię, opłaty sieciowe, arbitraż i degradację';
+  }
 
   if (simplePayback === Infinity || simplePayback > 50) {
     document.getElementById('deltaPayback').textContent = '>50';
