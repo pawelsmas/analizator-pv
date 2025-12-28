@@ -218,6 +218,67 @@ class TestSizingInputValidation:
         assert response.status_code >= 400, "Should reject mismatched array lengths"
 
 
+class TestRecommendedVariantLogic:
+    """Test recommended variant selection logic."""
+
+    def test_recommended_matches_highest_score(
+        self, wait_for_services, bess_dispatch_url, minimal_sizing_request
+    ):
+        """Contract: Recommended variant should have highest score (NPV by default)."""
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=minimal_sizing_request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        variants = data.get("variants", [])
+
+        if not variants:
+            pytest.skip("No variants returned")
+
+        # Find variant marked as recommended
+        recommended_variants = [v for v in variants if v.get("is_recommended", False)]
+        assert len(recommended_variants) == 1, "Exactly one variant should be recommended"
+
+        recommended = recommended_variants[0]
+
+        # Find variant with highest score
+        highest_score_variant = max(variants, key=lambda v: v.get("score", float("-inf")))
+
+        # Recommended variant should be the one with highest score
+        assert recommended["variant"] == highest_score_variant["variant"], (
+            f"Recommended variant {recommended['variant']} (score={recommended['score']:.2f}) "
+            f"should match highest score variant {highest_score_variant['variant']} "
+            f"(score={highest_score_variant['score']:.2f})"
+        )
+
+    def test_score_equals_npv_by_default(
+        self, wait_for_services, bess_dispatch_url, minimal_sizing_request
+    ):
+        """Contract: With default optimization, score should equal npv_pln."""
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=minimal_sizing_request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        for variant in data.get("variants", []):
+            npv = variant.get("npv_pln", 0)
+            score = variant.get("score", 0)
+
+            # Score should equal NPV (with small tolerance for floating point)
+            if abs(npv) > 1:
+                diff = abs(score - npv) / abs(npv)
+                assert diff < 0.001, (
+                    f"Variant {variant['variant']}: score={score:.2f} should equal npv={npv:.2f}"
+                )
+
+
 class TestHealthEndpoint:
     """Test service health endpoint."""
 
