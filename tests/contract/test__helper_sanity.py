@@ -4,7 +4,7 @@ Sanity tests for contract test helpers.
 These tests verify that the helper functions work correctly
 and can load smoke payloads from the repository.
 """
-from tests.contract._api import load_smoke_payload, pick_recommended_variant
+from ._api import load_smoke_payload, pick_recommended_variant
 
 
 def test_load_smoke_payload_exists():
