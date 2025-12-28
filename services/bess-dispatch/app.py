@@ -19,11 +19,17 @@ from typing import List, Optional, Dict, Any, Union
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel, Field
+
+from observability.http_metrics import (
+    HTTP_REQUESTS_TOTAL,
+    HTTP_REQUEST_DURATION_SECONDS,
+    SERVICE_NAME,
+)
 
 from models import (
     DispatchRequest,
@@ -85,6 +91,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Prometheus HTTP metrics middleware
+@app.middleware("http")
+async def prometheus_http_middleware(request: Request, call_next):
+    """Record HTTP metrics for all requests."""
+    start = time.perf_counter()
+    status = "500"
+    endpoint = "unknown"
+
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+
+        # Use route template path for low cardinality
+        route = request.scope.get("route")
+        if route and getattr(route, "path", None):
+            endpoint = route.path
+        else:
+            endpoint = request.url.path
+
+        return response
+    except Exception:
+        status = "500"
+        raise
+    finally:
+        duration = time.perf_counter() - start
+        method = request.method
+
+        HTTP_REQUEST_DURATION_SECONDS.labels(
+            service=SERVICE_NAME,
+            endpoint=endpoint,
+            method=method,
+        ).observe(duration)
+
+        HTTP_REQUESTS_TOTAL.labels(
+            service=SERVICE_NAME,
+            endpoint=endpoint,
+            method=method,
+            status=status,
+        ).inc()
+
 
 # Include arbitrage router
 from api_arbitrage import router as arbitrage_router

@@ -27,3 +27,17 @@ groups:
         annotations:
           summary: "No sizing traffic"
           description: "No sizing requests observed for 30m."
+
+      - alert: BessHttp5xxErrorRateHigh
+        expr: |
+          (
+            sum(rate(http_requests_total{service="bess-dispatch",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{service="bess-dispatch"}[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on bess-dispatch"
+          description: "5xx error rate > 1% for 5m."
