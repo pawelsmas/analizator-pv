@@ -162,6 +162,7 @@ def dispatch_pv_surplus(
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
+    include_energy_flows_timeseries: bool = False,
 ) -> DispatchResult:
     """
     PV-Surplus (Autokonsumpcja) Dispatch Algorithm
@@ -399,6 +400,41 @@ def dispatch_pv_surplus(
         result.hourly_grid_import_kw = grid_import.tolist()
         result.hourly_grid_export_kw = grid_export.tolist()
 
+    # === ENERGY FLOWS SSoT ===
+    # Convert power arrays (kW) to energy arrays (kWh) for flows
+    pv_to_load_kwh_arr = direct_pv * dt_hours
+    pv_to_batt_kwh_arr = charge * dt_hours  # All charge is from PV surplus
+    pv_curtail_kwh_arr = curtailment * dt_hours
+    batt_to_load_kwh_arr = discharge * dt_hours
+    batt_charge_grid_kwh_arr = np.zeros(n)  # No grid charging in PV_SURPLUS
+    grid_import_kwh_arr = grid_import * dt_hours
+    grid_export_kwh_arr = grid_export * dt_hours
+    soc_kwh_arr = soc[:-1]
+
+    # Calculate battery losses per step (proportional to throughput)
+    total_energy_in = np.sum(charge * dt_hours)
+    total_energy_out = np.sum(discharge * dt_hours)
+    total_loss = total_energy_in - total_energy_out + (soc[0] - soc[-1])
+    throughput_per_step = charge + discharge
+    total_throughput = np.sum(throughput_per_step)
+    if total_throughput > 0 and total_loss > 0:
+        batt_losses_kwh_arr = throughput_per_step / total_throughput * total_loss
+    else:
+        batt_losses_kwh_arr = np.zeros(n)
+
+    result.energy_flows = create_energy_flows(
+        grid_import_kwh=grid_import_kwh_arr,
+        grid_export_kwh=grid_export_kwh_arr,
+        pv_to_load_kwh=pv_to_load_kwh_arr,
+        pv_to_batt_kwh=pv_to_batt_kwh_arr,
+        pv_curtail_kwh=pv_curtail_kwh_arr,
+        batt_to_load_kwh=batt_to_load_kwh_arr,
+        batt_charge_from_grid_kwh=batt_charge_grid_kwh_arr,
+        batt_losses_kwh=batt_losses_kwh_arr,
+        soc_kwh=soc_kwh_arr,
+        include_timeseries=include_energy_flows_timeseries,
+    )
+
     return result
 
 
@@ -411,6 +447,7 @@ def dispatch_peak_shaving(
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
+    include_energy_flows_timeseries: bool = False,
 ) -> DispatchResult:
     """
     Peak Shaving Dispatch Algorithm
@@ -593,6 +630,41 @@ def dispatch_peak_shaving(
         result.hourly_soc_pct = (soc[:-1] / battery.energy_kwh * 100).tolist()
         result.hourly_grid_import_kw = grid_import.tolist()
         result.hourly_grid_export_kw = grid_export.tolist()
+
+    # === ENERGY FLOWS SSoT ===
+    # Convert power arrays (kW) to energy arrays (kWh) for flows
+    pv_to_load_kwh_arr = direct_pv * dt_hours
+    pv_to_batt_kwh_arr = np.zeros(n)  # Peak shaving charges from grid, not PV
+    pv_curtail_kwh_arr = curtailment * dt_hours
+    batt_to_load_kwh_arr = discharge * dt_hours
+    batt_charge_grid_kwh_arr = charge * dt_hours  # All charge is from grid in peak shaving
+    grid_import_kwh_arr = grid_import * dt_hours
+    grid_export_kwh_arr = grid_export * dt_hours
+    soc_kwh_arr = soc[:-1]
+
+    # Calculate battery losses per step (proportional to throughput)
+    total_energy_in = np.sum(charge * dt_hours)
+    total_energy_out = np.sum(discharge * dt_hours)
+    total_loss = total_energy_in - total_energy_out + (soc[0] - soc[-1])
+    throughput_per_step = charge + discharge
+    total_throughput = np.sum(throughput_per_step)
+    if total_throughput > 0 and total_loss > 0:
+        batt_losses_kwh_arr = throughput_per_step / total_throughput * total_loss
+    else:
+        batt_losses_kwh_arr = np.zeros(n)
+
+    result.energy_flows = create_energy_flows(
+        grid_import_kwh=grid_import_kwh_arr,
+        grid_export_kwh=grid_export_kwh_arr,
+        pv_to_load_kwh=pv_to_load_kwh_arr,
+        pv_to_batt_kwh=pv_to_batt_kwh_arr,
+        pv_curtail_kwh=pv_curtail_kwh_arr,
+        batt_to_load_kwh=batt_to_load_kwh_arr,
+        batt_charge_from_grid_kwh=batt_charge_grid_kwh_arr,
+        batt_losses_kwh=batt_losses_kwh_arr,
+        soc_kwh=soc_kwh_arr,
+        include_timeseries=include_energy_flows_timeseries,
+    )
 
     return result
 
@@ -1290,6 +1362,7 @@ def dispatch_load_only(
     prices: Optional[PriceConfig] = None,
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
+    include_energy_flows_timeseries: bool = False,
 ) -> DispatchResult:
     """
     Load-Only (Stand-alone BESS) Dispatch Algorithm
@@ -1520,6 +1593,41 @@ def dispatch_load_only(
         result.hourly_grid_import_kw = grid_import.tolist()
         result.hourly_grid_export_kw = [0.0] * n
 
+    # === ENERGY FLOWS SSoT ===
+    # Convert power arrays (kW) to energy arrays (kWh) for flows
+    pv_to_load_kwh_arr = np.zeros(n)  # No PV in LOAD_ONLY
+    pv_to_batt_kwh_arr = np.zeros(n)  # No PV charging
+    pv_curtail_kwh_arr = np.zeros(n)  # No curtailment
+    batt_to_load_kwh_arr = discharge * dt_hours
+    batt_charge_grid_kwh_arr = charge * dt_hours  # All charge is from grid
+    grid_import_kwh_arr = grid_import * dt_hours
+    grid_export_kwh_arr = np.zeros(n)  # No export
+    soc_kwh_arr = soc[:-1]
+
+    # Calculate battery losses per step (proportional to throughput)
+    total_energy_in = np.sum(charge * dt_hours)
+    total_energy_out = np.sum(discharge * dt_hours)
+    total_loss = total_energy_in - total_energy_out + (soc[0] - soc[-1])
+    throughput_per_step = charge + discharge
+    total_throughput = np.sum(throughput_per_step)
+    if total_throughput > 0 and total_loss > 0:
+        batt_losses_kwh_arr = throughput_per_step / total_throughput * total_loss
+    else:
+        batt_losses_kwh_arr = np.zeros(n)
+
+    result.energy_flows = create_energy_flows(
+        grid_import_kwh=grid_import_kwh_arr,
+        grid_export_kwh=grid_export_kwh_arr,
+        pv_to_load_kwh=pv_to_load_kwh_arr,
+        pv_to_batt_kwh=pv_to_batt_kwh_arr,
+        pv_curtail_kwh=pv_curtail_kwh_arr,
+        batt_to_load_kwh=batt_to_load_kwh_arr,
+        batt_charge_from_grid_kwh=batt_charge_grid_kwh_arr,
+        batt_losses_kwh=batt_losses_kwh_arr,
+        soc_kwh=soc_kwh_arr,
+        include_timeseries=include_energy_flows_timeseries,
+    )
+
     return result
 
 
@@ -1565,7 +1673,8 @@ def run_dispatch(
 
     if request.mode == DispatchMode.PV_SURPLUS:
         result = dispatch_pv_surplus(
-            pv, load, request.battery, dt_hours, request.prices
+            pv, load, request.battery, dt_hours, request.prices,
+            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
         )
 
     elif request.mode == DispatchMode.PEAK_SHAVING:
@@ -1573,7 +1682,8 @@ def run_dispatch(
             raise ValueError("peak_limit_kw required for PEAK_SHAVING mode")
         result = dispatch_peak_shaving(
             pv, load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices
+            request.peak_limit_kw, request.prices,
+            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
         )
 
     elif request.mode == DispatchMode.STACKED:
@@ -1592,7 +1702,8 @@ def run_dispatch(
             raise ValueError("peak_limit_kw required for LOAD_ONLY mode")
         result = dispatch_load_only(
             load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices
+            request.peak_limit_kw, request.prices,
+            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
         )
 
     else:
