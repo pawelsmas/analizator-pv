@@ -928,6 +928,16 @@ class SizingVariantResult(BaseModel):
 class SizingResult(BaseModel):
     """Complete sizing result with all variants"""
 
+    # API versioning - for frontend/backend compatibility
+    schema_version: str = Field(
+        "1.0.0",
+        description="API schema version. Bump when response structure changes."
+    )
+    assumptions_version: str = Field(
+        "v1.0-unknown",
+        description="Assumptions version (hash of docs/assumptions.yaml)."
+    )
+
     # Input summary
     mode: DispatchMode
     total_pv_mwh: float

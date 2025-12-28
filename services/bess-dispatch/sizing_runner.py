@@ -49,6 +49,7 @@ from dispatch_engine import (
     dispatch_load_only,
     check_degradation_budget,
 )
+from common.versioning import get_version_info
 from economics_helper import (
     PricingConfig,
     CostBreakdown,
@@ -1164,7 +1165,12 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         end_datetime=end_dt,
     )
 
+    # Get version info for API response
+    version_info = get_version_info()
+
     return SizingResult(
+        schema_version=version_info["schema_version"],
+        assumptions_version=version_info["assumptions_version"],
         mode=request.mode,
         total_pv_mwh=total_pv_mwh,
         total_load_mwh=total_load_mwh,

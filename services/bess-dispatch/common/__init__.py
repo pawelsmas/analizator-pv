@@ -4,6 +4,7 @@ Common utilities shared across bess-dispatch modules.
 Contains:
 - calendar_pl: Polish calendar with holidays and day types
 - time_utils: Time handling utilities with ClockMode support
+- versioning: API versioning helpers
 """
 
 from .calendar_pl import (
@@ -24,6 +25,13 @@ from .time_utils import (
     get_effective_day_type,
 )
 
+from .versioning import (
+    get_schema_version,
+    get_assumptions_version,
+    get_version_info,
+    SCHEMA_VERSION,
+)
+
 __all__ = [
     # Calendar
     "DayType",
@@ -39,4 +47,9 @@ __all__ = [
     "minute_of_day",
     "datetime_to_local_minute",
     "get_effective_day_type",
+    # Versioning
+    "get_schema_version",
+    "get_assumptions_version",
+    "get_version_info",
+    "SCHEMA_VERSION",
 ]
