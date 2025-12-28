@@ -9,8 +9,9 @@ alerting:
     - static_configs:
         - targets: []
 
-# Rules files (for future alerting rules)
-rule_files: []
+# Rules files
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 # Scrape configurations
 scrape_configs:

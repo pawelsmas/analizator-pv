@@ -1,0 +1,29 @@
+groups:
+  - name: bess-dispatch-alerts
+    rules:
+      - alert: BessDispatchTargetDown
+        expr: up{job="pv-backends", instance=~".*bess-dispatch.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "bess-dispatch target DOWN"
+          description: "Prometheus cannot scrape bess-dispatch for >2m."
+
+      - alert: BessSizingHighLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(bess_sizing_duration_seconds_bucket[10m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High sizing p95 latency"
+          description: "Sizing p95 > 2s for 10m."
+
+      - alert: BessSizingNoTraffic
+        expr: rate(bess_sizing_requests_total[15m]) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "No sizing traffic"
+          description: "No sizing requests observed for 30m."
