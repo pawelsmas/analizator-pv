@@ -15,6 +15,7 @@ Port: 8031
 
 import io
 import time
+import uuid
 from typing import List, Optional, Dict, Any, Union
 from contextlib import asynccontextmanager
 
@@ -58,6 +59,13 @@ from models import (
     GridConstraints,
     # v0.8.0 Sizing Constraints
     ConstraintsConfig,
+    # v0.9.0 Batch Sizing
+    BatchSizingRequest,
+    BatchSizingResponse,
+    BatchSizingItem,
+    BatchItemResult,
+    BatchItemStatus,
+    BatchSizingSummary,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -991,6 +999,318 @@ async def quick_sizing(request: QuickSizingRequest):
 
     except Exception as e:
         raise HTTPException(500, f"Quick sizing error: {str(e)}")
+
+
+# =============================================================================
+# Batch Sizing Endpoint (v0.9.0)
+# =============================================================================
+
+def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
+    """
+    Process a single sizing request from batch.
+
+    This is a synchronous helper that reuses the same logic as the /sizing endpoint.
+    Raises exceptions on error (caller handles wrapping to BatchItemResult).
+    """
+    # Parse the request dict into SizingRequestAPI model
+    api_request = SizingRequestAPI(**item_request)
+
+    # Validate arbitrage requirements
+    if api_request.arbitrage_config and api_request.arbitrage_config.enabled:
+        if not api_request.start_date:
+            raise ValueError("start_date is required when arbitrage_config.enabled=True")
+        if api_request.mode != DispatchMode.STACKED:
+            raise ValueError("Arbitrage sizing requires STACKED mode")
+
+    stacked_params = None
+    if api_request.mode == DispatchMode.STACKED:
+        if not api_request.peak_limit_kw:
+            raise ValueError("peak_limit_kw required for STACKED mode")
+        stacked_params = StackedModeParams(
+            peak_limit_kw=api_request.peak_limit_kw,
+            reserve_fraction=api_request.reserve_fraction,
+        )
+
+    # Build DegradationBudget from request
+    budget = None
+    if api_request.degradation_budget:
+        budget = DegradationBudget(**api_request.degradation_budget)
+    elif (api_request.max_efc_per_year or api_request.max_throughput_mwh_per_year or
+          api_request.max_cycles_per_day or api_request.max_throughput_mwh_per_day):
+        budget = DegradationBudget(
+            max_efc_per_year=api_request.max_efc_per_year,
+            max_throughput_mwh_per_year=api_request.max_throughput_mwh_per_year,
+            max_cycles_per_day=api_request.max_cycles_per_day,
+            max_throughput_mwh_per_day=api_request.max_throughput_mwh_per_day,
+        )
+
+    # Build PriceConfig from request
+    prices_dict = api_request.prices or {}
+    is_tou = (
+        prices_dict.get('tariff_id') or
+        prices_dict.get('type') in ('two_zone', 'three_zone')
+    )
+
+    if is_tou:
+        if not prices_dict.get('tariff_id'):
+            tou_type = prices_dict.get('type', 'two_zone')
+            if tou_type == 'two_zone':
+                day_rate = prices_dict.get('day_rate_pln_mwh', 800.0)
+                night_rate = prices_dict.get('night_rate_pln_mwh', 400.0)
+                avg_rate = day_rate * 0.6 + night_rate * 0.4
+            elif tou_type == 'three_zone':
+                peak_rate = prices_dict.get('peak_rate_pln_mwh', 1200.0)
+                day_rate = prices_dict.get('day_rate_pln_mwh', 800.0)
+                night_rate = prices_dict.get('night_rate_pln_mwh', 400.0)
+                avg_rate = peak_rate * 0.2 + day_rate * 0.4 + night_rate * 0.4
+            else:
+                avg_rate = api_request.import_price_pln_mwh
+
+            other_fees = prices_dict.get('other_fees_pln_mwh', 451.0)
+            full_import_price = avg_rate + other_fees
+
+            prices = PriceConfig(
+                import_price_pln_mwh=full_import_price,
+                export_price_pln_mwh=api_request.export_price_pln_mwh,
+                demand_charge_pln_kw_month=api_request.demand_charge_pln_kw_month,
+                demand_charge_pln_kw_year=api_request.demand_charge_pln_kw_year,
+                other_fees_pln_mwh=other_fees,
+                capacity_fee_method=prices_dict.get('capacity_fee_method', 'dynamic'),
+                capacity_fee_som_pln_kwh=prices_dict.get('capacity_fee_som_pln_kwh', 0.2194),
+                analysis_year=prices_dict.get('analysis_year', 2025),
+            )
+        else:
+            prices = PriceConfig(
+                import_price_pln_mwh=api_request.import_price_pln_mwh,
+                export_price_pln_mwh=api_request.export_price_pln_mwh,
+                demand_charge_pln_kw_month=api_request.demand_charge_pln_kw_month,
+                demand_charge_pln_kw_year=api_request.demand_charge_pln_kw_year,
+                tariff_id=prices_dict.get('tariff_id'),
+                other_fees_pln_mwh=prices_dict.get('other_fees_pln_mwh', 451.0),
+                capacity_fee_method=prices_dict.get('capacity_fee_method', 'dynamic'),
+                capacity_fee_som_pln_kwh=prices_dict.get('capacity_fee_som_pln_kwh', 0.2194),
+                capacity_fee_fixed_pln_mwh=prices_dict.get('capacity_fee_fixed_pln_mwh'),
+                analysis_year=prices_dict.get('analysis_year', 2025),
+            )
+    else:
+        other_fees = prices_dict.get('other_fees_pln_mwh', 451.0)
+        prices = PriceConfig(
+            import_price_pln_mwh=api_request.import_price_pln_mwh + other_fees,
+            export_price_pln_mwh=api_request.export_price_pln_mwh,
+            demand_charge_pln_kw_month=api_request.demand_charge_pln_kw_month,
+            demand_charge_pln_kw_year=api_request.demand_charge_pln_kw_year,
+            other_fees_pln_mwh=other_fees,
+        )
+
+    # Build ArbitrageConfig for sizing
+    arb_config = None
+    if api_request.arbitrage_config and api_request.arbitrage_config.enabled:
+        strategy_map = {
+            "percentile": ArbitrageStrategy.PERCENTILE_THRESHOLD,
+            "zone_based": ArbitrageStrategy.ZONE_BASED,
+            "spread": ArbitrageStrategy.SPREAD_THRESHOLD,
+        }
+        arb_config = ArbitrageConfig(
+            enabled=True,
+            tariff_id=api_request.arbitrage_config.tariff_id,
+            strategy=strategy_map.get(
+                api_request.arbitrage_config.strategy,
+                ArbitrageStrategy.PERCENTILE_THRESHOLD
+            ),
+            charge_below_percentile=api_request.arbitrage_config.charge_below_percentile,
+            discharge_above_percentile=api_request.arbitrage_config.discharge_above_percentile,
+            min_spread_pln_kwh=api_request.arbitrage_config.min_spread_pln_kwh,
+            arbitrage_soc_min=api_request.arbitrage_config.arbitrage_soc_min,
+            max_grid_charge_kw=api_request.arbitrage_config.max_grid_charge_kw,
+            degradation_cost_pln_kwh=api_request.arbitrage_config.degradation_cost_pln_kwh,
+            capacity_fee_pln_kwh=0.0,
+            other_components_pln_kwh=api_request.arbitrage_config.other_components_pln_kwh,
+        )
+
+    # Parse optimization config
+    optimization_config = None
+    if api_request.optimization:
+        opt_dict = api_request.optimization
+        constraints_list = []
+        if opt_dict.get("constraints"):
+            for c in opt_dict["constraints"]:
+                constraints_list.append(SizingConstraint(
+                    constraint_type=ConstraintType(c.get("constraint_type", "max_capex")),
+                    value=c.get("value", 0),
+                    hard=c.get("hard", True),
+                ))
+        optimization_config = OptimizationConfig(
+            objective=OptimizationObjective(opt_dict.get("objective", "npv")),
+            constraints=constraints_list,
+            constraint_penalty_weight=opt_dict.get("constraint_penalty_weight", 0.3),
+        )
+
+    # Parse finance_config
+    finance_config = None
+    if api_request.finance_config:
+        fc_dict = api_request.finance_config
+        finance_config = FinanceConfig(
+            horizon_years=fc_dict.get("horizon_years", 10),
+            discount_rate=fc_dict.get("discount_rate", 0.08),
+            savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
+            opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
+            opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
+            capex_override_pln=fc_dict.get("capex_override_pln"),
+            include_cashflow_timeseries=fc_dict.get("include_cashflow_timeseries", False),
+            discount_rate_sweep=fc_dict.get("discount_rate_sweep"),
+            replacement_year=fc_dict.get("replacement_year"),
+            replacement_capex_pln=fc_dict.get("replacement_capex_pln"),
+            bess_degradation_pct_per_year=fc_dict.get("bess_degradation_pct_per_year", 0.0),
+            pv_degradation_pct_per_year=fc_dict.get("pv_degradation_pct_per_year", 0.0),
+            energy_price_multiplier_sweep=fc_dict.get("energy_price_multiplier_sweep"),
+            capex_multiplier_sweep=fc_dict.get("capex_multiplier_sweep"),
+        )
+
+    # Parse grid_constraints
+    grid_constraints = None
+    if api_request.grid_constraints:
+        gc_dict = api_request.grid_constraints
+        grid_constraints = GridConstraints(
+            max_export_kw=gc_dict.get("max_export_kw"),
+            max_import_kw=gc_dict.get("max_import_kw"),
+            allow_export=gc_dict.get("allow_export", True),
+            unserved_load_penalty_pln_kwh=gc_dict.get("unserved_load_penalty_pln_kwh", 0.0),
+        )
+
+    # Parse constraints_config
+    constraints_config = None
+    if api_request.constraints_config:
+        cc_dict = api_request.constraints_config
+        constraints_config = ConstraintsConfig(
+            max_capex_pln=cc_dict.get("max_capex_pln"),
+            max_payback_years=cc_dict.get("max_payback_years"),
+            min_npv_pln=cc_dict.get("min_npv_pln"),
+            min_net_savings_pln=cc_dict.get("min_net_savings_pln"),
+            require_no_unserved_load=cc_dict.get("require_no_unserved_load", False),
+            max_unserved_load_kwh=cc_dict.get("max_unserved_load_kwh"),
+        )
+
+    internal_request = SizingRequest(
+        pv_generation_kw=api_request.pv_generation_kw,
+        load_kw=api_request.load_kw,
+        interval_minutes=api_request.interval_minutes,
+        mode=api_request.mode,
+        stacked_params=stacked_params,
+        peak_limit_kw=api_request.peak_limit_kw,
+        arbitrage_config=arb_config,
+        start_date=api_request.start_date,
+        timezone=api_request.timezone,
+        period_start=api_request.period_start,
+        period_end=api_request.period_end,
+        min_power_kw=api_request.min_power_kw,
+        max_power_kw=api_request.max_power_kw,
+        power_steps=api_request.power_steps,
+        durations_h=api_request.durations_h,
+        roundtrip_efficiency=api_request.roundtrip_efficiency,
+        soc_min=api_request.soc_min,
+        soc_max=api_request.soc_max,
+        eol_capacity_factor=api_request.eol_capacity_factor,
+        annual_degradation_pct=api_request.annual_degradation_pct,
+        capex_per_kwh=api_request.capex_per_kwh,
+        capex_per_kw=api_request.capex_per_kw,
+        opex_pct_per_year=api_request.opex_pct_per_year,
+        discount_rate=api_request.discount_rate,
+        analysis_years=api_request.analysis_years,
+        prices=prices,
+        degradation_cost_pln_mwh=api_request.degradation_cost_pln_mwh,
+        degradation_budget=budget,
+        optimization=optimization_config,
+        include_energy_flows_timeseries=api_request.include_energy_flows_timeseries,
+        finance_config=finance_config,
+        grid_constraints=grid_constraints,
+        constraints_config=constraints_config,
+    )
+
+    return run_sizing(internal_request)
+
+
+@app.post("/sizing:batch", response_model=BatchSizingResponse)
+async def run_batch_sizing(request: BatchSizingRequest):
+    """
+    Run batch BESS sizing optimization.
+
+    Process multiple sizing requests in a single API call. Each item is processed
+    independently with per-item error isolation.
+
+    Features:
+    - batch_id: Unique identifier for the batch (server-generated if not provided)
+    - fail_fast: If True, stop on first error; otherwise process all items
+    - Per-item status: ok/error with response/error message
+
+    Use cases:
+    - Compare multiple scenarios with different parameters
+    - Process portfolio of sites
+    - Parameter sweeps for sensitivity analysis
+
+    Returns results for each item in the same order as the request, plus summary.
+    """
+    start_time = time.time()
+
+    # Generate batch_id if not provided
+    batch_id = request.batch_id or str(uuid.uuid4())
+
+    results: List[BatchItemResult] = []
+    ok_count = 0
+    error_count = 0
+
+    for item in request.items:
+        try:
+            # Process single item
+            sizing_result = _process_single_sizing_item(item.request)
+
+            # Convert to dict for response
+            result_dict = sizing_result.model_dump(mode="json")
+
+            results.append(BatchItemResult(
+                item_id=item.item_id,
+                status=BatchItemStatus.OK,
+                response=result_dict,
+                error=None,
+            ))
+            ok_count += 1
+
+        except Exception as e:
+            error_msg = str(e)
+            results.append(BatchItemResult(
+                item_id=item.item_id,
+                status=BatchItemStatus.ERROR,
+                response=None,
+                error=error_msg,
+            ))
+            error_count += 1
+
+            # Stop on first error if fail_fast
+            if request.fail_fast:
+                break
+
+    processing_time_ms = (time.time() - start_time) * 1000
+
+    # Get schema/assumptions versions from first successful result or use defaults
+    schema_version = "1.0.0"
+    assumptions_version = "v1.0-unknown"
+    for r in results:
+        if r.status == BatchItemStatus.OK and r.response:
+            schema_version = r.response.get("schema_version", schema_version)
+            assumptions_version = r.response.get("assumptions_version", assumptions_version)
+            break
+
+    return BatchSizingResponse(
+        batch_id=batch_id,
+        schema_version=schema_version,
+        assumptions_version=assumptions_version,
+        results=results,
+        summary=BatchSizingSummary(
+            total_items=len(request.items),
+            ok_count=ok_count,
+            error_count=error_count,
+            processing_time_ms=processing_time_ms,
+        ),
+    )
 
 
 # =============================================================================

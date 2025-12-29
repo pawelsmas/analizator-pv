@@ -149,5 +149,24 @@
     "opex_pln",
     "savings_pln",
     "year"
+  ],
+  "batch_response_keys": [
+    "assumptions_version",
+    "batch_id",
+    "results",
+    "schema_version",
+    "summary"
+  ],
+  "batch_item_result_keys": [
+    "error",
+    "item_id",
+    "response",
+    "status"
+  ],
+  "batch_summary_keys": [
+    "error_count",
+    "ok_count",
+    "processing_time_ms",
+    "total_items"
   ]
 }

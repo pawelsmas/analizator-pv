@@ -2222,5 +2222,115 @@ class SensitivityResult(BaseModel):
     breakeven_scenarios: List[str]  # Parameters where NPV crosses zero
 
 
+# =============================================================================
+# Batch Sizing (v0.9.0)
+# =============================================================================
+
+class BatchItemStatus(str, Enum):
+    """Status of individual batch item"""
+    OK = "ok"           # Item processed successfully
+    ERROR = "error"     # Item failed to process
+
+
+class BatchSizingItem(BaseModel):
+    """Single item in a batch sizing request"""
+    item_id: str = Field(
+        ...,
+        description="Unique identifier for this item within the batch. "
+                    "Used to correlate request items with response results."
+    )
+    request: Dict[str, Any] = Field(
+        ...,
+        description="Sizing request payload (same schema as POST /sizing)"
+    )
+
+
+class BatchSizingRequest(BaseModel):
+    """
+    Request for batch sizing - multiple sizing requests in one API call.
+
+    Each item is processed independently. If fail_fast=True, processing stops
+    on first error. Otherwise, all items are processed and errors are collected.
+    """
+    batch_id: Optional[str] = Field(
+        None,
+        description="Optional batch identifier. If None, server generates UUID."
+    )
+    items: List[BatchSizingItem] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="List of sizing items to process. Max 100 items per batch."
+    )
+    fail_fast: bool = Field(
+        False,
+        description="If True, stop processing on first error. "
+                    "If False (default), process all items and collect errors."
+    )
+
+
+class BatchItemResult(BaseModel):
+    """Result for a single batch item"""
+    item_id: str = Field(
+        ...,
+        description="Item identifier (same as in request)"
+    )
+    status: BatchItemStatus = Field(
+        ...,
+        description="Processing status: ok or error"
+    )
+    response: Optional[Dict[str, Any]] = Field(
+        None,
+        description="SizingResult as dict when status=ok. None when status=error."
+    )
+    error: Optional[str] = Field(
+        None,
+        description="Error message when status=error. None when status=ok."
+    )
+
+
+class BatchSizingSummary(BaseModel):
+    """Summary statistics for batch sizing result"""
+    total_items: int = Field(..., description="Total items in batch")
+    ok_count: int = Field(..., description="Successfully processed items")
+    error_count: int = Field(..., description="Failed items")
+    processing_time_ms: float = Field(..., description="Total processing time [ms]")
+
+
+class BatchSizingResponse(BaseModel):
+    """
+    Response for batch sizing request.
+
+    Contains results for each item, summary statistics, and API versioning info.
+    """
+    # Batch metadata
+    batch_id: str = Field(
+        ...,
+        description="Batch identifier (from request or server-generated UUID)"
+    )
+
+    # API versioning
+    schema_version: str = Field(
+        "1.0.0",
+        description="API schema version"
+    )
+    assumptions_version: str = Field(
+        "v1.0-unknown",
+        description="Assumptions version (hash of docs/assumptions.yaml)"
+    )
+
+    # Results
+    results: List[BatchItemResult] = Field(
+        ...,
+        description="Results for each item in the same order as request"
+    )
+
+    # Summary
+    summary: BatchSizingSummary = Field(
+        ...,
+        description="Summary statistics for the batch"
+    )
+
+
 # Update forward references for Pydantic
 SizingRequest.update_forward_refs()
