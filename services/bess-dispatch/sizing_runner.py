@@ -53,6 +53,11 @@ from models import (
     # v0.7.0 Grid Constraints
     GridConstraints,
     GridConstraintsApplied,
+    # v0.8.0 Sizing Constraints
+    ConstraintsConfig,
+    ConstraintViolation,
+    Feasibility,
+    ConstraintsReport,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -877,6 +882,152 @@ def check_constraints(
                 passes_hard = False
 
     return passes_hard, min(penalty, 1.0), violations
+
+
+# =============================================================================
+# FEASIBILITY EVALUATION (v0.8.0)
+# =============================================================================
+
+def evaluate_feasibility(
+    variant_result: SizingVariantResult,
+    constraints_config: Optional[ConstraintsConfig],
+) -> Feasibility:
+    """
+    Evaluate whether a sizing variant satisfies all user-defined constraints.
+
+    Args:
+        variant_result: The sizing variant to check
+        constraints_config: User-defined constraints (None = no constraints)
+
+    Returns:
+        Feasibility object with is_feasible status and list of violations
+    """
+    if constraints_config is None:
+        return Feasibility(is_feasible=True, violations=[])
+
+    violations: List[ConstraintViolation] = []
+
+    # Get values to check (with safe defaults)
+    capex = variant_result.capex_pln
+    payback = variant_result.simple_payback_years
+    npv = variant_result.npv_pln
+
+    # Get net savings from savings_breakdown
+    net_savings = 0.0
+    if variant_result.savings_breakdown:
+        net_savings = variant_result.savings_breakdown.net_savings_pln
+
+    # Get unserved load from dispatch_summary.constraint_summary
+    unserved_load = 0.0
+    if (variant_result.dispatch_summary and
+        variant_result.dispatch_summary.constraint_summary):
+        unserved_load = variant_result.dispatch_summary.constraint_summary.unserved_load_kwh
+
+    # Check MAX_CAPEX
+    if constraints_config.max_capex_pln is not None:
+        if capex > constraints_config.max_capex_pln:
+            violations.append(ConstraintViolation(
+                code="MAX_CAPEX",
+                limit=constraints_config.max_capex_pln,
+                actual=capex,
+                unit="PLN",
+                message=f"CAPEX {capex:,.0f} PLN przekracza limit {constraints_config.max_capex_pln:,.0f} PLN"
+            ))
+
+    # Check MAX_PAYBACK
+    if constraints_config.max_payback_years is not None:
+        if payback > constraints_config.max_payback_years:
+            violations.append(ConstraintViolation(
+                code="MAX_PAYBACK",
+                limit=constraints_config.max_payback_years,
+                actual=payback,
+                unit="years",
+                message=f"Payback {payback:.1f} lat przekracza limit {constraints_config.max_payback_years:.1f} lat"
+            ))
+
+    # Check MIN_NPV
+    if constraints_config.min_npv_pln is not None:
+        if npv < constraints_config.min_npv_pln:
+            violations.append(ConstraintViolation(
+                code="MIN_NPV",
+                limit=constraints_config.min_npv_pln,
+                actual=npv,
+                unit="PLN",
+                message=f"NPV {npv:,.0f} PLN ponizej limitu {constraints_config.min_npv_pln:,.0f} PLN"
+            ))
+
+    # Check MIN_NET_SAVINGS
+    if constraints_config.min_net_savings_pln is not None:
+        if net_savings < constraints_config.min_net_savings_pln:
+            violations.append(ConstraintViolation(
+                code="MIN_NET_SAVINGS",
+                limit=constraints_config.min_net_savings_pln,
+                actual=net_savings,
+                unit="PLN",
+                message=f"Oszczednosci netto {net_savings:,.0f} PLN ponizej limitu {constraints_config.min_net_savings_pln:,.0f} PLN"
+            ))
+
+    # Check REQUIRE_NO_UNSERVED_LOAD
+    if constraints_config.require_no_unserved_load:
+        if unserved_load > 0:
+            violations.append(ConstraintViolation(
+                code="NO_UNSERVED_LOAD",
+                limit=0.0,
+                actual=unserved_load,
+                unit="kWh",
+                message=f"Niespelnione obciazenie {unserved_load:.1f} kWh (wymagane: 0)"
+            ))
+
+    # Check MAX_UNSERVED_LOAD
+    if constraints_config.max_unserved_load_kwh is not None:
+        if unserved_load > constraints_config.max_unserved_load_kwh:
+            violations.append(ConstraintViolation(
+                code="MAX_UNSERVED_LOAD",
+                limit=constraints_config.max_unserved_load_kwh,
+                actual=unserved_load,
+                unit="kWh",
+                message=f"Niespelnione obciazenie {unserved_load:.1f} kWh przekracza limit {constraints_config.max_unserved_load_kwh:.1f} kWh"
+            ))
+
+    return Feasibility(
+        is_feasible=len(violations) == 0,
+        violations=violations
+    )
+
+
+def build_constraints_report(
+    variants: List[SizingVariantResult],
+    constraints_config: Optional[ConstraintsConfig],
+) -> ConstraintsReport:
+    """
+    Build a summary report of constraint evaluation for all variants.
+
+    Args:
+        variants: List of sized variants with feasibility already evaluated
+        constraints_config: User-defined constraints (None = no constraints)
+
+    Returns:
+        ConstraintsReport with feasibility summary
+    """
+    if constraints_config is None:
+        return ConstraintsReport(
+            applied=False,
+            feasible_count=len(variants),
+            feasible_variants=[v.variant.value for v in variants],
+            none_feasible=False
+        )
+
+    feasible_variants = [
+        v.variant.value for v in variants
+        if v.feasibility and v.feasibility.is_feasible
+    ]
+
+    return ConstraintsReport(
+        applied=True,
+        feasible_count=len(feasible_variants),
+        feasible_variants=feasible_variants,
+        none_feasible=len(feasible_variants) == 0
+    )
 
 
 def run_sizing_for_variant(
@@ -1746,6 +1897,11 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             finance_summary=finance_summary,  # v0.5.0
         )
 
+        # Evaluate feasibility against user constraints (v0.8.0)
+        feasibility = evaluate_feasibility(variant_result, request.constraints_config)
+        # Use object.__setattr__ to set on Pydantic model after creation
+        object.__setattr__(variant_result, 'feasibility', feasibility)
+
         variants.append(variant_result)
 
     # Determine objective used (v0.4)
@@ -1753,11 +1909,30 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     objective = opt_config.objective if opt_config else OptimizationObjective.NPV
     objective_used = objective.value  # Convert enum to string
 
-    # Find recommended variant (highest score)
+    # Build constraints_report (v0.8.0)
+    constraints_report = build_constraints_report(variants, request.constraints_config)
+    none_feasible = constraints_report.none_feasible
+
+    # Find recommended variant (highest score, preferring feasible variants)
     recommended_reason = None
     structured_reason = None
     if variants:
-        best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
+        # If constraints_config is applied, prefer feasible variants (v0.8.0)
+        if request.constraints_config is not None and not none_feasible:
+            # Select from feasible variants only
+            feasible_variants = [v for v in variants if v.feasibility and v.feasibility.is_feasible]
+            if feasible_variants:
+                best_idx = max(
+                    range(len(variants)),
+                    key=lambda i: variants[i].score if variants[i].feasibility and variants[i].feasibility.is_feasible else -float('inf')
+                )
+            else:
+                # Fallback: none feasible, use highest score anyway
+                best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
+        else:
+            # No constraints or none feasible: use highest score
+            best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
+
         variants[best_idx].is_recommended = True
         recommended = variants[best_idx]
 
@@ -1767,6 +1942,9 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             recommended_reason = generate_recommended_reason(
                 recommended, variants, objective, constraints
             )
+            # Add none_feasible note if applicable (v0.8.0)
+            if none_feasible:
+                recommended_reason = f"[FALLBACK] {recommended_reason} (brak wariantow spelniajacych ograniczenia)"
         except Exception as e:
             logger.error(f"Failed to generate recommended_reason: {e}")
             # Fallback to simple reason
@@ -1775,6 +1953,14 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # Generate structured reason info (v0.4.1)
         try:
             structured_reason = get_structured_reason_info(recommended, objective)
+            # Update reason_code to fallback if none feasible (v0.8.0)
+            if none_feasible and structured_reason:
+                structured_reason = type(structured_reason)(
+                    code="constrained_fallback",
+                    metric=structured_reason.metric,
+                    value=structured_reason.value,
+                    unit=structured_reason.unit,
+                )
         except Exception as e:
             logger.error(f"Failed to generate structured_reason: {e}")
             structured_reason = None
@@ -1995,6 +2181,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         applied_parameters=applied_parameters,
         finance_assumptions=finance_assumptions,  # v0.5.0
         grid_constraints_applied=grid_constraints_applied,  # v0.7.0
+        constraints_report=constraints_report,  # v0.8.0
         warnings=warnings,
     )
 

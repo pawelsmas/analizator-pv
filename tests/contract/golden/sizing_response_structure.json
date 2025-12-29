@@ -3,6 +3,7 @@
     "annual_surplus_mwh",
     "applied_parameters",
     "assumptions_version",
+    "constraints_report",
     "finance_assumptions",
     "grid_constraints_applied",
     "mode",
@@ -35,6 +36,7 @@
     "dispatch_summary",
     "duration_h",
     "energy_kwh",
+    "feasibility",
     "finance_summary",
     "irr_pct",
     "is_recommended",
@@ -46,6 +48,23 @@
     "simple_payback_years",
     "variant",
     "variant_label"
+  ],
+  "constraints_report_keys": [
+    "applied",
+    "feasible_count",
+    "feasible_variants",
+    "none_feasible"
+  ],
+  "feasibility_keys": [
+    "is_feasible",
+    "violations"
+  ],
+  "constraint_violation_keys": [
+    "actual",
+    "code",
+    "limit",
+    "message",
+    "unit"
   ],
   "savings_breakdown_keys": [
     "arbitrage_savings_pln",

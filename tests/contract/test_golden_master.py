@@ -89,6 +89,13 @@ class TestGoldenMaster:
             )
             if data.get("variants") and data["variants"][0].get("finance_summary")
             else [],
+            # v0.8.0 constraints
+            "constraints_report_keys": sorted(data.get("constraints_report", {}).keys()),
+            "feasibility_keys": sorted(
+                data["variants"][0].get("feasibility", {}).keys()
+            )
+            if data.get("variants") and data["variants"][0].get("feasibility")
+            else [],
         }
 
         golden_file = golden_dir / "sizing_response_structure.json"
@@ -124,6 +131,19 @@ class TestGoldenMaster:
                 f"savings_breakdown keys changed.\n"
                 f"Expected: {expected['savings_breakdown_keys']}\n"
                 f"Got: {structure['savings_breakdown_keys']}"
+            )
+
+            # v0.8.0 constraints
+            assert structure["constraints_report_keys"] == expected.get("constraints_report_keys", []), (
+                f"constraints_report keys changed.\n"
+                f"Expected: {expected.get('constraints_report_keys', [])}\n"
+                f"Got: {structure['constraints_report_keys']}"
+            )
+
+            assert structure["feasibility_keys"] == expected.get("feasibility_keys", []), (
+                f"feasibility keys changed.\n"
+                f"Expected: {expected.get('feasibility_keys', [])}\n"
+                f"Got: {structure['feasibility_keys']}"
             )
 
     def test_net_savings_formula_consistency(
