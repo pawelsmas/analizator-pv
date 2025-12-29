@@ -1,0 +1,1139 @@
+{
+  "schema_version": "1.0.0",
+  "assumptions_version": "v1.0-no-file",
+  "mode": "stacked",
+  "total_pv_mwh": 12.250000000000002,
+  "total_load_mwh": 89.6,
+  "annual_surplus_mwh": 0.0,
+  "period_info": {
+    "period_hours": 168.0,
+    "period_days": 7.0,
+    "is_full_year": false,
+    "annualization_factor": 52.142857142857146,
+    "start_datetime": "2025-01-01T00:00:00",
+    "end_datetime": "2025-01-08T00:00:00",
+    "steps": 168,
+    "step_minutes": 60,
+    "timezone": null
+  },
+  "variants": [
+    {
+      "variant": "small",
+      "variant_label": "Small (1h)",
+      "duration_h": 1.0,
+      "power_kw": 20.0,
+      "energy_kwh": 20.0,
+      "c_rate": 1.0,
+      "capex_pln": 36000.0,
+      "annual_opex_pln": 540.0,
+      "annual_savings_pln": 6.268899233521358,
+      "npv_pln": -40861.176967633335,
+      "simple_payback_years": 5742.6349760894345,
+      "irr_pct": null,
+      "dispatch_summary": {
+        "mode": "stacked",
+        "battery_power_kw": 20.0,
+        "battery_energy_kwh": 20.0,
+        "interval_minutes": 60,
+        "n_timesteps": 168,
+        "total_pv_kwh": 12250.000000000002,
+        "total_load_kwh": 89600.0,
+        "total_direct_pv_kwh": 12250.000000000002,
+        "total_charge_kwh": 0.0,
+        "total_discharge_kwh": 3.794733192202055,
+        "total_grid_import_kwh": 77346.2052668078,
+        "total_grid_export_kwh": 0.0,
+        "total_curtailment_kwh": 0.0,
+        "self_consumption_kwh": 12253.794733192204,
+        "self_consumption_pct": 100.0309774138139,
+        "grid_independence_pct": 13.676110193294871,
+        "original_peak_kw": 550.0,
+        "new_peak_kw": 550.0,
+        "peak_reduction_kw": 0.0,
+        "peak_reduction_pct": 0.0,
+        "degradation": {
+          "throughput_charge_kwh": 0.0,
+          "throughput_discharge_kwh": 3.794733192202055,
+          "throughput_total_mwh": 0.0037947331922020553,
+          "efc_total": 0.23717082451262844,
+          "throughput_pv_mwh": 0.0037947331922020553,
+          "throughput_peak_mwh": 0.0,
+          "efc_pv": 0.23717082451262844,
+          "efc_peak": 0.0,
+          "throughput_arb_mwh": 0.0,
+          "efc_arb": 0.0,
+          "arb_charge_from_grid_kwh": 0.0,
+          "arb_discharge_kwh": 0.0,
+          "arb_cycles_count": 0,
+          "peak_events_count": 0,
+          "peak_events_energy_kwh": 0.0,
+          "peak_max_discharge_kw": 0.0,
+          "n_days": 7,
+          "max_daily_efc": 0.23717082451262844,
+          "avg_daily_efc": 0.03388154635894692,
+          "max_daily_throughput_mwh": 0.0037947331922020553,
+          "avg_daily_throughput_mwh": 0.0005421047417431508,
+          "days_exceeding_cycle_limit": 0,
+          "days_exceeding_throughput_limit": 0,
+          "charge_from_pv_kwh": 0.0,
+          "charge_from_grid_kwh": 0.0,
+          "charge_pv_pct": 0.0,
+          "budget_status": "ok",
+          "budget_utilization_pct": 0.0,
+          "budget_warnings": []
+        },
+        "baseline_cost_pln": 131649.69999999998,
+        "project_cost_pln": 131643.24136410686,
+        "annual_savings_pln": 6.268899233521358,
+        "savings_breakdown": {
+          "energy_savings_pln": 6.4586358931314605,
+          "arbitrage_savings_pln": 0.0,
+          "capacity_fee_savings_pln": 0.0,
+          "demand_charge_savings_pln": 0.0,
+          "baseline_export_revenue_pln": 0.0,
+          "project_export_revenue_pln": 0.0,
+          "export_revenue_savings_pln": 0.0,
+          "export_revenue_pln": 0.0,
+          "battery_throughput_mwh": 0.0037947331922020553,
+          "degradation_cost_pln": 0.18973665961010278,
+          "net_savings_pln": 6.268899233521358
+        },
+        "prices_summary": {
+          "import_price_pln_mwh": 1702.0,
+          "export_price_pln_mwh": 400.0,
+          "demand_charge_pln_kw_month": 0.0,
+          "demand_charge_pln_kw_year": 0.0,
+          "tariff_type": "flat",
+          "tariff_id": null,
+          "zone_rates": null
+        },
+        "energy_flows": {
+          "totals_mwh": {
+            "grid_import_mwh": 77.3462052668078,
+            "grid_export_mwh": 0.0,
+            "pv_to_load_mwh": 12.250000000000002,
+            "pv_to_batt_mwh": 0.0,
+            "pv_curtail_mwh": 0.0,
+            "batt_to_load_mwh": 0.0037947331922020553,
+            "batt_charge_from_grid_mwh": 0.0,
+            "batt_losses_mwh": 0.00020526680779794492
+          },
+          "timeseries_kwh": null
+        },
+        "hourly_charge_kw": null,
+        "hourly_discharge_kw": null,
+        "hourly_soc_pct": null,
+        "hourly_grid_import_kw": null,
+        "hourly_grid_export_kw": null,
+        "hourly_dispatch": null,
+        "warnings": [],
+        "info": {
+          "audit": {
+            "engine_version": "1.3.0",
+            "profile_unit": "kW_avg",
+            "interval_minutes": 60,
+            "resampling_method": "none",
+            "source_interval_minutes": null
+          },
+          "reserve_soc_kwh": 6.0,
+          "reserve_fraction": 0.3,
+          "peak_limit_kw": 600.0,
+          "discharge_peak_kwh": 0.0,
+          "discharge_pv_kwh": 3.794733192202055,
+          "discharge_arb_kwh": 0.0
+        }
+      },
+      "degradation": {
+        "throughput_charge_kwh": 0.0,
+        "throughput_discharge_kwh": 3.794733192202055,
+        "throughput_total_mwh": 0.0037947331922020553,
+        "efc_total": 0.23717082451262844,
+        "throughput_pv_mwh": 0.0037947331922020553,
+        "throughput_peak_mwh": 0.0,
+        "efc_pv": 0.23717082451262844,
+        "efc_peak": 0.0,
+        "throughput_arb_mwh": 0.0,
+        "efc_arb": 0.0,
+        "arb_charge_from_grid_kwh": 0.0,
+        "arb_discharge_kwh": 0.0,
+        "arb_cycles_count": 0,
+        "peak_events_count": 0,
+        "peak_events_energy_kwh": 0.0,
+        "peak_max_discharge_kw": 0.0,
+        "n_days": 7,
+        "max_daily_efc": 0.23717082451262844,
+        "avg_daily_efc": 0.03388154635894692,
+        "max_daily_throughput_mwh": 0.0037947331922020553,
+        "avg_daily_throughput_mwh": 0.0005421047417431508,
+        "days_exceeding_cycle_limit": 0,
+        "days_exceeding_throughput_limit": 0,
+        "charge_from_pv_kwh": 0.0,
+        "charge_from_grid_kwh": 0.0,
+        "charge_pv_pct": 0.0,
+        "budget_status": "ok",
+        "budget_utilization_pct": 0.0,
+        "budget_warnings": []
+      },
+      "degradation_status": "ok",
+      "score": -40861.176967633335,
+      "is_recommended": true,
+      "savings_breakdown": {
+        "energy_savings_pln": 6.4586358931314605,
+        "arbitrage_savings_pln": 0.0,
+        "capacity_fee_savings_pln": 0.0,
+        "demand_charge_savings_pln": 0.0,
+        "baseline_export_revenue_pln": 0.0,
+        "project_export_revenue_pln": 0.0,
+        "export_revenue_savings_pln": 0.0,
+        "export_revenue_pln": 0.0,
+        "battery_throughput_mwh": 0.0037947331922020553,
+        "degradation_cost_pln": 0.18973665961010278,
+        "net_savings_pln": 6.268899233521358
+      },
+      "prices_summary": {
+        "import_price_pln_mwh": 1702.0,
+        "export_price_pln_mwh": 400.0,
+        "demand_charge_pln_kw_month": 0.0,
+        "demand_charge_pln_kw_year": 0.0,
+        "tariff_type": "flat",
+        "tariff_id": null,
+        "zone_rates": null
+      },
+      "finance_summary": {
+        "capex_pln": 36000.0,
+        "opex_pln_per_year": 540.0,
+        "horizon_years": 15,
+        "discount_rate": 0.08,
+        "npv_pln": -40568.45998209417,
+        "payback_years": 5742.6349760894345,
+        "irr_pct": null,
+        "cashflow_timeseries": [
+          {
+            "year": 0,
+            "savings_pln": 0.0,
+            "opex_pln": 0.0,
+            "net_cashflow_pln": -36000.0,
+            "cumulative_cashflow_pln": -36000.0,
+            "discounted_cashflow_pln": -36000.0
+          },
+          {
+            "year": 1,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -36533.731100766476,
+            "discounted_cashflow_pln": -494.1954636726654
+          },
+          {
+            "year": 2,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -37067.46220153295,
+            "discounted_cashflow_pln": -457.588392289505
+          },
+          {
+            "year": 3,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -37601.19330229943,
+            "discounted_cashflow_pln": -423.6929558236157
+          },
+          {
+            "year": 4,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -38134.9244030659,
+            "discounted_cashflow_pln": -392.30829242927376
+          },
+          {
+            "year": 5,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -38668.65550383238,
+            "discounted_cashflow_pln": -363.2484189159942
+          },
+          {
+            "year": 6,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -39202.386604598854,
+            "discounted_cashflow_pln": -336.34112862592053
+          },
+          {
+            "year": 7,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -39736.11770536533,
+            "discounted_cashflow_pln": -311.4269709499264
+          },
+          {
+            "year": 8,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -40269.848806131806,
+            "discounted_cashflow_pln": -288.358306435117
+          },
+          {
+            "year": 9,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -40803.57990689828,
+            "discounted_cashflow_pln": -266.9984318843676
+          },
+          {
+            "year": 10,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -41337.31100766476,
+            "discounted_cashflow_pln": -247.2207702633033
+          },
+          {
+            "year": 11,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -41871.04210843123,
+            "discounted_cashflow_pln": -228.90812061416972
+          },
+          {
+            "year": 12,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -42404.77320919771,
+            "discounted_cashflow_pln": -211.95196353163863
+          },
+          {
+            "year": 13,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -42938.504309964184,
+            "discounted_cashflow_pln": -196.25181808485056
+          },
+          {
+            "year": 14,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -43472.23541073066,
+            "discounted_cashflow_pln": -181.71464637486162
+          },
+          {
+            "year": 15,
+            "savings_pln": 6.268899233521358,
+            "opex_pln": 540.0,
+            "net_cashflow_pln": -533.7311007664787,
+            "cumulative_cashflow_pln": -44005.966511497136,
+            "discounted_cashflow_pln": -168.25430219894594
+          }
+        ],
+        "discount_rate_sensitivity": [
+          {
+            "discount_rate": 0.04,
+            "discount_rate_pct": 4.0,
+            "npv_pln": -41934.22916291926
+          },
+          {
+            "discount_rate": 0.06,
+            "discount_rate_pct": 6.0,
+            "npv_pln": -41183.729343145125
+          },
+          {
+            "discount_rate": 0.08,
+            "discount_rate_pct": 8.0,
+            "npv_pln": -40568.45998209417
+          },
+          {
+            "discount_rate": 0.1,
+            "discount_rate_pct": 10.0,
+            "npv_pln": -40059.60118741932
+          },
+          {
+            "discount_rate": 0.12,
+            "discount_rate_pct": 12.0,
+            "npv_pln": -39635.17020113346
+          },
+          {
+            "discount_rate": 0.15,
+            "discount_rate_pct": 15.0,
+            "npv_pln": -39120.92327933137
+          }
+        ]
+      }
+    },
+    {
+      "variant": "medium",
+      "variant_label": "Medium (2h)",
+      "duration_h": 2.0,
+      "power_kw": 20.0,
+      "energy_kwh": 40.0,
+      "c_rate": 0.5,
+      "capex_pln": 66000.0,
+      "annual_opex_pln": 990.0,
+      "annual_savings_pln": 12.537798467042716,
+      "npv_pln": -74902.64167480684,
+      "simple_payback_years": 5264.082061415315,
+      "irr_pct": null,
+      "dispatch_summary": {
+        "mode": "stacked",
+        "battery_power_kw": 20.0,
+        "battery_energy_kwh": 40.0,
+        "interval_minutes": 60,
+        "n_timesteps": 168,
+        "total_pv_kwh": 12250.000000000002,
+        "total_load_kwh": 89600.0,
+        "total_direct_pv_kwh": 12250.000000000002,
+        "total_charge_kwh": 0.0,
+        "total_discharge_kwh": 7.58946638440411,
+        "total_grid_import_kwh": 77342.41053361559,
+        "total_grid_export_kwh": 0.0,
+        "total_curtailment_kwh": 0.0,
+        "self_consumption_kwh": 12257.589466384406,
+        "self_consumption_pct": 100.06195482762779,
+        "grid_independence_pct": 13.68034538658974,
+        "original_peak_kw": 550.0,
+        "new_peak_kw": 550.0,
+        "peak_reduction_kw": 0.0,
+        "peak_reduction_pct": 0.0,
+        "degradation": {
+          "throughput_charge_kwh": 0.0,
+          "throughput_discharge_kwh": 7.58946638440411,
+          "throughput_total_mwh": 0.0075894663844041105,
+          "efc_total": 0.23717082451262844,
+          "throughput_pv_mwh": 0.0075894663844041105,
+          "throughput_peak_mwh": 0.0,
+          "efc_pv": 0.23717082451262844,
+          "efc_peak": 0.0,
+          "throughput_arb_mwh": 0.0,
+          "efc_arb": 0.0,
+          "arb_charge_from_grid_kwh": 0.0,
+          "arb_discharge_kwh": 0.0,
+          "arb_cycles_count": 0,
+          "peak_events_count": 0,
+          "peak_events_energy_kwh": 0.0,
+          "peak_max_discharge_kw": 0.0,
+          "n_days": 7,
+          "max_daily_efc": 0.23717082451262844,
+          "avg_daily_efc": 0.03388154635894692,
+          "max_daily_throughput_mwh": 0.0075894663844041105,
+          "avg_daily_throughput_mwh": 0.0010842094834863016,
+          "days_exceeding_cycle_limit": 0,
+          "days_exceeding_throughput_limit": 0,
+          "charge_from_pv_kwh": 0.0,
+          "charge_from_grid_kwh": 0.0,
+          "charge_pv_pct": 0.0,
+          "budget_status": "ok",
+          "budget_utilization_pct": 0.0,
+          "budget_warnings": []
+        },
+        "baseline_cost_pln": 131649.69999999998,
+        "project_cost_pln": 131636.78272821373,
+        "annual_savings_pln": 12.537798467042716,
+        "savings_breakdown": {
+          "energy_savings_pln": 12.917271786262921,
+          "arbitrage_savings_pln": 0.0,
+          "capacity_fee_savings_pln": 0.0,
+          "demand_charge_savings_pln": 0.0,
+          "baseline_export_revenue_pln": 0.0,
+          "project_export_revenue_pln": 0.0,
+          "export_revenue_savings_pln": 0.0,
+          "export_revenue_pln": 0.0,
+          "battery_throughput_mwh": 0.0075894663844041105,
+          "degradation_cost_pln": 0.37947331922020555,
+          "net_savings_pln": 12.537798467042716
+        },
+        "prices_summary": {
+          "import_price_pln_mwh": 1702.0,
+          "export_price_pln_mwh": 400.0,
+          "demand_charge_pln_kw_month": 0.0,
+          "demand_charge_pln_kw_year": 0.0,
+          "tariff_type": "flat",
+          "tariff_id": null,
+          "zone_rates": null
+        },
+        "energy_flows": {
+          "totals_mwh": {
+            "grid_import_mwh": 77.34241053361559,
+            "grid_export_mwh": 0.0,
+            "pv_to_load_mwh": 12.250000000000002,
+            "pv_to_batt_mwh": 0.0,
+            "pv_curtail_mwh": 0.0,
+            "batt_to_load_mwh": 0.0075894663844041105,
+            "batt_charge_from_grid_mwh": 0.0,
+            "batt_losses_mwh": 0.00041053361559588984
+          },
+          "timeseries_kwh": null
+        },
+        "hourly_charge_kw": null,
+        "hourly_discharge_kw": null,
+        "hourly_soc_pct": null,
+        "hourly_grid_import_kw": null,
+        "hourly_grid_export_kw": null,
+        "hourly_dispatch": null,
+        "warnings": [],
+        "info": {
+          "audit": {
+            "engine_version": "1.3.0",
+            "profile_unit": "kW_avg",
+            "interval_minutes": 60,
+            "resampling_method": "none",
+            "source_interval_minutes": null
+          },
+          "reserve_soc_kwh": 12.0,
+          "reserve_fraction": 0.3,
+          "peak_limit_kw": 600.0,
+          "discharge_peak_kwh": 0.0,
+          "discharge_pv_kwh": 7.58946638440411,
+          "discharge_arb_kwh": 0.0
+        }
+      },
+      "degradation": {
+        "throughput_charge_kwh": 0.0,
+        "throughput_discharge_kwh": 7.58946638440411,
+        "throughput_total_mwh": 0.0075894663844041105,
+        "efc_total": 0.23717082451262844,
+        "throughput_pv_mwh": 0.0075894663844041105,
+        "throughput_peak_mwh": 0.0,
+        "efc_pv": 0.23717082451262844,
+        "efc_peak": 0.0,
+        "throughput_arb_mwh": 0.0,
+        "efc_arb": 0.0,
+        "arb_charge_from_grid_kwh": 0.0,
+        "arb_discharge_kwh": 0.0,
+        "arb_cycles_count": 0,
+        "peak_events_count": 0,
+        "peak_events_energy_kwh": 0.0,
+        "peak_max_discharge_kw": 0.0,
+        "n_days": 7,
+        "max_daily_efc": 0.23717082451262844,
+        "avg_daily_efc": 0.03388154635894692,
+        "max_daily_throughput_mwh": 0.0075894663844041105,
+        "avg_daily_throughput_mwh": 0.0010842094834863016,
+        "days_exceeding_cycle_limit": 0,
+        "days_exceeding_throughput_limit": 0,
+        "charge_from_pv_kwh": 0.0,
+        "charge_from_grid_kwh": 0.0,
+        "charge_pv_pct": 0.0,
+        "budget_status": "ok",
+        "budget_utilization_pct": 0.0,
+        "budget_warnings": []
+      },
+      "degradation_status": "ok",
+      "score": -74902.64167480684,
+      "is_recommended": false,
+      "savings_breakdown": {
+        "energy_savings_pln": 12.917271786262921,
+        "arbitrage_savings_pln": 0.0,
+        "capacity_fee_savings_pln": 0.0,
+        "demand_charge_savings_pln": 0.0,
+        "baseline_export_revenue_pln": 0.0,
+        "project_export_revenue_pln": 0.0,
+        "export_revenue_savings_pln": 0.0,
+        "export_revenue_pln": 0.0,
+        "battery_throughput_mwh": 0.0075894663844041105,
+        "degradation_cost_pln": 0.37947331922020555,
+        "net_savings_pln": 12.537798467042716
+      },
+      "prices_summary": {
+        "import_price_pln_mwh": 1702.0,
+        "export_price_pln_mwh": 400.0,
+        "demand_charge_pln_kw_month": 0.0,
+        "demand_charge_pln_kw_year": 0.0,
+        "tariff_type": "flat",
+        "tariff_id": null,
+        "zone_rates": null
+      },
+      "finance_summary": {
+        "capex_pln": 66000.0,
+        "opex_pln_per_year": 990.0,
+        "horizon_years": 15,
+        "discount_rate": 0.08,
+        "npv_pln": -74366.56688227494,
+        "payback_years": 5264.082061415315,
+        "irr_pct": null,
+        "cashflow_timeseries": [
+          {
+            "year": 0,
+            "savings_pln": 0.0,
+            "opex_pln": 0.0,
+            "net_cashflow_pln": -66000.0,
+            "cumulative_cashflow_pln": -66000.0,
+            "discounted_cashflow_pln": -66000.0
+          },
+          {
+            "year": 1,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -66977.46220153295,
+            "discounted_cashflow_pln": -905.0575940119974
+          },
+          {
+            "year": 2,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -67954.9244030659,
+            "discounted_cashflow_pln": -838.0162907518494
+          },
+          {
+            "year": 3,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -68932.38660459885,
+            "discounted_cashflow_pln": -775.9410099554161
+          },
+          {
+            "year": 4,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -69909.8488061318,
+            "discounted_cashflow_pln": -718.4638981068667
+          },
+          {
+            "year": 5,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -70887.31100766476,
+            "discounted_cashflow_pln": -665.2443500989506
+          },
+          {
+            "year": 6,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -71864.77320919771,
+            "discounted_cashflow_pln": -615.9669908323616
+          },
+          {
+            "year": 7,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -72842.23541073066,
+            "discounted_cashflow_pln": -570.3398063262607
+          },
+          {
+            "year": 8,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -73819.69761226361,
+            "discounted_cashflow_pln": -528.0924132650562
+          },
+          {
+            "year": 9,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -74797.15981379656,
+            "discounted_cashflow_pln": -488.97445672690384
+          },
+          {
+            "year": 10,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -75774.62201532951,
+            "discounted_cashflow_pln": -452.75412659898495
+          },
+          {
+            "year": 11,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -76752.08421686247,
+            "discounted_cashflow_pln": -419.2167838879491
+          },
+          {
+            "year": 12,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -77729.54641839542,
+            "discounted_cashflow_pln": -388.163688785138
+          },
+          {
+            "year": 13,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -78707.00861992837,
+            "discounted_cashflow_pln": -359.4108229492018
+          },
+          {
+            "year": 14,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -79684.47082146132,
+            "discounted_cashflow_pln": -332.7877990270387
+          },
+          {
+            "year": 15,
+            "savings_pln": 12.537798467042716,
+            "opex_pln": 990.0,
+            "net_cashflow_pln": -977.4622015329572,
+            "cumulative_cashflow_pln": -80661.93302299427,
+            "discounted_cashflow_pln": -308.13685095096173
+          }
+        ],
+        "discount_rate_sensitivity": [
+          {
+            "discount_rate": 0.04,
+            "discount_rate_pct": 4.0,
+            "npv_pln": -76867.80345694342
+          },
+          {
+            "discount_rate": 0.06,
+            "discount_rate_pct": 6.0,
+            "npv_pln": -75493.35627739354
+          },
+          {
+            "discount_rate": 0.08,
+            "discount_rate_pct": 8.0,
+            "npv_pln": -74366.56688227494
+          },
+          {
+            "discount_rate": 0.1,
+            "discount_rate_pct": 10.0,
+            "npv_pln": -73434.65521927086
+          },
+          {
+            "discount_rate": 0.12,
+            "discount_rate_pct": 12.0,
+            "npv_pln": -72657.36259821507
+          },
+          {
+            "discount_rate": 0.15,
+            "discount_rate_pct": 15.0,
+            "npv_pln": -71715.58324978591
+          }
+        ]
+      }
+    },
+    {
+      "variant": "large",
+      "variant_label": "Large (4h)",
+      "duration_h": 4.0,
+      "power_kw": 20.0,
+      "energy_kwh": 80.0,
+      "c_rate": 0.25,
+      "capex_pln": 126000.0,
+      "annual_opex_pln": 1890.0,
+      "annual_savings_pln": 25.075596934085432,
+      "npv_pln": -142985.5710891539,
+      "simple_payback_years": 5024.805604078256,
+      "irr_pct": null,
+      "dispatch_summary": {
+        "mode": "stacked",
+        "battery_power_kw": 20.0,
+        "battery_energy_kwh": 80.0,
+        "interval_minutes": 60,
+        "n_timesteps": 168,
+        "total_pv_kwh": 12250.000000000002,
+        "total_load_kwh": 89600.0,
+        "total_direct_pv_kwh": 12250.000000000002,
+        "total_charge_kwh": 0.0,
+        "total_discharge_kwh": 15.17893276880822,
+        "total_grid_import_kwh": 77334.82106723118,
+        "total_grid_export_kwh": 0.0,
+        "total_curtailment_kwh": 0.0,
+        "self_consumption_kwh": 12265.17893276881,
+        "self_consumption_pct": 100.12390965525557,
+        "grid_independence_pct": 13.688815773179483,
+        "original_peak_kw": 550.0,
+        "new_peak_kw": 550.0,
+        "peak_reduction_kw": 0.0,
+        "peak_reduction_pct": 0.0,
+        "degradation": {
+          "throughput_charge_kwh": 0.0,
+          "throughput_discharge_kwh": 15.17893276880822,
+          "throughput_total_mwh": 0.015178932768808221,
+          "efc_total": 0.23717082451262844,
+          "throughput_pv_mwh": 0.015178932768808221,
+          "throughput_peak_mwh": 0.0,
+          "efc_pv": 0.23717082451262844,
+          "efc_peak": 0.0,
+          "throughput_arb_mwh": 0.0,
+          "efc_arb": 0.0,
+          "arb_charge_from_grid_kwh": 0.0,
+          "arb_discharge_kwh": 0.0,
+          "arb_cycles_count": 0,
+          "peak_events_count": 0,
+          "peak_events_energy_kwh": 0.0,
+          "peak_max_discharge_kw": 0.0,
+          "n_days": 7,
+          "max_daily_efc": 0.23717082451262844,
+          "avg_daily_efc": 0.03388154635894692,
+          "max_daily_throughput_mwh": 0.015178932768808221,
+          "avg_daily_throughput_mwh": 0.002168418966972603,
+          "days_exceeding_cycle_limit": 0,
+          "days_exceeding_throughput_limit": 0,
+          "charge_from_pv_kwh": 0.0,
+          "charge_from_grid_kwh": 0.0,
+          "charge_pv_pct": 0.0,
+          "budget_status": "ok",
+          "budget_utilization_pct": 0.0,
+          "budget_warnings": []
+        },
+        "baseline_cost_pln": 131649.69999999998,
+        "project_cost_pln": 131623.86545642748,
+        "annual_savings_pln": 25.075596934085432,
+        "savings_breakdown": {
+          "energy_savings_pln": 25.834543572525842,
+          "arbitrage_savings_pln": 0.0,
+          "capacity_fee_savings_pln": 0.0,
+          "demand_charge_savings_pln": 0.0,
+          "baseline_export_revenue_pln": 0.0,
+          "project_export_revenue_pln": 0.0,
+          "export_revenue_savings_pln": 0.0,
+          "export_revenue_pln": 0.0,
+          "battery_throughput_mwh": 0.015178932768808221,
+          "degradation_cost_pln": 0.7589466384404111,
+          "net_savings_pln": 25.075596934085432
+        },
+        "prices_summary": {
+          "import_price_pln_mwh": 1702.0,
+          "export_price_pln_mwh": 400.0,
+          "demand_charge_pln_kw_month": 0.0,
+          "demand_charge_pln_kw_year": 0.0,
+          "tariff_type": "flat",
+          "tariff_id": null,
+          "zone_rates": null
+        },
+        "energy_flows": {
+          "totals_mwh": {
+            "grid_import_mwh": 77.33482106723119,
+            "grid_export_mwh": 0.0,
+            "pv_to_load_mwh": 12.250000000000002,
+            "pv_to_batt_mwh": 0.0,
+            "pv_curtail_mwh": 0.0,
+            "batt_to_load_mwh": 0.015178932768808221,
+            "batt_charge_from_grid_mwh": 0.0,
+            "batt_losses_mwh": 0.0008210672311917797
+          },
+          "timeseries_kwh": null
+        },
+        "hourly_charge_kw": null,
+        "hourly_discharge_kw": null,
+        "hourly_soc_pct": null,
+        "hourly_grid_import_kw": null,
+        "hourly_grid_export_kw": null,
+        "hourly_dispatch": null,
+        "warnings": [],
+        "info": {
+          "audit": {
+            "engine_version": "1.3.0",
+            "profile_unit": "kW_avg",
+            "interval_minutes": 60,
+            "resampling_method": "none",
+            "source_interval_minutes": null
+          },
+          "reserve_soc_kwh": 24.0,
+          "reserve_fraction": 0.3,
+          "peak_limit_kw": 600.0,
+          "discharge_peak_kwh": 0.0,
+          "discharge_pv_kwh": 15.17893276880822,
+          "discharge_arb_kwh": 0.0
+        }
+      },
+      "degradation": {
+        "throughput_charge_kwh": 0.0,
+        "throughput_discharge_kwh": 15.17893276880822,
+        "throughput_total_mwh": 0.015178932768808221,
+        "efc_total": 0.23717082451262844,
+        "throughput_pv_mwh": 0.015178932768808221,
+        "throughput_peak_mwh": 0.0,
+        "efc_pv": 0.23717082451262844,
+        "efc_peak": 0.0,
+        "throughput_arb_mwh": 0.0,
+        "efc_arb": 0.0,
+        "arb_charge_from_grid_kwh": 0.0,
+        "arb_discharge_kwh": 0.0,
+        "arb_cycles_count": 0,
+        "peak_events_count": 0,
+        "peak_events_energy_kwh": 0.0,
+        "peak_max_discharge_kw": 0.0,
+        "n_days": 7,
+        "max_daily_efc": 0.23717082451262844,
+        "avg_daily_efc": 0.03388154635894692,
+        "max_daily_throughput_mwh": 0.015178932768808221,
+        "avg_daily_throughput_mwh": 0.002168418966972603,
+        "days_exceeding_cycle_limit": 0,
+        "days_exceeding_throughput_limit": 0,
+        "charge_from_pv_kwh": 0.0,
+        "charge_from_grid_kwh": 0.0,
+        "charge_pv_pct": 0.0,
+        "budget_status": "ok",
+        "budget_utilization_pct": 0.0,
+        "budget_warnings": []
+      },
+      "degradation_status": "ok",
+      "score": -142985.5710891539,
+      "is_recommended": false,
+      "savings_breakdown": {
+        "energy_savings_pln": 25.834543572525842,
+        "arbitrage_savings_pln": 0.0,
+        "capacity_fee_savings_pln": 0.0,
+        "demand_charge_savings_pln": 0.0,
+        "baseline_export_revenue_pln": 0.0,
+        "project_export_revenue_pln": 0.0,
+        "export_revenue_savings_pln": 0.0,
+        "export_revenue_pln": 0.0,
+        "battery_throughput_mwh": 0.015178932768808221,
+        "degradation_cost_pln": 0.7589466384404111,
+        "net_savings_pln": 25.075596934085432
+      },
+      "prices_summary": {
+        "import_price_pln_mwh": 1702.0,
+        "export_price_pln_mwh": 400.0,
+        "demand_charge_pln_kw_month": 0.0,
+        "demand_charge_pln_kw_year": 0.0,
+        "tariff_type": "flat",
+        "tariff_id": null,
+        "zone_rates": null
+      },
+      "finance_summary": {
+        "capex_pln": 126000.0,
+        "opex_pln_per_year": 1890.0,
+        "horizon_years": 15,
+        "discount_rate": 0.08,
+        "npv_pln": -141962.7806826365,
+        "payback_years": 5024.805604078256,
+        "irr_pct": null,
+        "cashflow_timeseries": [
+          {
+            "year": 0,
+            "savings_pln": 0.0,
+            "opex_pln": 0.0,
+            "net_cashflow_pln": -126000.0,
+            "cumulative_cashflow_pln": -126000.0,
+            "discounted_cashflow_pln": -126000.0
+          },
+          {
+            "year": 1,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -127864.92440306592,
+            "discounted_cashflow_pln": -1726.7818546906615
+          },
+          {
+            "year": 2,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -129729.84880613183,
+            "discounted_cashflow_pln": -1598.8720876765383
+          },
+          {
+            "year": 3,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -131594.77320919774,
+            "discounted_cashflow_pln": -1480.4371182190168
+          },
+          {
+            "year": 4,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -133459.69761226364,
+            "discounted_cashflow_pln": -1370.7751094620526
+          },
+          {
+            "year": 5,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -135324.62201532954,
+            "discounted_cashflow_pln": -1269.2362124648632
+          },
+          {
+            "year": 6,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -137189.54641839545,
+            "discounted_cashflow_pln": -1175.2187152452439
+          },
+          {
+            "year": 7,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -139054.47082146135,
+            "discounted_cashflow_pln": -1088.1654770789294
+          },
+          {
+            "year": 8,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -140919.39522452725,
+            "discounted_cashflow_pln": -1007.5606269249346
+          },
+          {
+            "year": 9,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -142784.31962759316,
+            "discounted_cashflow_pln": -932.9265064119763
+          },
+          {
+            "year": 10,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -144649.24403065906,
+            "discounted_cashflow_pln": -863.8208392703484
+          },
+          {
+            "year": 11,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -146514.16843372496,
+            "discounted_cashflow_pln": -799.8341104355078
+          },
+          {
+            "year": 12,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -148379.09283679086,
+            "discounted_cashflow_pln": -740.5871392921367
+          },
+          {
+            "year": 13,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -150244.01723985677,
+            "discounted_cashflow_pln": -685.7288326779043
+          },
+          {
+            "year": 14,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -152108.94164292267,
+            "discounted_cashflow_pln": -634.9341043313929
+          },
+          {
+            "year": 15,
+            "savings_pln": 25.075596934085432,
+            "opex_pln": 1890.0,
+            "net_cashflow_pln": -1864.9244030659145,
+            "cumulative_cashflow_pln": -153973.86604598857,
+            "discounted_cashflow_pln": -587.9019484549934
+          }
+        ],
+        "discount_rate_sensitivity": [
+          {
+            "discount_rate": 0.04,
+            "discount_rate_pct": 4.0,
+            "npv_pln": -146734.9520449917
+          },
+          {
+            "discount_rate": 0.06,
+            "discount_rate_pct": 6.0,
+            "npv_pln": -144112.61014589044
+          },
+          {
+            "discount_rate": 0.08,
+            "discount_rate_pct": 8.0,
+            "npv_pln": -141962.7806826365
+          },
+          {
+            "discount_rate": 0.1,
+            "discount_rate_pct": 10.0,
+            "npv_pln": -140184.763282974
+          },
+          {
+            "discount_rate": 0.12,
+            "discount_rate_pct": 12.0,
+            "npv_pln": -138701.7473923784
+          },
+          {
+            "discount_rate": 0.15,
+            "discount_rate_pct": 15.0,
+            "npv_pln": -136904.90319069513
+          }
+        ]
+      }
+    }
+  ],
+  "recommended_variant": "small",
+  "recommended_power_kw": 20.0,
+  "recommended_energy_kwh": 20.0,
+  "recommended_reason": "Najwy\u017csze NPV (-40 861 PLN)",
+  "recommended_reason_code": "npv_max",
+  "recommended_reason_metric": "npv_pln",
+  "recommended_reason_value": -40861.176967633335,
+  "recommended_reason_unit": "PLN",
+  "top_variants": [
+    "small",
+    "medium",
+    "large"
+  ],
+  "top_variants_details": [
+    {
+      "variant": "small",
+      "score": -40861.176967633335,
+      "npv_pln": -40861.176967633335,
+      "payback_years": 5742.6349760894345,
+      "net_savings_pln": 6.268899233521358
+    },
+    {
+      "variant": "medium",
+      "score": -74902.64167480684,
+      "npv_pln": -74902.64167480684,
+      "payback_years": 5264.082061415315,
+      "net_savings_pln": 12.537798467042716
+    },
+    {
+      "variant": "large",
+      "score": -142985.5710891539,
+      "npv_pln": -142985.5710891539,
+      "payback_years": 5024.805604078256,
+      "net_savings_pln": 25.075596934085432
+    }
+  ],
+  "objective_used": "npv",
+  "pareto_points": null,
+  "applied_parameters": {
+    "degradation_cost_pln_mwh": 50.0,
+    "degradation_cost_source": "default",
+    "discount_rate": 0.07,
+    "analysis_years": 15,
+    "opex_pct_per_year": 0.015,
+    "import_price_pln_mwh": 1702.0,
+    "export_price_pln_mwh": 400.0
+  },
+  "finance_assumptions": {
+    "horizon_years": 15,
+    "discount_rate": 0.08,
+    "savings_escalation_rate": 0.0,
+    "opex_pln_per_year": 0.0,
+    "opex_escalation_rate": 0.0,
+    "capex_override_pln": null
+  },
+  "warnings": []
+}
