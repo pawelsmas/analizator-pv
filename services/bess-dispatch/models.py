@@ -236,15 +236,40 @@ class StackedModeParams(BaseModel):
 
 
 class DegradationBudget(BaseModel):
-    """Degradation budget constraints"""
+    """Degradation budget constraints for battery lifecycle management.
+
+    Supports both annual and daily limits to control battery wear.
+    Daily limits are enforced in real-time during dispatch.
+    Annual limits are checked post-dispatch for reporting.
+    """
+    # Annual limits (checked post-dispatch)
     max_efc_per_year: Optional[float] = Field(None, ge=0,
                                                description="Max equivalent full cycles per year")
     max_throughput_mwh_per_year: Optional[float] = Field(None, ge=0,
                                                           description="Max throughput MWh per year")
 
+    # Daily limits (enforced during dispatch)
+    max_cycles_per_day: Optional[float] = Field(
+        None, ge=0, le=10,
+        description="Max EFC cycles per day. Enforced in real-time during dispatch."
+    )
+    max_throughput_mwh_per_day: Optional[float] = Field(
+        None, ge=0,
+        description="Max throughput per day [MWh]. Enforced in real-time during dispatch."
+    )
+
     def has_limits(self) -> bool:
         """Check if any limits are set"""
-        return self.max_efc_per_year is not None or self.max_throughput_mwh_per_year is not None
+        return (
+            self.max_efc_per_year is not None or
+            self.max_throughput_mwh_per_year is not None or
+            self.max_cycles_per_day is not None or
+            self.max_throughput_mwh_per_day is not None
+        )
+
+    def has_daily_limits(self) -> bool:
+        """Check if daily limits are set (enforced during dispatch)"""
+        return self.max_cycles_per_day is not None or self.max_throughput_mwh_per_day is not None
 
 
 # =============================================================================
@@ -671,6 +696,15 @@ class DegradationMetrics(BaseModel):
     peak_events_count: int = Field(0, description="Number of hours with peak shaving discharge")
     peak_events_energy_kwh: float = Field(0.0, description="Total energy discharged for peak shaving [kWh]")
     peak_max_discharge_kw: float = Field(0.0, description="Maximum discharge power for peak shaving [kW]")
+
+    # Daily statistics (for daily limit enforcement)
+    n_days: int = Field(0, description="Number of days in analysis period")
+    max_daily_efc: float = Field(0.0, description="Max EFC in any single day")
+    avg_daily_efc: float = Field(0.0, description="Average EFC per day")
+    max_daily_throughput_mwh: float = Field(0.0, description="Max throughput in any single day [MWh]")
+    avg_daily_throughput_mwh: float = Field(0.0, description="Average throughput per day [MWh]")
+    days_exceeding_cycle_limit: int = Field(0, description="Days where daily cycle limit was exceeded")
+    days_exceeding_throughput_limit: int = Field(0, description="Days where daily throughput limit was exceeded")
 
     # Charge source breakdown
     charge_from_pv_kwh: float = Field(0.0, description="Energy charged from PV surplus [kWh]")
