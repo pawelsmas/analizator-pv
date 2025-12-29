@@ -237,6 +237,8 @@ def build_cashflow_timeseries(
     annual_opex: float,
     discount_rate: float,
     horizon_years: int,
+    replacement_year: Optional[int] = None,
+    replacement_capex_pln: Optional[float] = None,
 ) -> List[CashflowYear]:
     """
     Build year-by-year cashflow timeseries.
@@ -247,12 +249,17 @@ def build_cashflow_timeseries(
         annual_opex: Annual operating expenses (positive value)
         discount_rate: Discount rate (0.08 = 8%)
         horizon_years: Analysis horizon in years
+        replacement_year: Year for battery replacement (1-30). If None, no replacement.
+        replacement_capex_pln: Replacement cost in PLN. If None, uses original capex.
 
     Returns:
         List of CashflowYear from year 0 (investment) through horizon_years
     """
     cashflow_list = []
     cumulative = 0.0
+
+    # Determine replacement cost (use original capex if not specified)
+    actual_replacement_cost = replacement_capex_pln if replacement_capex_pln is not None else capex
 
     # Year 0: Initial investment
     net_cf_0 = -capex
@@ -269,7 +276,13 @@ def build_cashflow_timeseries(
 
     # Years 1 to horizon_years: Operating cashflows
     for year in range(1, horizon_years + 1):
+        # Base operating cashflow
         net_cf = annual_savings - annual_opex
+
+        # Apply replacement cost in replacement year (if specified and within horizon)
+        if replacement_year is not None and year == replacement_year:
+            net_cf -= actual_replacement_cost
+
         cumulative += net_cf
         discounted_cf = net_cf / ((1 + discount_rate) ** year)
 
@@ -1461,7 +1474,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             fs_opex_pct, fs_discount_rate, fs_horizon
         )
 
-        # Build cashflow timeseries if requested (v0.5.0 PR2)
+        # Build cashflow timeseries if requested (v0.5.0 PR2, v0.6.0: replacement)
         cashflow_ts = None
         fs_irr = irr  # Default to simple IRR calculation
         if fc and fc.include_cashflow_timeseries:
@@ -1471,11 +1484,18 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 annual_opex=fs_opex,
                 discount_rate=fs_discount_rate,
                 horizon_years=fs_horizon,
+                replacement_year=fc.replacement_year,
+                replacement_capex_pln=fc.replacement_capex_pln,
             )
             # When cashflow is available, calculate IRR from cashflow using bisection
             # This ensures consistency: irr_pct is the rate where NPV of cashflow = 0
             nominal_cfs = [cf.nominal_cashflow_pln for cf in cashflow_ts]
             fs_irr = calculate_irr_from_cashflow(nominal_cfs)
+
+            # v0.6.0: Recalculate NPV from cashflow when replacement is present
+            # This ensures NPV accounts for the replacement cost
+            if fc.replacement_year is not None:
+                fs_npv = sum(cf.discounted_cashflow_pln for cf in cashflow_ts)
 
         # Build discount rate sensitivity if requested (v0.5.0 PR3)
         dr_sensitivity = None
@@ -1729,7 +1749,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         export_price_pln_mwh=request.prices.export_price_pln_mwh,
     )
 
-    # Build finance_assumptions (v0.5.0) - echo of finance_config values used
+    # Build finance_assumptions (v0.5.0, v0.6.0: replacement) - echo of finance_config values used
     fc = request.finance_config
     finance_assumptions = FinanceAssumptions(
         horizon_years=fc.horizon_years if fc else request.analysis_years,
@@ -1738,6 +1758,8 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         opex_pln_per_year=fc.opex_pln_per_year if fc else 0.0,
         opex_escalation_rate=fc.opex_escalation_rate if fc else 0.0,
         capex_override_pln=fc.capex_override_pln if fc else None,
+        replacement_year=fc.replacement_year if fc else None,
+        replacement_capex_pln=fc.replacement_capex_pln if fc else None,
     )
 
     return SizingResult(

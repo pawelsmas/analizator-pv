@@ -812,7 +812,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 constraint_penalty_weight=opt_dict.get("constraint_penalty_weight", 0.3),
             )
 
-        # Parse finance_config (v0.5.0)
+        # Parse finance_config (v0.5.0, v0.6.0: replacement)
         finance_config = None
         if request.finance_config:
             fc_dict = request.finance_config
@@ -825,6 +825,9 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 capex_override_pln=fc_dict.get("capex_override_pln"),
                 include_cashflow_timeseries=fc_dict.get("include_cashflow_timeseries", False),
                 discount_rate_sweep=fc_dict.get("discount_rate_sweep"),
+                # v0.6.0: Battery replacement
+                replacement_year=fc_dict.get("replacement_year"),
+                replacement_capex_pln=fc_dict.get("replacement_capex_pln"),
             )
 
         internal_request = SizingRequest(

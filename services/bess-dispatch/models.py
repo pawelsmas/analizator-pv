@@ -1250,6 +1250,17 @@ class FinanceConfig(BaseModel):
         description="List of discount rates (e.g., [0.05, 0.08, 0.10, 0.12]) for sensitivity analysis. "
                     "If provided, finance_summary will include discount_rate_sensitivity array."
     )
+    # Battery replacement (v0.6.0)
+    replacement_year: Optional[int] = Field(
+        None,
+        ge=1, le=30,
+        description="Year for battery replacement (e.g., 10). If None, no replacement event."
+    )
+    replacement_capex_pln: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Replacement cost in PLN. If None, uses original CAPEX."
+    )
 
 
 class FinanceAssumptions(BaseModel):
@@ -1267,6 +1278,15 @@ class FinanceAssumptions(BaseModel):
     capex_override_pln: Optional[float] = Field(
         None,
         description="CAPEX override if provided, None if using calculated CAPEX"
+    )
+    # Battery replacement (v0.6.0)
+    replacement_year: Optional[int] = Field(
+        None,
+        description="Year for battery replacement, None if no replacement"
+    )
+    replacement_capex_pln: Optional[float] = Field(
+        None,
+        description="Replacement cost used, None if no replacement"
     )
 
 
