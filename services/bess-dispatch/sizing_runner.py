@@ -160,6 +160,77 @@ def calculate_irr(
     return irr * 100 if abs(npv) < 1 else None
 
 
+def calculate_irr_from_cashflow(
+    cashflows: List[float],
+    lo: float = -0.9,
+    hi: float = 3.0,
+    max_iterations: int = 80,
+    tolerance: float = 1e-6,
+) -> Optional[float]:
+    """
+    Calculate IRR from cashflow array using bisection method.
+
+    This is the reference implementation for IRR self-consistency tests.
+    The IRR is the discount rate r such that NPV = sum(CF[t]/(1+r)^t) = 0.
+
+    Args:
+        cashflows: Array of nominal cashflows [CF_0, CF_1, ..., CF_n]
+                   where CF_0 is typically -CAPEX (negative)
+        lo: Lower bound for bisection search (default -0.9 = -90%)
+        hi: Upper bound for bisection search (default 3.0 = 300%)
+        max_iterations: Maximum bisection iterations
+        tolerance: Convergence tolerance for NPV
+
+    Returns:
+        IRR as percentage (e.g., 15.0 for 15%), or None if not found
+    """
+    def npv_at_rate(rate: float, cfs: List[float]) -> float:
+        """Calculate NPV at given rate."""
+        s = 0.0
+        for t, cf in enumerate(cfs):
+            s += float(cf) / ((1.0 + rate) ** t)
+        return s
+
+    # Edge case: empty or single cashflow
+    if len(cashflows) < 2:
+        return None
+
+    # Check if all operating cashflows are non-positive (no return possible)
+    if all(cf <= 0 for cf in cashflows[1:]):
+        return None
+
+    f_lo = npv_at_rate(lo, cashflows)
+    f_hi = npv_at_rate(hi, cashflows)
+
+    # Check if root is exactly at boundary
+    if abs(f_lo) < tolerance:
+        return lo * 100.0
+    if abs(f_hi) < tolerance:
+        return hi * 100.0
+
+    # Check if root exists in interval (sign change)
+    if f_lo * f_hi > 0:
+        return None  # No sign change, IRR outside bounds
+
+    # Bisection search
+    for _ in range(max_iterations):
+        mid = (lo + hi) / 2.0
+        f_mid = npv_at_rate(mid, cashflows)
+
+        if abs(f_mid) < tolerance:
+            return mid * 100.0  # Return as percentage
+
+        if f_lo * f_mid <= 0:
+            hi = mid
+            f_hi = f_mid
+        else:
+            lo = mid
+            f_lo = f_mid
+
+    # Return best estimate
+    return ((lo + hi) / 2.0) * 100.0
+
+
 def build_cashflow_timeseries(
     capex: float,
     annual_savings: float,
@@ -193,6 +264,7 @@ def build_cashflow_timeseries(
         net_cashflow_pln=net_cf_0,
         cumulative_cashflow_pln=cumulative,
         discounted_cashflow_pln=net_cf_0,  # No discounting for year 0
+        nominal_cashflow_pln=net_cf_0,  # Undiscounted = net for IRR
     ))
 
     # Years 1 to horizon_years: Operating cashflows
@@ -208,6 +280,7 @@ def build_cashflow_timeseries(
             net_cashflow_pln=net_cf,
             cumulative_cashflow_pln=cumulative,
             discounted_cashflow_pln=discounted_cf,
+            nominal_cashflow_pln=net_cf,  # Undiscounted = net for IRR
         ))
 
     return cashflow_list
@@ -1390,6 +1463,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
         # Build cashflow timeseries if requested (v0.5.0 PR2)
         cashflow_ts = None
+        fs_irr = irr  # Default to simple IRR calculation
         if fc and fc.include_cashflow_timeseries:
             cashflow_ts = build_cashflow_timeseries(
                 capex=capex,
@@ -1398,6 +1472,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 discount_rate=fs_discount_rate,
                 horizon_years=fs_horizon,
             )
+            # When cashflow is available, calculate IRR from cashflow using bisection
+            # This ensures consistency: irr_pct is the rate where NPV of cashflow = 0
+            nominal_cfs = [cf.nominal_cashflow_pln for cf in cashflow_ts]
+            fs_irr = calculate_irr_from_cashflow(nominal_cfs)
 
         # Build discount rate sensitivity if requested (v0.5.0 PR3)
         dr_sensitivity = None
@@ -1417,7 +1495,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             discount_rate=fs_discount_rate,
             npv_pln=fs_npv,  # Use finance_config-based NPV for consistency with cashflow
             payback_years=payback,
-            irr_pct=irr,
+            irr_pct=fs_irr,  # Use cashflow-based IRR when available
             cashflow_timeseries=cashflow_ts,
             discount_rate_sensitivity=dr_sensitivity,
         )
@@ -1430,8 +1508,8 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         if dr_sensitivity:
             record_finance_sensitivity_metrics(mode=mode_str, num_points=len(dr_sensitivity))
         record_finance_npv_metrics(mode=mode_str, variant=variant_str, npv_pln=fs_npv)
-        if irr is not None:
-            record_finance_irr_metrics(mode=mode_str, variant=variant_str, irr_pct=irr)
+        if fs_irr is not None:
+            record_finance_irr_metrics(mode=mode_str, variant=variant_str, irr_pct=fs_irr)
 
         variant_result = SizingVariantResult(
             variant=variant_type,

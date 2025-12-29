@@ -1322,6 +1322,10 @@ class CashflowYear(BaseModel):
         ...,
         description="Net cashflow discounted to year 0"
     )
+    nominal_cashflow_pln: Optional[float] = Field(
+        None,
+        description="Undiscounted net cashflow = net_cashflow_pln (for IRR calculation convenience)"
+    )
 
 
 class DiscountRateSensitivityPoint(BaseModel):
