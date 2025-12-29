@@ -2539,6 +2539,61 @@ body {
   margin-right: 4px;
 }
 
+/* v0.8.0: Pareto Frontier Table */
+.pareto-frontier-compare {
+  margin-top: 16px;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(46, 204, 113, 0.08) 0%, rgba(39, 174, 96, 0.04) 100%);
+  border-radius: 10px;
+  border-left: 4px solid #27ae60;
+}
+
+.pareto-frontier-compare .compare-header {
+  color: #27ae60;
+}
+
+.pareto-description {
+  font-size: 11px;
+  color: #7f8c8d;
+  margin-bottom: 12px;
+  font-style: italic;
+}
+
+.pareto-table tr.pareto-row {
+  background: linear-gradient(135deg, rgba(46, 204, 113, 0.1) 0%, rgba(39, 174, 96, 0.05) 100%);
+}
+
+.pareto-table tr.pareto-row td {
+  font-weight: 600;
+  color: #27ae60;
+}
+
+.pareto-table tr.dominated-row td {
+  color: #95a5a6;
+}
+
+.pareto-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.dominated-badge {
+  display: inline-block;
+  background: #95a5a6;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
 /* Constraint Warnings */
 .constraint-warnings {
   margin-top: 16px;

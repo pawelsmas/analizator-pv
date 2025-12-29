@@ -997,6 +997,27 @@
             </tbody>
           </table>
         </div>
+
+        <!-- v0.8.0: Pareto Frontier Table -->
+        <div class="pareto-frontier-compare" id="paretoFrontierCompare" style="display: none;">
+          <div class="compare-header">📈 Pareto Frontier (NPV vs Payback)</div>
+          <div class="pareto-description">
+            Warianty oznaczone jako "Pareto" sa optymalne - zaden inny nie ma jednoczesnie wyzszego NPV i krotszego paybacku.
+          </div>
+          <table class="compare-table pareto-table">
+            <thead>
+              <tr>
+                <th>Wariant</th>
+                <th>NPV</th>
+                <th>Payback</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="paretoFrontierTableBody">
+              <!-- Rows populated by JS -->
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
