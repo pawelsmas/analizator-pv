@@ -229,6 +229,111 @@ def apply_export_cap(
     return result, constraint_summary
 
 
+def apply_import_cap(
+    result: DispatchResult,
+    grid_constraints: Optional[GridConstraints],
+    dt_hours: float,
+    existing_summary: Optional[ConstraintSummary] = None,
+) -> Tuple[DispatchResult, ConstraintSummary]:
+    """
+    Apply import cap constraint to dispatch result (v0.7.0 PR3).
+
+    If max_import_kw is set, any grid import exceeding the limit results in
+    unserved load (load that cannot be met).
+
+    This is a post-processing step that modifies:
+    - hourly_grid_import_kw: capped at max_import_kw
+    - total_grid_import_kwh: recalculated
+
+    Returns:
+    --------
+    Tuple of (modified_result, constraint_summary)
+    """
+    # Start with existing summary or create new one
+    if existing_summary is not None:
+        constraint_summary = existing_summary
+    else:
+        constraint_summary = ConstraintSummary()
+
+    if grid_constraints is None:
+        return result, constraint_summary
+
+    max_import_kw = grid_constraints.max_import_kw
+    if max_import_kw is None:
+        # No import limit
+        return result, constraint_summary
+
+    # Get hourly import data
+    hourly_import = result.hourly_grid_import_kw
+    if hourly_import is None:
+        return result, constraint_summary
+
+    # Apply import cap
+    import_arr = np.array(hourly_import, dtype=float)
+    cap_hit_mask = import_arr > max_import_kw
+    import_cap_hit_steps = int(np.sum(cap_hit_mask))
+
+    if import_cap_hit_steps == 0:
+        # No cap hits
+        return result, constraint_summary
+
+    # Calculate unserved load (excess that cannot be imported)
+    excess_kw = np.maximum(0, import_arr - max_import_kw)
+    unserved_kwh = float(np.sum(excess_kw) * dt_hours)
+
+    # Apply cap
+    capped_import = np.minimum(import_arr, max_import_kw)
+
+    # Update result
+    result.hourly_grid_import_kw = capped_import.tolist()
+    result.total_grid_import_kwh = float(np.sum(capped_import) * dt_hours)
+
+    # Update energy_flows if present
+    if result.energy_flows is not None and result.energy_flows.totals_mwh is not None:
+        result.energy_flows.totals_mwh.grid_import_mwh = result.total_grid_import_kwh / 1000.0
+
+    # Update constraint summary with import cap stats
+    constraint_summary.import_cap_hit_steps = import_cap_hit_steps
+    constraint_summary.unserved_load_kwh = unserved_kwh
+
+    return result, constraint_summary
+
+
+def apply_grid_constraints(
+    result: DispatchResult,
+    grid_constraints: Optional[GridConstraints],
+    dt_hours: float,
+) -> Tuple[DispatchResult, Optional[ConstraintSummary]]:
+    """
+    Apply all grid constraints to dispatch result (v0.7.0).
+
+    Applies in order:
+    1. Export cap (max_export_kw, allow_export)
+    2. Import cap (max_import_kw)
+
+    Returns:
+    --------
+    Tuple of (modified_result, constraint_summary or None if no constraints)
+    """
+    if grid_constraints is None:
+        return result, None
+
+    # Apply export cap first
+    result, summary = apply_export_cap(result, grid_constraints, dt_hours)
+
+    # Apply import cap (using existing summary)
+    result, summary = apply_import_cap(result, grid_constraints, dt_hours, summary)
+
+    # Return None summary if no constraints were hit
+    if (summary.export_cap_hit_steps == 0 and
+        summary.export_cap_curtailed_kwh == 0.0 and
+        summary.import_cap_hit_steps == 0 and
+        summary.unserved_load_kwh == 0.0):
+        return result, None
+
+    return result, summary
+
+
 # =============================================================================
 # Dispatch Algorithms
 # =============================================================================
@@ -1887,11 +1992,10 @@ def run_dispatch(
             result.degradation, request.degradation_budget
         )
 
-    # Apply grid constraints (v0.7.0)
-    if request.grid_constraints is not None:
-        result, constraint_summary = apply_export_cap(
-            result, request.grid_constraints, dt_hours
-        )
-        result.constraint_summary = constraint_summary
+    # Apply grid constraints (v0.7.0) - handles export cap, import cap
+    result, constraint_summary = apply_grid_constraints(
+        result, request.grid_constraints, dt_hours
+    )
+    result.constraint_summary = constraint_summary
 
     return result
