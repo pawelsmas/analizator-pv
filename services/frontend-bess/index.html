@@ -997,19 +997,27 @@
       </div>
     </div>
 
-    <!-- v0.5.0: Finance Section - Cashflow + Discount Rate Sensitivity -->
+    <!-- v0.6.0: Finance Section - IRR, Cashflow, Sensitivity Charts -->
     <div class="chart-section full-width finance-section" id="financeSection" style="display: none;">
-      <h2>💰 Analiza Finansowa</h2>
+      <h2>Analiza Finansowa</h2>
+
+      <!-- v0.6.0: IRR Display -->
+      <div class="finance-kpi-row">
+        <div class="finance-kpi-card">
+          <div class="kpi-label">IRR (Internal Rate of Return)</div>
+          <div class="kpi-value" id="irrValue">-</div>
+        </div>
+      </div>
 
       <!-- Cashflow Table -->
       <div class="finance-subsection" id="cashflowSection" style="display: none;">
-        <h3>📊 Przepływy Pieniężne (Cashflow)</h3>
+        <h3>Przeplywy Pieniezne (Cashflow)</h3>
         <div class="table-wrapper">
           <table class="cashflow-table">
             <thead>
               <tr>
                 <th>Rok</th>
-                <th>Oszczędności<br>[tys. PLN]</th>
+                <th>Oszczednosci<br>[tys. PLN]</th>
                 <th>OPEX<br>[tys. PLN]</th>
                 <th>Netto<br>[tys. PLN]</th>
                 <th>Skumulowane<br>[tys. PLN]</th>
@@ -1023,25 +1031,74 @@
         </div>
       </div>
 
-      <!-- Discount Rate Sensitivity -->
-      <div class="finance-subsection" id="drSensitivitySection" style="display: none;">
-        <h3>📈 Wrażliwość na Stopę Dyskontową</h3>
-        <div class="dr-sensitivity-container">
-          <div class="dr-chart-container" id="drSensitivityChart">
-            <!-- Chart rendered by drawDiscountRateSensitivityChart() -->
+      <!-- Sensitivity Charts Grid (v0.6.0) -->
+      <div class="sensitivity-charts-grid">
+        <!-- Discount Rate Sensitivity -->
+        <div class="finance-subsection" id="drSensitivitySection" style="display: none;">
+          <h3>NPV vs Stopa dyskontowa</h3>
+          <div class="sensitivity-container">
+            <div class="sensitivity-chart" id="drSensitivityChart">
+              <!-- Chart rendered by drawDiscountRateSensitivityChart() -->
+            </div>
+            <div class="sensitivity-table">
+              <table class="sensitivity-table-inner">
+                <thead>
+                  <tr>
+                    <th>Stopa</th>
+                    <th>NPV</th>
+                  </tr>
+                </thead>
+                <tbody id="drSensitivityTableBody">
+                  <!-- Dynamically filled -->
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div class="dr-table-container">
-            <table class="dr-sensitivity-table">
-              <thead>
-                <tr>
-                  <th>Stopa dyskontowa</th>
-                  <th>NPV</th>
-                </tr>
-              </thead>
-              <tbody id="drSensitivityTableBody">
-                <!-- Dynamically filled -->
-              </tbody>
-            </table>
+        </div>
+
+        <!-- v0.6.0: Energy Price Sensitivity -->
+        <div class="finance-subsection" id="epSensitivitySection" style="display: none;">
+          <h3>NPV vs Cena energii</h3>
+          <div class="sensitivity-container">
+            <div class="sensitivity-chart" id="epSensitivityChart">
+              <!-- Chart rendered by drawEnergyPriceSensitivityChart() -->
+            </div>
+            <div class="sensitivity-table">
+              <table class="sensitivity-table-inner">
+                <thead>
+                  <tr>
+                    <th>Mnoznik</th>
+                    <th>NPV</th>
+                  </tr>
+                </thead>
+                <tbody id="epSensitivityTableBody">
+                  <!-- Dynamically filled -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- v0.6.0: CAPEX Sensitivity -->
+        <div class="finance-subsection" id="capexSensitivitySection" style="display: none;">
+          <h3>NPV vs CAPEX</h3>
+          <div class="sensitivity-container">
+            <div class="sensitivity-chart" id="capexSensitivityChart">
+              <!-- Chart rendered by drawCapexSensitivityChart() -->
+            </div>
+            <div class="sensitivity-table">
+              <table class="sensitivity-table-inner">
+                <thead>
+                  <tr>
+                    <th>Mnoznik</th>
+                    <th>NPV</th>
+                  </tr>
+                </thead>
+                <tbody id="capexSensitivityTableBody">
+                  <!-- Dynamically filled -->
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>

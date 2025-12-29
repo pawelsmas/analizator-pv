@@ -3144,3 +3144,153 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ================================================
+   v0.6.0: IRR + Sensitivity Charts Styles
+   ================================================ */
+
+/* IRR KPI Row */
+.finance-kpi-row {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.finance-kpi-card {
+  flex: 1;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid #3b82f6;
+  border-radius: 10px;
+  padding: 20px;
+  text-align: center;
+}
+
+.finance-kpi-card .kpi-label {
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.finance-kpi-card .kpi-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+/* IRR Value styling */
+.irr-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.irr-value.positive {
+  color: #22c55e;
+}
+
+.irr-value.negative {
+  color: #ef4444;
+}
+
+.irr-value.na {
+  color: #64748b;
+  font-style: italic;
+}
+
+/* Sensitivity Charts Grid */
+.sensitivity-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-top: 24px;
+}
+
+/* Individual sensitivity container */
+.sensitivity-container {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.sensitivity-container h4 {
+  color: #e2e8f0;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sensitivity-chart {
+  min-height: 180px;
+  margin-bottom: 12px;
+}
+
+/* Sensitivity Table */
+.sensitivity-table {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.sensitivity-table-inner {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sensitivity-table-inner th,
+.sensitivity-table-inner td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #334155;
+}
+
+.sensitivity-table-inner th {
+  background: rgba(59, 130, 246, 0.08);
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: left;
+  position: sticky;
+  top: 0;
+}
+
+.sensitivity-table-inner th:last-child,
+.sensitivity-table-inner td:last-child {
+  text-align: right;
+}
+
+.sensitivity-table-inner td {
+  color: #e2e8f0;
+}
+
+.sensitivity-table-inner .positive {
+  color: #22c55e;
+}
+
+.sensitivity-table-inner .negative {
+  color: #ef4444;
+}
+
+.sensitivity-table-inner tr.base-value {
+  background: rgba(59, 130, 246, 0.12);
+  border-left: 3px solid #3b82f6;
+}
+
+/* Responsive for sensitivity grid */
+@media (max-width: 1200px) {
+  .sensitivity-charts-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .sensitivity-charts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .finance-kpi-row {
+    flex-direction: column;
+  }
+}
