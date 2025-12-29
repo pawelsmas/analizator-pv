@@ -2304,6 +2304,72 @@ class BatchSizingSummary(BaseModel):
     processing_time_ms: float = Field(..., description="Total processing time [ms]")
 
 
+class PortfolioVariantRanking(BaseModel):
+    """
+    Ranking entry for a variant across the portfolio.
+
+    Used to compare variants across multiple items/scenarios in the batch.
+    """
+    variant: str = Field(
+        ...,
+        description="Variant name (small, medium, large)"
+    )
+    total_npv_pln: float = Field(
+        ...,
+        description="Sum of NPV across all items for this variant [PLN]"
+    )
+    avg_npv_pln: float = Field(
+        ...,
+        description="Average NPV for this variant [PLN]"
+    )
+    avg_payback_years: float = Field(
+        ...,
+        description="Average payback period for this variant [years]"
+    )
+    feasible_count: int = Field(
+        ...,
+        description="Number of items where this variant is feasible"
+    )
+    recommended_count: int = Field(
+        ...,
+        description="Number of items where this variant is recommended"
+    )
+
+
+class PortfolioSummary(BaseModel):
+    """
+    Portfolio-level summary for batch sizing.
+
+    Provides aggregated metrics across all items to help identify
+    the best overall variant for a portfolio of scenarios.
+    """
+    # Overall metrics
+    total_npv_pln: float = Field(
+        ...,
+        description="Sum of recommended variant NPVs across all items [PLN]"
+    )
+    avg_npv_pln: float = Field(
+        ...,
+        description="Average recommended variant NPV [PLN]"
+    )
+    avg_payback_years: float = Field(
+        ...,
+        description="Average recommended variant payback [years]"
+    )
+
+    # Portfolio-optimal variant (by total NPV)
+    portfolio_optimal_variant: str = Field(
+        ...,
+        description="Variant with highest total NPV across portfolio"
+    )
+
+    # Ranking by variant
+    variant_rankings: List[PortfolioVariantRanking] = Field(
+        ...,
+        description="Rankings for each variant, sorted by total_npv_pln descending"
+    )
+
+
 class BatchSizingResponse(BaseModel):
     """
     Response for batch sizing request.
@@ -2336,6 +2402,13 @@ class BatchSizingResponse(BaseModel):
     summary: BatchSizingSummary = Field(
         ...,
         description="Summary statistics for the batch"
+    )
+
+    # Portfolio summary (v0.9.0) - aggregated metrics across items
+    portfolio_summary: Optional[PortfolioSummary] = Field(
+        None,
+        description="Portfolio-level summary with variant rankings. "
+                    "None if all items failed."
     )
 
 

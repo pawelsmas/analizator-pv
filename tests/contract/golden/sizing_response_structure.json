@@ -154,6 +154,7 @@
   "batch_response_keys": [
     "assumptions_version",
     "batch_id",
+    "portfolio_summary",
     "results",
     "schema_version",
     "summary"
@@ -176,5 +177,20 @@
     "request_hash",
     "run_id",
     "ttl_seconds"
+  ],
+  "portfolio_summary_keys": [
+    "avg_npv_pln",
+    "avg_payback_years",
+    "portfolio_optimal_variant",
+    "total_npv_pln",
+    "variant_rankings"
+  ],
+  "variant_ranking_keys": [
+    "avg_npv_pln",
+    "avg_payback_years",
+    "feasible_count",
+    "recommended_count",
+    "total_npv_pln",
+    "variant"
   ]
 }
