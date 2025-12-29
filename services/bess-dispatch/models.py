@@ -1219,6 +1219,28 @@ class SizingResult(BaseModel):
                     "Example: 'Highest NPV (45,230 PLN) among variants with payback < 8 years'"
     )
 
+    # Structured reason fields (machine-readable, stable API)
+    recommended_reason_code: Optional[str] = Field(
+        None,
+        description="Machine-readable code for recommendation reason. "
+                    "Values: npv_max, payback_min, self_consumption_max, peak_reduction_max, "
+                    "efc_utilization_max, constrained_fallback"
+    )
+    recommended_reason_metric: Optional[str] = Field(
+        None,
+        description="Metric name used for recommendation. "
+                    "Values: npv_pln, payback_years, self_consumption_pct, peak_reduction_pct, efc_total"
+    )
+    recommended_reason_value: Optional[float] = Field(
+        None,
+        description="Numeric value of the recommendation metric. Example: 45230.0 for NPV"
+    )
+    recommended_reason_unit: Optional[str] = Field(
+        None,
+        description="Unit for the recommendation metric value. "
+                    "Values: PLN, years, %, cycles"
+    )
+
     # Top variants (ranked by score, best first)
     top_variants: Optional[List[SizingVariant]] = Field(
         None,
@@ -1449,6 +1471,20 @@ class OptimizationObjective(str, Enum):
     SELF_CONSUMPTION = "self_consumption"   # Maximize self-consumption %
     PEAK_REDUCTION = "peak_reduction"       # Maximize peak reduction %
     EFC_UTILIZATION = "efc_utilization"     # Maximize EFC utilization within budget
+
+
+class RecommendedReasonCode(str, Enum):
+    """
+    Machine-readable codes for recommended variant selection reason.
+
+    UI can use these codes to generate localized descriptions.
+    """
+    NPV_MAX = "npv_max"                         # Highest NPV selected
+    PAYBACK_MIN = "payback_min"                 # Shortest payback selected
+    SELF_CONSUMPTION_MAX = "self_consumption_max"  # Highest self-consumption %
+    PEAK_REDUCTION_MAX = "peak_reduction_max"   # Highest peak reduction %
+    EFC_UTILIZATION_MAX = "efc_utilization_max" # Optimal EFC utilization
+    CONSTRAINED_FALLBACK = "constrained_fallback"  # Best within constraints
 
 
 class ConstraintType(str, Enum):

@@ -42,6 +42,7 @@ from models import (
     SavingsBreakdown,
     AnalyticalPeriodConfig,
     PeriodInfo,
+    RecommendedReasonCode,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -372,6 +373,77 @@ def calculate_objective_score(
         return result.degradation.efc_total
 
     return npv  # Default to NPV
+
+
+@dataclass
+class StructuredReasonInfo:
+    """Structured info about recommendation reason for machine consumption."""
+    code: str  # RecommendedReasonCode value
+    metric: str  # Metric name (npv_pln, payback_years, etc.)
+    value: float  # Metric value
+    unit: str  # Unit string (PLN, years, %, cycles)
+
+
+def get_structured_reason_info(
+    recommended: "SizingVariantResult",
+    objective: OptimizationObjective,
+) -> StructuredReasonInfo:
+    """
+    Get structured machine-readable info about recommendation reason.
+
+    Args:
+        recommended: The recommended variant
+        objective: The optimization objective used
+
+    Returns:
+        StructuredReasonInfo with code, metric, value, unit
+    """
+    if objective == OptimizationObjective.NPV:
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.NPV_MAX.value,
+            metric="npv_pln",
+            value=recommended.npv_pln,
+            unit="PLN",
+        )
+    elif objective == OptimizationObjective.PAYBACK:
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.PAYBACK_MIN.value,
+            metric="payback_years",
+            value=recommended.simple_payback_years,
+            unit="years",
+        )
+    elif objective == OptimizationObjective.SELF_CONSUMPTION:
+        sc_pct = recommended.dispatch_summary.self_consumption_pct
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.SELF_CONSUMPTION_MAX.value,
+            metric="self_consumption_pct",
+            value=sc_pct,
+            unit="%",
+        )
+    elif objective == OptimizationObjective.PEAK_REDUCTION:
+        pr_pct = recommended.dispatch_summary.peak_reduction_pct
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.PEAK_REDUCTION_MAX.value,
+            metric="peak_reduction_pct",
+            value=pr_pct,
+            unit="%",
+        )
+    elif objective == OptimizationObjective.EFC_UTILIZATION:
+        efc = recommended.dispatch_summary.degradation.efc_total
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.EFC_UTILIZATION_MAX.value,
+            metric="efc_total",
+            value=efc,
+            unit="cycles",
+        )
+    else:
+        # Default fallback
+        return StructuredReasonInfo(
+            code=RecommendedReasonCode.NPV_MAX.value,
+            metric="npv_pln",
+            value=recommended.npv_pln,
+            unit="PLN",
+        )
 
 
 def generate_recommended_reason(
@@ -1235,6 +1307,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     # Find recommended variant (highest score)
     recommended_reason = None
+    structured_reason = None
     if variants:
         best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
         variants[best_idx].is_recommended = True
@@ -1250,6 +1323,13 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             logger.error(f"Failed to generate recommended_reason: {e}")
             # Fallback to simple reason
             recommended_reason = f"Najwyższy score ({recommended.score:.0f})"
+
+        # Generate structured reason info (v0.4.1)
+        try:
+            structured_reason = get_structured_reason_info(recommended, objective)
+        except Exception as e:
+            logger.error(f"Failed to generate structured_reason: {e}")
+            structured_reason = None
     else:
         recommended = None
 
@@ -1413,6 +1493,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_power_kw=recommended.power_kw if recommended else 0,
         recommended_energy_kwh=recommended.energy_kwh if recommended else 0,
         recommended_reason=recommended_reason,
+        recommended_reason_code=structured_reason.code if structured_reason else None,
+        recommended_reason_metric=structured_reason.metric if structured_reason else None,
+        recommended_reason_value=structured_reason.value if structured_reason else None,
+        recommended_reason_unit=structured_reason.unit if structured_reason else None,
         top_variants=top_variants,
         objective_used=objective_used,
         applied_parameters=applied_parameters,
