@@ -43,6 +43,7 @@ from models import (
     AnalyticalPeriodConfig,
     PeriodInfo,
     RecommendedReasonCode,
+    TopVariantDetail,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1335,9 +1336,23 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     # Calculate top_variants (sorted by score, highest first, max 3)
     top_variants = None
+    top_variants_details = None
     if variants:
         sorted_variants = sorted(variants, key=lambda v: v.score, reverse=True)
-        top_variants = [v.variant for v in sorted_variants[:3]]
+        top_3 = sorted_variants[:3]
+        top_variants = [v.variant for v in top_3]
+
+        # Build top_variants_details with key metrics for UI comparison
+        top_variants_details = [
+            TopVariantDetail(
+                variant=v.variant,
+                score=v.score,
+                npv_pln=v.npv_pln,
+                payback_years=v.simple_payback_years,
+                net_savings_pln=v.savings_breakdown.net_savings_pln if v.savings_breakdown else 0.0,
+            )
+            for v in top_3
+        ]
 
     warnings = []
     for v in variants:
@@ -1498,6 +1513,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_reason_value=structured_reason.value if structured_reason else None,
         recommended_reason_unit=structured_reason.unit if structured_reason else None,
         top_variants=top_variants,
+        top_variants_details=top_variants_details,
         objective_used=objective_used,
         applied_parameters=applied_parameters,
         warnings=warnings,

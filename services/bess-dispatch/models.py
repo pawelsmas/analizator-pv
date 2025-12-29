@@ -1181,6 +1181,19 @@ class AppliedParameters(BaseModel):
     export_price_pln_mwh: float = Field(0.0, description="Grid export price [PLN/MWh]")
 
 
+class TopVariantDetail(BaseModel):
+    """
+    Detailed information about a top variant for UI display.
+
+    Contains key metrics for easy comparison in a table/list view.
+    """
+    variant: SizingVariant = Field(..., description="Variant name (small/medium/large)")
+    score: float = Field(..., description="Optimization score (higher is better)")
+    npv_pln: float = Field(..., description="Net Present Value [PLN]")
+    payback_years: float = Field(..., description="Simple payback period [years]")
+    net_savings_pln: float = Field(..., description="Net annual savings from savings_breakdown [PLN]")
+
+
 class SizingResult(BaseModel):
     """Complete sizing result with all variants"""
 
@@ -1246,6 +1259,13 @@ class SizingResult(BaseModel):
         None,
         description="Top 3 variants ranked by score (highest first). "
                     "Useful for UI to show alternatives. Example: ['medium', 'large', 'small']"
+    )
+
+    # Top variants with details (for UI comparison tables)
+    top_variants_details: Optional[List[TopVariantDetail]] = Field(
+        None,
+        description="Top 3 variants with key metrics for easy comparison. "
+                    "First element is always the recommended variant."
     )
 
     # Optimization objective used
