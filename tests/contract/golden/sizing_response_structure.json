@@ -11,6 +11,7 @@
     "recommended_reason",
     "recommended_variant",
     "schema_version",
+    "top_variants",
     "total_load_mwh",
     "total_pv_mwh",
     "variants",

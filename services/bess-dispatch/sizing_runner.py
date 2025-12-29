@@ -1250,6 +1250,12 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     else:
         recommended = None
 
+    # Calculate top_variants (sorted by score, highest first, max 3)
+    top_variants = None
+    if variants:
+        sorted_variants = sorted(variants, key=lambda v: v.score, reverse=True)
+        top_variants = [v.variant for v in sorted_variants[:3]]
+
     warnings = []
     for v in variants:
         if v.degradation_status == DegradationStatus.EXCEEDED:
@@ -1404,6 +1410,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_power_kw=recommended.power_kw if recommended else 0,
         recommended_energy_kwh=recommended.energy_kwh if recommended else 0,
         recommended_reason=recommended_reason,
+        top_variants=top_variants,
         applied_parameters=applied_parameters,
         warnings=warnings,
     )
