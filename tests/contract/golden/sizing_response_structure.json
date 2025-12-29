@@ -91,11 +91,17 @@
     "capex_pln",
     "cashflow_timeseries",
     "discount_rate",
+    "discount_rate_sensitivity",
     "horizon_years",
     "irr_pct",
     "npv_pln",
     "opex_pln_per_year",
     "payback_years"
+  ],
+  "discount_rate_sensitivity_point_keys": [
+    "discount_rate",
+    "discount_rate_pct",
+    "npv_pln"
   ],
   "cashflow_year_keys": [
     "cumulative_cashflow_pln",
