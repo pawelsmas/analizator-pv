@@ -181,3 +181,39 @@ class TestExportRevenueNetSavingsFormula:
             f"capacity_fee={capacity_fee}, demand={demand}, "
             f"export_delta={export_delta}, degradation={degradation}"
         )
+
+class TestExportRevenuePLNDeprecated:
+    """Test that export_revenue_pln is marked deprecated."""
+
+    def test_legacy_field_equals_project_value(
+        self, wait_for_services, bess_dispatch_url
+    ):
+        """
+        Verify export_revenue_pln (DEPRECATED) equals project_export_revenue_pln.
+        
+        This test documents the deprecation:
+        - export_revenue_pln is DEPRECATED
+        - Use project_export_revenue_pln instead
+        - Field will be removed in v1.0
+        """
+        payload = load_smoke_payload("sizing_stacked_no_arbitrage.json")
+
+        # Set export price to generate meaningful values
+        if "prices" not in payload:
+            payload["prices"] = {}
+        payload["prices"]["export_price_pln_mwh"] = 200.0
+
+        resp = post_json("/sizing", payload)
+
+        recommended = pick_recommended_variant(resp)
+        sb = recommended.get("savings_breakdown", {})
+
+        project = sb.get("project_export_revenue_pln", 0)
+        legacy = sb.get("export_revenue_pln", 0)
+
+        # DEPRECATED: export_revenue_pln should equal project_export_revenue_pln
+        assert math.isclose(legacy, project, abs_tol=0.01), (
+            f"[DEPRECATED] export_revenue_pln ({legacy}) should equal "
+            f"project_export_revenue_pln ({project}). "
+            f"Use project_export_revenue_pln in new code."
+        )

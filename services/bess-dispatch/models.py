@@ -775,8 +775,13 @@ class SavingsBreakdown(BaseModel):
     project_export_revenue_pln: float = Field(0.0, description="Export revenue WITH battery (reduced due to self-consumption)")
     export_revenue_savings_pln: float = Field(0.0, description="Change in export revenue = project - baseline (typically negative)")
 
-    # Legacy field (backward compatibility) - equals project_export_revenue_pln
-    export_revenue_pln: float = Field(0.0, description="Revenue from grid export (sprzedaż nadwyżek do sieci)")
+    # DEPRECATED: Use project_export_revenue_pln instead
+    # This field will be removed in v1.0. For now it equals project_export_revenue_pln.
+    export_revenue_pln: float = Field(
+        0.0,
+        description="[DEPRECATED] Use project_export_revenue_pln instead. "
+                    "This field equals project_export_revenue_pln for backward compatibility."
+    )
 
     # Battery throughput (for degradation calculation)
     battery_throughput_mwh: float = Field(0.0, description="Total battery throughput [MWh] (discharge only)")
