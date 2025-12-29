@@ -1241,6 +1241,10 @@ class FinanceConfig(BaseModel):
         description="Override CAPEX for deterministic tests and what-if scenarios. "
                     "If None, CAPEX is calculated from battery sizing."
     )
+    include_cashflow_timeseries: bool = Field(
+        False,
+        description="If True, include year-by-year cashflow_timeseries in finance_summary."
+    )
 
 
 class FinanceAssumptions(BaseModel):
@@ -1278,6 +1282,35 @@ class FinanceSummary(BaseModel):
     irr_pct: Optional[float] = Field(
         None,
         description="Internal Rate of Return [%]. Null if IRR not calculated."
+    )
+    # Cashflow timeseries (optional, only when include_cashflow_timeseries=True)
+    cashflow_timeseries: Optional[List["CashflowYear"]] = Field(
+        None,
+        description="Year-by-year cashflow breakdown. Only present when include_cashflow_timeseries=True."
+    )
+
+
+class CashflowYear(BaseModel):
+    """
+    Annual cashflow data for a single year.
+
+    Used for building cashflow tables and charts in UI.
+    Year 0 represents the initial investment (negative CAPEX).
+    """
+    year: int = Field(..., description="Year number (0 = investment, 1-N = operating years)")
+    savings_pln: float = Field(..., description="Annual savings [PLN]. 0 for year 0.")
+    opex_pln: float = Field(..., description="Annual OPEX [PLN]. 0 for year 0.")
+    net_cashflow_pln: float = Field(
+        ...,
+        description="Net cashflow = savings - opex (year > 0), or -capex (year 0)"
+    )
+    cumulative_cashflow_pln: float = Field(
+        ...,
+        description="Cumulative undiscounted cashflow up to this year"
+    )
+    discounted_cashflow_pln: float = Field(
+        ...,
+        description="Net cashflow discounted to year 0"
     )
 
 

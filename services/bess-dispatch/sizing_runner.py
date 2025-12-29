@@ -47,6 +47,7 @@ from models import (
     FinanceConfig,
     FinanceAssumptions,
     FinanceSummary,
+    CashflowYear,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -150,6 +151,59 @@ def calculate_irr(
             return None
 
     return irr * 100 if abs(npv) < 1 else None
+
+
+def build_cashflow_timeseries(
+    capex: float,
+    annual_savings: float,
+    annual_opex: float,
+    discount_rate: float,
+    horizon_years: int,
+) -> List[CashflowYear]:
+    """
+    Build year-by-year cashflow timeseries.
+
+    Args:
+        capex: Initial investment (positive value)
+        annual_savings: Annual savings (positive = revenue)
+        annual_opex: Annual operating expenses (positive value)
+        discount_rate: Discount rate (0.08 = 8%)
+        horizon_years: Analysis horizon in years
+
+    Returns:
+        List of CashflowYear from year 0 (investment) through horizon_years
+    """
+    cashflow_list = []
+    cumulative = 0.0
+
+    # Year 0: Initial investment
+    net_cf_0 = -capex
+    cumulative += net_cf_0
+    cashflow_list.append(CashflowYear(
+        year=0,
+        savings_pln=0.0,
+        opex_pln=0.0,
+        net_cashflow_pln=net_cf_0,
+        cumulative_cashflow_pln=cumulative,
+        discounted_cashflow_pln=net_cf_0,  # No discounting for year 0
+    ))
+
+    # Years 1 to horizon_years: Operating cashflows
+    for year in range(1, horizon_years + 1):
+        net_cf = annual_savings - annual_opex
+        cumulative += net_cf
+        discounted_cf = net_cf / ((1 + discount_rate) ** year)
+
+        cashflow_list.append(CashflowYear(
+            year=year,
+            savings_pln=annual_savings,
+            opex_pln=annual_opex,
+            net_cashflow_pln=net_cf,
+            cumulative_cashflow_pln=cumulative,
+            discounted_cashflow_pln=discounted_cf,
+        ))
+
+    return cashflow_list
 
 
 # =============================================================================
@@ -1284,14 +1338,38 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # Build finance_summary for this variant (v0.5.0)
         # Uses finance_config if provided, otherwise uses legacy analysis params
         fc = request.finance_config
+        fs_horizon = fc.horizon_years if fc else request.analysis_years
+        fs_discount_rate = fc.discount_rate if fc else request.discount_rate
+        fs_opex = annual_opex + (fc.opex_pln_per_year if fc else 0.0)
+
+        # Calculate finance_summary NPV using finance_config parameters
+        # This ensures consistency with cashflow_timeseries (NPV = sum of discounted cashflows)
+        fs_opex_pct = fs_opex / capex if capex > 0 else 0.0
+        fs_npv = calculate_npv(
+            dispatch_result.annual_savings_pln, capex,
+            fs_opex_pct, fs_discount_rate, fs_horizon
+        )
+
+        # Build cashflow timeseries if requested (v0.5.0 PR2)
+        cashflow_ts = None
+        if fc and fc.include_cashflow_timeseries:
+            cashflow_ts = build_cashflow_timeseries(
+                capex=capex,
+                annual_savings=dispatch_result.annual_savings_pln,
+                annual_opex=fs_opex,
+                discount_rate=fs_discount_rate,
+                horizon_years=fs_horizon,
+            )
+
         finance_summary = FinanceSummary(
             capex_pln=capex,
-            opex_pln_per_year=annual_opex + (fc.opex_pln_per_year if fc else 0.0),
-            horizon_years=fc.horizon_years if fc else request.analysis_years,
-            discount_rate=fc.discount_rate if fc else request.discount_rate,
-            npv_pln=npv,  # Same NPV used for scoring and top_variants_details
+            opex_pln_per_year=fs_opex,
+            horizon_years=fs_horizon,
+            discount_rate=fs_discount_rate,
+            npv_pln=fs_npv,  # Use finance_config-based NPV for consistency with cashflow
             payback_years=payback,
             irr_pct=irr,
+            cashflow_timeseries=cashflow_ts,
         )
 
         variant_result = SizingVariantResult(
