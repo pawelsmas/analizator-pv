@@ -96,6 +96,12 @@ class TestGoldenMaster:
             )
             if data.get("variants") and data["variants"][0].get("feasibility")
             else [],
+            # v0.8.0 pareto frontier
+            "pareto_point_keys": sorted(
+                data["pareto_frontier"][0].keys()
+            )
+            if data.get("pareto_frontier") and len(data["pareto_frontier"]) > 0
+            else [],
         }
 
         golden_file = golden_dir / "sizing_response_structure.json"
@@ -144,6 +150,13 @@ class TestGoldenMaster:
                 f"feasibility keys changed.\n"
                 f"Expected: {expected.get('feasibility_keys', [])}\n"
                 f"Got: {structure['feasibility_keys']}"
+            )
+
+            # v0.8.0 pareto frontier
+            assert structure["pareto_point_keys"] == expected.get("pareto_point_keys", []), (
+                f"pareto_point keys changed.\n"
+                f"Expected: {expected.get('pareto_point_keys', [])}\n"
+                f"Got: {structure['pareto_point_keys']}"
             )
 
     def test_net_savings_formula_consistency(
