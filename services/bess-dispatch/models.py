@@ -1213,6 +1213,11 @@ class SizingResult(BaseModel):
     recommended_variant: Optional[SizingVariant] = None
     recommended_power_kw: float = 0.0
     recommended_energy_kwh: float = 0.0
+    recommended_reason: Optional[str] = Field(
+        None,
+        description="Human-readable explanation of why this variant was recommended. "
+                    "Example: 'Highest NPV (45,230 PLN) among variants with payback < 8 years'"
+    )
 
     # Pareto frontier (optional)
     pareto_points: Optional[List[Dict[str, float]]] = None
