@@ -758,22 +758,36 @@ class SavingsBreakdown(BaseModel):
     arbitrage_savings_pln: float = Field(0.0, description="ADDITIONAL savings from ToU price spread (tou_total - flat_savings)")
     capacity_fee_savings_pln: float = Field(0.0, description="Savings from reduced capacity fee (opłata mocowa PL)")
     demand_charge_savings_pln: float = Field(0.0, description="Savings from peak shaving (opłata za moc / demand charge)")
+
+    # Export revenue breakdown (SSoT)
+    baseline_export_revenue_pln: float = Field(0.0, description="Export revenue WITHOUT battery (PV surplus only)")
+    project_export_revenue_pln: float = Field(0.0, description="Export revenue WITH battery (reduced due to self-consumption)")
+    export_revenue_savings_pln: float = Field(0.0, description="Change in export revenue = project - baseline (typically negative)")
+
+    # Legacy field (backward compatibility) - equals project_export_revenue_pln
     export_revenue_pln: float = Field(0.0, description="Revenue from grid export (sprzedaż nadwyżek do sieci)")
 
     # Negative (costs)
     degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
 
     # Net
-    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export - degradation")
+    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta - degradation")
 
     def calculate_net(self) -> float:
-        """Calculate net savings from components"""
+        """
+        Calculate net savings from components.
+
+        Formula: net = energy + arbitrage + capacity_fee + demand + export_delta - degradation
+
+        Note: export_revenue_savings_pln is typically NEGATIVE (battery uses PV that would be exported)
+        so adding it reduces net savings, which is correct behavior.
+        """
         return (
             self.energy_savings_pln +
             self.arbitrage_savings_pln +
             self.capacity_fee_savings_pln +
             self.demand_charge_savings_pln +
-            self.export_revenue_pln -
+            self.export_revenue_savings_pln -  # delta = project - baseline (usually negative)
             abs(self.degradation_cost_pln)
         )
 
