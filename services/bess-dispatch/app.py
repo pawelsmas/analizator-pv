@@ -585,6 +585,13 @@ class SizingRequestAPI(BaseModel):
         description="ToU pricing config: {tariff_id, other_fees_pln_mwh, capacity_fee_method, analysis_year}"
     )
 
+    # Degradation cost (general parameter - not just for arbitrage)
+    degradation_cost_pln_mwh: float = Field(
+        50.0,
+        ge=0,
+        description="Degradation cost per MWh throughput [PLN/MWh]. Used to calculate degradation_cost_pln in savings_breakdown."
+    )
+
     # Degradation budget (annual limits - checked post-dispatch)
     max_efc_per_year: Optional[float] = None
     max_throughput_mwh_per_year: Optional[float] = None
@@ -816,6 +823,8 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             discount_rate=request.discount_rate,
             analysis_years=request.analysis_years,
             prices=prices,
+            # Degradation
+            degradation_cost_pln_mwh=request.degradation_cost_pln_mwh,
             degradation_budget=budget,
             optimization=optimization_config,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,

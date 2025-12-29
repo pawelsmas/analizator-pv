@@ -665,10 +665,18 @@ def run_sizing_for_variant(
     # Legacy field for backward compatibility
     savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
 
-    # 5. Degradation cost (negative) - applies to arbitrage modes
-    if arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
-        # Total throughput for degradation cost
-        total_throughput_kwh = result.degradation.throughput_total_mwh * 1000
+    # 5. Battery throughput and degradation cost
+    # Always set battery_throughput_mwh (SSoT for throughput)
+    throughput_mwh = result.degradation.throughput_total_mwh if result.degradation else 0.0
+    savings_breakdown.battery_throughput_mwh = throughput_mwh
+
+    # Calculate degradation cost using general degradation_cost_pln_mwh parameter
+    # (applies to all modes, not just arbitrage)
+    if throughput_mwh > 0 and request.degradation_cost_pln_mwh > 0:
+        savings_breakdown.degradation_cost_pln = throughput_mwh * request.degradation_cost_pln_mwh
+    # Legacy: also check arbitrage config for backward compatibility
+    elif arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
+        total_throughput_kwh = throughput_mwh * 1000
         savings_breakdown.degradation_cost_pln = (
             total_throughput_kwh * request.arbitrage_config.degradation_cost_pln_kwh
         )
