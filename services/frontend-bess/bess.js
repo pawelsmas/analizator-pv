@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.16 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.17 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -47,9 +47,21 @@ function sendBessResultToShell(sizingResult) {
     bess_power_kw: recommended.power_kw || 0,
     bess_energy_kwh: recommended.energy_kwh || 0,
 
-    // Energy flows
+    // Energy flows (basic metrics)
     annual_cycles: recommended.dispatch_summary?.degradation?.efc || 0,
     annual_discharge_mwh: (recommended.dispatch_summary?.total_discharge_kwh || 0) / 1000,
+
+    // Energy flows (detailed totals from SSoT)
+    energy_flows: recommended.dispatch_summary?.energy_flows?.totals_mwh ? {
+      grid_import_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.grid_import_mwh || 0,
+      grid_export_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.grid_export_mwh || 0,
+      pv_to_load_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.pv_to_load_mwh || 0,
+      pv_to_batt_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.pv_to_batt_mwh || 0,
+      pv_curtail_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.pv_curtail_mwh || 0,
+      batt_to_load_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.batt_to_load_mwh || 0,
+      batt_charge_from_grid_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.batt_charge_from_grid_mwh || 0,
+      batt_losses_mwh: recommended.dispatch_summary.energy_flows.totals_mwh.batt_losses_mwh || 0,
+    } : null,
 
     // Economics
     npv_pln: recommended.npv_pln || 0,
@@ -74,6 +86,7 @@ function sendBessResultToShell(sizingResult) {
       demand_charge_savings_pln: recommended.savings_breakdown.demand_charge_savings_pln || 0,
       capacity_fee_savings_pln: recommended.savings_breakdown.capacity_fee_savings_pln || 0,
       arbitrage_savings_pln: recommended.savings_breakdown.arbitrage_savings_pln || 0,
+      export_revenue_pln: recommended.savings_breakdown.export_revenue_pln || 0,
       degradation_cost_pln: recommended.savings_breakdown.degradation_cost_pln || 0,
       net_savings_pln: recommended.savings_breakdown.net_savings_pln || recommended.annual_savings_pln || 0,
       source: 'bess_dispatch_accurate',
@@ -82,6 +95,7 @@ function sendBessResultToShell(sizingResult) {
       demand_charge_savings_pln: 0,
       capacity_fee_savings_pln: 0,
       arbitrage_savings_pln: 0,
+      export_revenue_pln: 0,
       degradation_cost_pln: 0,
       net_savings_pln: recommended.annual_savings_pln || 0,
       source: 'bess_pro_fallback',
@@ -2294,6 +2308,12 @@ function displaySizingVariants(sizingResult) {
             <div class="breakdown-row">
               <span class="breakdown-label">🕐 Arbitraż ToU</span>
               <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.arbitrage_savings_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
+            ${v.savings_breakdown.export_revenue_pln > 0 ? `
+            <div class="breakdown-row">
+              <span class="breakdown-label">💰 Sprzedaż do sieci</span>
+              <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.export_revenue_pln, 0)} PLN</span>
             </div>
             ` : ''}
             ${v.savings_breakdown.degradation_cost_pln > 0 ? `
