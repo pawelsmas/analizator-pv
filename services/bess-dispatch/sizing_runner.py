@@ -1233,12 +1233,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended = variants[best_idx]
 
         # Generate human-readable explanation (v0.4)
-        opt_config = request.optimization
-        objective = opt_config.objective if opt_config else OptimizationObjective.NPV
-        constraints = opt_config.constraints if opt_config else None
-        recommended_reason = generate_recommended_reason(
-            recommended, variants, objective, constraints
-        )
+        try:
+            opt_config = request.optimization
+            objective = opt_config.objective if opt_config else OptimizationObjective.NPV
+            constraints = opt_config.constraints if opt_config else None
+            recommended_reason = generate_recommended_reason(
+                recommended, variants, objective, constraints
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate recommended_reason: {e}")
+            # Fallback to simple reason
+            recommended_reason = f"Najwyższy score ({recommended.score:.0f})"
     else:
         recommended = None
 
