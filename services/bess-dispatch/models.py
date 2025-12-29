@@ -1155,6 +1155,33 @@ class ConstraintsReport(BaseModel):
     )
 
 
+class ParetoPoint(BaseModel):
+    """
+    A point on the Pareto frontier for NPV vs Payback trade-off (v0.8.0).
+
+    A variant is Pareto-optimal (non-dominated) if no other variant has:
+    - Higher NPV AND lower payback simultaneously
+
+    Variants on the frontier represent optimal trade-offs.
+    """
+    variant: str = Field(
+        ...,
+        description="Variant name (e.g., 'small', 'medium', 'large')"
+    )
+    npv_pln: float = Field(
+        ...,
+        description="Net Present Value [PLN]"
+    )
+    payback_years: float = Field(
+        ...,
+        description="Simple payback period [years]"
+    )
+    is_dominated: bool = Field(
+        False,
+        description="True if this variant is dominated by another (not on Pareto frontier)"
+    )
+
+
 class ConstraintSummary(BaseModel):
     """
     Summary of grid constraint impacts (v0.7.0).
@@ -1763,8 +1790,12 @@ class SizingResult(BaseModel):
                     "Values: npv, payback, self_consumption, peak_reduction, efc_utilization"
     )
 
-    # Pareto frontier (optional)
-    pareto_points: Optional[List[Dict[str, float]]] = None
+    # Pareto frontier (v0.8.0)
+    pareto_frontier: Optional[List["ParetoPoint"]] = Field(
+        None,
+        description="Pareto frontier for NPV vs Payback trade-off. "
+                    "Variants with is_dominated=False are on the frontier."
+    )
 
     # Applied parameters - SSoT for debugging and transparency
     applied_parameters: Optional[AppliedParameters] = Field(

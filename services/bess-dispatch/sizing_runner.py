@@ -58,6 +58,7 @@ from models import (
     ConstraintViolation,
     Feasibility,
     ConstraintsReport,
+    ParetoPoint,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1028,6 +1029,54 @@ def build_constraints_report(
         feasible_variants=feasible_variants,
         none_feasible=len(feasible_variants) == 0
     )
+
+
+def compute_pareto_frontier(
+    variants: List[SizingVariantResult],
+) -> List[ParetoPoint]:
+    """
+    Compute the Pareto frontier for NPV vs Payback trade-off (v0.8.0).
+
+    A variant is Pareto-optimal (non-dominated) if no other variant has:
+    - Higher NPV AND lower payback simultaneously
+
+    Objective: Maximize NPV, Minimize Payback
+
+    Args:
+        variants: List of sized variants with npv_pln and simple_payback_years
+
+    Returns:
+        List of ParetoPoint objects, one per variant, with is_dominated flag
+    """
+    points: List[ParetoPoint] = []
+
+    for v in variants:
+        npv = v.npv_pln
+        payback = v.simple_payback_years
+
+        # Check if this variant is dominated by any other
+        is_dominated = False
+        for other in variants:
+            if other.variant == v.variant:
+                continue
+
+            other_npv = other.npv_pln
+            other_payback = other.simple_payback_years
+
+            # other dominates v if: other has higher NPV AND lower payback
+            # (strictly better on both objectives)
+            if other_npv > npv and other_payback < payback:
+                is_dominated = True
+                break
+
+        points.append(ParetoPoint(
+            variant=v.variant.value,
+            npv_pln=npv,
+            payback_years=payback,
+            is_dominated=is_dominated
+        ))
+
+    return points
 
 
 def run_sizing_for_variant(
@@ -2158,6 +2207,9 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             unserved_load_penalty_pln_kwh=gc.unserved_load_penalty_pln_kwh,
         )
 
+    # Compute Pareto frontier for NPV vs Payback (v0.8.0)
+    pareto_frontier = compute_pareto_frontier(variants) if variants else None
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -2182,6 +2234,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         finance_assumptions=finance_assumptions,  # v0.5.0
         grid_constraints_applied=grid_constraints_applied,  # v0.7.0
         constraints_report=constraints_report,  # v0.8.0
+        pareto_frontier=pareto_frontier,  # v0.8.0
         warnings=warnings,
     )
 

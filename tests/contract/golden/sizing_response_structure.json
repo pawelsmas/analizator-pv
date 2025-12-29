@@ -8,7 +8,7 @@
     "grid_constraints_applied",
     "mode",
     "objective_used",
-    "pareto_points",
+    "pareto_frontier",
     "period_info",
     "recommended_energy_kwh",
     "recommended_power_kw",
@@ -65,6 +65,12 @@
     "limit",
     "message",
     "unit"
+  ],
+  "pareto_point_keys": [
+    "is_dominated",
+    "npv_pln",
+    "payback_years",
+    "variant"
   ],
   "savings_breakdown_keys": [
     "arbitrage_savings_pln",
