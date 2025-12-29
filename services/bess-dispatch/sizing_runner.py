@@ -72,6 +72,12 @@ from economics_helper import (
     build_time_index_from_period,
     get_time_index_for_request,
 )
+from observability.finance_metrics import (
+    record_finance_cashflow_metrics,
+    record_finance_sensitivity_metrics,
+    record_finance_npv_metrics,
+    record_finance_irr_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1415,6 +1421,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             cashflow_timeseries=cashflow_ts,
             discount_rate_sensitivity=dr_sensitivity,
         )
+
+        # Record finance metrics (v0.5.0 PR6)
+        mode_str = request.mode.value if request.mode else "stacked"
+        variant_str = variant_type.value if variant_type else "unknown"
+        if cashflow_ts:
+            record_finance_cashflow_metrics(mode=mode_str, horizon_years=fs_horizon)
+        if dr_sensitivity:
+            record_finance_sensitivity_metrics(mode=mode_str, num_points=len(dr_sensitivity))
+        record_finance_npv_metrics(mode=mode_str, variant=variant_str, npv_pln=fs_npv)
+        if irr is not None:
+            record_finance_irr_metrics(mode=mode_str, variant=variant_str, irr_pct=irr)
 
         variant_result = SizingVariantResult(
             variant=variant_type,
