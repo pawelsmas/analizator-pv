@@ -1,6 +1,7 @@
 {
   "top_level_keys": [
     "annual_surplus_mwh",
+    "applied_parameters",
     "assumptions_version",
     "mode",
     "pareto_points",
@@ -58,5 +59,14 @@
     "step_minutes",
     "steps",
     "timezone"
+  ],
+  "applied_parameters_keys": [
+    "analysis_years",
+    "degradation_cost_pln_mwh",
+    "degradation_cost_source",
+    "discount_rate",
+    "export_price_pln_mwh",
+    "import_price_pln_mwh",
+    "opex_pct_per_year"
   ]
 }
