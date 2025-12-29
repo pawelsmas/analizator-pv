@@ -927,6 +927,32 @@
 
         <!-- Arbitrage config is now in Settings module -->
         <!-- Use USTAWIENIA > BESS Advanced Features > Arbitraż Taryfowy OSD / Arbitraż RDN -->
+
+        <!-- Batch Sizing (v0.9.0) -->
+        <div class="config-card batch-sizing-card">
+          <h3>Batch Sizing</h3>
+          <div class="config-description">
+            Analiza wielu scenariuszy jednoczesnie (JSON)
+          </div>
+          <div class="batch-sizing-inputs">
+            <textarea id="batchScenariosInput" class="batch-textarea" rows="8" placeholder='[
+  {"item_id": "scenario_1", "request": {"load_kw": [...], "pv_generation_kw": [...], "energy_price_pln_kwh": 0.8}},
+  {"item_id": "scenario_2", "request": {...}}
+]'></textarea>
+            <div class="batch-actions-row">
+              <button class="btn btn-small btn-secondary" onclick="loadSampleBatchScenarios()">
+                Zaladuj przyklad
+              </button>
+              <button class="btn btn-small btn-primary" id="runBatchBtn" onclick="runBatchSizing()">
+                Uruchom Batch
+              </button>
+            </div>
+          </div>
+          <!-- Batch Results Container -->
+          <div id="batchResultsContainer" class="batch-results-container" style="display: none;">
+            <!-- Results will be rendered here by displayBatchResults() -->
+          </div>
+        </div>
       </div>
 
       <!-- Apply Configuration Button -->

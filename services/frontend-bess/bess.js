@@ -5209,4 +5209,232 @@ window.displayIRR = displayIRR;
 window.displayEnergyPriceSensitivity = displayEnergyPriceSensitivity;
 window.displayCapexSensitivity = displayCapexSensitivity;
 
-console.log('[BESS] bess.js v3.21 - v0.6.0 lifecycle features (IRR + sensitivity sweeps)');
+// =============================================================================
+// Batch Sizing UI (v0.9.0)
+// =============================================================================
+
+/**
+ * Run batch sizing with multiple scenarios.
+ * Collects scenario data from the batch input and sends to /sizing:batch API.
+ */
+async function runBatchSizing() {
+  const batchInput = document.getElementById('batchScenariosInput');
+  const runBtn = document.getElementById('runBatchBtn');
+  const resultsContainer = document.getElementById('batchResultsContainer');
+
+  if (!batchInput || !resultsContainer) {
+    console.error('[BATCH] Missing batch UI elements');
+    return;
+  }
+
+  // Parse scenarios from textarea
+  let scenarios;
+  try {
+    scenarios = JSON.parse(batchInput.value.trim());
+    if (!Array.isArray(scenarios)) {
+      scenarios = [scenarios]; // Single scenario
+    }
+  } catch (e) {
+    resultsContainer.innerHTML = `<div class="batch-error">Invalid JSON: ${e.message}</div>`;
+    return;
+  }
+
+  // Validate scenarios
+  if (scenarios.length === 0) {
+    resultsContainer.innerHTML = '<div class="batch-error">No scenarios provided</div>';
+    return;
+  }
+
+  // Build batch request
+  const batchRequest = {
+    batch_id: `batch_${Date.now()}`,
+    items: scenarios.map((scenario, idx) => ({
+      item_id: scenario.name || `scenario_${idx + 1}`,
+      request: {
+        load_kw: scenario.load_kw,
+        pv_generation_kw: scenario.pv_generation_kw,
+        energy_price_pln_kwh: scenario.energy_price_pln_kwh || 0.8,
+        mode: scenario.mode || 'stacked',
+        ...scenario  // Allow additional fields
+      }
+    }))
+  };
+
+  // Show loading state
+  runBtn.disabled = true;
+  runBtn.textContent = 'Processing...';
+  resultsContainer.innerHTML = '<div class="batch-loading">Processing batch...</div>';
+
+  try {
+    const bessDispatchUrl = '/api/bess-dispatch';
+    const response = await fetch(`${bessDispatchUrl}/sizing:batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batchRequest)
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const result = await response.json();
+    displayBatchResults(result);
+
+  } catch (e) {
+    resultsContainer.innerHTML = `<div class="batch-error">Batch request failed: ${e.message}</div>`;
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run Batch Sizing';
+  }
+}
+
+/**
+ * Display batch sizing results including portfolio summary.
+ */
+function displayBatchResults(batchResult) {
+  const container = document.getElementById('batchResultsContainer');
+  if (!container) return;
+
+  const { batch_id, summary, portfolio_summary, results } = batchResult;
+
+  // Build HTML
+  let html = `
+    <div class="batch-results">
+      <div class="batch-summary-header">
+        <h4>Batch: ${batch_id}</h4>
+        <div class="batch-stats">
+          <span class="stat-ok">${summary.ok_count} OK</span>
+          <span class="stat-error">${summary.error_count} errors</span>
+          <span class="stat-time">${summary.processing_time_ms.toFixed(0)}ms</span>
+        </div>
+      </div>
+  `;
+
+  // Portfolio Summary
+  if (portfolio_summary) {
+    html += `
+      <div class="portfolio-summary-card">
+        <h5>Portfolio Summary</h5>
+        <div class="portfolio-metrics">
+          <div class="metric">
+            <span class="metric-label">Total NPV</span>
+            <span class="metric-value ${portfolio_summary.total_npv_pln >= 0 ? 'positive' : 'negative'}">
+              ${formatNpv(portfolio_summary.total_npv_pln)}
+            </span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Avg NPV</span>
+            <span class="metric-value">${formatNpv(portfolio_summary.avg_npv_pln)}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Avg Payback</span>
+            <span class="metric-value">${portfolio_summary.avg_payback_years.toFixed(1)} lat</span>
+          </div>
+          <div class="metric optimal">
+            <span class="metric-label">Optymalny wariant</span>
+            <span class="metric-value">${portfolio_summary.portfolio_optimal_variant}</span>
+          </div>
+        </div>
+
+        <h6>Ranking wariantow</h6>
+        <table class="variant-rankings-table">
+          <thead>
+            <tr>
+              <th>Wariant</th>
+              <th>Total NPV</th>
+              <th>Avg NPV</th>
+              <th>Avg Payback</th>
+              <th>Recommended</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${portfolio_summary.variant_rankings.map((r, idx) => `
+              <tr class="${idx === 0 ? 'optimal-row' : ''}">
+                <td>${r.variant}</td>
+                <td class="${r.total_npv_pln >= 0 ? 'positive' : 'negative'}">${formatNpv(r.total_npv_pln)}</td>
+                <td>${formatNpv(r.avg_npv_pln)}</td>
+                <td>${r.avg_payback_years.toFixed(1)} lat</td>
+                <td>${r.recommended_count}x</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Individual Results
+  html += `
+    <div class="batch-items">
+      <h5>Wyniki scenariuszy</h5>
+      ${results.map(r => `
+        <div class="batch-item ${r.status}">
+          <div class="item-header">
+            <span class="item-id">${r.item_id}</span>
+            <span class="item-status ${r.status}">${r.status.toUpperCase()}</span>
+          </div>
+          ${r.status === 'ok' ? `
+            <div class="item-summary">
+              <span>Recommended: <strong>${r.response.recommended_variant}</strong></span>
+              <span>NPV: <strong class="${r.response.variants.find(v => v.is_recommended)?.npv_pln >= 0 ? 'positive' : 'negative'}">
+                ${formatNpv(r.response.variants.find(v => v.is_recommended)?.npv_pln || 0)}
+              </strong></span>
+              ${r.response.cache_info ? `
+                <span class="cache-status ${r.response.cache_info.cache_status}">
+                  Cache: ${r.response.cache_info.cache_status}
+                </span>
+              ` : ''}
+            </div>
+          ` : `
+            <div class="item-error">${r.error}</div>
+          `}
+        </div>
+      `).join('')}
+    </div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+/**
+ * Format NPV value for display.
+ */
+function formatNpv(value) {
+  if (Math.abs(value) >= 1000) {
+    return (value / 1000).toFixed(1) + ' tys. PLN';
+  }
+  return value.toFixed(0) + ' PLN';
+}
+
+/**
+ * Load sample batch scenarios into the input.
+ */
+function loadSampleBatchScenarios() {
+  const sampleScenarios = [
+    {
+      "name": "Site A - Office",
+      "load_kw": [50, 60, 70, 80, 90, 100, 110, 120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 30, 30, 30, 30, 40, 50, 50],
+      "pv_generation_kw": [0, 0, 0, 0, 5, 20, 40, 60, 80, 90, 95, 100, 95, 80, 60, 40, 20, 5, 0, 0, 0, 0, 0, 0],
+      "energy_price_pln_kwh": 0.85
+    },
+    {
+      "name": "Site B - Warehouse",
+      "load_kw": [30, 30, 30, 40, 50, 60, 70, 80, 80, 80, 80, 80, 80, 80, 70, 60, 50, 40, 30, 30, 30, 30, 30, 30],
+      "pv_generation_kw": [0, 0, 0, 0, 10, 30, 50, 70, 90, 95, 100, 100, 95, 80, 60, 40, 20, 10, 0, 0, 0, 0, 0, 0],
+      "energy_price_pln_kwh": 0.75
+    }
+  ];
+
+  const batchInput = document.getElementById('batchScenariosInput');
+  if (batchInput) {
+    batchInput.value = JSON.stringify(sampleScenarios, null, 2);
+  }
+}
+
+// Export batch functions
+window.runBatchSizing = runBatchSizing;
+window.displayBatchResults = displayBatchResults;
+window.loadSampleBatchScenarios = loadSampleBatchScenarios;
+
+console.log('[BESS] bess.js v3.22 - v0.9.0 batch sizing UI');
