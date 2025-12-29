@@ -1197,7 +1197,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # This ensures score reflects the actual economics of the sized variant
         opt_config = request.optimization
         objective = opt_config.objective if opt_config else OptimizationObjective.NPV
-        max_efc = opt_config.max_efc_per_year if opt_config else None
+        # Get max_efc from degradation_budget, not from optimization config
+        max_efc = None
+        if request.degradation_budget and request.degradation_budget.max_efc_per_year:
+            max_efc = request.degradation_budget.max_efc_per_year
         objective_score = calculate_objective_score(
             objective, dispatch_result, capex, npv, payback, max_efc
         )
