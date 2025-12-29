@@ -166,7 +166,13 @@ class PeriodInfo(BaseModel):
 
     Helps UI understand whether results are for a full year or partial period,
     and whether annualization was applied.
+
+    New fields (v0.3.3):
+    - steps: number of time steps in analysis
+    - step_minutes: time resolution (15 or 60)
+    - timezone: timezone string (e.g., "Europe/Warsaw")
     """
+    # Core period info
     period_hours: float = Field(..., description="Total hours in analysis period")
     period_days: float = Field(..., description="Total days in analysis period")
     is_full_year: bool = Field(..., description="True if period >= 8760 hours")
@@ -176,6 +182,11 @@ class PeriodInfo(BaseModel):
     )
     start_datetime: str = Field(..., description="Analysis start (ISO 8601)")
     end_datetime: str = Field(..., description="Analysis end (ISO 8601)")
+
+    # Extended fields (v0.3.3)
+    steps: Optional[int] = Field(None, description="Number of time steps")
+    step_minutes: Optional[int] = Field(None, description="Time resolution in minutes (15 or 60)")
+    timezone: Optional[str] = Field(None, description="Timezone (e.g., 'Europe/Warsaw')")
 
 
 # =============================================================================
@@ -992,6 +1003,20 @@ class SizingRequest(BaseModel):
     start_date: Optional[str] = Field(
         None,
         description="Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled."
+    )
+
+    # Period configuration (optional - for explicit time axis specification)
+    timezone: Optional[str] = Field(
+        None,
+        description="Timezone (e.g., 'Europe/Warsaw'). Used for period_info in response."
+    )
+    period_start: Optional[str] = Field(
+        None,
+        description="Analysis period start (ISO 8601, e.g., '2025-01-01T00:00:00')"
+    )
+    period_end: Optional[str] = Field(
+        None,
+        description="Analysis period end (ISO 8601, e.g., '2025-12-31T23:00:00')"
     )
 
     # Battery constraints

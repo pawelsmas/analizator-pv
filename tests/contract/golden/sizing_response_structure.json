@@ -53,6 +53,9 @@
     "is_full_year",
     "period_days",
     "period_hours",
-    "start_datetime"
+    "start_datetime",
+    "step_minutes",
+    "steps",
+    "timezone"
   ]
 }

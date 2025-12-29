@@ -532,6 +532,20 @@ class SizingRequestAPI(BaseModel):
         description="Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled."
     )
 
+    # Period configuration (optional - for explicit time axis specification)
+    timezone: Optional[str] = Field(
+        None,
+        description="Timezone (e.g., 'Europe/Warsaw'). Used for period_info in response."
+    )
+    period_start: Optional[str] = Field(
+        None,
+        description="Analysis period start (ISO 8601, e.g., '2025-01-01T00:00:00')"
+    )
+    period_end: Optional[str] = Field(
+        None,
+        description="Analysis period end (ISO 8601, e.g., '2025-12-31T23:00:00')"
+    )
+
     # Battery constraints
     min_power_kw: float = Field(10.0, ge=0)
     max_power_kw: float = Field(10000.0, ge=0)
@@ -780,6 +794,11 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             peak_limit_kw=request.peak_limit_kw,
             arbitrage_config=arb_config,
             start_date=request.start_date,
+            # Period configuration (v0.3.3)
+            timezone=request.timezone,
+            period_start=request.period_start,
+            period_end=request.period_end,
+            # Battery sizing
             min_power_kw=request.min_power_kw,
             max_power_kw=request.max_power_kw,
             power_steps=request.power_steps,
