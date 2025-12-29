@@ -2655,6 +2655,14 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
       // Mark as what-if
       requestBody._isWhatIf = true;
 
+      // v0.5.0: Add finance_config for cashflow + sensitivity analysis
+      requestBody.finance_config = {
+        horizon_years: 15,
+        discount_rate: 0.08,
+        include_cashflow_timeseries: true,
+        discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+      };
+
     } else {
       // Fallback: legacy inline request
       console.warn('⚠️ BESS Request Builder not available - using legacy inline request');
@@ -2691,6 +2699,15 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
       }
     }
 
+    // v0.5.0: Add finance_config for cashflow + sensitivity analysis
+    requestBody.finance_config = {
+      horizon_years: 15,
+      discount_rate: 0.08,
+      include_cashflow_timeseries: true,
+      discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+    };
+    console.log('💰 Finance config added for cashflow + sensitivity');
+
     const response = await fetch(`${bessDispatchUrl}/sizing`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2707,6 +2724,9 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
 
     // Display results
     displaySizingVariants(result);
+
+    // v0.5.0: Display finance section (cashflow + sensitivity)
+    displayFinanceSection(result);
 
     // Display degradation for recommended variant
     if (result.variants && result.variants.length > 0) {
@@ -4454,6 +4474,183 @@ async function runCapacityFeeAnalysisIfEnabled(variant) {
   displayCapacityFeeOverlay(savings);
 }
 
+// ============================================
+// v0.5.0: FINANCE SECTION - Cashflow + Sensitivity
+// ============================================
+
+/**
+ * Display finance section with cashflow table and sensitivity chart
+ * @param {object} result - Sizing result from bess-dispatch API
+ */
+function displayFinanceSection(result) {
+  const section = document.getElementById('financeSection');
+  if (!section) {
+    console.log('⚠️ Finance section element not found');
+    return;
+  }
+
+  // Find recommended variant
+  const recommended = result.variants?.find(v => v.is_recommended) || result.variants?.[0];
+  if (!recommended || !recommended.finance_summary) {
+    section.style.display = 'none';
+    return;
+  }
+
+  const fs = recommended.finance_summary;
+  section.style.display = 'block';
+
+  // Display cashflow table
+  displayCashflowTable(fs);
+
+  // Display discount rate sensitivity chart
+  displayDiscountRateSensitivity(fs);
+
+  console.log('💰 Finance section updated');
+}
+
+/**
+ * Display cashflow table from finance_summary.cashflow_timeseries
+ */
+function displayCashflowTable(financeSummary) {
+  const tableBody = document.getElementById('cashflowTableBody');
+  if (!tableBody) return;
+
+  const cashflow = financeSummary.cashflow_timeseries;
+  if (!cashflow || cashflow.length === 0) {
+    document.getElementById('cashflowSection').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('cashflowSection').style.display = 'block';
+
+  // Build table rows
+  const rows = cashflow.map(cf => {
+    const isYearZero = cf.year === 0;
+    const netClass = cf.net_cashflow_pln >= 0 ? 'positive' : 'negative';
+    const cumClass = cf.cumulative_cashflow_pln >= 0 ? 'positive' : 'negative';
+
+    return `
+      <tr class="${isYearZero ? 'year-zero' : ''}">
+        <td>${cf.year}</td>
+        <td>${isYearZero ? '-' : formatNumberEU(cf.savings_pln / 1000, 1)}</td>
+        <td>${isYearZero ? '-' : formatNumberEU(cf.opex_pln / 1000, 1)}</td>
+        <td class="${netClass}">${formatNumberEU(cf.net_cashflow_pln / 1000, 1)}</td>
+        <td class="${cumClass}">${formatNumberEU(cf.cumulative_cashflow_pln / 1000, 1)}</td>
+        <td>${formatNumberEU(cf.discounted_cashflow_pln / 1000, 1)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tableBody.innerHTML = rows;
+}
+
+/**
+ * Display discount rate sensitivity (NPV at different rates)
+ */
+function displayDiscountRateSensitivity(financeSummary) {
+  const section = document.getElementById('drSensitivitySection');
+  const chartContainer = document.getElementById('drSensitivityChart');
+  const tableBody = document.getElementById('drSensitivityTableBody');
+
+  if (!section) return;
+
+  const sensitivity = financeSummary.discount_rate_sensitivity;
+  if (!sensitivity || sensitivity.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+
+  // Build simple table (chart can be added later with Chart.js)
+  if (tableBody) {
+    const baseRate = financeSummary.discount_rate;
+    const rows = sensitivity.map(point => {
+      const isBase = Math.abs(point.discount_rate - baseRate) < 0.001;
+      const npvClass = point.npv_pln >= 0 ? 'positive' : 'negative';
+      const rowClass = isBase ? 'base-rate' : '';
+
+      return `
+        <tr class="${rowClass}">
+          <td>${formatNumberEU(point.discount_rate_pct, 1)}%${isBase ? ' (bazowa)' : ''}</td>
+          <td class="${npvClass}">${formatNumberEU(point.npv_pln / 1000, 0)} tys. PLN</td>
+        </tr>
+      `;
+    }).join('');
+
+    tableBody.innerHTML = rows;
+  }
+
+  // Draw chart if Chart.js is available
+  if (chartContainer && typeof Chart !== 'undefined') {
+    drawDiscountRateSensitivityChart(chartContainer, sensitivity, financeSummary.discount_rate);
+  }
+}
+
+/**
+ * Draw discount rate sensitivity chart using Chart.js
+ */
+function drawDiscountRateSensitivityChart(container, sensitivity, baseRate) {
+  const canvasId = 'drSensitivityCanvas';
+  let canvas = document.getElementById(canvasId);
+
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = canvasId;
+    canvas.height = 200;
+    container.innerHTML = '';
+    container.appendChild(canvas);
+  }
+
+  // Destroy existing chart
+  if (window.drSensitivityChartInstance) {
+    window.drSensitivityChartInstance.destroy();
+  }
+
+  const labels = sensitivity.map(p => `${formatNumberEU(p.discount_rate_pct, 0)}%`);
+  const npvValues = sensitivity.map(p => p.npv_pln / 1000);
+  const colors = sensitivity.map(p => p.npv_pln >= 0 ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)');
+  const borderColors = sensitivity.map(p => Math.abs(p.discount_rate - baseRate) < 0.001 ? '#3b82f6' : 'transparent');
+
+  window.drSensitivityChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'NPV (tys. PLN)',
+        data: npvValues,
+        backgroundColor: colors,
+        borderColor: borderColors,
+        borderWidth: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: {
+          display: true,
+          text: 'NPV vs Stopa dyskontowa',
+          color: '#e5e7eb'
+        }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'NPV (tys. PLN)', color: '#9ca3af' },
+          grid: { color: 'rgba(255,255,255,0.1)' },
+          ticks: { color: '#9ca3af' }
+        },
+        x: {
+          title: { display: true, text: 'Stopa dyskontowa', color: '#9ca3af' },
+          grid: { display: false },
+          ticks: { color: '#9ca3af' }
+        }
+      }
+    }
+  });
+}
+
 // Export ToU and Capacity Fee functions
 window.fetchTariffPresets = fetchTariffPresets;
 window.calculateToUCosts = calculateToUCosts;
@@ -4462,5 +4659,6 @@ window.fetchCapacityFeeSavings = fetchCapacityFeeSavings;
 window.displayCapacityFeeOverlay = displayCapacityFeeOverlay;
 window.hideCapacityFeeOverlay = hideCapacityFeeOverlay;
 window.runCapacityFeeAnalysisIfEnabled = runCapacityFeeAnalysisIfEnabled;
+window.displayFinanceSection = displayFinanceSection;
 
-console.log('📦 bess.js v3.17 - added ToU cost analysis + capacity fee overlay');
+console.log('📦 bess.js v3.20 - added finance section (cashflow + sensitivity)');

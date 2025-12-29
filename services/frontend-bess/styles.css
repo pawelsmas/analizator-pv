@@ -3006,3 +3006,141 @@ body {
   font-weight: 600;
   color: #333;
 }
+
+/* ================================================
+   v0.5.0: Finance Section Styles
+   ================================================ */
+
+.finance-section {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 24px;
+  margin-top: 24px;
+}
+
+.finance-section h2 {
+  color: #f8fafc;
+  font-size: 20px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.finance-subsection {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.finance-subsection h3 {
+  color: #e2e8f0;
+  font-size: 16px;
+  margin-bottom: 16px;
+}
+
+/* Cashflow Table */
+.cashflow-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cashflow-table th,
+.cashflow-table td {
+  padding: 10px 12px;
+  text-align: right;
+  border-bottom: 1px solid #334155;
+}
+
+.cashflow-table th {
+  background: rgba(59, 130, 246, 0.1);
+  color: #94a3b8;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.cashflow-table th:first-child,
+.cashflow-table td:first-child {
+  text-align: center;
+  width: 60px;
+}
+
+.cashflow-table td {
+  color: #e2e8f0;
+}
+
+.cashflow-table tr.year-zero {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.cashflow-table .positive {
+  color: #22c55e;
+}
+
+.cashflow-table .negative {
+  color: #ef4444;
+}
+
+/* Discount Rate Sensitivity */
+.dr-sensitivity-container {
+  display: grid;
+  grid-template-columns: 1fr 250px;
+  gap: 24px;
+}
+
+.dr-chart-container {
+  min-height: 200px;
+}
+
+.dr-sensitivity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dr-sensitivity-table th,
+.dr-sensitivity-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #334155;
+}
+
+.dr-sensitivity-table th {
+  background: rgba(59, 130, 246, 0.1);
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: left;
+}
+
+.dr-sensitivity-table td {
+  color: #e2e8f0;
+}
+
+.dr-sensitivity-table td:last-child {
+  text-align: right;
+  font-weight: 600;
+}
+
+.dr-sensitivity-table .positive {
+  color: #22c55e;
+}
+
+.dr-sensitivity-table .negative {
+  color: #ef4444;
+}
+
+.dr-sensitivity-table tr.base-rate {
+  background: rgba(59, 130, 246, 0.15);
+  border-left: 3px solid #3b82f6;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .dr-sensitivity-container {
+    grid-template-columns: 1fr;
+  }
+}

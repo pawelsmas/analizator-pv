@@ -997,6 +997,56 @@
       </div>
     </div>
 
+    <!-- v0.5.0: Finance Section - Cashflow + Discount Rate Sensitivity -->
+    <div class="chart-section full-width finance-section" id="financeSection" style="display: none;">
+      <h2>💰 Analiza Finansowa</h2>
+
+      <!-- Cashflow Table -->
+      <div class="finance-subsection" id="cashflowSection" style="display: none;">
+        <h3>📊 Przepływy Pieniężne (Cashflow)</h3>
+        <div class="table-wrapper">
+          <table class="cashflow-table">
+            <thead>
+              <tr>
+                <th>Rok</th>
+                <th>Oszczędności<br>[tys. PLN]</th>
+                <th>OPEX<br>[tys. PLN]</th>
+                <th>Netto<br>[tys. PLN]</th>
+                <th>Skumulowane<br>[tys. PLN]</th>
+                <th>Zdyskontowane<br>[tys. PLN]</th>
+              </tr>
+            </thead>
+            <tbody id="cashflowTableBody">
+              <!-- Dynamically filled -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Discount Rate Sensitivity -->
+      <div class="finance-subsection" id="drSensitivitySection" style="display: none;">
+        <h3>📈 Wrażliwość na Stopę Dyskontową</h3>
+        <div class="dr-sensitivity-container">
+          <div class="dr-chart-container" id="drSensitivityChart">
+            <!-- Chart rendered by drawDiscountRateSensitivityChart() -->
+          </div>
+          <div class="dr-table-container">
+            <table class="dr-sensitivity-table">
+              <thead>
+                <tr>
+                  <th>Stopa dyskontowa</th>
+                  <th>NPV</th>
+                </tr>
+              </thead>
+              <tbody id="drSensitivityTableBody">
+                <!-- Dynamically filled -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Footer Info -->
     <div class="info-banner full-width">
       <div class="banner-icon">ℹ️</div>
