@@ -87,6 +87,12 @@ from observability.finance_metrics import (
     record_energy_price_sensitivity_metrics,
     record_capex_sensitivity_metrics,
 )
+from observability.constraint_metrics import (
+    # v0.7.0 grid constraint metrics
+    record_grid_constraint_request,
+    record_export_cap_metrics,
+    record_import_cap_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1123,6 +1129,28 @@ def run_sizing_for_variant(
             penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
             if penalty_rate > 0:
                 savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
+
+    # 7. Record grid constraint metrics (v0.7.0 PR6)
+    if request.grid_constraints is not None:
+        mode_str = mode.value if hasattr(mode, "value") else str(mode)
+        record_grid_constraint_request(mode=mode_str)
+
+        cs = result.constraint_summary
+        if cs is not None:
+            # Export cap metrics
+            record_export_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.export_cap_hit_steps,
+                curtailed_kwh=cs.export_cap_curtailed_kwh,
+            )
+            # Import cap and unserved load metrics
+            penalty_pln = savings_breakdown.unserved_load_penalty_pln
+            record_import_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.import_cap_hit_steps,
+                unserved_kwh=cs.unserved_load_kwh,
+                penalty_pln=penalty_pln,
+            )
 
     # Calculate net savings
     savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
