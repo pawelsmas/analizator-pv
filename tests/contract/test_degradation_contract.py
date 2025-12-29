@@ -159,6 +159,65 @@ class TestDegradationBudgetDailyLimits:
             )
 
 
+class TestBatteryThroughputAndDegradationCost:
+    """Test battery_throughput_mwh and degradation_cost_pln in savings_breakdown."""
+
+    def test_battery_throughput_present(
+        self, wait_for_services, bess_dispatch_url
+    ):
+        """Verify battery_throughput_mwh is present in savings_breakdown."""
+        payload = load_smoke_payload("sizing_stacked_no_arbitrage.json")
+
+        resp = post_json("/sizing", payload)
+
+        recommended = pick_recommended_variant(resp)
+        sb = recommended.get("savings_breakdown", {})
+
+        assert "battery_throughput_mwh" in sb, "battery_throughput_mwh missing"
+        assert sb["battery_throughput_mwh"] >= 0, "battery_throughput_mwh should be >= 0"
+
+    def test_degradation_cost_calculated_with_rate(
+        self, wait_for_services, bess_dispatch_url
+    ):
+        """Verify degradation_cost_pln is calculated when degradation_cost_pln_mwh is set."""
+        payload = load_smoke_payload("sizing_stacked_no_arbitrage.json")
+
+        # Set explicit degradation cost rate
+        payload["degradation_cost_pln_mwh"] = 100.0  # 100 PLN/MWh
+
+        resp = post_json("/sizing", payload)
+
+        recommended = pick_recommended_variant(resp)
+        sb = recommended.get("savings_breakdown", {})
+
+        throughput = sb.get("battery_throughput_mwh", 0)
+        deg_cost = sb.get("degradation_cost_pln", 0)
+
+        # If there's throughput, there should be degradation cost
+        if throughput > 0:
+            expected_cost = throughput * 100.0  # rate * throughput
+            assert abs(deg_cost - expected_cost) < 1.0, (
+                f"degradation_cost_pln {deg_cost} != throughput {throughput} * 100 = {expected_cost}"
+            )
+
+    def test_zero_degradation_rate_zero_cost(
+        self, wait_for_services, bess_dispatch_url
+    ):
+        """Verify degradation_cost_pln is 0 when degradation_cost_pln_mwh is 0."""
+        payload = load_smoke_payload("sizing_stacked_no_arbitrage.json")
+
+        # Set zero degradation cost rate
+        payload["degradation_cost_pln_mwh"] = 0.0
+
+        resp = post_json("/sizing", payload)
+
+        recommended = pick_recommended_variant(resp)
+        sb = recommended.get("savings_breakdown", {})
+
+        deg_cost = sb.get("degradation_cost_pln", 0)
+        assert deg_cost == 0, f"degradation_cost_pln should be 0, got {deg_cost}"
+
+
 class TestDaysExceedingLimits:
     """Test days_exceeding_cycle_limit tracking."""
 

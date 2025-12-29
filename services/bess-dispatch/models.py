@@ -778,6 +778,9 @@ class SavingsBreakdown(BaseModel):
     # Legacy field (backward compatibility) - equals project_export_revenue_pln
     export_revenue_pln: float = Field(0.0, description="Revenue from grid export (sprzedaż nadwyżek do sieci)")
 
+    # Battery throughput (for degradation calculation)
+    battery_throughput_mwh: float = Field(0.0, description="Total battery throughput [MWh] (discharge only)")
+
     # Negative (costs)
     degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
 
@@ -1055,6 +1058,13 @@ class SizingRequest(BaseModel):
 
     # Pricing
     prices: PriceConfig = Field(default_factory=PriceConfig)
+
+    # Degradation cost (general parameter)
+    degradation_cost_pln_mwh: float = Field(
+        50.0,
+        ge=0,
+        description="Degradation cost per MWh throughput [PLN/MWh]. Used for savings_breakdown."
+    )
 
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
