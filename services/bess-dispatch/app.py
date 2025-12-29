@@ -66,6 +66,8 @@ from models import (
     BatchItemResult,
     BatchItemStatus,
     BatchSizingSummary,
+    PortfolioSummary,
+    PortfolioVariantRanking,
     # v0.9.0 Caching
     CacheInfo,
     CacheStatus,
@@ -1305,6 +1307,98 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
     return run_sizing(internal_request)
 
 
+def _build_portfolio_summary(
+    results: List[BatchItemResult]
+) -> Optional[PortfolioSummary]:
+    """
+    Build portfolio summary from batch results.
+
+    Aggregates metrics across all successful items to identify
+    the best overall variant for the portfolio.
+
+    Returns None if no successful results.
+    """
+    from collections import defaultdict
+
+    # Filter successful results
+    ok_results = [r for r in results if r.status == BatchItemStatus.OK and r.response]
+    if not ok_results:
+        return None
+
+    # Collect variant data across all items
+    # variant_name -> list of (npv, payback, is_feasible, is_recommended)
+    variant_data: Dict[str, List[Dict]] = defaultdict(list)
+    recommended_npv_sum = 0.0
+    recommended_payback_sum = 0.0
+    recommended_count = 0
+
+    for result in ok_results:
+        resp = result.response
+        recommended_variant = resp.get("recommended_variant", "")
+
+        # Get recommended variant data for overall metrics
+        for v in resp.get("variants", []):
+            variant_name = v.get("variant", "")
+            npv = v.get("npv_pln", 0.0)
+            payback = v.get("simple_payback_years", float("inf"))
+            is_recommended = (variant_name == recommended_variant)
+
+            # Check feasibility
+            feasibility = v.get("feasibility", {})
+            is_feasible = feasibility.get("is_feasible", True) if feasibility else True
+
+            variant_data[variant_name].append({
+                "npv": npv,
+                "payback": payback,
+                "is_feasible": is_feasible,
+                "is_recommended": is_recommended,
+            })
+
+            if is_recommended:
+                recommended_npv_sum += npv
+                recommended_payback_sum += payback
+                recommended_count += 1
+
+    # Build variant rankings
+    variant_rankings = []
+    for variant_name, data_list in variant_data.items():
+        total_npv = sum(d["npv"] for d in data_list)
+        avg_npv = total_npv / len(data_list) if data_list else 0.0
+
+        payback_values = [d["payback"] for d in data_list if d["payback"] < float("inf")]
+        avg_payback = sum(payback_values) / len(payback_values) if payback_values else float("inf")
+
+        feasible_count = sum(1 for d in data_list if d["is_feasible"])
+        rec_count = sum(1 for d in data_list if d["is_recommended"])
+
+        variant_rankings.append(PortfolioVariantRanking(
+            variant=variant_name,
+            total_npv_pln=total_npv,
+            avg_npv_pln=avg_npv,
+            avg_payback_years=avg_payback if avg_payback < float("inf") else 0.0,
+            feasible_count=feasible_count,
+            recommended_count=rec_count,
+        ))
+
+    # Sort by total NPV descending
+    variant_rankings.sort(key=lambda x: x.total_npv_pln, reverse=True)
+
+    # Portfolio optimal is the variant with highest total NPV
+    portfolio_optimal = variant_rankings[0].variant if variant_rankings else ""
+
+    # Overall metrics from recommended variants
+    overall_avg_npv = recommended_npv_sum / recommended_count if recommended_count > 0 else 0.0
+    overall_avg_payback = recommended_payback_sum / recommended_count if recommended_count > 0 else 0.0
+
+    return PortfolioSummary(
+        total_npv_pln=recommended_npv_sum,
+        avg_npv_pln=overall_avg_npv,
+        avg_payback_years=overall_avg_payback,
+        portfolio_optimal_variant=portfolio_optimal,
+        variant_rankings=variant_rankings,
+    )
+
+
 @app.post("/sizing:batch", response_model=BatchSizingResponse)
 async def run_batch_sizing(request: BatchSizingRequest):
     """
@@ -1375,6 +1469,9 @@ async def run_batch_sizing(request: BatchSizingRequest):
             assumptions_version = r.response.get("assumptions_version", assumptions_version)
             break
 
+    # Build portfolio summary from successful results
+    portfolio_summary = _build_portfolio_summary(results)
+
     return BatchSizingResponse(
         batch_id=batch_id,
         schema_version=schema_version,
@@ -1386,6 +1483,7 @@ async def run_batch_sizing(request: BatchSizingRequest):
             error_count=error_count,
             processing_time_ms=processing_time_ms,
         ),
+        portfolio_summary=portfolio_summary,
     )
 
 
