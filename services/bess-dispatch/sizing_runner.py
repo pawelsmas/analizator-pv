@@ -49,6 +49,7 @@ from models import (
     FinanceSummary,
     CashflowYear,
     DiscountRateSensitivityPoint,
+    MultiplierSensitivityPoint,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -346,6 +347,80 @@ def build_discount_rate_sensitivity(
         points.append(DiscountRateSensitivityPoint(
             discount_rate=rate,
             discount_rate_pct=rate * 100,
+            npv_pln=npv,
+        ))
+    return points
+
+
+def build_energy_price_sensitivity(
+    base_annual_savings: float,
+    capex: float,
+    opex_pct: float,
+    discount_rate: float,
+    horizon_years: int,
+    multipliers: List[float],
+) -> List[MultiplierSensitivityPoint]:
+    """
+    Calculate NPV at multiple energy price multipliers for sensitivity analysis.
+
+    Energy price affects annual savings proportionally.
+
+    Args:
+        base_annual_savings: Base annual savings at multiplier=1.0
+        capex: Initial investment
+        opex_pct: OPEX as fraction of CAPEX
+        discount_rate: Discount rate
+        horizon_years: Analysis horizon
+        multipliers: List of multipliers to evaluate (e.g., [0.8, 1.0, 1.2])
+
+    Returns:
+        List of MultiplierSensitivityPoint sorted by multiplier (ascending)
+    """
+    points = []
+    for m in sorted(multipliers):
+        # Energy price multiplier affects savings proportionally
+        adjusted_savings = base_annual_savings * m
+        npv = calculate_npv(adjusted_savings, capex, opex_pct, discount_rate, horizon_years)
+        points.append(MultiplierSensitivityPoint(
+            multiplier=m,
+            multiplier_pct=m * 100,
+            npv_pln=npv,
+        ))
+    return points
+
+
+def build_capex_sensitivity(
+    annual_savings: float,
+    base_capex: float,
+    opex_pct: float,
+    discount_rate: float,
+    horizon_years: int,
+    multipliers: List[float],
+) -> List[MultiplierSensitivityPoint]:
+    """
+    Calculate NPV at multiple CAPEX multipliers for sensitivity analysis.
+
+    CAPEX multiplier affects both initial investment and OPEX (as OPEX is % of CAPEX).
+
+    Args:
+        annual_savings: Annual savings (unchanged)
+        base_capex: Base CAPEX at multiplier=1.0
+        opex_pct: OPEX as fraction of CAPEX
+        discount_rate: Discount rate
+        horizon_years: Analysis horizon
+        multipliers: List of multipliers to evaluate (e.g., [0.8, 1.0, 1.2])
+
+    Returns:
+        List of MultiplierSensitivityPoint sorted by multiplier (ascending)
+    """
+    points = []
+    for m in sorted(multipliers):
+        # CAPEX multiplier affects both capex and opex (which is % of capex)
+        adjusted_capex = base_capex * m
+        npv = calculate_npv(annual_savings, adjusted_capex, opex_pct, discount_rate, horizon_years)
+        points.append(MultiplierSensitivityPoint(
+            multiplier=m,
+            multiplier_pct=m * 100,
             npv_pln=npv,
         ))
     return points
@@ -1536,6 +1611,30 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 discount_rates=fc.discount_rate_sweep,
             )
 
+        # Build energy price sensitivity if requested (v0.6.0 PR4)
+        ep_sensitivity = None
+        if fc and fc.energy_price_multiplier_sweep:
+            ep_sensitivity = build_energy_price_sensitivity(
+                base_annual_savings=dispatch_result.annual_savings_pln,
+                capex=capex,
+                opex_pct=fs_opex_pct,
+                discount_rate=fs_discount_rate,
+                horizon_years=fs_horizon,
+                multipliers=fc.energy_price_multiplier_sweep,
+            )
+
+        # Build CAPEX sensitivity if requested (v0.6.0 PR4)
+        capex_sens = None
+        if fc and fc.capex_multiplier_sweep:
+            capex_sens = build_capex_sensitivity(
+                annual_savings=dispatch_result.annual_savings_pln,
+                base_capex=capex,
+                opex_pct=fs_opex_pct,
+                discount_rate=fs_discount_rate,
+                horizon_years=fs_horizon,
+                multipliers=fc.capex_multiplier_sweep,
+            )
+
         finance_summary = FinanceSummary(
             capex_pln=capex,
             opex_pln_per_year=fs_opex,
@@ -1546,6 +1645,8 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             irr_pct=fs_irr,  # Use cashflow-based IRR when available
             cashflow_timeseries=cashflow_ts,
             discount_rate_sensitivity=dr_sensitivity,
+            energy_price_sensitivity=ep_sensitivity,  # v0.6.0 PR4
+            capex_sensitivity=capex_sens,  # v0.6.0 PR4
         )
 
         # Record finance metrics (v0.5.0 PR6)
