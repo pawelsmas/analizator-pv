@@ -709,18 +709,20 @@ class SavingsBreakdown(BaseModel):
     NOTE on terminology:
     - demand_charge_savings_pln = peak shaving (opłata za moc umowną / demand charge)
     - capacity_fee_savings_pln = opłata mocowa PL (rynek mocy) - osobny moduł
+    - export_revenue_pln = revenue from grid export (sprzedaż nadwyżek do sieci)
     """
-    # Positive savings
+    # Positive savings/revenue
     energy_savings_pln: float = Field(0.0, description="Savings from reduced grid import at flat price (volume × flat_rate)")
     arbitrage_savings_pln: float = Field(0.0, description="ADDITIONAL savings from ToU price spread (tou_total - flat_savings)")
     capacity_fee_savings_pln: float = Field(0.0, description="Savings from reduced capacity fee (opłata mocowa PL)")
     demand_charge_savings_pln: float = Field(0.0, description="Savings from peak shaving (opłata za moc / demand charge)")
+    export_revenue_pln: float = Field(0.0, description="Revenue from grid export (sprzedaż nadwyżek do sieci)")
 
     # Negative (costs)
     degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
 
     # Net
-    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee - degradation")
+    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export - degradation")
 
     def calculate_net(self) -> float:
         """Calculate net savings from components"""
@@ -728,7 +730,8 @@ class SavingsBreakdown(BaseModel):
             self.energy_savings_pln +
             self.arbitrage_savings_pln +
             self.capacity_fee_savings_pln +
-            self.demand_charge_savings_pln -
+            self.demand_charge_savings_pln +
+            self.export_revenue_pln -
             abs(self.degradation_cost_pln)
         )
 

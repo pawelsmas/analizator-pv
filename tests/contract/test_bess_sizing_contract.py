@@ -86,7 +86,7 @@ class TestSizingEndpointContract:
     def test_savings_breakdown_net_equals_components(
         self, wait_for_services, bess_dispatch_url, minimal_sizing_request
     ):
-        """Contract: net_savings_pln == energy + capacity + demand + arbitrage - degradation."""
+        """Contract: net_savings_pln == energy + capacity + demand + arbitrage + export - degradation."""
         response = requests.post(
             f"{bess_dispatch_url}/sizing",
             json=minimal_sizing_request,
@@ -104,11 +104,12 @@ class TestSizingEndpointContract:
             capacity = sb.get("capacity_fee_savings_pln", 0)
             demand = sb.get("demand_charge_savings_pln", 0)
             arbitrage = sb.get("arbitrage_savings_pln", 0)
+            export = sb.get("export_revenue_pln", 0)
             degradation = abs(sb.get("degradation_cost_pln", 0))
             net = sb.get("net_savings_pln", 0)
 
             # Calculate expected net
-            expected_net = energy + capacity + demand + arbitrage - degradation
+            expected_net = energy + capacity + demand + arbitrage + export - degradation
 
             # Allow small tolerance for floating point
             if abs(expected_net) > 1:  # Avoid division by zero

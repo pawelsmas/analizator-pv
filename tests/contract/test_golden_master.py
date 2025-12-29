@@ -130,7 +130,7 @@ class TestGoldenMaster:
         """
         Golden master: Verify net savings calculation is consistent.
 
-        Formula: net = energy + capacity + demand + arbitrage - degradation
+        Formula: net = energy + capacity + demand + arbitrage + export - degradation
         """
         response = requests.post(
             f"{bess_dispatch_url}/sizing",
@@ -148,10 +148,11 @@ class TestGoldenMaster:
             capacity = sb.get("capacity_fee_savings_pln", 0)
             demand = sb.get("demand_charge_savings_pln", 0)
             arbitrage = sb.get("arbitrage_savings_pln", 0)
+            export = sb.get("export_revenue_pln", 0)
             degradation = abs(sb.get("degradation_cost_pln", 0))
             net = sb.get("net_savings_pln", 0)
 
-            calculated = energy + capacity + demand + arbitrage - degradation
+            calculated = energy + capacity + demand + arbitrage + export - degradation
             diff = abs(net - calculated)
 
             results.append({

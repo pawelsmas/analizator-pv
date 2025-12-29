@@ -642,7 +642,12 @@ def run_sizing_for_variant(
             result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
         )
 
-    # 4. Degradation cost (negative) - applies to arbitrage modes
+    # 4. Export revenue (from grid export) - applies when export_price > 0
+    if result.total_grid_export_kwh > 0 and request.prices.export_price_pln_mwh > 0:
+        export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0
+        savings_breakdown.export_revenue_pln = result.total_grid_export_kwh * export_price_pln_kwh
+
+    # 5. Degradation cost (negative) - applies to arbitrage modes
     if arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
         # Total throughput for degradation cost
         total_throughput_kwh = result.degradation.throughput_total_mwh * 1000
