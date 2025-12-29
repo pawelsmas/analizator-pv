@@ -69,6 +69,23 @@ from .sizing_constraint_metrics import (
     record_pareto_frontier,
 )
 
+from .batch_metrics import (
+    # v0.9.0 batch sizing metrics
+    BATCH_REQUESTS,
+    BATCH_ITEMS_COUNT,
+    BATCH_OK_COUNT,
+    BATCH_ERROR_COUNT,
+    BATCH_PROCESSING_TIME_MS,
+    # v0.9.0 portfolio summary metrics
+    PORTFOLIO_SUMMARY_REQUESTS,
+    PORTFOLIO_OPTIMAL_VARIANT,
+    PORTFOLIO_TOTAL_NPV_KPLN,
+    PORTFOLIO_AVG_PAYBACK_YEARS,
+    # Helper functions
+    record_batch_request,
+    record_portfolio_summary,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -124,4 +141,17 @@ __all__ = [
     "PARETO_FRONTIER_SIZE",
     "PARETO_DOMINATED_COUNT",
     "record_pareto_frontier",
+    # Batch sizing metrics (v0.9.0)
+    "BATCH_REQUESTS",
+    "BATCH_ITEMS_COUNT",
+    "BATCH_OK_COUNT",
+    "BATCH_ERROR_COUNT",
+    "BATCH_PROCESSING_TIME_MS",
+    "record_batch_request",
+    # Portfolio summary metrics (v0.9.0)
+    "PORTFOLIO_SUMMARY_REQUESTS",
+    "PORTFOLIO_OPTIMAL_VARIANT",
+    "PORTFOLIO_TOTAL_NPV_KPLN",
+    "PORTFOLIO_AVG_PAYBACK_YEARS",
+    "record_portfolio_summary",
 ]
