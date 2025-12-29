@@ -54,6 +54,8 @@ from models import (
     ArbitrageConfig,
     ArbitrageStrategy,
     FinanceConfig,
+    # v0.7.0 Grid Constraints
+    GridConstraints,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -631,6 +633,13 @@ class SizingRequestAPI(BaseModel):
         description="Finance config: {horizon_years, discount_rate, savings_escalation_rate, opex_pln_per_year, opex_escalation_rate, capex_override_pln}. Overrides analysis_years/discount_rate when provided."
     )
 
+    # Grid constraints (v0.7.0) - physical grid connection limits
+    grid_constraints: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Grid constraints: {max_export_kw, max_import_kw, allow_export}. "
+                    "Applied to both baseline and project scenarios."
+    )
+
     @model_validator(mode='after')
     def validate_optimization_objective(self):
         """Validate optimization.objective is a valid enum value."""
@@ -836,6 +845,16 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 capex_multiplier_sweep=fc_dict.get("capex_multiplier_sweep"),
             )
 
+        # Parse grid_constraints (v0.7.0)
+        grid_constraints = None
+        if request.grid_constraints:
+            gc_dict = request.grid_constraints
+            grid_constraints = GridConstraints(
+                max_export_kw=gc_dict.get("max_export_kw"),
+                max_import_kw=gc_dict.get("max_import_kw"),
+                allow_export=gc_dict.get("allow_export", True),
+            )
+
         internal_request = SizingRequest(
             pv_generation_kw=request.pv_generation_kw,
             load_kw=request.load_kw,
@@ -874,6 +893,8 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
             # Finance (v0.5.0)
             finance_config=finance_config,
+            # Grid constraints (v0.7.0)
+            grid_constraints=grid_constraints,
         )
 
         result = run_sizing(internal_request)

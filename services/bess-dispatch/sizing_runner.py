@@ -50,6 +50,9 @@ from models import (
     CashflowYear,
     DiscountRateSensitivityPoint,
     MultiplierSensitivityPoint,
+    # v0.7.0 Grid Constraints
+    GridConstraints,
+    GridConstraintsApplied,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1917,6 +1920,20 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         pv_degradation_pct_per_year=fc.pv_degradation_pct_per_year if fc else 0.0,
     )
 
+    # Build grid_constraints_applied (v0.7.0) - echo of grid constraints used
+    grid_constraints_applied = None
+    if request.grid_constraints is not None:
+        gc = request.grid_constraints
+        # Compute effective max_export_kw: if allow_export=False, treat as 0
+        effective_max_export = gc.max_export_kw
+        if not gc.allow_export:
+            effective_max_export = 0.0
+        grid_constraints_applied = GridConstraintsApplied(
+            max_export_kw=effective_max_export,
+            max_import_kw=gc.max_import_kw,
+            allow_export=gc.allow_export,
+        )
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -1939,6 +1956,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         objective_used=objective_used,
         applied_parameters=applied_parameters,
         finance_assumptions=finance_assumptions,  # v0.5.0
+        grid_constraints_applied=grid_constraints_applied,  # v0.7.0
         warnings=warnings,
     )
 
