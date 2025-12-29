@@ -525,13 +525,15 @@ def run_sizing_for_variant(
 
     savings_breakdown = SavingsBreakdown()
 
-    # Baseline grid import (no BESS)
+    # Baseline grid import/export (no BESS)
     # For modes with PV: net_load = load - pv, clipped to >= 0
-    # For LOAD_ONLY: net_load = load
+    # For LOAD_ONLY: net_load = load, no export
     if mode == DispatchMode.LOAD_ONLY:
         baseline_grid_import_kw = load_kw.copy()
+        baseline_grid_export_kw = np.zeros_like(load_kw)
     else:
         baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
+        baseline_grid_export_kw = np.maximum(pv_kw - load_kw, 0)  # PV surplus
 
     # Get actual grid import from dispatch result
     if result.hourly_grid_import_kw is not None:
@@ -642,10 +644,26 @@ def run_sizing_for_variant(
             result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
         )
 
-    # 4. Export revenue (from grid export) - applies when export_price > 0
-    if result.total_grid_export_kwh > 0 and request.prices.export_price_pln_mwh > 0:
-        export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0
-        savings_breakdown.export_revenue_pln = result.total_grid_export_kwh * export_price_pln_kwh
+    # 4. Export revenue breakdown (baseline vs project)
+    # Baseline: PV surplus without battery (all excess goes to grid)
+    # Project: With battery (some PV is stored, so less export)
+    export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0 if request.prices.export_price_pln_mwh > 0 else 0.0
+
+    # Calculate baseline export (no battery) - in kWh
+    baseline_export_kwh = np.sum(baseline_grid_export_kw) * dt_hours
+    savings_breakdown.baseline_export_revenue_pln = baseline_export_kwh * export_price_pln_kwh
+
+    # Calculate project export (with battery) - in kWh
+    project_export_kwh = result.total_grid_export_kwh
+    savings_breakdown.project_export_revenue_pln = project_export_kwh * export_price_pln_kwh
+
+    # Export revenue change = project - baseline (typically NEGATIVE because battery uses PV)
+    savings_breakdown.export_revenue_savings_pln = (
+        savings_breakdown.project_export_revenue_pln - savings_breakdown.baseline_export_revenue_pln
+    )
+
+    # Legacy field for backward compatibility
+    savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
 
     # 5. Degradation cost (negative) - applies to arbitrage modes
     if arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
