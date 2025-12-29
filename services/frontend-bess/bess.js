@@ -4061,6 +4061,9 @@ function updateConfigResultsSummary(result) {
   // v3.19: Populate top 3 variants comparison table
   updateTopVariantsCompareTable(result);
 
+  // v0.8.0: Populate Pareto Frontier table
+  updateParetoFrontierTable(result);
+
   console.log('📊 Results summary updated:', {
     variant: result.recommended_variant,
     npv: recommended.npv_pln,
@@ -4125,6 +4128,64 @@ function updateTopVariantsCompareTable(result) {
   tableBody.innerHTML = rows;
 
   console.log('📊 Top variants table updated:', details.length, 'variants');
+}
+
+/**
+ * v0.8.0: Update Pareto Frontier table
+ * Uses pareto_frontier from API (v0.8.0+) to show dominance analysis
+ * @param {object} result - Sizing result from bess-dispatch API
+ */
+function updateParetoFrontierTable(result) {
+  const paretoPanel = document.getElementById('paretoFrontierCompare');
+  const tableBody = document.getElementById('paretoFrontierTableBody');
+
+  if (!paretoPanel || !tableBody) return;
+
+  // Use pareto_frontier if available (v0.8.0+)
+  const pareto = result.pareto_frontier;
+
+  if (!pareto || pareto.length === 0) {
+    paretoPanel.style.display = 'none';
+    return;
+  }
+
+  // Show panel
+  paretoPanel.style.display = 'block';
+
+  // Variant labels
+  const variantLabels = {
+    'small': 'Small (1h)',
+    'medium': 'Medium (2h)',
+    'large': 'Large (4h)'
+  };
+
+  // Build table rows
+  const rows = pareto.map(point => {
+    const isOnFrontier = !point.is_dominated;
+    const rowClass = isOnFrontier ? 'pareto-row' : 'dominated-row';
+    const statusBadge = isOnFrontier
+      ? '<span class="pareto-badge">Pareto</span>'
+      : '<span class="dominated-badge">Dominated</span>';
+
+    const label = variantLabels[point.variant] || point.variant;
+    const npvFormatted = `${formatNumberEU(point.npv_pln / 1000, 0)} tys.`;
+    const npvClass = point.npv_pln >= 0 ? 'positive' : 'negative';
+    const paybackFormatted = point.payback_years < 100 ? `${formatNumberEU(point.payback_years, 1)} lat` : '> 25 lat';
+
+    return `
+      <tr class="${rowClass}">
+        <td>${label}</td>
+        <td class="${npvClass}">${npvFormatted}</td>
+        <td>${paybackFormatted}</td>
+        <td>${statusBadge}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tableBody.innerHTML = rows;
+
+  const frontierCount = pareto.filter(p => !p.is_dominated).length;
+  console.log('📈 Pareto frontier table updated:', pareto.length, 'points,', frontierCount, 'on frontier');
 }
 
 /**
