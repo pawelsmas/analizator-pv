@@ -107,6 +107,7 @@
     "cumulative_cashflow_pln",
     "discounted_cashflow_pln",
     "net_cashflow_pln",
+    "nominal_cashflow_pln",
     "opex_pln",
     "savings_pln",
     "year"
