@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from observability.http_metrics import (
     HTTP_REQUESTS_TOTAL,
@@ -623,6 +623,19 @@ class SizingRequestAPI(BaseModel):
         False,
         description="If True, include per-timestep energy flows in response. Default: False to keep response small."
     )
+
+    @model_validator(mode='after')
+    def validate_optimization_objective(self):
+        """Validate optimization.objective is a valid enum value."""
+        if self.optimization is not None and 'objective' in self.optimization:
+            objective = self.optimization['objective']
+            valid_objectives = {e.value for e in OptimizationObjective}
+            if objective not in valid_objectives:
+                raise ValueError(
+                    f"Invalid objective '{objective}'. "
+                    f"Valid values: {sorted(valid_objectives)}"
+                )
+        return self
 
 
 @app.post("/sizing", response_model=SizingResult)
