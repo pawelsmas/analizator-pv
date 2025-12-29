@@ -824,6 +824,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
                 capex_override_pln=fc_dict.get("capex_override_pln"),
                 include_cashflow_timeseries=fc_dict.get("include_cashflow_timeseries", False),
+                discount_rate_sweep=fc_dict.get("discount_rate_sweep"),
             )
 
         internal_request = SizingRequest(

@@ -48,6 +48,7 @@ from models import (
     FinanceAssumptions,
     FinanceSummary,
     CashflowYear,
+    DiscountRateSensitivityPoint,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -204,6 +205,37 @@ def build_cashflow_timeseries(
         ))
 
     return cashflow_list
+
+
+def build_discount_rate_sensitivity(
+    annual_savings: float,
+    capex: float,
+    opex_pct: float,
+    horizon_years: int,
+    discount_rates: List[float],
+) -> List[DiscountRateSensitivityPoint]:
+    """
+    Calculate NPV at multiple discount rates for sensitivity analysis.
+
+    Args:
+        annual_savings: Annual savings (positive = revenue)
+        capex: Initial investment
+        opex_pct: OPEX as fraction of CAPEX
+        horizon_years: Analysis horizon
+        discount_rates: List of discount rates to evaluate (e.g., [0.05, 0.08, 0.10])
+
+    Returns:
+        List of DiscountRateSensitivityPoint sorted by discount_rate (ascending)
+    """
+    points = []
+    for rate in sorted(discount_rates):
+        npv = calculate_npv(annual_savings, capex, opex_pct, rate, horizon_years)
+        points.append(DiscountRateSensitivityPoint(
+            discount_rate=rate,
+            discount_rate_pct=rate * 100,
+            npv_pln=npv,
+        ))
+    return points
 
 
 # =============================================================================
@@ -1361,6 +1393,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 horizon_years=fs_horizon,
             )
 
+        # Build discount rate sensitivity if requested (v0.5.0 PR3)
+        dr_sensitivity = None
+        if fc and fc.discount_rate_sweep:
+            dr_sensitivity = build_discount_rate_sensitivity(
+                annual_savings=dispatch_result.annual_savings_pln,
+                capex=capex,
+                opex_pct=fs_opex_pct,
+                horizon_years=fs_horizon,
+                discount_rates=fc.discount_rate_sweep,
+            )
+
         finance_summary = FinanceSummary(
             capex_pln=capex,
             opex_pln_per_year=fs_opex,
@@ -1370,6 +1413,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             payback_years=payback,
             irr_pct=irr,
             cashflow_timeseries=cashflow_ts,
+            discount_rate_sensitivity=dr_sensitivity,
         )
 
         variant_result = SizingVariantResult(

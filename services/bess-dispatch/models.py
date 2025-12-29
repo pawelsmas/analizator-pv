@@ -1245,6 +1245,11 @@ class FinanceConfig(BaseModel):
         False,
         description="If True, include year-by-year cashflow_timeseries in finance_summary."
     )
+    discount_rate_sweep: Optional[List[float]] = Field(
+        None,
+        description="List of discount rates (e.g., [0.05, 0.08, 0.10, 0.12]) for sensitivity analysis. "
+                    "If provided, finance_summary will include discount_rate_sensitivity array."
+    )
 
 
 class FinanceAssumptions(BaseModel):
@@ -1288,6 +1293,11 @@ class FinanceSummary(BaseModel):
         None,
         description="Year-by-year cashflow breakdown. Only present when include_cashflow_timeseries=True."
     )
+    # Discount rate sensitivity (optional, only when discount_rate_sweep provided)
+    discount_rate_sensitivity: Optional[List["DiscountRateSensitivityPoint"]] = Field(
+        None,
+        description="NPV at different discount rates. Only present when discount_rate_sweep provided."
+    )
 
 
 class CashflowYear(BaseModel):
@@ -1311,6 +1321,27 @@ class CashflowYear(BaseModel):
     discounted_cashflow_pln: float = Field(
         ...,
         description="Net cashflow discounted to year 0"
+    )
+
+
+class DiscountRateSensitivityPoint(BaseModel):
+    """
+    NPV at a specific discount rate.
+
+    Used for discount rate sensitivity charts showing how NPV varies
+    with different discount rate assumptions.
+    """
+    discount_rate: float = Field(
+        ...,
+        description="Discount rate (0.05 = 5%)"
+    )
+    discount_rate_pct: float = Field(
+        ...,
+        description="Discount rate as percentage (5.0 = 5%)"
+    )
+    npv_pln: float = Field(
+        ...,
+        description="NPV at this discount rate [PLN]"
     )
 
 
