@@ -137,7 +137,7 @@ class TestGoldenMaster:
         """
         Golden master: Verify net savings calculation is consistent.
 
-        Formula: net = energy + capacity + demand + arbitrage + export_delta - degradation
+        Formula: net = energy + capacity + demand + arbitrage + export_delta - degradation - unserved_penalty
 
         Note: export_delta = export_revenue_savings_pln (project - baseline),
         which is typically NEGATIVE (battery uses PV that would be exported).
@@ -160,9 +160,10 @@ class TestGoldenMaster:
             arbitrage = sb.get("arbitrage_savings_pln", 0)
             export_delta = sb.get("export_revenue_savings_pln", 0)  # project - baseline
             degradation = abs(sb.get("degradation_cost_pln", 0))
+            unserved_penalty = abs(sb.get("unserved_load_penalty_pln", 0))  # v0.7.0
             net = sb.get("net_savings_pln", 0)
 
-            calculated = energy + capacity + demand + arbitrage + export_delta - degradation
+            calculated = energy + capacity + demand + arbitrage + export_delta - degradation - unserved_penalty
             diff = abs(net - calculated)
 
             results.append({

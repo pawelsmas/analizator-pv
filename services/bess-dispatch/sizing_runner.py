@@ -1115,6 +1115,15 @@ def run_sizing_for_variant(
             total_throughput_kwh * request.arbitrage_config.degradation_cost_pln_kwh
         )
 
+    # 6. Unserved load penalty (v0.7.0 PR4)
+    # If import cap caused unserved load and penalty rate is set, calculate cost
+    if result.constraint_summary is not None:
+        unserved_kwh = result.constraint_summary.unserved_load_kwh
+        if unserved_kwh > 0 and request.grid_constraints is not None:
+            penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
+            if penalty_rate > 0:
+                savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
+
     # Calculate net savings
     savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
 
@@ -1932,6 +1941,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             max_export_kw=effective_max_export,
             max_import_kw=gc.max_import_kw,
             allow_export=gc.allow_export,
+            unserved_load_penalty_pln_kwh=gc.unserved_load_penalty_pln_kwh,
         )
 
     return SizingResult(

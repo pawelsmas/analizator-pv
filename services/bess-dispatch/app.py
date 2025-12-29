@@ -853,6 +853,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 max_export_kw=gc_dict.get("max_export_kw"),
                 max_import_kw=gc_dict.get("max_import_kw"),
                 allow_export=gc_dict.get("allow_export", True),
+                unserved_load_penalty_pln_kwh=gc_dict.get("unserved_load_penalty_pln_kwh", 0.0),
             )
 
         internal_request = SizingRequest(
