@@ -99,6 +99,12 @@ from observability.constraint_metrics import (
     record_export_cap_metrics,
     record_import_cap_metrics,
 )
+from observability.sizing_constraint_metrics import (
+    # v0.8.0 sizing constraint + Pareto metrics
+    record_sizing_constraints_request,
+    record_sizing_feasibility,
+    record_pareto_frontier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2209,6 +2215,30 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     # Compute Pareto frontier for NPV vs Payback (v0.8.0)
     pareto_frontier = compute_pareto_frontier(variants) if variants else None
+
+    # Record v0.8.0 metrics for constraints and Pareto
+    if request.constraints_config is not None:
+        cc = request.constraints_config
+        record_sizing_constraints_request(
+            mode=mode_str,
+            has_max_capex=cc.max_capex_pln is not None,
+            has_max_payback=cc.max_payback_years is not None,
+            has_min_npv=cc.min_npv_pln is not None,
+        )
+        record_sizing_feasibility(
+            mode=mode_str,
+            feasible_count=constraints_report.feasible_count,
+            total_variants=len(variants),
+        )
+
+    if pareto_frontier:
+        frontier_size = sum(1 for p in pareto_frontier if not p.is_dominated)
+        dominated_count = sum(1 for p in pareto_frontier if p.is_dominated)
+        record_pareto_frontier(
+            mode=mode_str,
+            frontier_size=frontier_size,
+            dominated_count=dominated_count,
+        )
 
     return SizingResult(
         schema_version=version_info["schema_version"],

@@ -50,6 +50,25 @@ from .constraint_metrics import (
     record_import_cap_metrics,
 )
 
+from .sizing_constraint_metrics import (
+    # v0.8.0 sizing constraint metrics
+    SIZING_CONSTRAINTS_REQUESTS,
+    SIZING_CONSTRAINTS_FEASIBLE,
+    SIZING_CONSTRAINTS_NONE_FEASIBLE,
+    SIZING_FEASIBLE_VARIANTS_COUNT,
+    SIZING_CONSTRAINT_MAX_CAPEX,
+    SIZING_CONSTRAINT_MAX_PAYBACK,
+    SIZING_CONSTRAINT_MIN_NPV,
+    # v0.8.0 Pareto frontier metrics
+    PARETO_FRONTIER_REQUESTS,
+    PARETO_FRONTIER_SIZE,
+    PARETO_DOMINATED_COUNT,
+    # Helper functions
+    record_sizing_constraints_request,
+    record_sizing_feasibility,
+    record_pareto_frontier,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -90,4 +109,19 @@ __all__ = [
     "record_grid_constraint_request",
     "record_export_cap_metrics",
     "record_import_cap_metrics",
+    # Sizing constraint metrics (v0.8.0)
+    "SIZING_CONSTRAINTS_REQUESTS",
+    "SIZING_CONSTRAINTS_FEASIBLE",
+    "SIZING_CONSTRAINTS_NONE_FEASIBLE",
+    "SIZING_FEASIBLE_VARIANTS_COUNT",
+    "SIZING_CONSTRAINT_MAX_CAPEX",
+    "SIZING_CONSTRAINT_MAX_PAYBACK",
+    "SIZING_CONSTRAINT_MIN_NPV",
+    "record_sizing_constraints_request",
+    "record_sizing_feasibility",
+    # Pareto frontier metrics (v0.8.0)
+    "PARETO_FRONTIER_REQUESTS",
+    "PARETO_FRONTIER_SIZE",
+    "PARETO_DOMINATED_COUNT",
+    "record_pareto_frontier",
 ]
