@@ -1228,6 +1228,11 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
         variants.append(variant_result)
 
+    # Determine objective used (v0.4)
+    opt_config = request.optimization
+    objective = opt_config.objective if opt_config else OptimizationObjective.NPV
+    objective_used = objective.value  # Convert enum to string
+
     # Find recommended variant (highest score)
     recommended_reason = None
     if variants:
@@ -1237,8 +1242,6 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
         # Generate human-readable explanation (v0.4)
         try:
-            opt_config = request.optimization
-            objective = opt_config.objective if opt_config else OptimizationObjective.NPV
             constraints = opt_config.constraints if opt_config else None
             recommended_reason = generate_recommended_reason(
                 recommended, variants, objective, constraints
@@ -1411,6 +1414,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_energy_kwh=recommended.energy_kwh if recommended else 0,
         recommended_reason=recommended_reason,
         top_variants=top_variants,
+        objective_used=objective_used,
         applied_parameters=applied_parameters,
         warnings=warnings,
     )
