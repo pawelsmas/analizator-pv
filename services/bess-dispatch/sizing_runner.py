@@ -1201,8 +1201,23 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     is_full_year = period_hours >= 8760
     annualization_factor = 1.0 if is_full_year else (8760 / period_hours)
 
-    # Determine start/end datetime
-    if request.analytical_period is not None:
+    # Get step_minutes from request
+    step_minutes = request.interval_minutes
+
+    # Get timezone from request (or analytical_period)
+    timezone_str = getattr(request, 'timezone', None)
+    if timezone_str is None and request.analytical_period is not None:
+        timezone_str = getattr(request.analytical_period, 'timezone', None)
+
+    # Determine start/end datetime - prefer explicit period_start/period_end
+    period_start_req = getattr(request, 'period_start', None)
+    period_end_req = getattr(request, 'period_end', None)
+
+    if period_start_req and period_end_req:
+        # Use explicit period_start/period_end from request
+        start_dt = period_start_req
+        end_dt = period_end_req
+    elif request.analytical_period is not None:
         start_dt = request.analytical_period.start_datetime
         end_dt = request.analytical_period.end_datetime
     elif request.start_date:
@@ -1221,6 +1236,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         annualization_factor=annualization_factor,
         start_datetime=start_dt,
         end_datetime=end_dt,
+        # New fields (v0.3.3)
+        steps=n,
+        step_minutes=step_minutes,
+        timezone=timezone_str,
     )
 
     # Get version info for API response
