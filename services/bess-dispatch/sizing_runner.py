@@ -239,6 +239,8 @@ def build_cashflow_timeseries(
     horizon_years: int,
     replacement_year: Optional[int] = None,
     replacement_capex_pln: Optional[float] = None,
+    bess_degradation_pct_per_year: float = 0.0,
+    pv_degradation_pct_per_year: float = 0.0,
 ) -> List[CashflowYear]:
     """
     Build year-by-year cashflow timeseries.
@@ -251,15 +253,25 @@ def build_cashflow_timeseries(
         horizon_years: Analysis horizon in years
         replacement_year: Year for battery replacement (1-30). If None, no replacement.
         replacement_capex_pln: Replacement cost in PLN. If None, uses original capex.
+        bess_degradation_pct_per_year: BESS capacity degradation [%/year]. E.g., 2.0 = 2%.
+        pv_degradation_pct_per_year: PV output degradation [%/year]. E.g., 0.5 = 0.5%.
 
     Returns:
         List of CashflowYear from year 0 (investment) through horizon_years
+
+    Degradation model:
+        Combined degradation factor = (1 - bess_rate)^year * (1 - pv_rate)^year
+        Degraded savings = base_savings * combined_factor
     """
     cashflow_list = []
     cumulative = 0.0
 
     # Determine replacement cost (use original capex if not specified)
     actual_replacement_cost = replacement_capex_pln if replacement_capex_pln is not None else capex
+
+    # Convert degradation percentages to decimal rates
+    bess_rate = bess_degradation_pct_per_year / 100.0
+    pv_rate = pv_degradation_pct_per_year / 100.0
 
     # Year 0: Initial investment
     net_cf_0 = -capex
@@ -276,8 +288,17 @@ def build_cashflow_timeseries(
 
     # Years 1 to horizon_years: Operating cashflows
     for year in range(1, horizon_years + 1):
-        # Base operating cashflow
-        net_cf = annual_savings - annual_opex
+        # Calculate degradation factor for this year
+        # Combined: (1 - bess_rate)^year * (1 - pv_rate)^year
+        bess_factor = (1.0 - bess_rate) ** year
+        pv_factor = (1.0 - pv_rate) ** year
+        combined_factor = bess_factor * pv_factor
+
+        # Apply degradation to savings (savings decrease over time)
+        degraded_savings = annual_savings * combined_factor
+
+        # Base operating cashflow with degraded savings
+        net_cf = degraded_savings - annual_opex
 
         # Apply replacement cost in replacement year (if specified and within horizon)
         if replacement_year is not None and year == replacement_year:
@@ -288,7 +309,7 @@ def build_cashflow_timeseries(
 
         cashflow_list.append(CashflowYear(
             year=year,
-            savings_pln=annual_savings,
+            savings_pln=degraded_savings,  # Degraded savings shown in cashflow
             opex_pln=annual_opex,
             net_cashflow_pln=net_cf,
             cumulative_cashflow_pln=cumulative,
@@ -1474,7 +1495,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             fs_opex_pct, fs_discount_rate, fs_horizon
         )
 
-        # Build cashflow timeseries if requested (v0.5.0 PR2, v0.6.0: replacement)
+        # Build cashflow timeseries if requested (v0.5.0 PR2, v0.6.0: replacement + degradation)
         cashflow_ts = None
         fs_irr = irr  # Default to simple IRR calculation
         if fc and fc.include_cashflow_timeseries:
@@ -1486,15 +1507,22 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 horizon_years=fs_horizon,
                 replacement_year=fc.replacement_year,
                 replacement_capex_pln=fc.replacement_capex_pln,
+                bess_degradation_pct_per_year=fc.bess_degradation_pct_per_year,
+                pv_degradation_pct_per_year=fc.pv_degradation_pct_per_year,
             )
             # When cashflow is available, calculate IRR from cashflow using bisection
             # This ensures consistency: irr_pct is the rate where NPV of cashflow = 0
             nominal_cfs = [cf.nominal_cashflow_pln for cf in cashflow_ts]
             fs_irr = calculate_irr_from_cashflow(nominal_cfs)
 
-            # v0.6.0: Recalculate NPV from cashflow when replacement is present
-            # This ensures NPV accounts for the replacement cost
-            if fc.replacement_year is not None:
+            # v0.6.0: Recalculate NPV from cashflow when replacement or degradation is present
+            # This ensures NPV accounts for the replacement cost and degraded savings
+            has_lifecycle_effects = (
+                fc.replacement_year is not None or
+                fc.bess_degradation_pct_per_year > 0 or
+                fc.pv_degradation_pct_per_year > 0
+            )
+            if has_lifecycle_effects:
                 fs_npv = sum(cf.discounted_cashflow_pln for cf in cashflow_ts)
 
         # Build discount rate sensitivity if requested (v0.5.0 PR3)
@@ -1749,7 +1777,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         export_price_pln_mwh=request.prices.export_price_pln_mwh,
     )
 
-    # Build finance_assumptions (v0.5.0, v0.6.0: replacement) - echo of finance_config values used
+    # Build finance_assumptions (v0.5.0, v0.6.0: replacement + degradation) - echo of finance_config values used
     fc = request.finance_config
     finance_assumptions = FinanceAssumptions(
         horizon_years=fc.horizon_years if fc else request.analysis_years,
@@ -1760,6 +1788,8 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         capex_override_pln=fc.capex_override_pln if fc else None,
         replacement_year=fc.replacement_year if fc else None,
         replacement_capex_pln=fc.replacement_capex_pln if fc else None,
+        bess_degradation_pct_per_year=fc.bess_degradation_pct_per_year if fc else 0.0,
+        pv_degradation_pct_per_year=fc.pv_degradation_pct_per_year if fc else 0.0,
     )
 
     return SizingResult(
