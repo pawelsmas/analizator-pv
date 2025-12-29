@@ -374,6 +374,81 @@ def calculate_objective_score(
     return npv  # Default to NPV
 
 
+def generate_recommended_reason(
+    recommended: "SizingVariantResult",
+    all_variants: list,
+    objective: OptimizationObjective,
+    constraints: Optional[list] = None,
+) -> str:
+    """
+    Generate human-readable explanation for why a variant was recommended.
+
+    Args:
+        recommended: The recommended variant
+        all_variants: List of all variants
+        objective: The optimization objective used
+        constraints: Optional list of constraints applied
+
+    Returns:
+        Human-readable explanation string
+    """
+    # Format numbers for Polish locale
+    def fmt_pln(value: float) -> str:
+        """Format PLN value with thousand separators."""
+        return f"{value:,.0f}".replace(",", " ")
+
+    # Base explanation depends on objective
+    if objective == OptimizationObjective.NPV:
+        reason = f"Najwyższe NPV ({fmt_pln(recommended.npv_pln)} PLN)"
+    elif objective == OptimizationObjective.PAYBACK:
+        reason = f"Najkrótszy okres zwrotu ({recommended.simple_payback_years:.1f} lat)"
+    elif objective == OptimizationObjective.SELF_CONSUMPTION:
+        sc_pct = recommended.dispatch_summary.self_consumption_pct
+        reason = f"Najwyższa autokonsumpcja ({sc_pct:.1f}%)"
+    elif objective == OptimizationObjective.PEAK_REDUCTION:
+        pr_pct = recommended.dispatch_summary.peak_reduction_pct
+        reason = f"Najwyższa redukcja szczytów ({pr_pct:.1f}%)"
+    elif objective == OptimizationObjective.EFC_UTILIZATION:
+        efc = recommended.dispatch_summary.degradation.efc_total
+        reason = f"Optymalne wykorzystanie cykli ({efc:.0f} EFC)"
+    else:
+        reason = f"Najwyższy score ({recommended.score:.0f})"
+
+    # Add context about other variants
+    other_variants = [v for v in all_variants if v.variant != recommended.variant]
+    if other_variants:
+        # Show comparison
+        if objective == OptimizationObjective.NPV:
+            others_npv = [v.npv_pln for v in other_variants]
+            max_other = max(others_npv) if others_npv else 0
+            if recommended.npv_pln > max_other > 0:
+                delta = recommended.npv_pln - max_other
+                reason += f", o {fmt_pln(delta)} PLN więcej niż kolejny wariant"
+        elif objective == OptimizationObjective.PAYBACK:
+            others_payback = [v.simple_payback_years for v in other_variants if v.simple_payback_years < 100]
+            min_other = min(others_payback) if others_payback else 999
+            if recommended.simple_payback_years < min_other < 100:
+                delta = min_other - recommended.simple_payback_years
+                reason += f", o {delta:.1f} lat krótszy niż kolejny wariant"
+
+    # Add constraint info if applicable
+    if constraints:
+        active_constraints = [c for c in constraints if c.hard]
+        if active_constraints:
+            constraint_names = []
+            for c in active_constraints:
+                if c.constraint_type == ConstraintType.MAX_CAPEX:
+                    constraint_names.append(f"CAPEX ≤ {fmt_pln(c.value)} PLN")
+                elif c.constraint_type == ConstraintType.MAX_PAYBACK:
+                    constraint_names.append(f"payback ≤ {c.value:.0f} lat")
+                elif c.constraint_type == ConstraintType.MIN_NPV:
+                    constraint_names.append(f"NPV ≥ {fmt_pln(c.value)} PLN")
+            if constraint_names:
+                reason += f" (przy ograniczeniach: {', '.join(constraint_names)})"
+
+    return reason
+
+
 def check_constraints(
     optimization: Optional[OptimizationConfig],
     capex: float,
@@ -1151,10 +1226,19 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         variants.append(variant_result)
 
     # Find recommended variant (highest score)
+    recommended_reason = None
     if variants:
         best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
         variants[best_idx].is_recommended = True
         recommended = variants[best_idx]
+
+        # Generate human-readable explanation (v0.4)
+        opt_config = request.optimization
+        objective = opt_config.objective if opt_config else OptimizationObjective.NPV
+        constraints = opt_config.constraints if opt_config else None
+        recommended_reason = generate_recommended_reason(
+            recommended, variants, objective, constraints
+        )
     else:
         recommended = None
 
@@ -1311,6 +1395,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_variant=recommended.variant if recommended else None,
         recommended_power_kw=recommended.power_kw if recommended else 0,
         recommended_energy_kwh=recommended.energy_kwh if recommended else 0,
+        recommended_reason=recommended_reason,
         applied_parameters=applied_parameters,
         warnings=warnings,
     )

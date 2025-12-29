@@ -8,6 +8,7 @@
     "period_info",
     "recommended_energy_kwh",
     "recommended_power_kw",
+    "recommended_reason",
     "recommended_variant",
     "schema_version",
     "total_load_mwh",
