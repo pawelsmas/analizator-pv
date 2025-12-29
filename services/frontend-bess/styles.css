@@ -2409,6 +2409,19 @@ body {
   color: #e74c3c;
 }
 
+/* v3.19: Reason summary item */
+.summary-item.reason {
+  grid-column: span 2;
+  background: linear-gradient(135deg, rgba(41, 128, 185, 0.08) 0%, rgba(52, 152, 219, 0.04) 100%);
+  border-color: #3498db;
+}
+
+.summary-item.reason .summary-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2980b9;
+}
+
 /* Constraint Warnings */
 .constraint-warnings {
   margin-top: 16px;
