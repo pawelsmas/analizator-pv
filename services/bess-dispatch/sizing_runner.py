@@ -44,6 +44,9 @@ from models import (
     PeriodInfo,
     RecommendedReasonCode,
     TopVariantDetail,
+    FinanceConfig,
+    FinanceAssumptions,
+    FinanceSummary,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1278,6 +1281,19 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             objective, dispatch_result, capex, npv, payback, max_efc
         )
 
+        # Build finance_summary for this variant (v0.5.0)
+        # Uses finance_config if provided, otherwise uses legacy analysis params
+        fc = request.finance_config
+        finance_summary = FinanceSummary(
+            capex_pln=capex,
+            opex_pln_per_year=annual_opex + (fc.opex_pln_per_year if fc else 0.0),
+            horizon_years=fc.horizon_years if fc else request.analysis_years,
+            discount_rate=fc.discount_rate if fc else request.discount_rate,
+            npv_pln=npv,  # Same NPV used for scoring and top_variants_details
+            payback_years=payback,
+            irr_pct=irr,
+        )
+
         variant_result = SizingVariantResult(
             variant=variant_type,
             variant_label=label,
@@ -1297,6 +1313,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             degradation_status=dispatch_result.degradation.budget_status,
             score=objective_score,
             is_recommended=False,
+            finance_summary=finance_summary,  # v0.5.0
         )
 
         variants.append(variant_result)
@@ -1495,6 +1512,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         export_price_pln_mwh=request.prices.export_price_pln_mwh,
     )
 
+    # Build finance_assumptions (v0.5.0) - echo of finance_config values used
+    fc = request.finance_config
+    finance_assumptions = FinanceAssumptions(
+        horizon_years=fc.horizon_years if fc else request.analysis_years,
+        discount_rate=fc.discount_rate if fc else request.discount_rate,
+        savings_escalation_rate=fc.savings_escalation_rate if fc else 0.0,
+        opex_pln_per_year=fc.opex_pln_per_year if fc else 0.0,
+        opex_escalation_rate=fc.opex_escalation_rate if fc else 0.0,
+        capex_override_pln=fc.capex_override_pln if fc else None,
+    )
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -1516,6 +1544,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         top_variants_details=top_variants_details,
         objective_used=objective_used,
         applied_parameters=applied_parameters,
+        finance_assumptions=finance_assumptions,  # v0.5.0
         warnings=warnings,
     )
 

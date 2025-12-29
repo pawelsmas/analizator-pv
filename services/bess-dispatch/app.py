@@ -53,6 +53,7 @@ from models import (
     ConstraintType,
     ArbitrageConfig,
     ArbitrageStrategy,
+    FinanceConfig,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -624,6 +625,12 @@ class SizingRequestAPI(BaseModel):
         description="If True, include per-timestep energy flows in response. Default: False to keep response small."
     )
 
+    # Finance configuration (v0.5.0) - explicit financial parameters
+    finance_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Finance config: {horizon_years, discount_rate, savings_escalation_rate, opex_pln_per_year, opex_escalation_rate, capex_override_pln}. Overrides analysis_years/discount_rate when provided."
+    )
+
     @model_validator(mode='after')
     def validate_optimization_objective(self):
         """Validate optimization.objective is a valid enum value."""
@@ -805,6 +812,19 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 constraint_penalty_weight=opt_dict.get("constraint_penalty_weight", 0.3),
             )
 
+        # Parse finance_config (v0.5.0)
+        finance_config = None
+        if request.finance_config:
+            fc_dict = request.finance_config
+            finance_config = FinanceConfig(
+                horizon_years=fc_dict.get("horizon_years", 10),
+                discount_rate=fc_dict.get("discount_rate", 0.08),
+                savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
+                opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
+                opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
+                capex_override_pln=fc_dict.get("capex_override_pln"),
+            )
+
         internal_request = SizingRequest(
             pv_generation_kw=request.pv_generation_kw,
             load_kw=request.load_kw,
@@ -841,6 +861,8 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             degradation_budget=budget,
             optimization=optimization_config,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            # Finance (v0.5.0)
+            finance_config=finance_config,
         )
 
         result = run_sizing(internal_request)

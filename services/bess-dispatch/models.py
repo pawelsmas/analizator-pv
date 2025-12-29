@@ -1088,6 +1088,13 @@ class SizingRequest(BaseModel):
                     "False = only totals_mwh (small). True = also timeseries_kwh (large)."
     )
 
+    # Finance configuration (v0.5.0)
+    finance_config: Optional["FinanceConfig"] = Field(
+        None,
+        description="Financial parameters for NPV/cashflow calculation. "
+                    "If not provided, uses default values from analysis_years/discount_rate."
+    )
+
     @property
     def effective_pv_kw(self) -> List[float]:
         """Get PV array, creating zeros if empty (for LOAD_ONLY mode)"""
@@ -1139,6 +1146,13 @@ class SizingVariantResult(BaseModel):
         description="Alias - populated from dispatch_summary.prices_summary (ToU breakdown)"
     )
 
+    # Finance summary (v0.5.0) - key financial metrics in one place
+    finance_summary: Optional["FinanceSummary"] = Field(
+        None,
+        description="Financial summary with CAPEX, OPEX, NPV, payback. "
+                    "NPV here matches npv_pln used for scoring and top_variants_details."
+    )
+
     def model_post_init(self, __context):
         """Pydantic v2: populate alias fields after init"""
         if self.dispatch_summary:
@@ -1179,6 +1193,92 @@ class AppliedParameters(BaseModel):
     # Pricing
     import_price_pln_mwh: float = Field(..., description="Grid import price [PLN/MWh]")
     export_price_pln_mwh: float = Field(0.0, description="Grid export price [PLN/MWh]")
+
+
+# =============================================================================
+# FINANCE CONFIGURATION (v0.5.0)
+# =============================================================================
+
+class FinanceConfig(BaseModel):
+    """
+    Financial parameters for NPV/cashflow calculation.
+
+    This provides explicit control over financial assumptions that affect
+    NPV, payback, and IRR calculations. All parameters are optional with
+    sensible defaults.
+
+    Note: capex_override_pln enables deterministic tests and what-if scenarios
+    without changing battery sizing assumptions.
+    """
+    horizon_years: int = Field(
+        10,
+        ge=1, le=30,
+        description="Analysis horizon in years for NPV/cashflow calculation"
+    )
+    discount_rate: float = Field(
+        0.08,
+        ge=0, le=0.3,
+        description="Discount rate for NPV calculation (0.08 = 8%)"
+    )
+    savings_escalation_rate: float = Field(
+        0.0,
+        ge=0, le=0.1,
+        description="Annual escalation rate for savings (0.02 = 2% per year)"
+    )
+    opex_pln_per_year: float = Field(
+        0.0,
+        ge=0,
+        description="Fixed annual OPEX in PLN (added to % based OPEX)"
+    )
+    opex_escalation_rate: float = Field(
+        0.0,
+        ge=0, le=0.1,
+        description="Annual escalation rate for OPEX (0.02 = 2% per year)"
+    )
+    capex_override_pln: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Override CAPEX for deterministic tests and what-if scenarios. "
+                    "If None, CAPEX is calculated from battery sizing."
+    )
+
+
+class FinanceAssumptions(BaseModel):
+    """
+    Echo of finance parameters applied in calculation.
+
+    Returned in response so user can verify what values were used,
+    especially when using defaults.
+    """
+    horizon_years: int = Field(..., description="Analysis horizon used")
+    discount_rate: float = Field(..., description="Discount rate used")
+    savings_escalation_rate: float = Field(..., description="Savings escalation rate used")
+    opex_pln_per_year: float = Field(..., description="Fixed OPEX per year used")
+    opex_escalation_rate: float = Field(..., description="OPEX escalation rate used")
+    capex_override_pln: Optional[float] = Field(
+        None,
+        description="CAPEX override if provided, None if using calculated CAPEX"
+    )
+
+
+class FinanceSummary(BaseModel):
+    """
+    Financial summary per variant.
+
+    Provides key financial metrics in one place for easy UI display.
+    NPV here is the same value used for scoring (when objective=npv)
+    and displayed in top_variants_details.
+    """
+    capex_pln: float = Field(..., description="Total CAPEX for this variant [PLN]")
+    opex_pln_per_year: float = Field(..., description="Annual OPEX [PLN/year]")
+    horizon_years: int = Field(..., description="Analysis horizon [years]")
+    discount_rate: float = Field(..., description="Discount rate used")
+    npv_pln: float = Field(..., description="Net Present Value [PLN]")
+    payback_years: float = Field(..., description="Simple payback period [years]")
+    irr_pct: Optional[float] = Field(
+        None,
+        description="Internal Rate of Return [%]. Null if IRR not calculated."
+    )
 
 
 class TopVariantDetail(BaseModel):
@@ -1283,6 +1383,13 @@ class SizingResult(BaseModel):
         None,
         description="Parameters actually used in calculation. "
                     "Shows effective defaults and sources for transparency."
+    )
+
+    # Finance assumptions (v0.5.0) - echo of finance_config values used
+    finance_assumptions: Optional[FinanceAssumptions] = Field(
+        None,
+        description="Echo of finance parameters applied in calculation. "
+                    "Shows what values were used (explicit or defaults)."
     )
 
     # Warnings
