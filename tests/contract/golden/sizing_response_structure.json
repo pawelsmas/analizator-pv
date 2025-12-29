@@ -3,6 +3,7 @@
     "annual_surplus_mwh",
     "applied_parameters",
     "assumptions_version",
+    "finance_assumptions",
     "mode",
     "objective_used",
     "pareto_points",
@@ -33,6 +34,7 @@
     "dispatch_summary",
     "duration_h",
     "energy_kwh",
+    "finance_summary",
     "irr_pct",
     "is_recommended",
     "npv_pln",
@@ -76,5 +78,22 @@
     "export_price_pln_mwh",
     "import_price_pln_mwh",
     "opex_pct_per_year"
+  ],
+  "finance_assumptions_keys": [
+    "capex_override_pln",
+    "discount_rate",
+    "horizon_years",
+    "opex_escalation_rate",
+    "opex_pln_per_year",
+    "savings_escalation_rate"
+  ],
+  "finance_summary_keys": [
+    "capex_pln",
+    "discount_rate",
+    "horizon_years",
+    "irr_pct",
+    "npv_pln",
+    "opex_pln_per_year",
+    "payback_years"
   ]
 }

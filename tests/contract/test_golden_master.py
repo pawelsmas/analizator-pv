@@ -83,6 +83,12 @@ class TestGoldenMaster:
             else [],
             "period_info_keys": sorted(data.get("period_info", {}).keys()),
             "applied_parameters_keys": sorted(data.get("applied_parameters", {}).keys()),
+            "finance_assumptions_keys": sorted(data.get("finance_assumptions", {}).keys()),
+            "finance_summary_keys": sorted(
+                data["variants"][0].get("finance_summary", {}).keys()
+            )
+            if data.get("variants") and data["variants"][0].get("finance_summary")
+            else [],
         }
 
         golden_file = golden_dir / "sizing_response_structure.json"
