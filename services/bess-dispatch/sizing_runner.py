@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
 from models import (
+    AppliedParameters,
     BatteryParams,
     DispatchMode,
     DispatchResult,
@@ -1277,6 +1278,27 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         duration_seconds=compute_time_ms / 1000,
     )
 
+    # Build applied_parameters for transparency (v0.3.4)
+    # Determine degradation cost source
+    degradation_cost_source = "default"
+    degradation_cost_used = request.degradation_cost_pln_mwh
+    if request.degradation_cost_pln_mwh != 50.0:  # Non-default value means explicit request
+        degradation_cost_source = "request"
+    elif arbitrage_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
+        # Legacy: arbitrage_config overrides default
+        degradation_cost_source = "arbitrage_config"
+        degradation_cost_used = request.arbitrage_config.degradation_cost_pln_kwh * 1000  # kWh to MWh
+
+    applied_parameters = AppliedParameters(
+        degradation_cost_pln_mwh=degradation_cost_used,
+        degradation_cost_source=degradation_cost_source,
+        discount_rate=request.discount_rate,
+        analysis_years=request.analysis_years,
+        opex_pct_per_year=request.opex_pct_per_year,
+        import_price_pln_mwh=request.prices.import_price_pln_mwh,
+        export_price_pln_mwh=request.prices.export_price_pln_mwh,
+    )
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -1289,6 +1311,7 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         recommended_variant=recommended.variant if recommended else None,
         recommended_power_kw=recommended.power_kw if recommended else 0,
         recommended_energy_kwh=recommended.energy_kwh if recommended else 0,
+        applied_parameters=applied_parameters,
         warnings=warnings,
     )
 

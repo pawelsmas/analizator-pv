@@ -1144,6 +1144,38 @@ class SizingVariantResult(BaseModel):
                 object.__setattr__(self, 'prices_summary', self.dispatch_summary.prices_summary)
 
 
+class AppliedParameters(BaseModel):
+    """
+    Applied parameters used in sizing calculation.
+
+    This shows what default values were actually used, useful for:
+    - Debugging: verify which defaults took effect
+    - Transparency: user can see exact values used
+    - Reproducibility: re-run with explicit values
+
+    Note: Only includes parameters with defaults that affect results.
+    """
+    # Degradation
+    degradation_cost_pln_mwh: float = Field(
+        ...,
+        description="Degradation cost rate used [PLN/MWh]. "
+                    "Default: 50. Set to 0 to disable degradation cost."
+    )
+    degradation_cost_source: str = Field(
+        "default",
+        description="Source of degradation cost: 'default', 'request', or 'arbitrage_config'"
+    )
+
+    # Economics
+    discount_rate: float = Field(..., description="Discount rate used for NPV calculation")
+    analysis_years: int = Field(..., description="Analysis period in years")
+    opex_pct_per_year: float = Field(..., description="OPEX as % of CAPEX per year")
+
+    # Pricing
+    import_price_pln_mwh: float = Field(..., description="Grid import price [PLN/MWh]")
+    export_price_pln_mwh: float = Field(0.0, description="Grid export price [PLN/MWh]")
+
+
 class SizingResult(BaseModel):
     """Complete sizing result with all variants"""
 
@@ -1179,6 +1211,13 @@ class SizingResult(BaseModel):
 
     # Pareto frontier (optional)
     pareto_points: Optional[List[Dict[str, float]]] = None
+
+    # Applied parameters - SSoT for debugging and transparency
+    applied_parameters: Optional[AppliedParameters] = Field(
+        None,
+        description="Parameters actually used in calculation. "
+                    "Shows effective defaults and sources for transparency."
+    )
 
     # Warnings
     warnings: List[str] = Field(default_factory=list)
