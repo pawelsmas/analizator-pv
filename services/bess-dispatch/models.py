@@ -1274,6 +1274,17 @@ class FinanceConfig(BaseModel):
         description="PV output degradation [%/year]. Applied to savings as (1 - rate)^year. "
                     "E.g., 0.5 = 0.5% annual degradation."
     )
+    # Sensitivity sweeps (v0.6.0 PR4)
+    energy_price_multiplier_sweep: Optional[List[float]] = Field(
+        None,
+        description="Energy price multipliers for sensitivity analysis (e.g., [0.8, 1.0, 1.2]). "
+                    "NPV calculated at each multiplier. Results in energy_price_sensitivity."
+    )
+    capex_multiplier_sweep: Optional[List[float]] = Field(
+        None,
+        description="CAPEX multipliers for sensitivity analysis (e.g., [0.8, 1.0, 1.2]). "
+                    "NPV calculated at each multiplier. Results in capex_sensitivity."
+    )
 
 
 class FinanceAssumptions(BaseModel):
@@ -1340,6 +1351,16 @@ class FinanceSummary(BaseModel):
         None,
         description="NPV at different discount rates. Only present when discount_rate_sweep provided."
     )
+    # Energy price sensitivity (optional, v0.6.0 PR4)
+    energy_price_sensitivity: Optional[List["MultiplierSensitivityPoint"]] = Field(
+        None,
+        description="NPV at different energy price multipliers. Only present when energy_price_multiplier_sweep provided."
+    )
+    # CAPEX sensitivity (optional, v0.6.0 PR4)
+    capex_sensitivity: Optional[List["MultiplierSensitivityPoint"]] = Field(
+        None,
+        description="NPV at different CAPEX multipliers. Only present when capex_multiplier_sweep provided."
+    )
 
 
 class CashflowYear(BaseModel):
@@ -1388,6 +1409,27 @@ class DiscountRateSensitivityPoint(BaseModel):
     npv_pln: float = Field(
         ...,
         description="NPV at this discount rate [PLN]"
+    )
+
+
+class MultiplierSensitivityPoint(BaseModel):
+    """
+    NPV at a specific multiplier value (v0.6.0 PR4).
+
+    Used for energy price and CAPEX sensitivity charts showing how NPV varies
+    with different price/cost assumptions.
+    """
+    multiplier: float = Field(
+        ...,
+        description="Multiplier value (1.0 = 100%, 0.8 = 80%, 1.2 = 120%)"
+    )
+    multiplier_pct: float = Field(
+        ...,
+        description="Multiplier as percentage (100.0 = 100%)"
+    )
+    npv_pln: float = Field(
+        ...,
+        description="NPV at this multiplier [PLN]"
     )
 
 

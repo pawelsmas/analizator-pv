@@ -812,7 +812,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 constraint_penalty_weight=opt_dict.get("constraint_penalty_weight", 0.3),
             )
 
-        # Parse finance_config (v0.5.0, v0.6.0: replacement + degradation)
+        # Parse finance_config (v0.5.0, v0.6.0: replacement + degradation + sweeps)
         finance_config = None
         if request.finance_config:
             fc_dict = request.finance_config
@@ -831,6 +831,9 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 # v0.6.0 PR3: Performance degradation
                 bess_degradation_pct_per_year=fc_dict.get("bess_degradation_pct_per_year", 0.0),
                 pv_degradation_pct_per_year=fc_dict.get("pv_degradation_pct_per_year", 0.0),
+                # v0.6.0 PR4: Sensitivity sweeps
+                energy_price_multiplier_sweep=fc_dict.get("energy_price_multiplier_sweep"),
+                capex_multiplier_sweep=fc_dict.get("capex_multiplier_sweep"),
             )
 
         internal_request = SizingRequest(

@@ -93,9 +93,11 @@
   ],
   "finance_summary_keys": [
     "capex_pln",
+    "capex_sensitivity",
     "cashflow_timeseries",
     "discount_rate",
     "discount_rate_sensitivity",
+    "energy_price_sensitivity",
     "horizon_years",
     "irr_pct",
     "npv_pln",
@@ -105,6 +107,11 @@
   "discount_rate_sensitivity_point_keys": [
     "discount_rate",
     "discount_rate_pct",
+    "npv_pln"
+  ],
+  "multiplier_sensitivity_point_keys": [
+    "multiplier",
+    "multiplier_pct",
     "npv_pln"
   ],
   "cashflow_year_keys": [
