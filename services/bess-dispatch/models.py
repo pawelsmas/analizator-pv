@@ -1219,6 +1219,13 @@ class SizingResult(BaseModel):
                     "Example: 'Highest NPV (45,230 PLN) among variants with payback < 8 years'"
     )
 
+    # Top variants (ranked by score, best first)
+    top_variants: Optional[List[SizingVariant]] = Field(
+        None,
+        description="Top 3 variants ranked by score (highest first). "
+                    "Useful for UI to show alternatives. Example: ['medium', 'large', 'small']"
+    )
+
     # Pareto frontier (optional)
     pareto_points: Optional[List[Dict[str, float]]] = None
 
