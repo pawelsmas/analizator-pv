@@ -78,6 +78,11 @@ from observability.finance_metrics import (
     record_finance_sensitivity_metrics,
     record_finance_npv_metrics,
     record_finance_irr_metrics,
+    # v0.6.0 lifecycle metrics
+    record_replacement_metrics,
+    record_degradation_metrics,
+    record_energy_price_sensitivity_metrics,
+    record_capex_sensitivity_metrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -1659,6 +1664,25 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         record_finance_npv_metrics(mode=mode_str, variant=variant_str, npv_pln=fs_npv)
         if fs_irr is not None:
             record_finance_irr_metrics(mode=mode_str, variant=variant_str, irr_pct=fs_irr)
+
+        # Record lifecycle metrics (v0.6.0 PR6)
+        if fc:
+            # Replacement metrics
+            if fc.replacement_year is not None:
+                record_replacement_metrics(mode=mode_str, replacement_year=fc.replacement_year)
+            # Degradation metrics
+            if fc.bess_degradation_pct_per_year > 0 or fc.pv_degradation_pct_per_year > 0:
+                record_degradation_metrics(
+                    mode=mode_str,
+                    bess_degradation_pct=fc.bess_degradation_pct_per_year,
+                    pv_degradation_pct=fc.pv_degradation_pct_per_year,
+                )
+            # Energy price sensitivity metrics
+            if ep_sensitivity:
+                record_energy_price_sensitivity_metrics(mode=mode_str, num_points=len(ep_sensitivity))
+            # CAPEX sensitivity metrics
+            if capex_sens:
+                record_capex_sensitivity_metrics(mode=mode_str, num_points=len(capex_sens))
 
         variant_result = SizingVariantResult(
             variant=variant_type,
