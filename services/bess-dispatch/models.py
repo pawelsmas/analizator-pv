@@ -795,15 +795,16 @@ class SavingsBreakdown(BaseModel):
 
     # Negative (costs)
     degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
+    unserved_load_penalty_pln: float = Field(0.0, description="Penalty for unserved load due to import cap [PLN]")
 
     # Net
-    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta - degradation")
+    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta - degradation - unserved_penalty")
 
     def calculate_net(self) -> float:
         """
         Calculate net savings from components.
 
-        Formula: net = energy + arbitrage + capacity_fee + demand + export_delta - degradation
+        Formula: net = energy + arbitrage + capacity_fee + demand + export_delta - degradation - unserved_penalty
 
         Note: export_revenue_savings_pln is typically NEGATIVE (battery uses PV that would be exported)
         so adding it reduces net savings, which is correct behavior.
@@ -814,7 +815,8 @@ class SavingsBreakdown(BaseModel):
             self.capacity_fee_savings_pln +
             self.demand_charge_savings_pln +
             self.export_revenue_savings_pln -  # delta = project - baseline (usually negative)
-            abs(self.degradation_cost_pln)
+            abs(self.degradation_cost_pln) -
+            abs(self.unserved_load_penalty_pln)
         )
 
 
@@ -1005,6 +1007,12 @@ class GridConstraints(BaseModel):
         description="Whether grid export is allowed. If False, all excess PV is curtailed "
                     "or stored in battery. Equivalent to max_export_kw=0."
     )
+    unserved_load_penalty_pln_kwh: float = Field(
+        0.0,
+        ge=0,
+        description="Penalty cost per kWh of unserved load [PLN/kWh]. "
+                    "Used for economic impact calculation when import cap causes unserved load."
+    )
 
 
 class GridConstraintsApplied(BaseModel):
@@ -1025,6 +1033,10 @@ class GridConstraintsApplied(BaseModel):
     allow_export: bool = Field(
         True,
         description="Whether export was allowed."
+    )
+    unserved_load_penalty_pln_kwh: float = Field(
+        0.0,
+        description="Penalty rate for unserved load [PLN/kWh]."
     )
 
 

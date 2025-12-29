@@ -58,7 +58,8 @@
     "export_revenue_pln",
     "export_revenue_savings_pln",
     "net_savings_pln",
-    "project_export_revenue_pln"
+    "project_export_revenue_pln",
+    "unserved_load_penalty_pln"
   ],
   "period_info_keys": [
     "annualization_factor",
