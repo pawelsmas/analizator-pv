@@ -85,6 +85,8 @@
     "horizon_years",
     "opex_escalation_rate",
     "opex_pln_per_year",
+    "replacement_capex_pln",
+    "replacement_year",
     "savings_escalation_rate"
   ],
   "finance_summary_keys": [
