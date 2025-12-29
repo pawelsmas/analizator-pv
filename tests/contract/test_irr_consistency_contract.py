@@ -13,7 +13,7 @@ Run with: python -m pytest tests/contract/test_irr_consistency_contract.py -v
 import math
 from typing import List, Optional
 
-from tests.contract._api import post_json, load_smoke_payload, pick_recommended_variant
+from ._api import post_json, load_smoke_payload, pick_recommended_variant
 
 
 def _npv(rate: float, cfs: List[float]) -> float:
