@@ -4,6 +4,7 @@
     "applied_parameters",
     "assumptions_version",
     "finance_assumptions",
+    "grid_constraints_applied",
     "mode",
     "objective_used",
     "pareto_points",

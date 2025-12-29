@@ -967,6 +967,54 @@ class DispatchResult(BaseModel):
 # Sizing Request/Result
 # =============================================================================
 
+class GridConstraints(BaseModel):
+    """
+    Grid connection constraints (v0.7.0).
+
+    Defines physical limits of the grid connection that apply to both
+    baseline and project scenarios. These are hard limits that cannot
+    be exceeded regardless of battery operation.
+    """
+    max_export_kw: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum grid export power [kW]. If set, excess PV is curtailed. "
+                    "None = no limit (unconstrained export)."
+    )
+    max_import_kw: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum grid import power [kW]. If set, load exceeding this + PV + battery "
+                    "results in unserved load. None = no limit (unconstrained import)."
+    )
+    allow_export: bool = Field(
+        True,
+        description="Whether grid export is allowed. If False, all excess PV is curtailed "
+                    "or stored in battery. Equivalent to max_export_kw=0."
+    )
+
+
+class GridConstraintsApplied(BaseModel):
+    """
+    Echo of grid constraints applied in calculation (v0.7.0).
+
+    Returned in response so user can verify what constraints were used,
+    including computed effective values (e.g., max_export_kw=0 when allow_export=False).
+    """
+    max_export_kw: Optional[float] = Field(
+        None,
+        description="Effective max export [kW]. 0 if allow_export=False."
+    )
+    max_import_kw: Optional[float] = Field(
+        None,
+        description="Effective max import [kW]. None = unlimited."
+    )
+    allow_export: bool = Field(
+        True,
+        description="Whether export was allowed."
+    )
+
+
 class SizingVariant(str, Enum):
     """Pre-defined sizing variants"""
     SMALL = "small"       # 1h duration
@@ -1093,6 +1141,13 @@ class SizingRequest(BaseModel):
         None,
         description="Financial parameters for NPV/cashflow calculation. "
                     "If not provided, uses default values from analysis_years/discount_rate."
+    )
+
+    # Grid constraints (v0.7.0)
+    grid_constraints: Optional[GridConstraints] = Field(
+        None,
+        description="Grid connection constraints (max_export_kw, max_import_kw, allow_export). "
+                    "Applied to both baseline and project scenarios."
     )
 
     @property
@@ -1542,6 +1597,13 @@ class SizingResult(BaseModel):
         None,
         description="Echo of finance parameters applied in calculation. "
                     "Shows what values were used (explicit or defaults)."
+    )
+
+    # Grid constraints applied (v0.7.0) - echo of grid constraints used
+    grid_constraints_applied: Optional[GridConstraintsApplied] = Field(
+        None,
+        description="Echo of grid constraints applied in calculation. "
+                    "Shows effective values (e.g., max_export_kw=0 when allow_export=False)."
     )
 
     # Warnings
