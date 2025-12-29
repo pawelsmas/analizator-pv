@@ -89,11 +89,20 @@
   ],
   "finance_summary_keys": [
     "capex_pln",
+    "cashflow_timeseries",
     "discount_rate",
     "horizon_years",
     "irr_pct",
     "npv_pln",
     "opex_pln_per_year",
     "payback_years"
+  ],
+  "cashflow_year_keys": [
+    "cumulative_cashflow_pln",
+    "discounted_cashflow_pln",
+    "net_cashflow_pln",
+    "opex_pln",
+    "savings_pln",
+    "year"
   ]
 }
