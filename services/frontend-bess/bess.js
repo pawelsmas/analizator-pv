@@ -3144,6 +3144,15 @@ let advancedConfig = {
     maxImportKw: null,           // null = unlimited import
     allowExport: true,           // false = no export allowed
     unservedLoadPenaltyPlnKwh: 0 // penalty rate for unserved load
+  },
+  // v0.8.0 Sizing Constraints (soft constraints for variant feasibility)
+  sizingConstraints: {
+    maxCapexPln: null,           // null = no limit
+    maxPaybackYears: null,       // null = no limit
+    minNpvPln: null,             // null = no limit
+    minNetSavingsPln: null,      // null = no limit
+    requireNoUnservedLoad: false,
+    maxUnservedLoadKwh: null     // null = no limit
   }
 };
 
@@ -3328,6 +3337,37 @@ function updateGridConstraint(field, value) {
 
   // Store in localStorage for persistence
   localStorage.setItem('bessGridConstraints', JSON.stringify(advancedConfig.gridConstraints));
+}
+
+/**
+ * v0.8.0: Update sizing constraint value
+ * Sizing constraints are soft constraints that determine variant feasibility
+ */
+function updateSizingConstraint(field, value) {
+  if (!advancedConfig.sizingConstraints) {
+    advancedConfig.sizingConstraints = {
+      maxCapexPln: null,
+      maxPaybackYears: null,
+      minNpvPln: null,
+      minNetSavingsPln: null,
+      requireNoUnservedLoad: false,
+      maxUnservedLoadKwh: null
+    };
+  }
+
+  // Parse value based on field type
+  if (field === 'requireNoUnservedLoad') {
+    advancedConfig.sizingConstraints.requireNoUnservedLoad = Boolean(value);
+  } else {
+    // Numeric fields - empty string means no limit (null)
+    const numValue = value === '' || value === null || value === undefined ? null : parseFloat(value);
+    advancedConfig.sizingConstraints[field] = numValue;
+  }
+
+  console.log('Sizing constraint updated:', field, '=', advancedConfig.sizingConstraints[field]);
+
+  // Store in localStorage for persistence
+  localStorage.setItem('bessSizingConstraints', JSON.stringify(advancedConfig.sizingConstraints));
 }
 
 // v3.15: toggleArbitrage() and updateArbitrageTariff() removed
@@ -3827,6 +3867,30 @@ function buildSizingRequest(variantData) {
     }
   }
 
+  // v0.8.0 Sizing Constraints (soft constraints for variant feasibility)
+  const sc = advancedConfig.sizingConstraints;
+  if (sc) {
+    const hasConstraints = (
+      sc.maxCapexPln !== null ||
+      sc.maxPaybackYears !== null ||
+      sc.minNpvPln !== null ||
+      sc.minNetSavingsPln !== null ||
+      sc.requireNoUnservedLoad ||
+      sc.maxUnservedLoadKwh !== null
+    );
+    if (hasConstraints) {
+      request.constraints_config = {
+        max_capex_pln: sc.maxCapexPln,
+        max_payback_years: sc.maxPaybackYears,
+        min_npv_pln: sc.minNpvPln,
+        min_net_savings_pln: sc.minNetSavingsPln,
+        require_no_unserved_load: sc.requireNoUnservedLoad,
+        max_unserved_load_kwh: sc.maxUnservedLoadKwh
+      };
+      console.log('📊 Sizing constraints:', request.constraints_config);
+    }
+  }
+
   return request;
 }
 
@@ -4124,6 +4188,7 @@ function loadSavedConfig() {
   const savedTopology = localStorage.getItem('bessTopology');
   const savedObjective = localStorage.getItem('bessObjective');
   const savedGridConstraints = localStorage.getItem('bessGridConstraints');
+  const savedSizingConstraints = localStorage.getItem('bessSizingConstraints');
 
   if (savedTopology) {
     advancedConfig.topology = savedTopology;
@@ -4158,6 +4223,31 @@ function loadSavedConfig() {
       console.warn('Failed to parse saved grid constraints:', e);
     }
   }
+
+  // v0.8.0: Restore sizing constraints
+  if (savedSizingConstraints) {
+    try {
+      const sc = JSON.parse(savedSizingConstraints);
+      advancedConfig.sizingConstraints = sc;
+
+      // Update UI inputs
+      const maxCapexEl = document.getElementById('maxCapexPln');
+      const maxPaybackEl = document.getElementById('maxPaybackYears');
+      const minNpvEl = document.getElementById('minNpvPln');
+      const minSavingsEl = document.getElementById('minNetSavingsPln');
+      const requireNoUnservedEl = document.getElementById('requireNoUnservedLoad');
+      const maxUnservedEl = document.getElementById('maxUnservedLoadKwh');
+
+      if (maxCapexEl && sc.maxCapexPln !== null) maxCapexEl.value = sc.maxCapexPln;
+      if (maxPaybackEl && sc.maxPaybackYears !== null) maxPaybackEl.value = sc.maxPaybackYears;
+      if (minNpvEl && sc.minNpvPln !== null) minNpvEl.value = sc.minNpvPln;
+      if (minSavingsEl && sc.minNetSavingsPln !== null) minSavingsEl.value = sc.minNetSavingsPln;
+      if (requireNoUnservedEl) requireNoUnservedEl.checked = sc.requireNoUnservedLoad === true;
+      if (maxUnservedEl && sc.maxUnservedLoadKwh !== null) maxUnservedEl.value = sc.maxUnservedLoadKwh;
+    } catch (e) {
+      console.warn('Failed to parse saved sizing constraints:', e);
+    }
+  }
 }
 
 // Initialize advanced config on load
@@ -4170,6 +4260,7 @@ window.updateTopology = updateTopology;
 window.updateOptimizationObjective = updateOptimizationObjective;
 window.toggleConstraint = toggleConstraint;
 window.updateGridConstraint = updateGridConstraint;  // v0.7.0
+window.updateSizingConstraint = updateSizingConstraint;  // v0.8.0
 window.applyAdvancedConfig = applyAdvancedConfig;
 window.resetAdvancedConfig = resetAdvancedConfig;
 window.advancedConfig = advancedConfig;
