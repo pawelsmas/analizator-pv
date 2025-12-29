@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.19 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.21 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -2655,12 +2655,21 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
       // Mark as what-if
       requestBody._isWhatIf = true;
 
-      // v0.5.0: Add finance_config for cashflow + sensitivity analysis
+      // v0.6.0: Finance config with lifecycle features
       requestBody.finance_config = {
         horizon_years: 15,
         discount_rate: 0.08,
         include_cashflow_timeseries: true,
         discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+        // v0.6.0 PR2: Battery replacement (optional)
+        replacement_year: bessConfig.replacement_year || null,
+        replacement_capex_pln: bessConfig.replacement_capex_pln || null,
+        // v0.6.0 PR3: Performance degradation
+        bess_degradation_pct_per_year: bessConfig.bess_degradation_pct_per_year || 0.0,
+        pv_degradation_pct_per_year: bessConfig.pv_degradation_pct_per_year || 0.0,
+        // v0.6.0 PR4: Price/CAPEX sensitivity sweeps
+        energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+        capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
       };
 
     } else {
@@ -2699,14 +2708,24 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
       }
     }
 
-    // v0.5.0: Add finance_config for cashflow + sensitivity analysis
+    // v0.6.0: Finance config with lifecycle features
     requestBody.finance_config = {
       horizon_years: 15,
       discount_rate: 0.08,
       include_cashflow_timeseries: true,
+      // v0.5.0: Discount rate sensitivity
       discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+      // v0.6.0 PR2: Battery replacement (optional - from bessConfig)
+      replacement_year: bessConfig.replacement_year || null,
+      replacement_capex_pln: bessConfig.replacement_capex_pln || null,
+      // v0.6.0 PR3: Performance degradation (from bessConfig)
+      bess_degradation_pct_per_year: bessConfig.bess_degradation_pct_per_year || 0.0,
+      pv_degradation_pct_per_year: bessConfig.pv_degradation_pct_per_year || 0.0,
+      // v0.6.0 PR4: Price/CAPEX sensitivity sweeps
+      energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+      capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
     };
-    console.log('💰 Finance config added for cashflow + sensitivity');
+    console.log('[BESS] Finance config with lifecycle features:', requestBody.finance_config);
 
     const response = await fetch(`${bessDispatchUrl}/sizing`, {
       method: 'POST',
@@ -4479,13 +4498,14 @@ async function runCapacityFeeAnalysisIfEnabled(variant) {
 // ============================================
 
 /**
- * Display finance section with cashflow table and sensitivity chart
+ * Display finance section with cashflow table, IRR, and sensitivity charts
+ * v0.6.0: Added IRR, energy price sensitivity, CAPEX sensitivity
  * @param {object} result - Sizing result from bess-dispatch API
  */
 function displayFinanceSection(result) {
   const section = document.getElementById('financeSection');
   if (!section) {
-    console.log('⚠️ Finance section element not found');
+    console.log('[BESS] Finance section element not found');
     return;
   }
 
@@ -4499,13 +4519,40 @@ function displayFinanceSection(result) {
   const fs = recommended.finance_summary;
   section.style.display = 'block';
 
+  // v0.6.0: Display IRR
+  displayIRR(fs);
+
   // Display cashflow table
   displayCashflowTable(fs);
 
   // Display discount rate sensitivity chart
   displayDiscountRateSensitivity(fs);
 
-  console.log('💰 Finance section updated');
+  // v0.6.0: Display energy price sensitivity
+  displayEnergyPriceSensitivity(fs);
+
+  // v0.6.0: Display CAPEX sensitivity
+  displayCapexSensitivity(fs);
+
+  console.log('[BESS] Finance section updated (v0.6.0 with IRR + sweeps)');
+}
+
+/**
+ * Display IRR (Internal Rate of Return) from finance_summary
+ * v0.6.0 PR1
+ */
+function displayIRR(financeSummary) {
+  const irrValueEl = document.getElementById('irrValue');
+  if (!irrValueEl) return;
+
+  const irr = financeSummary.irr_pct;
+  if (irr === null || irr === undefined) {
+    irrValueEl.textContent = 'N/A';
+    irrValueEl.className = 'irr-value na';
+  } else {
+    irrValueEl.textContent = formatNumberEU(irr, 1) + '%';
+    irrValueEl.className = irr >= financeSummary.discount_rate * 100 ? 'irr-value positive' : 'irr-value negative';
+  }
 }
 
 /**
@@ -4651,6 +4698,222 @@ function drawDiscountRateSensitivityChart(container, sensitivity, baseRate) {
   });
 }
 
+/**
+ * Display energy price sensitivity (NPV at different price multipliers)
+ * v0.6.0 PR4
+ */
+function displayEnergyPriceSensitivity(financeSummary) {
+  const section = document.getElementById('epSensitivitySection');
+  const chartContainer = document.getElementById('epSensitivityChart');
+  const tableBody = document.getElementById('epSensitivityTableBody');
+
+  if (!section) return;
+
+  const sensitivity = financeSummary.energy_price_sensitivity;
+  if (!sensitivity || sensitivity.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+
+  // Build table
+  if (tableBody) {
+    const rows = sensitivity.map(point => {
+      const isBase = Math.abs(point.multiplier - 1.0) < 0.01;
+      const npvClass = point.npv_pln >= 0 ? 'positive' : 'negative';
+      const rowClass = isBase ? 'base-rate' : '';
+
+      return `
+        <tr class="${rowClass}">
+          <td>${formatNumberEU(point.multiplier_pct, 0)}%${isBase ? ' (bazowa)' : ''}</td>
+          <td class="${npvClass}">${formatNumberEU(point.npv_pln / 1000, 0)} tys. PLN</td>
+        </tr>
+      `;
+    }).join('');
+
+    tableBody.innerHTML = rows;
+  }
+
+  // Draw chart if Chart.js is available
+  if (chartContainer && typeof Chart !== 'undefined') {
+    drawEnergyPriceSensitivityChart(chartContainer, sensitivity);
+  }
+}
+
+/**
+ * Draw energy price sensitivity chart using Chart.js
+ * v0.6.0 PR4
+ */
+function drawEnergyPriceSensitivityChart(container, sensitivity) {
+  const canvasId = 'epSensitivityCanvas';
+  let canvas = document.getElementById(canvasId);
+
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = canvasId;
+    canvas.height = 200;
+    container.innerHTML = '';
+    container.appendChild(canvas);
+  }
+
+  // Destroy existing chart
+  if (window.epSensitivityChartInstance) {
+    window.epSensitivityChartInstance.destroy();
+  }
+
+  const labels = sensitivity.map(p => `${formatNumberEU(p.multiplier_pct, 0)}%`);
+  const npvValues = sensitivity.map(p => p.npv_pln / 1000);
+  const colors = sensitivity.map(p => p.npv_pln >= 0 ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)');
+  const borderColors = sensitivity.map(p => Math.abs(p.multiplier - 1.0) < 0.01 ? '#3b82f6' : 'transparent');
+
+  window.epSensitivityChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'NPV (tys. PLN)',
+        data: npvValues,
+        backgroundColor: colors,
+        borderColor: borderColors,
+        borderWidth: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: {
+          display: true,
+          text: 'NPV vs Cena energii',
+          color: '#e5e7eb'
+        }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'NPV (tys. PLN)', color: '#9ca3af' },
+          grid: { color: 'rgba(255,255,255,0.1)' },
+          ticks: { color: '#9ca3af' }
+        },
+        x: {
+          title: { display: true, text: 'Cena energii (% bazowej)', color: '#9ca3af' },
+          grid: { display: false },
+          ticks: { color: '#9ca3af' }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Display CAPEX sensitivity (NPV at different CAPEX multipliers)
+ * v0.6.0 PR4
+ */
+function displayCapexSensitivity(financeSummary) {
+  const section = document.getElementById('capexSensitivitySection');
+  const chartContainer = document.getElementById('capexSensitivityChart');
+  const tableBody = document.getElementById('capexSensitivityTableBody');
+
+  if (!section) return;
+
+  const sensitivity = financeSummary.capex_sensitivity;
+  if (!sensitivity || sensitivity.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+
+  // Build table
+  if (tableBody) {
+    const rows = sensitivity.map(point => {
+      const isBase = Math.abs(point.multiplier - 1.0) < 0.01;
+      const npvClass = point.npv_pln >= 0 ? 'positive' : 'negative';
+      const rowClass = isBase ? 'base-rate' : '';
+
+      return `
+        <tr class="${rowClass}">
+          <td>${formatNumberEU(point.multiplier_pct, 0)}%${isBase ? ' (bazowy)' : ''}</td>
+          <td class="${npvClass}">${formatNumberEU(point.npv_pln / 1000, 0)} tys. PLN</td>
+        </tr>
+      `;
+    }).join('');
+
+    tableBody.innerHTML = rows;
+  }
+
+  // Draw chart if Chart.js is available
+  if (chartContainer && typeof Chart !== 'undefined') {
+    drawCapexSensitivityChart(chartContainer, sensitivity);
+  }
+}
+
+/**
+ * Draw CAPEX sensitivity chart using Chart.js
+ * v0.6.0 PR4
+ */
+function drawCapexSensitivityChart(container, sensitivity) {
+  const canvasId = 'capexSensitivityCanvas';
+  let canvas = document.getElementById(canvasId);
+
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = canvasId;
+    canvas.height = 200;
+    container.innerHTML = '';
+    container.appendChild(canvas);
+  }
+
+  // Destroy existing chart
+  if (window.capexSensitivityChartInstance) {
+    window.capexSensitivityChartInstance.destroy();
+  }
+
+  const labels = sensitivity.map(p => `${formatNumberEU(p.multiplier_pct, 0)}%`);
+  const npvValues = sensitivity.map(p => p.npv_pln / 1000);
+  const colors = sensitivity.map(p => p.npv_pln >= 0 ? 'rgba(34, 197, 94, 0.8)' : 'rgba(239, 68, 68, 0.8)');
+  const borderColors = sensitivity.map(p => Math.abs(p.multiplier - 1.0) < 0.01 ? '#3b82f6' : 'transparent');
+
+  window.capexSensitivityChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'NPV (tys. PLN)',
+        data: npvValues,
+        backgroundColor: colors,
+        borderColor: borderColors,
+        borderWidth: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: {
+          display: true,
+          text: 'NPV vs CAPEX',
+          color: '#e5e7eb'
+        }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'NPV (tys. PLN)', color: '#9ca3af' },
+          grid: { color: 'rgba(255,255,255,0.1)' },
+          ticks: { color: '#9ca3af' }
+        },
+        x: {
+          title: { display: true, text: 'CAPEX (% bazowego)', color: '#9ca3af' },
+          grid: { display: false },
+          ticks: { color: '#9ca3af' }
+        }
+      }
+    }
+  });
+}
+
 // Export ToU and Capacity Fee functions
 window.fetchTariffPresets = fetchTariffPresets;
 window.calculateToUCosts = calculateToUCosts;
@@ -4660,5 +4923,8 @@ window.displayCapacityFeeOverlay = displayCapacityFeeOverlay;
 window.hideCapacityFeeOverlay = hideCapacityFeeOverlay;
 window.runCapacityFeeAnalysisIfEnabled = runCapacityFeeAnalysisIfEnabled;
 window.displayFinanceSection = displayFinanceSection;
+window.displayIRR = displayIRR;
+window.displayEnergyPriceSensitivity = displayEnergyPriceSensitivity;
+window.displayCapexSensitivity = displayCapexSensitivity;
 
-console.log('📦 bess.js v3.20 - added finance section (cashflow + sensitivity)');
+console.log('[BESS] bess.js v3.21 - v0.6.0 lifecycle features (IRR + sensitivity sweeps)');
