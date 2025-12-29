@@ -1825,6 +1825,13 @@ class SizingResult(BaseModel):
                     "which ones, and whether recommended is fallback due to none_feasible."
     )
 
+    # Cache info (v0.9.0) - request hash and run_id for caching
+    cache_info: Optional["CacheInfo"] = Field(
+        None,
+        description="Cache metadata including request_hash, run_id, and cache_status. "
+                    "Enables deterministic result retrieval and debugging."
+    )
+
     # Warnings
     warnings: List[str] = Field(default_factory=list)
 
@@ -2332,5 +2339,48 @@ class BatchSizingResponse(BaseModel):
     )
 
 
+# =============================================================================
+# Request Hash and Caching (v0.9.0)
+# =============================================================================
+
+class CacheStatus(str, Enum):
+    """Cache lookup result status"""
+    HIT = "hit"          # Result retrieved from cache
+    MISS = "miss"        # New computation performed
+    DISABLED = "disabled"  # Caching disabled for request
+
+
+class CacheInfo(BaseModel):
+    """
+    Cache metadata for a sizing result.
+
+    Enables deterministic result retrieval and debugging.
+    """
+    request_hash: str = Field(
+        ...,
+        description="SHA-256 hash of canonical request JSON. "
+                    "Same inputs always produce same hash."
+    )
+    run_id: str = Field(
+        ...,
+        description="Unique identifier for this computation run (UUID). "
+                    "Different for each new computation, same for cache hits."
+    )
+    cache_status: CacheStatus = Field(
+        CacheStatus.MISS,
+        description="Whether result was from cache (hit) or freshly computed (miss)"
+    )
+    cached_at: Optional[str] = Field(
+        None,
+        description="ISO 8601 timestamp when result was cached. "
+                    "None for cache misses."
+    )
+    ttl_seconds: Optional[int] = Field(
+        None,
+        description="Cache time-to-live in seconds. None if caching disabled."
+    )
+
+
 # Update forward references for Pydantic
-SizingRequest.update_forward_refs()
+SizingRequest.model_rebuild()
+SizingResult.model_rebuild()

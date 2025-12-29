@@ -3,6 +3,7 @@
     "annual_surplus_mwh",
     "applied_parameters",
     "assumptions_version",
+    "cache_info",
     "constraints_report",
     "finance_assumptions",
     "grid_constraints_applied",
@@ -168,5 +169,12 @@
     "ok_count",
     "processing_time_ms",
     "total_items"
+  ],
+  "cache_info_keys": [
+    "cache_status",
+    "cached_at",
+    "request_hash",
+    "run_id",
+    "ttl_seconds"
   ]
 }
