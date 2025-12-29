@@ -4,6 +4,7 @@
     "applied_parameters",
     "assumptions_version",
     "mode",
+    "objective_used",
     "pareto_points",
     "period_info",
     "recommended_energy_kwh",

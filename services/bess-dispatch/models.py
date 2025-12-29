@@ -1226,6 +1226,13 @@ class SizingResult(BaseModel):
                     "Useful for UI to show alternatives. Example: ['medium', 'large', 'small']"
     )
 
+    # Optimization objective used
+    objective_used: Optional[str] = Field(
+        None,
+        description="Optimization objective that was used. Default is 'npv'. "
+                    "Values: npv, payback, self_consumption, peak_reduction, efc_utilization"
+    )
+
     # Pareto frontier (optional)
     pareto_points: Optional[List[Dict[str, float]]] = None
 
