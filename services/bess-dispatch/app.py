@@ -32,6 +32,11 @@ from observability.http_metrics import (
     SERVICE_NAME,
 )
 
+from observability.batch_metrics import (
+    record_batch_request,
+    record_portfolio_summary,
+)
+
 from models import (
     DispatchRequest,
     DispatchResult,
@@ -1471,6 +1476,22 @@ async def run_batch_sizing(request: BatchSizingRequest):
 
     # Build portfolio summary from successful results
     portfolio_summary = _build_portfolio_summary(results)
+
+    # Record batch metrics
+    record_batch_request(
+        total_items=len(request.items),
+        ok_count=ok_count,
+        error_count=error_count,
+        processing_time_ms=processing_time_ms,
+    )
+
+    # Record portfolio metrics if available
+    if portfolio_summary:
+        record_portfolio_summary(
+            optimal_variant=portfolio_summary.portfolio_optimal_variant,
+            total_npv_pln=portfolio_summary.total_npv_pln,
+            avg_payback_years=portfolio_summary.avg_payback_years,
+        )
 
     return BatchSizingResponse(
         batch_id=batch_id,
