@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.17 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.18 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -86,7 +86,13 @@ function sendBessResultToShell(sizingResult) {
       demand_charge_savings_pln: recommended.savings_breakdown.demand_charge_savings_pln || 0,
       capacity_fee_savings_pln: recommended.savings_breakdown.capacity_fee_savings_pln || 0,
       arbitrage_savings_pln: recommended.savings_breakdown.arbitrage_savings_pln || 0,
-      export_revenue_pln: recommended.savings_breakdown.export_revenue_pln || 0,
+      // Export revenue breakdown (v0.3.4)
+      baseline_export_revenue_pln: recommended.savings_breakdown.baseline_export_revenue_pln || 0,
+      project_export_revenue_pln: recommended.savings_breakdown.project_export_revenue_pln || 0,
+      export_revenue_savings_pln: recommended.savings_breakdown.export_revenue_savings_pln || 0,
+      export_revenue_pln: recommended.savings_breakdown.export_revenue_pln || 0,  // legacy
+      // Degradation (v0.3.4)
+      battery_throughput_mwh: recommended.savings_breakdown.battery_throughput_mwh || 0,
       degradation_cost_pln: recommended.savings_breakdown.degradation_cost_pln || 0,
       net_savings_pln: recommended.savings_breakdown.net_savings_pln || recommended.annual_savings_pln || 0,
       source: 'bess_dispatch_accurate',
@@ -95,7 +101,11 @@ function sendBessResultToShell(sizingResult) {
       demand_charge_savings_pln: 0,
       capacity_fee_savings_pln: 0,
       arbitrage_savings_pln: 0,
+      baseline_export_revenue_pln: 0,
+      project_export_revenue_pln: 0,
+      export_revenue_savings_pln: 0,
       export_revenue_pln: 0,
+      battery_throughput_mwh: 0,
       degradation_cost_pln: 0,
       net_savings_pln: recommended.annual_savings_pln || 0,
       source: 'bess_pro_fallback',
