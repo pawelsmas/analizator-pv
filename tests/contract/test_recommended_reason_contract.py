@@ -90,7 +90,7 @@ class TestRecommendedReasonContent:
         request = {
             **minimal_sizing_request,
             "optimization": {
-                "objective": "PAYBACK",
+                "objective": "payback",  # lowercase per OptimizationObjective enum
             }
         }
 
@@ -122,10 +122,10 @@ class TestRecommendedReasonWithConstraints:
         request = {
             **minimal_sizing_request,
             "optimization": {
-                "objective": "NPV",
+                "objective": "npv",  # lowercase per OptimizationObjective enum
                 "constraints": [
                     {
-                        "constraint_type": "MAX_PAYBACK",
+                        "constraint_type": "max_payback",  # lowercase per ConstraintType enum
                         "value": 10.0,
                         "hard": True,
                     }
