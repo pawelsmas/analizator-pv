@@ -1,4 +1,4 @@
-console.log('🔋 bess.js LOADED v=3.18 - timestamp:', new Date().toISOString());
+console.log('🔋 bess.js LOADED v=3.19 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -3101,6 +3101,72 @@ const objectiveDescriptions = {
   efc_utilization: 'Optymalizuj wykorzystanie cykli baterii w budżecie degradacji'
 };
 
+// v3.19: Reason code to Polish description mapping
+const reasonCodeDescriptions = {
+  npv_max: 'Najwyższe NPV',
+  payback_min: 'Najkrótszy payback',
+  self_consumption_max: 'Najwyższe autokonsumpcja',
+  peak_reduction_max: 'Najwyższa redukcja szczytów',
+  efc_utilization_max: 'Optymalne wykorzystanie cykli',
+  constrained_fallback: 'Wariant awaryjny (ograniczenia)'
+};
+
+/**
+ * v3.19: Format recommended reason using structured fields from API
+ * Uses machine-readable code/metric/value/unit fields instead of string parsing
+ * @param {object} result - Sizing result from bess-dispatch API
+ * @returns {string} Human-readable reason in Polish
+ */
+function formatRecommendedReason(result) {
+  // Prefer structured fields (v0.4.1+)
+  const code = result.recommended_reason_code;
+  const metric = result.recommended_reason_metric;
+  const value = result.recommended_reason_value;
+  const unit = result.recommended_reason_unit;
+
+  if (code && value !== undefined && value !== null) {
+    // Use structured data
+    const description = reasonCodeDescriptions[code] || code;
+    const formattedValue = formatReasonValue(value, metric, unit);
+    return `${description}: ${formattedValue}`;
+  }
+
+  // Fallback to legacy string if available
+  if (result.recommended_reason) {
+    return result.recommended_reason;
+  }
+
+  // Final fallback
+  return 'Najlepszy wynik optymalizacji';
+}
+
+/**
+ * v3.19: Format reason value based on metric type
+ * @param {number} value - The metric value
+ * @param {string} metric - Metric name (npv_pln, payback_years, etc.)
+ * @param {string} unit - Unit string (PLN, years, %, etc.)
+ * @returns {string} Formatted value with unit
+ */
+function formatReasonValue(value, metric, unit) {
+  if (metric === 'npv_pln' || unit === 'PLN') {
+    // Format NPV in thousands
+    return `${formatNumberEU(value / 1000, 0)} tys. PLN`;
+  }
+  if (metric === 'payback_years' || unit === 'years') {
+    // Format payback with 1 decimal
+    return `${formatNumberEU(value, 1)} lat`;
+  }
+  if (unit === '%') {
+    // Percentage
+    return `${formatNumberEU(value, 1)}%`;
+  }
+  if (unit === 'kW') {
+    return `${formatNumberEU(value, 0)} kW`;
+  }
+  // Default: value + unit
+  return `${formatNumberEU(value, 2)} ${unit || ''}`.trim();
+}
+
 /**
  * Update topology selection
  */
@@ -3737,6 +3803,11 @@ function updateConfigResultsSummary(result) {
   };
 
   setElementText('summaryRecommended', variantLabels[result.recommended_variant] || result.recommended_variant || '-');
+
+  // v3.19: Display structured reason for recommendation
+  const reasonText = formatRecommendedReason(result);
+  setElementText('summaryReason', reasonText);
+
   setElementText('summaryPowerEnergy', `${formatNumberEU(recommended.power_kw, 0)} kW / ${formatNumberEU(recommended.energy_kwh, 0)} kWh`);
 
   // NPV with color
