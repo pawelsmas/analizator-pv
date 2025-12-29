@@ -41,6 +41,7 @@
     "degradation_cost_pln",
     "demand_charge_savings_pln",
     "energy_savings_pln",
+    "export_revenue_pln",
     "net_savings_pln"
   ],
   "period_info_keys": [

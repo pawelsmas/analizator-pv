@@ -263,9 +263,19 @@ class DispatchRequestAPI(BaseModel):
         description="Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled."
     )
 
-    # Degradation budget
+    # Degradation budget (annual limits)
     max_efc_per_year: Optional[float] = None
     max_throughput_mwh_per_year: Optional[float] = None
+
+    # Degradation budget (daily limits)
+    max_cycles_per_day: Optional[float] = Field(
+        None, ge=0, le=10,
+        description="Max EFC cycles per day."
+    )
+    max_throughput_mwh_per_day: Optional[float] = Field(
+        None, ge=0,
+        description="Max throughput per day [MWh]."
+    )
 
     # Prices
     import_price_pln_mwh: float = Field(800.0, ge=0)
@@ -346,10 +356,13 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
             )
 
         budget = None
-        if request.max_efc_per_year or request.max_throughput_mwh_per_year:
+        if (request.max_efc_per_year or request.max_throughput_mwh_per_year or
+            request.max_cycles_per_day or request.max_throughput_mwh_per_day):
             budget = DegradationBudget(
                 max_efc_per_year=request.max_efc_per_year,
                 max_throughput_mwh_per_year=request.max_throughput_mwh_per_year,
+                max_cycles_per_day=request.max_cycles_per_day,
+                max_throughput_mwh_per_day=request.max_throughput_mwh_per_day,
             )
 
         prices = PriceConfig(
@@ -558,9 +571,25 @@ class SizingRequestAPI(BaseModel):
         description="ToU pricing config: {tariff_id, other_fees_pln_mwh, capacity_fee_method, analysis_year}"
     )
 
-    # Degradation budget
+    # Degradation budget (annual limits - checked post-dispatch)
     max_efc_per_year: Optional[float] = None
     max_throughput_mwh_per_year: Optional[float] = None
+
+    # Degradation budget (daily limits - triggers warnings when exceeded)
+    max_cycles_per_day: Optional[float] = Field(
+        None, ge=0, le=10,
+        description="Max EFC cycles per day. Triggers warning when exceeded."
+    )
+    max_throughput_mwh_per_day: Optional[float] = Field(
+        None, ge=0,
+        description="Max throughput per day [MWh]. Triggers warning when exceeded."
+    )
+
+    # OR full degradation_budget object (takes precedence if provided)
+    degradation_budget: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Full DegradationBudget config: {max_efc_per_year, max_throughput_mwh_per_year, max_cycles_per_day, max_throughput_mwh_per_day}. Takes precedence over individual fields."
+    )
 
     # Optimization configuration (objective + constraints)
     optimization: Optional[Dict[str, Any]] = Field(
@@ -618,11 +647,19 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 reserve_fraction=request.reserve_fraction,
             )
 
+        # Build DegradationBudget from request
         budget = None
-        if request.max_efc_per_year or request.max_throughput_mwh_per_year:
+        if request.degradation_budget:
+            # Full budget object takes precedence
+            budget = DegradationBudget(**request.degradation_budget)
+        elif (request.max_efc_per_year or request.max_throughput_mwh_per_year or
+              request.max_cycles_per_day or request.max_throughput_mwh_per_day):
+            # Individual fields
             budget = DegradationBudget(
                 max_efc_per_year=request.max_efc_per_year,
                 max_throughput_mwh_per_year=request.max_throughput_mwh_per_year,
+                max_cycles_per_day=request.max_cycles_per_day,
+                max_throughput_mwh_per_day=request.max_throughput_mwh_per_day,
             )
 
         # Build PriceConfig from request

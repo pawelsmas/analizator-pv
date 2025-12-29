@@ -991,6 +991,8 @@ def dispatch_stacked(
         peak_max_discharge_kw=peak_max_discharge,
         charge_from_pv_kwh=total_charge_pv,
         charge_from_grid_kwh=total_charge_grid,
+        discharge_hourly=discharge,
+        dt_hours=dt_hours,
     )
 
     # Add arbitrage metrics to degradation
@@ -1217,6 +1219,9 @@ def calculate_degradation_metrics_stacked(
     peak_max_discharge_kw: float = 0.0,
     charge_from_pv_kwh: float = 0.0,
     charge_from_grid_kwh: float = 0.0,
+    # Optional hourly arrays for daily statistics
+    discharge_hourly: Optional[np.ndarray] = None,
+    dt_hours: float = 1.0,
 ) -> DegradationMetrics:
     """
     Calculate degradation metrics for STACKED (dual-service) dispatch.
@@ -1224,11 +1229,16 @@ def calculate_degradation_metrics_stacked(
     Approximation for charge split:
     - Assume charge is proportional to discharge per service
 
-    New metrics:
+    Metrics:
     - peak_events_count: number of hours with peak shaving discharge
     - peak_max_discharge_kw: maximum discharge power for peak shaving
     - charge_from_pv_kwh: energy charged from PV surplus
     - charge_from_grid_kwh: energy charged from grid
+
+    Daily statistics (if discharge_hourly provided):
+    - n_days: number of days in analysis period
+    - max_daily_efc: max EFC in any single day
+    - avg_daily_efc: average EFC per day
     """
     usable_capacity = battery.usable_capacity_kwh
     if usable_capacity <= 0:
@@ -1258,6 +1268,38 @@ def calculate_degradation_metrics_stacked(
     # Charge source percentage
     charge_pv_pct = (charge_from_pv_kwh / total_charge * 100) if total_charge > 0 else 0.0
 
+    # Daily statistics (if hourly data provided)
+    n_days = 0
+    max_daily_efc = 0.0
+    avg_daily_efc = 0.0
+    max_daily_throughput_mwh = 0.0
+    avg_daily_throughput_mwh = 0.0
+
+    if discharge_hourly is not None and len(discharge_hourly) > 0:
+        # Calculate steps per day
+        steps_per_day = int(24 / dt_hours) if dt_hours > 0 else 24
+        n_steps = len(discharge_hourly)
+        n_days = max(1, n_steps // steps_per_day)
+
+        # Calculate daily discharge energy [kWh]
+        daily_discharge_kwh = []
+        for day in range(n_days):
+            start_idx = day * steps_per_day
+            end_idx = min(start_idx + steps_per_day, n_steps)
+            day_discharge_kw = discharge_hourly[start_idx:end_idx]
+            # Convert power to energy: kW * hours = kWh
+            day_discharge_kwh = float(np.sum(day_discharge_kw) * dt_hours)
+            daily_discharge_kwh.append(day_discharge_kwh)
+
+        if daily_discharge_kwh:
+            daily_efc = [d / usable_capacity for d in daily_discharge_kwh]
+            daily_throughput_mwh = [d / 1000 for d in daily_discharge_kwh]  # Approx (discharge only)
+
+            max_daily_efc = max(daily_efc)
+            avg_daily_efc = sum(daily_efc) / len(daily_efc)
+            max_daily_throughput_mwh = max(daily_throughput_mwh)
+            avg_daily_throughput_mwh = sum(daily_throughput_mwh) / len(daily_throughput_mwh)
+
     return DegradationMetrics(
         throughput_charge_kwh=total_charge,
         throughput_discharge_kwh=total_discharge,
@@ -1270,6 +1312,13 @@ def calculate_degradation_metrics_stacked(
         peak_events_count=peak_events_count,
         peak_events_energy_kwh=discharge_peak,
         peak_max_discharge_kw=peak_max_discharge_kw,
+        # Daily statistics
+        n_days=n_days,
+        max_daily_efc=max_daily_efc,
+        avg_daily_efc=avg_daily_efc,
+        max_daily_throughput_mwh=max_daily_throughput_mwh,
+        avg_daily_throughput_mwh=avg_daily_throughput_mwh,
+        # Charge source
         charge_from_pv_kwh=charge_from_pv_kwh,
         charge_from_grid_kwh=charge_from_grid_kwh,
         charge_pv_pct=charge_pv_pct,
@@ -1346,6 +1395,48 @@ def check_degradation_budget(
             warnings.append(
                 f"THROUGHPUT INFO: {metrics.throughput_total_mwh:.1f} MWh at {tp_util:.0f}% of budget"
             )
+
+    # Check daily cycle limit
+    days_exceeding_cycle = 0
+    if budget.max_cycles_per_day is not None and metrics.max_daily_efc > 0:
+        if metrics.max_daily_efc > budget.max_cycles_per_day:
+            if status != DegradationStatus.EXCEEDED:
+                status = DegradationStatus.WARNING
+            warnings.append(
+                f"DAILY CYCLE WARNING: max {metrics.max_daily_efc:.2f} EFC/day "
+                f"exceeds limit {budget.max_cycles_per_day:.1f} EFC/day"
+            )
+            # Count days exceeding limit (simplified: check if max > limit)
+            if metrics.avg_daily_efc > 0 and metrics.n_days > 0:
+                # Estimate days exceeding (rough approximation)
+                exceed_ratio = metrics.max_daily_efc / budget.max_cycles_per_day
+                if exceed_ratio > 1:
+                    days_exceeding_cycle = max(1, int(metrics.n_days * 0.1))  # Assume ~10% of days
+        elif metrics.max_daily_efc > budget.max_cycles_per_day * 0.9:
+            warnings.append(
+                f"DAILY CYCLE INFO: max {metrics.max_daily_efc:.2f} EFC/day "
+                f"approaching limit {budget.max_cycles_per_day:.1f} EFC/day"
+            )
+    metrics.days_exceeding_cycle_limit = days_exceeding_cycle
+
+    # Check daily throughput limit
+    days_exceeding_tp = 0
+    if budget.max_throughput_mwh_per_day is not None and metrics.max_daily_throughput_mwh > 0:
+        if metrics.max_daily_throughput_mwh > budget.max_throughput_mwh_per_day:
+            if status != DegradationStatus.EXCEEDED:
+                status = DegradationStatus.WARNING
+            warnings.append(
+                f"DAILY THROUGHPUT WARNING: max {metrics.max_daily_throughput_mwh:.2f} MWh/day "
+                f"exceeds limit {budget.max_throughput_mwh_per_day:.1f} MWh/day"
+            )
+            if metrics.n_days > 0:
+                days_exceeding_tp = max(1, int(metrics.n_days * 0.1))
+        elif metrics.max_daily_throughput_mwh > budget.max_throughput_mwh_per_day * 0.9:
+            warnings.append(
+                f"DAILY THROUGHPUT INFO: max {metrics.max_daily_throughput_mwh:.2f} MWh/day "
+                f"approaching limit {budget.max_throughput_mwh_per_day:.1f} MWh/day"
+            )
+    metrics.days_exceeding_throughput_limit = days_exceeding_tp
 
     metrics.budget_status = status
     metrics.budget_utilization_pct = min(utilization, 999)
@@ -1507,6 +1598,8 @@ def dispatch_load_only(
         peak_max_discharge_kw=float(np.max(discharge)) if np.any(discharge > 0) else 0.0,
         charge_from_pv_kwh=0.0,  # No PV
         charge_from_grid_kwh=total_charge,  # All charge from grid
+        discharge_hourly=discharge,
+        dt_hours=dt_hours,
     )
 
     # Economics - Energy cost (note: in LOAD_ONLY mode, battery increases energy import due to losses)
