@@ -151,6 +151,14 @@ class AnalyticalPeriodConfig(BaseModel):
         """Factor to scale period values to annual (8760 / period_hours)"""
         return 1.0 if self.is_full_year else (8760 / self.period_hours)
 
+    @property
+    def end_datetime(self) -> str:
+        """Calculate end datetime from start + n_points * interval"""
+        from datetime import datetime, timedelta
+        start = datetime.fromisoformat(self.start_datetime)
+        end = start + timedelta(minutes=(self.n_points - 1) * self.interval_minutes)
+        return end.isoformat()
+
 
 class PeriodInfo(BaseModel):
     """
