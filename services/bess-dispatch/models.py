@@ -587,6 +587,13 @@ class DispatchRequest(BaseModel):
                     "False = only totals_mwh (small). True = also timeseries_kwh (large)."
     )
 
+    # Grid constraints (v0.7.0)
+    grid_constraints: Optional["GridConstraints"] = Field(
+        None,
+        description="Grid connection constraints (max_export_kw, max_import_kw, allow_export). "
+                    "Applied to both baseline and project scenarios."
+    )
+
     @validator('interval_minutes')
     def validate_interval(cls, v):
         if v not in [15, 60]:
@@ -962,6 +969,12 @@ class DispatchResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     info: Dict[str, Any] = Field(default_factory=dict)
 
+    # Grid constraint summary (v0.7.0) - tracks cap hits
+    constraint_summary: Optional["ConstraintSummary"] = Field(
+        None,
+        description="Summary of grid constraint impacts (export_cap_hit_steps, curtailed_kwh, etc.)"
+    )
+
 
 # =============================================================================
 # Sizing Request/Result
@@ -1012,6 +1025,33 @@ class GridConstraintsApplied(BaseModel):
     allow_export: bool = Field(
         True,
         description="Whether export was allowed."
+    )
+
+
+class ConstraintSummary(BaseModel):
+    """
+    Summary of grid constraint impacts (v0.7.0).
+
+    Tracks how often and how much constraints were hit during dispatch.
+    """
+    # Export cap (PR 2/6)
+    export_cap_hit_steps: int = Field(
+        0,
+        description="Number of timesteps where export was capped by max_export_kw"
+    )
+    export_cap_curtailed_kwh: float = Field(
+        0.0,
+        description="Total energy curtailed due to export cap [kWh]"
+    )
+
+    # Import cap (PR 3/6) - to be added later
+    import_cap_hit_steps: int = Field(
+        0,
+        description="Number of timesteps where import was capped by max_import_kw"
+    )
+    unserved_load_kwh: float = Field(
+        0.0,
+        description="Total energy unserved due to import cap [kWh]"
     )
 
 

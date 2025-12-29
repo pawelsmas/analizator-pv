@@ -43,6 +43,9 @@ from models import (
     EnergyFlowsTotalsMwh,
     EnergyFlowsTimeseriesKwh,
     ENGINE_VERSION,
+    # v0.7.0 Grid Constraints
+    GridConstraints,
+    ConstraintSummary,
 )
 
 
@@ -148,6 +151,82 @@ def create_savings_breakdown(
         degradation_cost_pln=degradation_cost_pln,
         net_savings_pln=net_savings
     )
+
+
+def apply_export_cap(
+    result: DispatchResult,
+    grid_constraints: Optional[GridConstraints],
+    dt_hours: float,
+) -> Tuple[DispatchResult, ConstraintSummary]:
+    """
+    Apply export cap constraint to dispatch result (v0.7.0).
+
+    If max_export_kw is set (or allow_export=False), any grid export exceeding
+    the limit is converted to curtailment.
+
+    This is a post-processing step that modifies:
+    - hourly_grid_export_kw: capped at max_export_kw
+    - total_grid_export_kwh: recalculated
+    - total_curtailment_kwh: increased by capped amount
+    - energy_flows: updated if present
+
+    Returns:
+    --------
+    Tuple of (modified_result, constraint_summary)
+    """
+    # Initialize constraint summary with zeros
+    constraint_summary = ConstraintSummary()
+
+    if grid_constraints is None:
+        return result, constraint_summary
+
+    # Compute effective max export
+    max_export_kw = grid_constraints.max_export_kw
+    if not grid_constraints.allow_export:
+        max_export_kw = 0.0
+
+    if max_export_kw is None:
+        # No export limit
+        return result, constraint_summary
+
+    # Get hourly export data
+    hourly_export = result.hourly_grid_export_kw
+    if hourly_export is None:
+        return result, constraint_summary
+
+    # Apply export cap
+    export_arr = np.array(hourly_export, dtype=float)
+    cap_hit_mask = export_arr > max_export_kw
+    export_cap_hit_steps = int(np.sum(cap_hit_mask))
+
+    if export_cap_hit_steps == 0:
+        # No cap hits
+        return result, constraint_summary
+
+    # Calculate excess that will be curtailed
+    excess_kw = np.maximum(0, export_arr - max_export_kw)
+    excess_kwh = float(np.sum(excess_kw) * dt_hours)
+
+    # Apply cap
+    capped_export = np.minimum(export_arr, max_export_kw)
+
+    # Update result (create new object to avoid mutation)
+    result.hourly_grid_export_kw = capped_export.tolist()
+    result.total_grid_export_kwh = float(np.sum(capped_export) * dt_hours)
+    result.total_curtailment_kwh += excess_kwh
+
+    # Update energy_flows if present
+    if result.energy_flows is not None and result.energy_flows.totals_mwh is not None:
+        result.energy_flows.totals_mwh.grid_export_mwh = result.total_grid_export_kwh / 1000.0
+        result.energy_flows.totals_mwh.pv_curtail_mwh += excess_kwh / 1000.0
+
+    # Build constraint summary
+    constraint_summary = ConstraintSummary(
+        export_cap_hit_steps=export_cap_hit_steps,
+        export_cap_curtailed_kwh=excess_kwh,
+    )
+
+    return result, constraint_summary
 
 
 # =============================================================================
@@ -1807,5 +1886,12 @@ def run_dispatch(
         result.degradation = check_degradation_budget(
             result.degradation, request.degradation_budget
         )
+
+    # Apply grid constraints (v0.7.0)
+    if request.grid_constraints is not None:
+        result, constraint_summary = apply_export_cap(
+            result, request.grid_constraints, dt_hours
+        )
+        result.constraint_summary = constraint_summary
 
     return result
