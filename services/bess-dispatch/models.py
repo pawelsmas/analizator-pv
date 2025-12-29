@@ -1040,6 +1040,121 @@ class GridConstraintsApplied(BaseModel):
     )
 
 
+# =============================================================================
+# SIZING CONSTRAINTS CONFIG (v0.8.0)
+# =============================================================================
+
+class ConstraintsConfig(BaseModel):
+    """
+    User-defined constraints for BESS sizing optimization (v0.8.0).
+
+    These are soft constraints that filter which variants are considered
+    "feasible" for recommendation. Unlike grid_constraints (physical limits),
+    these are economic/business constraints that affect variant selection.
+
+    Variants violating constraints are still returned but marked as not feasible.
+    """
+    max_capex_pln: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum allowed CAPEX [PLN]. Variants exceeding this are not feasible."
+    )
+    max_payback_years: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum allowed payback period [years]. Variants exceeding this are not feasible."
+    )
+    min_npv_pln: Optional[float] = Field(
+        None,
+        description="Minimum required NPV [PLN]. Variants below this are not feasible. "
+                    "Can be negative to allow limited losses."
+    )
+    min_net_savings_pln: Optional[float] = Field(
+        None,
+        description="Minimum required annual net savings [PLN]. "
+                    "Variants below this are not feasible."
+    )
+    require_no_unserved_load: bool = Field(
+        False,
+        description="If True, variants with any unserved_load_kwh > 0 are not feasible."
+    )
+    max_unserved_load_kwh: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Maximum allowed unserved load [kWh]. "
+                    "If set, variants exceeding this are not feasible."
+    )
+
+
+class ConstraintViolation(BaseModel):
+    """
+    Details of a single constraint violation (v0.8.0).
+
+    Used to explain why a variant is not feasible.
+    """
+    code: str = Field(
+        ...,
+        description="Constraint code: MAX_CAPEX, MAX_PAYBACK, MIN_NPV, MIN_NET_SAVINGS, "
+                    "NO_UNSERVED_LOAD, MAX_UNSERVED_LOAD"
+    )
+    limit: float = Field(
+        ...,
+        description="The constraint limit value"
+    )
+    actual: float = Field(
+        ...,
+        description="The actual value that violated the constraint"
+    )
+    unit: str = Field(
+        ...,
+        description="Unit of measurement (PLN, years, kWh)"
+    )
+    message: str = Field(
+        ...,
+        description="Human-readable violation message"
+    )
+
+
+class Feasibility(BaseModel):
+    """
+    Per-variant feasibility status (v0.8.0).
+
+    Indicates whether a variant satisfies all user-defined constraints.
+    """
+    is_feasible: bool = Field(
+        True,
+        description="True if variant satisfies all constraints"
+    )
+    violations: List[ConstraintViolation] = Field(
+        default_factory=list,
+        description="List of constraint violations (empty if feasible)"
+    )
+
+
+class ConstraintsReport(BaseModel):
+    """
+    Summary of constraint evaluation results (v0.8.0).
+
+    Provides overview of how many variants are feasible and which ones.
+    """
+    applied: bool = Field(
+        False,
+        description="True if constraints_config was provided in request"
+    )
+    feasible_count: int = Field(
+        0,
+        description="Number of feasible variants"
+    )
+    feasible_variants: List[str] = Field(
+        default_factory=list,
+        description="List of feasible variant names (e.g., ['small', 'medium'])"
+    )
+    none_feasible: bool = Field(
+        False,
+        description="True if no variants are feasible (recommended is fallback)"
+    )
+
+
 class ConstraintSummary(BaseModel):
     """
     Summary of grid constraint impacts (v0.7.0).
@@ -1202,6 +1317,13 @@ class SizingRequest(BaseModel):
                     "Applied to both baseline and project scenarios."
     )
 
+    # Sizing constraints (v0.8.0)
+    constraints_config: Optional["ConstraintsConfig"] = Field(
+        None,
+        description="User-defined constraints for variant selection (max_capex, max_payback, min_npv). "
+                    "Variants violating constraints are marked as not feasible but still returned."
+    )
+
     @property
     def effective_pv_kw(self) -> List[float]:
         """Get PV array, creating zeros if empty (for LOAD_ONLY mode)"""
@@ -1258,6 +1380,13 @@ class SizingVariantResult(BaseModel):
         None,
         description="Financial summary with CAPEX, OPEX, NPV, payback. "
                     "NPV here matches npv_pln used for scoring and top_variants_details."
+    )
+
+    # Feasibility (v0.8.0) - constraint satisfaction status
+    feasibility: Optional["Feasibility"] = Field(
+        None,
+        description="Feasibility status based on constraints_config. "
+                    "is_feasible=True if variant satisfies all constraints, with violations list."
     )
 
     def model_post_init(self, __context):
@@ -1656,6 +1785,13 @@ class SizingResult(BaseModel):
         None,
         description="Echo of grid constraints applied in calculation. "
                     "Shows effective values (e.g., max_export_kw=0 when allow_export=False)."
+    )
+
+    # Constraints report (v0.8.0) - summary of constraint evaluation
+    constraints_report: Optional[ConstraintsReport] = Field(
+        None,
+        description="Summary of constraint evaluation: how many variants are feasible, "
+                    "which ones, and whether recommended is fallback due to none_feasible."
     )
 
     # Warnings

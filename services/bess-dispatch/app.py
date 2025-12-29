@@ -56,6 +56,8 @@ from models import (
     FinanceConfig,
     # v0.7.0 Grid Constraints
     GridConstraints,
+    # v0.8.0 Sizing Constraints
+    ConstraintsConfig,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -640,6 +642,14 @@ class SizingRequestAPI(BaseModel):
                     "Applied to both baseline and project scenarios."
     )
 
+    # Sizing constraints (v0.8.0) - user-defined constraints for variant selection
+    constraints_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Sizing constraints: {max_capex_pln, max_payback_years, min_npv_pln, min_net_savings_pln, "
+                    "require_no_unserved_load, max_unserved_load_kwh}. "
+                    "Variants violating constraints are marked as not feasible."
+    )
+
     @model_validator(mode='after')
     def validate_optimization_objective(self):
         """Validate optimization.objective is a valid enum value."""
@@ -856,6 +866,19 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 unserved_load_penalty_pln_kwh=gc_dict.get("unserved_load_penalty_pln_kwh", 0.0),
             )
 
+        # Parse constraints_config (v0.8.0)
+        constraints_config = None
+        if request.constraints_config:
+            cc_dict = request.constraints_config
+            constraints_config = ConstraintsConfig(
+                max_capex_pln=cc_dict.get("max_capex_pln"),
+                max_payback_years=cc_dict.get("max_payback_years"),
+                min_npv_pln=cc_dict.get("min_npv_pln"),
+                min_net_savings_pln=cc_dict.get("min_net_savings_pln"),
+                require_no_unserved_load=cc_dict.get("require_no_unserved_load", False),
+                max_unserved_load_kwh=cc_dict.get("max_unserved_load_kwh"),
+            )
+
         internal_request = SizingRequest(
             pv_generation_kw=request.pv_generation_kw,
             load_kw=request.load_kw,
@@ -896,6 +919,8 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             finance_config=finance_config,
             # Grid constraints (v0.7.0)
             grid_constraints=grid_constraints,
+            # Sizing constraints (v0.8.0)
+            constraints_config=constraints_config,
         )
 
         result = run_sizing(internal_request)
