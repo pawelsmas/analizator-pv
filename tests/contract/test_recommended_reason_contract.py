@@ -100,11 +100,24 @@ class TestRecommendedReasonContent:
             timeout=120,
         )
 
+        # Check for errors
+        assert response.status_code == 200, (
+            f"Expected 200, got {response.status_code}: {response.text[:500]}"
+        )
+
         data = response.json()
+
+        # Check variants exist
+        variants = data.get("variants", [])
+        assert len(variants) > 0, f"Expected variants, got: {list(data.keys())}"
+
         reason = data.get("recommended_reason")
 
         # Should have a non-empty reason
-        assert reason is not None, "recommended_reason should be present"
+        assert reason is not None, (
+            f"recommended_reason should be present. "
+            f"Response keys: {list(data.keys())}"
+        )
         assert isinstance(reason, str), "recommended_reason should be string"
         assert len(reason) > 0, f"recommended_reason should be non-empty: {reason}"
 
