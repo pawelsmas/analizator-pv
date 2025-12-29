@@ -20,6 +20,7 @@ COPY economics_helper.py .
 COPY dispatch_arbitrage.py .
 COPY api_arbitrage.py .
 COPY excel_export.py .
+COPY cache_helper.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/

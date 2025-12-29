@@ -66,6 +66,19 @@ from models import (
     BatchItemResult,
     BatchItemStatus,
     BatchSizingSummary,
+    # v0.9.0 Caching
+    CacheInfo,
+    CacheStatus,
+)
+from cache_helper import (
+    compute_request_hash,
+    generate_run_id,
+    get_cache_entry,
+    set_cache_entry,
+    build_cache_info,
+    clear_cache,
+    get_cache_stats,
+    DEFAULT_CACHE_TTL_SECONDS,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -213,8 +226,38 @@ async def service_info():
             "Capacity fee (opłata mocowa) post-dispatch calculation",
             "Sensitivity analysis (tornado chart)",
             "OSD tariff presets (C11, C12a, C12b, C21, C22a, C22b)",
+            "Request hash + run_id for deterministic caching (v0.9.0)",
+            "Batch sizing endpoint (v0.9.0)",
         ]
     )
+
+
+# =============================================================================
+# Cache Management Endpoints (v0.9.0)
+# =============================================================================
+
+class CacheStatsResponse(BaseModel):
+    """Cache statistics"""
+    entries: int = Field(..., description="Current number of cache entries")
+    max_entries: int = Field(..., description="Maximum cache entries allowed")
+
+
+@app.get("/cache/stats", response_model=CacheStatsResponse)
+async def cache_stats():
+    """Get cache statistics."""
+    stats = get_cache_stats()
+    return CacheStatsResponse(**stats)
+
+
+@app.delete("/cache")
+async def cache_clear():
+    """
+    Clear all cache entries.
+
+    Returns the number of entries cleared.
+    """
+    count = clear_cache()
+    return {"cleared": count}
 
 
 # =============================================================================
@@ -931,7 +974,40 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             constraints_config=constraints_config,
         )
 
+        # v0.9.0: Caching - compute request hash
+        # Convert request to dict for hash computation
+        request_dict = request.model_dump(mode="json")
+        request_hash = compute_request_hash(request_dict)
+
+        # Check cache (unless disabled via query param - future feature)
+        cache_entry = get_cache_entry(request_hash)
+        if cache_entry:
+            # Cache hit - return cached result with updated cache_info
+            result_dict, run_id, cached_at = cache_entry
+            cache_info = build_cache_info(
+                request_hash=request_hash,
+                run_id=run_id,
+                cache_status=CacheStatus.HIT,
+                cached_at=cached_at,
+            )
+            result_dict["cache_info"] = cache_info.model_dump(mode="json")
+            return result_dict
+
+        # Cache miss - run computation
+        run_id = generate_run_id()
         result = run_sizing(internal_request)
+
+        # Add cache_info to result
+        cache_info = build_cache_info(
+            request_hash=request_hash,
+            run_id=run_id,
+            cache_status=CacheStatus.MISS,
+        )
+        result.cache_info = cache_info
+
+        # Store in cache
+        result_dict = result.model_dump(mode="json")
+        set_cache_entry(request_hash, result_dict, run_id)
 
         return result
 
