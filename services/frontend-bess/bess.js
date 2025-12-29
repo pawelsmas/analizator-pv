@@ -1,4 +1,4 @@
-console.log('[BESS] bess.js LOADED v=3.21 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.22 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -94,6 +94,8 @@ function sendBessResultToShell(sizingResult) {
       // Degradation (v0.3.4)
       battery_throughput_mwh: recommended.savings_breakdown.battery_throughput_mwh || 0,
       degradation_cost_pln: recommended.savings_breakdown.degradation_cost_pln || 0,
+      // Unserved load penalty (v0.7.0)
+      unserved_load_penalty_pln: recommended.savings_breakdown.unserved_load_penalty_pln || 0,
       net_savings_pln: recommended.savings_breakdown.net_savings_pln || recommended.annual_savings_pln || 0,
       source: 'bess_dispatch_accurate',
     } : {
@@ -107,6 +109,7 @@ function sendBessResultToShell(sizingResult) {
       export_revenue_pln: 0,
       battery_throughput_mwh: 0,
       degradation_cost_pln: 0,
+      unserved_load_penalty_pln: 0,
       net_savings_pln: recommended.annual_savings_pln || 0,
       source: 'bess_pro_fallback',
     },
@@ -2332,6 +2335,12 @@ function displaySizingVariants(sizingResult) {
               <span class="breakdown-value negative">-${formatNumberEU(v.savings_breakdown.degradation_cost_pln, 0)} PLN</span>
             </div>
             ` : ''}
+            ${v.savings_breakdown.unserved_load_penalty_pln > 0 ? `
+            <div class="breakdown-row unserved-penalty">
+              <span class="breakdown-label">⚡ Kara za nieobsluzony</span>
+              <span class="breakdown-value negative">-${formatNumberEU(v.savings_breakdown.unserved_load_penalty_pln, 0)} PLN</span>
+            </div>
+            ` : ''}
           </div>
           ` : ''}
           <div class="variant-econ-row">
@@ -3128,7 +3137,14 @@ window.showSensitivitySectionIfAvailable = showSensitivitySectionIfAvailable;
 let advancedConfig = {
   topology: 'pv_load',           // 'pv_load', 'load_only', 'pv_only'
   objective: 'npv',              // 'npv', 'payback', 'self_consumption', 'peak_reduction', 'efc_utilization'
-  constraints: []                // Array of {type, value, hard}
+  constraints: [],               // Array of {type, value, hard}
+  // v0.7.0 Grid Constraints
+  gridConstraints: {
+    maxExportKw: null,           // null = unlimited export
+    maxImportKw: null,           // null = unlimited import
+    allowExport: true,           // false = no export allowed
+    unservedLoadPenaltyPlnKwh: 0 // penalty rate for unserved load
+  }
 };
 
 // Objective descriptions for info display
@@ -3279,7 +3295,39 @@ function toggleConstraint(constraintType) {
     }
   }
 
-  console.log(`🚧 Constraint ${constraintType} toggled:`, checkbox?.checked);
+  console.log(`Constraint ${constraintType} toggled:`, checkbox?.checked);
+}
+
+/**
+ * v0.7.0: Update grid constraint configuration
+ * @param {string} field - Field name (maxExportKw, maxImportKw, allowExport, unservedLoadPenaltyPlnKwh)
+ * @param {any} value - Field value
+ */
+function updateGridConstraint(field, value) {
+  if (!advancedConfig.gridConstraints) {
+    advancedConfig.gridConstraints = {
+      maxExportKw: null,
+      maxImportKw: null,
+      allowExport: true,
+      unservedLoadPenaltyPlnKwh: 0
+    };
+  }
+
+  // Parse value based on field type
+  if (field === 'allowExport') {
+    advancedConfig.gridConstraints.allowExport = Boolean(value);
+  } else if (field === 'maxExportKw' || field === 'maxImportKw') {
+    // Empty string or null means no limit
+    const numValue = value === '' || value === null ? null : parseFloat(value);
+    advancedConfig.gridConstraints[field] = numValue;
+  } else if (field === 'unservedLoadPenaltyPlnKwh') {
+    advancedConfig.gridConstraints.unservedLoadPenaltyPlnKwh = parseFloat(value) || 0;
+  }
+
+  console.log('Grid constraint updated:', field, '=', advancedConfig.gridConstraints[field]);
+
+  // Store in localStorage for persistence
+  localStorage.setItem('bessGridConstraints', JSON.stringify(advancedConfig.gridConstraints));
 }
 
 // v3.15: toggleArbitrage() and updateArbitrageTariff() removed
@@ -3759,6 +3807,26 @@ function buildSizingRequest(variantData) {
     };
   }
 
+  // v0.7.0 Grid Constraints
+  const gc = advancedConfig.gridConstraints;
+  if (gc) {
+    const hasConstraints = (
+      gc.maxExportKw !== null ||
+      gc.maxImportKw !== null ||
+      !gc.allowExport ||
+      gc.unservedLoadPenaltyPlnKwh > 0
+    );
+    if (hasConstraints) {
+      request.grid_constraints = {
+        max_export_kw: gc.maxExportKw,
+        max_import_kw: gc.maxImportKw,
+        allow_export: gc.allowExport,
+        unserved_load_penalty_pln_kwh: gc.unservedLoadPenaltyPlnKwh || 0
+      };
+      console.log('📊 Grid constraints:', request.grid_constraints);
+    }
+  }
+
   return request;
 }
 
@@ -3860,29 +3928,68 @@ function updateConfigResultsSummary(result) {
   setElementText('summaryCapex', `${formatNumberEU(recommended.capex_pln / 1000, 0)} tys. PLN`);
   setElementText('summaryEfc', `${formatNumberEU(recommended.degradation?.efc_total || 0, 0)} cykli`);
 
-  // Handle constraint warnings
+  // Handle constraint warnings (v0.7.0: includes grid constraint summary)
   const warningsPanel = document.getElementById('constraintWarnings');
   const warningsList = document.getElementById('warningsList');
 
+  // Collect all warnings
+  let allWarnings = [];
+
+  // 1. Backend warnings (budget constraints, degradation limits)
   if (result.warnings && result.warnings.length > 0) {
-    warningsPanel.style.display = 'block';
-    warningsList.innerHTML = result.warnings.map(w => {
-      // Parse warning to determine if hard or soft (backend sends [TWARDE] or [MIĘKKIE])
+    allWarnings = allWarnings.concat(result.warnings.map(w => {
       const isHard = w.includes('[TWARDE]');
       const isSoft = w.includes('[MIĘKKIE]');
       let className = '';
-      let icon = '⚠️';
+      let icon = 'X';
       if (isHard) {
         className = 'hard';
-        icon = '🚫';
+        icon = 'X';
       } else if (isSoft) {
         className = 'soft';
-        icon = '⚠️';
+        icon = '!';
       }
-      // Clean up the message for display
       const cleanMsg = w.replace('[TWARDE]', '').replace('[MIĘKKIE]', '').trim();
-      return `<li class="${className}">${icon} <span class="warning-detail">${cleanMsg}</span></li>`;
-    }).join('');
+      return { className, icon, msg: cleanMsg };
+    }));
+  }
+
+  // 2. Grid constraint summary warnings (v0.7.0)
+  const cs = recommended.dispatch_summary?.constraint_summary;
+  if (cs) {
+    // Export cap hit
+    if (cs.export_cap_hit_steps > 0) {
+      const curtailedKwh = cs.export_cap_curtailed_kwh || 0;
+      allWarnings.push({
+        className: 'info',
+        icon: 'i',
+        msg: `Limit eksportu aktywny przez ${cs.export_cap_hit_steps} krokow (ograniczono ${formatNumberEU(curtailedKwh, 1)} kWh)`
+      });
+    }
+    // Import cap hit
+    if (cs.import_cap_hit_steps > 0) {
+      allWarnings.push({
+        className: 'info',
+        icon: 'i',
+        msg: `Limit importu aktywny przez ${cs.import_cap_hit_steps} krokow`
+      });
+    }
+    // Unserved load
+    if (cs.unserved_load_kwh > 0) {
+      allWarnings.push({
+        className: 'hard',
+        icon: 'X',
+        msg: `Nieobsluzony pobor: ${formatNumberEU(cs.unserved_load_kwh, 1)} kWh (kara: ${formatNumberEU(recommended.savings_breakdown?.unserved_load_penalty_pln || 0, 0)} PLN)`
+      });
+    }
+  }
+
+  // Display warnings
+  if (allWarnings.length > 0) {
+    warningsPanel.style.display = 'block';
+    warningsList.innerHTML = allWarnings.map(w =>
+      `<li class="${w.className}"><span class="warning-icon">${w.icon}</span> <span class="warning-detail">${w.msg}</span></li>`
+    ).join('');
   } else {
     warningsPanel.style.display = 'none';
   }
@@ -4016,6 +4123,7 @@ function resetAdvancedConfig() {
 function loadSavedConfig() {
   const savedTopology = localStorage.getItem('bessTopology');
   const savedObjective = localStorage.getItem('bessObjective');
+  const savedGridConstraints = localStorage.getItem('bessGridConstraints');
 
   if (savedTopology) {
     advancedConfig.topology = savedTopology;
@@ -4029,6 +4137,27 @@ function loadSavedConfig() {
     if (selectEl) selectEl.value = savedObjective;
     updateOptimizationObjective(savedObjective);
   }
+
+  // v0.7.0: Restore grid constraints
+  if (savedGridConstraints) {
+    try {
+      const gc = JSON.parse(savedGridConstraints);
+      advancedConfig.gridConstraints = gc;
+
+      // Update UI inputs
+      const maxExportEl = document.getElementById('maxExportKw');
+      const maxImportEl = document.getElementById('maxImportKw');
+      const allowExportEl = document.getElementById('allowExport');
+      const penaltyEl = document.getElementById('unservedLoadPenalty');
+
+      if (maxExportEl && gc.maxExportKw !== null) maxExportEl.value = gc.maxExportKw;
+      if (maxImportEl && gc.maxImportKw !== null) maxImportEl.value = gc.maxImportKw;
+      if (allowExportEl) allowExportEl.checked = gc.allowExport !== false;
+      if (penaltyEl && gc.unservedLoadPenaltyPlnKwh) penaltyEl.value = gc.unservedLoadPenaltyPlnKwh;
+    } catch (e) {
+      console.warn('Failed to parse saved grid constraints:', e);
+    }
+  }
 }
 
 // Initialize advanced config on load
@@ -4040,6 +4169,7 @@ document.addEventListener('DOMContentLoaded', () => {
 window.updateTopology = updateTopology;
 window.updateOptimizationObjective = updateOptimizationObjective;
 window.toggleConstraint = toggleConstraint;
+window.updateGridConstraint = updateGridConstraint;  // v0.7.0
 window.applyAdvancedConfig = applyAdvancedConfig;
 window.resetAdvancedConfig = resetAdvancedConfig;
 window.advancedConfig = advancedConfig;

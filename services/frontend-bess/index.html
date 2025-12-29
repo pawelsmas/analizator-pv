@@ -857,6 +857,35 @@
           </div>
         </div>
 
+        <!-- Grid Constraints (v0.7.0) -->
+        <div class="config-card grid-constraints-card">
+          <h3>Grid Constraints</h3>
+          <div class="config-description">
+            Limity przy. sieci dla eksportu/importu
+          </div>
+          <div class="grid-constraints-inputs">
+            <div class="constraint-input-row">
+              <label for="maxExportKw">Max Export</label>
+              <input type="number" id="maxExportKw" placeholder="brak limitu" step="0.1" min="0" onchange="updateGridConstraint('maxExportKw', this.value)">
+              <span class="constraint-unit">kW</span>
+            </div>
+            <div class="constraint-input-row">
+              <label for="maxImportKw">Max Import</label>
+              <input type="number" id="maxImportKw" placeholder="brak limitu" step="0.1" min="0" onchange="updateGridConstraint('maxImportKw', this.value)">
+              <span class="constraint-unit">kW</span>
+            </div>
+            <div class="constraint-input-row">
+              <input type="checkbox" id="allowExport" checked onchange="updateGridConstraint('allowExport', this.checked)">
+              <label for="allowExport">Dozwolony eksport do sieci</label>
+            </div>
+            <div class="constraint-input-row">
+              <label for="unservedLoadPenalty">Kara za nieobsluzony pobor</label>
+              <input type="number" id="unservedLoadPenalty" placeholder="0" step="0.1" min="0" value="0" onchange="updateGridConstraint('unservedLoadPenaltyPlnKwh', this.value)">
+              <span class="constraint-unit">PLN/kWh</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Arbitrage config is now in Settings module -->
         <!-- Use USTAWIENIA > BESS Advanced Features > Arbitraż Taryfowy OSD / Arbitraż RDN -->
       </div>

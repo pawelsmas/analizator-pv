@@ -2191,6 +2191,50 @@ body {
   color: #aaa;
 }
 
+/* v0.7.0: Grid Constraints Card */
+.grid-constraints-card {
+  grid-column: span 1;
+}
+
+.grid-constraints-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.constraint-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.constraint-input-row label {
+  font-size: 12px;
+  color: #2c3e50;
+  font-weight: 500;
+  min-width: 140px;
+}
+
+.constraint-input-row input[type="number"] {
+  padding: 6px 10px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  font-size: 12px;
+  width: 100px;
+}
+
+.constraint-input-row input[type="number"]:focus {
+  outline: none;
+  border-color: #7b1fa2;
+}
+
+.constraint-input-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #7b1fa2;
+}
+
 /* Config Actions */
 .config-actions {
   display: flex;
@@ -2519,14 +2563,40 @@ body {
   border-bottom: none;
 }
 
-.warnings-list li.hard::before {
-  content: '🚫';
-  font-size: 14px;
+/* v0.7.0: Warning icon styling */
+.warning-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: bold;
+  flex-shrink: 0;
 }
 
-.warnings-list li.soft::before {
-  content: '⚠️';
-  font-size: 14px;
+.warnings-list li.hard .warning-icon {
+  background: #e74c3c;
+  color: white;
+}
+
+.warnings-list li.soft .warning-icon {
+  background: #f39c12;
+  color: white;
+}
+
+.warnings-list li.info .warning-icon {
+  background: #3498db;
+  color: white;
+}
+
+.warnings-list li.info {
+  color: #1a5276;
+}
+
+.warnings-list li.info .warning-detail {
+  color: #2471a3;
 }
 
 .warning-variant {
