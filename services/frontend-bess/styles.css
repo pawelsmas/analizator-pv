@@ -2422,6 +2422,67 @@ body {
   color: #2980b9;
 }
 
+/* v3.19: Top Variants Comparison Table */
+.top-variants-compare {
+  margin-top: 16px;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.08) 0%, rgba(41, 128, 185, 0.04) 100%);
+  border-radius: 10px;
+  border-left: 4px solid #3498db;
+}
+
+.compare-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2980b9;
+  margin-bottom: 12px;
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.compare-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #7f8c8d;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding: 8px 6px;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.compare-table td {
+  padding: 10px 6px;
+  border-bottom: 1px solid #f0f0f0;
+  color: #2c3e50;
+}
+
+.compare-table tr.recommended-row {
+  background: linear-gradient(135deg, rgba(123, 31, 162, 0.08) 0%, rgba(156, 39, 176, 0.04) 100%);
+}
+
+.compare-table tr.recommended-row td {
+  font-weight: 600;
+  color: #7b1fa2;
+}
+
+.compare-table .positive {
+  color: #27ae60;
+}
+
+.compare-table .negative {
+  color: #e74c3c;
+}
+
+.rec-badge {
+  color: #f39c12;
+  font-size: 14px;
+  margin-right: 4px;
+}
+
 /* Constraint Warnings */
 .constraint-warnings {
   margin-top: 16px;

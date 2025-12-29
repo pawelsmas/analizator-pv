@@ -3848,12 +3848,73 @@ function updateConfigResultsSummary(result) {
     warningsPanel.style.display = 'none';
   }
 
+  // v3.19: Populate top 3 variants comparison table
+  updateTopVariantsCompareTable(result);
+
   console.log('📊 Results summary updated:', {
     variant: result.recommended_variant,
     npv: recommended.npv_pln,
     payback: recommended.simple_payback_years,
     warnings: result.warnings?.length || 0
   });
+}
+
+/**
+ * v3.19: Update top 3 variants comparison table
+ * Uses top_variants_details from API (v0.4.1+) for consistent data
+ * @param {object} result - Sizing result from bess-dispatch API
+ */
+function updateTopVariantsCompareTable(result) {
+  const comparePanel = document.getElementById('topVariantsCompare');
+  const tableBody = document.getElementById('topVariantsTableBody');
+
+  if (!comparePanel || !tableBody) return;
+
+  // Use top_variants_details if available (v0.4.1+)
+  const details = result.top_variants_details;
+
+  if (!details || details.length === 0) {
+    comparePanel.style.display = 'none';
+    return;
+  }
+
+  // Show panel
+  comparePanel.style.display = 'block';
+
+  // Variant labels
+  const variantLabels = {
+    'small': 'Small (1h)',
+    'medium': 'Medium (2h)',
+    'large': 'Large (4h)'
+  };
+
+  // Build table rows
+  const rows = details.map((detail, index) => {
+    const isRecommended = index === 0;
+    const rowClass = isRecommended ? 'recommended-row' : '';
+    const badge = isRecommended ? '<span class="rec-badge">★</span>' : '';
+
+    const label = variantLabels[detail.variant] || detail.variant;
+    const npvFormatted = `${formatNumberEU(detail.npv_pln / 1000, 0)} tys.`;
+    const npvClass = detail.npv_pln >= 0 ? 'positive' : 'negative';
+    const paybackFormatted = detail.payback_years < 100 ? `${formatNumberEU(detail.payback_years, 1)} lat` : '> 25 lat';
+    const savingsFormatted = `${formatNumberEU(detail.net_savings_pln / 1000, 0)} tys.`;
+    const scoreFormatted = formatNumberEU(detail.score / 1000, 0);
+
+    return `
+      <tr class="${rowClass}">
+        <td>${badge}${label}</td>
+        <td class="${npvClass}">${npvFormatted}</td>
+        <td>${paybackFormatted}</td>
+        <td>${savingsFormatted}</td>
+        <td>${scoreFormatted}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tableBody.innerHTML = rows;
+
+  console.log('📊 Top variants table updated:', details.length, 'variants');
 }
 
 /**
