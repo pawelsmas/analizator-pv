@@ -886,6 +886,45 @@
           </div>
         </div>
 
+        <!-- Sizing Constraints (v0.8.0) -->
+        <div class="config-card sizing-constraints-card">
+          <h3>Sizing Constraints</h3>
+          <div class="config-description">
+            Ograniczenia doboru (filtr wariantow)
+          </div>
+          <div class="sizing-constraints-inputs">
+            <div class="constraint-input-row">
+              <label for="maxCapexPln">Max CAPEX</label>
+              <input type="number" id="maxCapexPln" placeholder="brak limitu" step="1000" min="0" onchange="updateSizingConstraint('maxCapexPln', this.value)">
+              <span class="constraint-unit">PLN</span>
+            </div>
+            <div class="constraint-input-row">
+              <label for="maxPaybackYears">Max Payback</label>
+              <input type="number" id="maxPaybackYears" placeholder="brak limitu" step="0.5" min="0" onchange="updateSizingConstraint('maxPaybackYears', this.value)">
+              <span class="constraint-unit">lat</span>
+            </div>
+            <div class="constraint-input-row">
+              <label for="minNpvPln">Min NPV</label>
+              <input type="number" id="minNpvPln" placeholder="brak limitu" step="1000" onchange="updateSizingConstraint('minNpvPln', this.value)">
+              <span class="constraint-unit">PLN</span>
+            </div>
+            <div class="constraint-input-row">
+              <label for="minNetSavingsPln">Min oszcz. roczne</label>
+              <input type="number" id="minNetSavingsPln" placeholder="brak limitu" step="100" onchange="updateSizingConstraint('minNetSavingsPln', this.value)">
+              <span class="constraint-unit">PLN/rok</span>
+            </div>
+            <div class="constraint-input-row">
+              <input type="checkbox" id="requireNoUnservedLoad" onchange="updateSizingConstraint('requireNoUnservedLoad', this.checked)">
+              <label for="requireNoUnservedLoad">Wymagaj brak nieobsluzonego poboru</label>
+            </div>
+            <div class="constraint-input-row">
+              <label for="maxUnservedLoadKwh">Max nieobsluzony</label>
+              <input type="number" id="maxUnservedLoadKwh" placeholder="brak limitu" step="1" min="0" onchange="updateSizingConstraint('maxUnservedLoadKwh', this.value)">
+              <span class="constraint-unit">kWh</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Arbitrage config is now in Settings module -->
         <!-- Use USTAWIENIA > BESS Advanced Features > Arbitraż Taryfowy OSD / Arbitraż RDN -->
       </div>

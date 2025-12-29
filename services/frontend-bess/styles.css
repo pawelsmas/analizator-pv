@@ -2202,6 +2202,18 @@ body {
   gap: 12px;
 }
 
+/* v0.8.0: Sizing Constraints Card */
+.sizing-constraints-card {
+  grid-column: span 1;
+  border-left: 3px solid #2196f3;
+}
+
+.sizing-constraints-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .constraint-input-row {
   display: flex;
   align-items: center;
