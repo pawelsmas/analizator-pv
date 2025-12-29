@@ -1261,6 +1261,19 @@ class FinanceConfig(BaseModel):
         ge=0,
         description="Replacement cost in PLN. If None, uses original CAPEX."
     )
+    # Performance degradation (v0.6.0 PR3)
+    bess_degradation_pct_per_year: float = Field(
+        0.0,
+        ge=0, le=10.0,
+        description="BESS capacity degradation [%/year]. Applied to savings as (1 - rate)^year. "
+                    "E.g., 2.0 = 2% annual degradation."
+    )
+    pv_degradation_pct_per_year: float = Field(
+        0.0,
+        ge=0, le=5.0,
+        description="PV output degradation [%/year]. Applied to savings as (1 - rate)^year. "
+                    "E.g., 0.5 = 0.5% annual degradation."
+    )
 
 
 class FinanceAssumptions(BaseModel):
@@ -1287,6 +1300,15 @@ class FinanceAssumptions(BaseModel):
     replacement_capex_pln: Optional[float] = Field(
         None,
         description="Replacement cost used, None if no replacement"
+    )
+    # Performance degradation (v0.6.0 PR3)
+    bess_degradation_pct_per_year: float = Field(
+        0.0,
+        description="BESS capacity degradation [%/year]"
+    )
+    pv_degradation_pct_per_year: float = Field(
+        0.0,
+        description="PV output degradation [%/year]"
     )
 
 

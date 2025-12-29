@@ -80,11 +80,13 @@
     "opex_pct_per_year"
   ],
   "finance_assumptions_keys": [
+    "bess_degradation_pct_per_year",
     "capex_override_pln",
     "discount_rate",
     "horizon_years",
     "opex_escalation_rate",
     "opex_pln_per_year",
+    "pv_degradation_pct_per_year",
     "replacement_capex_pln",
     "replacement_year",
     "savings_escalation_rate"
