@@ -1,5 +1,5 @@
 """
-RunStore - SQLite-backed persistence for sizing runs (v1.0.0)
+RunStore - SQLite-backed persistence for sizing runs (v1.3.0)
 =============================================================
 
 Provides audit trail and run registry for sizing operations:
@@ -7,6 +7,7 @@ Provides audit trail and run registry for sizing operations:
 - GET run by run_id
 - List/search runs by request_hash, created_at, endpoint
 - Retention pruning (configurable via RUN_STORE_RETENTION_DAYS)
+- Metadata updates: label, tags, notes (v1.3.0)
 
 Environment Variables:
 - RUN_STORE_PATH: Path to SQLite database (default: /data/runs.sqlite)
@@ -16,11 +17,22 @@ Environment Variables:
 
 import json
 import os
+import re
 import sqlite3
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+# =============================================================================
+# Validation constants for metadata (v1.3.0)
+# =============================================================================
+MAX_TAGS = 20
+MAX_TAG_LENGTH = 32
+TAG_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+MAX_LABEL_LENGTH = 80
+MAX_NOTES_LENGTH = 2000
 
 
 # Configuration from environment
@@ -41,6 +53,67 @@ def _decompress_json(data: bytes) -> Dict[str, Any]:
     return json.loads(json_str)
 
 
+def validate_tags(tags: Optional[List[str]]) -> None:
+    """
+    Validate tags list for metadata.
+
+    Args:
+        tags: List of tag strings
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if tags is None:
+        return
+    if not isinstance(tags, list):
+        raise ValueError("tags must be a list")
+    if len(tags) > MAX_TAGS:
+        raise ValueError(f"Maximum {MAX_TAGS} tags allowed, got {len(tags)}")
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise ValueError(f"Tag must be a string, got {type(tag).__name__}")
+        if not tag or len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(f"Tag must be 1-{MAX_TAG_LENGTH} chars, got {len(tag)}")
+        if not TAG_PATTERN.match(tag):
+            raise ValueError(f"Tag '{tag}' contains invalid characters. Only [a-zA-Z0-9_-] allowed")
+
+
+def validate_label(label: Optional[str]) -> None:
+    """
+    Validate label string for metadata.
+
+    Args:
+        label: Label string
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if label is None:
+        return
+    if not isinstance(label, str):
+        raise ValueError(f"label must be a string, got {type(label).__name__}")
+    if len(label) > MAX_LABEL_LENGTH:
+        raise ValueError(f"label must be max {MAX_LABEL_LENGTH} chars, got {len(label)}")
+
+
+def validate_notes(notes: Optional[str]) -> None:
+    """
+    Validate notes string for metadata.
+
+    Args:
+        notes: Notes string
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if notes is None:
+        return
+    if not isinstance(notes, str):
+        raise ValueError(f"notes must be a string, got {type(notes).__name__}")
+    if len(notes) > MAX_NOTES_LENGTH:
+        raise ValueError(f"notes must be max {MAX_NOTES_LENGTH} chars, got {len(notes)}")
+
+
 class RunStore:
     """
     SQLite-backed run store for audit trail.
@@ -57,6 +130,10 @@ class RunStore:
     - compute_time_ms: INTEGER
     - request_blob: BLOB (zlib-compressed JSON)
     - response_blob: BLOB (zlib-compressed JSON)
+    - label: TEXT (v1.3.0 - optional label for run)
+    - tags_json: TEXT (v1.3.0 - JSON array of tags)
+    - notes: TEXT (v1.3.0 - optional notes)
+    - updated_at: TEXT (v1.3.0 - last metadata update timestamp)
     """
 
     def __init__(self, db_path: Optional[str] = None):
@@ -68,6 +145,7 @@ class RunStore:
         """
         self.db_path = db_path or RUN_STORE_PATH
         self._ensure_db()
+        self._migrate_add_metadata_columns()
 
     def _ensure_db(self):
         """Create database and tables if they don't exist."""
@@ -106,6 +184,28 @@ class RunStore:
                 CREATE INDEX IF NOT EXISTS idx_runs_endpoint
                 ON runs(endpoint)
             """)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _migrate_add_metadata_columns(self):
+        """Add v1.3.0 metadata columns if they don't exist."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            # Check existing columns
+            cursor.execute("PRAGMA table_info(runs)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            # Add missing columns
+            if "label" not in existing_columns:
+                cursor.execute("ALTER TABLE runs ADD COLUMN label TEXT")
+            if "tags_json" not in existing_columns:
+                cursor.execute("ALTER TABLE runs ADD COLUMN tags_json TEXT")
+            if "notes" not in existing_columns:
+                cursor.execute("ALTER TABLE runs ADD COLUMN notes TEXT")
+            if "updated_at" not in existing_columns:
+                cursor.execute("ALTER TABLE runs ADD COLUMN updated_at TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -181,12 +281,21 @@ class RunStore:
             cursor.execute("""
                 SELECT run_id, request_hash, created_at, endpoint, status,
                        cache_hit, schema_version, assumptions_version,
-                       compute_time_ms, request_blob, response_blob
+                       compute_time_ms, request_blob, response_blob,
+                       label, tags_json, notes, updated_at
                 FROM runs WHERE run_id = ?
             """, (run_id,))
             row = cursor.fetchone()
             if row is None:
                 return None
+
+            # Parse tags from JSON
+            tags = None
+            if row[12]:
+                try:
+                    tags = json.loads(row[12])
+                except json.JSONDecodeError:
+                    tags = None
 
             return {
                 "run_id": row[0],
@@ -200,6 +309,10 @@ class RunStore:
                 "compute_time_ms": row[8],
                 "request": _decompress_json(row[9]),
                 "response": _decompress_json(row[10]),
+                "label": row[11],
+                "tags": tags,
+                "notes": row[13],
+                "updated_at": row[14],
             }
         finally:
             conn.close()
@@ -300,6 +413,70 @@ class RunStore:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
+        finally:
+            conn.close()
+
+    def update_metadata(
+        self,
+        run_id: str,
+        label: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        notes: Optional[str] = None,
+    ) -> bool:
+        """
+        Update metadata fields for a run (v1.3.0).
+
+        Args:
+            run_id: Run identifier
+            label: New label (max 80 chars). Pass None to not update.
+            tags: New tags list (max 20 tags, each 1-32 chars [a-zA-Z0-9_-]).
+                  Pass None to not update, pass empty list to clear.
+            notes: New notes (max 2000 chars). Pass None to not update.
+
+        Returns:
+            True if run was found and updated, False if run_id not found.
+
+        Raises:
+            ValueError: If validation fails
+        """
+        # Validate inputs
+        validate_label(label)
+        validate_tags(tags)
+        validate_notes(notes)
+
+        # Build UPDATE statement dynamically
+        set_parts = []
+        params: List[Any] = []
+
+        if label is not None:
+            set_parts.append("label = ?")
+            params.append(label if label else None)  # Empty string -> NULL
+        if tags is not None:
+            set_parts.append("tags_json = ?")
+            params.append(json.dumps(tags) if tags else None)  # Empty list -> NULL
+        if notes is not None:
+            set_parts.append("notes = ?")
+            params.append(notes if notes else None)  # Empty string -> NULL
+
+        if not set_parts:
+            # Nothing to update
+            return self.get(run_id) is not None
+
+        # Always update updated_at
+        set_parts.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+
+        params.append(run_id)  # For WHERE clause
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE runs SET {', '.join(set_parts)} WHERE run_id = ?",
+                params
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -421,3 +598,35 @@ def prune_runs(retention_days: Optional[int] = None) -> int:
     if not RUN_STORE_ENABLED:
         return 0
     return get_run_store().prune(retention_days)
+
+
+def update_run_metadata(
+    run_id: str,
+    label: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    notes: Optional[str] = None,
+) -> bool:
+    """
+    Update metadata for a run using the global store.
+
+    Args:
+        run_id: Run identifier
+        label: New label (max 80 chars)
+        tags: New tags list (max 20, each 1-32 chars [a-zA-Z0-9_-])
+        notes: New notes (max 2000 chars)
+
+    Returns:
+        True if run was found and updated, False if not found
+
+    Raises:
+        ValueError: If validation fails
+        RuntimeError: If run store is disabled
+    """
+    if not RUN_STORE_ENABLED:
+        raise RuntimeError("Run store is disabled")
+    return get_run_store().update_metadata(
+        run_id=run_id,
+        label=label,
+        tags=tags,
+        notes=notes,
+    )

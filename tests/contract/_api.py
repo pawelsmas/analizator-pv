@@ -104,6 +104,28 @@ def delete_json(path: str, timeout: int = 30) -> Dict[str, Any]:
     return r.json()
 
 
+def patch_json(path: str, payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+    """
+    PATCH JSON payload to API endpoint.
+
+    Args:
+        path: API path (e.g., "/runs/abc123")
+        payload: JSON-serializable dict
+        timeout: Request timeout in seconds
+
+    Returns:
+        Response JSON as dict
+
+    Raises:
+        AssertionError: If response status >= 400
+    """
+    url = DEFAULT_BASE_URL.rstrip("/") + path
+    r = requests.patch(url, json=payload, timeout=timeout)
+    if r.status_code >= 400:
+        raise AssertionError(f"PATCH {path} -> {r.status_code}\n{r.text[:2000]}")
+    return r.json()
+
+
 def pick_recommended_variant(resp: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract recommended variant from sizing response.
