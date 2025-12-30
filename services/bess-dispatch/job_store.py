@@ -751,6 +751,83 @@ class JobStore:
         finally:
             conn.close()
 
+    def vacuum(self) -> Dict[str, Any]:
+        """
+        Vacuum the SQLite database to reclaim space.
+
+        Returns:
+            Dict with size_before_bytes, size_after_bytes, freed_bytes
+        """
+        import os
+
+        # Get size before
+        size_before = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+
+        conn = self._get_conn()
+        try:
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Get size after
+        size_after = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+
+        return {
+            "size_before_bytes": size_before,
+            "size_after_bytes": size_after,
+            "freed_bytes": size_before - size_after,
+        }
+
+    def get_db_stats(self) -> Dict[str, Any]:
+        """
+        Get database statistics.
+
+        Returns:
+            Dict with total_jobs, size_bytes, by_status counts
+        """
+        import os
+
+        conn = self._get_conn()
+        try:
+            # Total jobs
+            cursor = conn.execute("SELECT COUNT(*) as cnt FROM jobs")
+            total_jobs = cursor.fetchone()["cnt"]
+
+            # By status
+            cursor = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status"
+            )
+            by_status = {row["status"]: row["cnt"] for row in cursor.fetchall()}
+
+            # By type
+            cursor = conn.execute(
+                "SELECT type, COUNT(*) as cnt FROM jobs GROUP BY type"
+            )
+            by_type = {row["type"]: row["cnt"] for row in cursor.fetchall()}
+
+            # Oldest and newest
+            cursor = conn.execute(
+                "SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM jobs"
+            )
+            row = cursor.fetchone()
+            oldest = row["oldest"]
+            newest = row["newest"]
+
+            # Database size
+            size_bytes = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+
+            return {
+                "total_jobs": total_jobs,
+                "size_bytes": size_bytes,
+                "by_status": by_status,
+                "by_type": by_type,
+                "oldest_job": oldest,
+                "newest_job": newest,
+            }
+        finally:
+            conn.close()
+
 
 # -----------------------------------------------------------------------------
 # Global instance (lazy initialization)
@@ -859,3 +936,18 @@ def mark_cancelled(job_id: str) -> bool:
 def prune_old_jobs(retention_days: int) -> int:
     """Prune old jobs."""
     return get_job_store().prune_old_jobs(retention_days)
+
+
+def vacuum_jobs_db() -> Dict[str, Any]:
+    """Vacuum jobs database."""
+    return get_job_store().vacuum()
+
+
+def get_jobs_db_stats() -> Dict[str, Any]:
+    """Get jobs database statistics."""
+    return get_job_store().get_db_stats()
+
+
+def count_jobs_by_status() -> Dict[str, int]:
+    """Count jobs by status."""
+    return get_job_store().count_by_status()

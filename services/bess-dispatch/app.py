@@ -127,6 +127,9 @@ from job_store import (
     save_result,
     mark_running,
     update_progress,
+    prune_old_jobs,
+    vacuum_jobs_db,
+    get_jobs_db_stats,
     JOB_STORE_ENABLED,
     JOBS_MAX_ITEMS,
     JOBS_INLINE_WAIT_MAX_SECONDS,
@@ -3172,6 +3175,136 @@ async def cancel_job_endpoint(job_id: str):
     return CancelJobResponse(
         cancelled=cancelled,
         status=updated_job["status"] if updated_job else job["status"],
+    )
+
+
+# -----------------------------------------------------------------------------
+# Job Retention/Pruning/Vacuum Endpoints (v1.2.0)
+# -----------------------------------------------------------------------------
+
+class JobRetentionConfig(BaseModel):
+    """Response for job retention configuration."""
+    retention_days: int = Field(..., description="Default retention days")
+    job_store_enabled: bool = Field(..., description="Whether job store is enabled")
+
+
+class PruneJobsRequest(BaseModel):
+    """Request for pruning old jobs."""
+    retention_days: Optional[int] = Field(
+        None,
+        ge=1,
+        le=365,
+        description="Days to retain (1-365). Uses JOB_STORE_RETENTION_DAYS if not provided."
+    )
+
+
+class PruneJobsResponse(BaseModel):
+    """Response for job pruning."""
+    deleted: int = Field(..., description="Number of jobs deleted")
+    retention_days: int = Field(..., description="Retention days used")
+
+
+class VacuumJobsResponse(BaseModel):
+    """Response for database vacuum."""
+    size_before_bytes: int = Field(..., description="Database size before vacuum")
+    size_after_bytes: int = Field(..., description="Database size after vacuum")
+    freed_bytes: int = Field(..., description="Bytes freed by vacuum")
+
+
+class JobStoreStatsResponse(BaseModel):
+    """Response for job store statistics."""
+    total_jobs: int = Field(..., description="Total number of jobs")
+    size_bytes: int = Field(..., description="Database size in bytes")
+    by_status: Dict[str, int] = Field(..., description="Job count by status")
+    by_type: Dict[str, int] = Field(..., description="Job count by type")
+    oldest_job: Optional[str] = Field(None, description="Oldest job timestamp")
+    newest_job: Optional[str] = Field(None, description="Newest job timestamp")
+    job_store_enabled: bool = Field(..., description="Whether job store is enabled")
+
+
+# Environment variable for job retention
+JOB_STORE_RETENTION_DAYS = int(os.environ.get("JOB_STORE_RETENTION_DAYS", "14"))
+
+
+@app.get("/api/bess-dispatch/jobs/retention", response_model=JobRetentionConfig)
+async def get_job_retention_config():
+    """
+    Get current job retention configuration.
+
+    Returns the retention days setting and whether job store is enabled.
+    """
+    return JobRetentionConfig(
+        retention_days=JOB_STORE_RETENTION_DAYS,
+        job_store_enabled=JOB_STORE_ENABLED,
+    )
+
+
+@app.post("/api/bess-dispatch/jobs:prune", response_model=PruneJobsResponse)
+async def prune_jobs_endpoint(request: PruneJobsRequest):
+    """
+    Prune jobs older than retention period.
+
+    If retention_days is not provided, uses JOB_STORE_RETENTION_DAYS env var (default 14).
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    retention = request.retention_days or JOB_STORE_RETENTION_DAYS
+    deleted = prune_old_jobs(retention)
+
+    return PruneJobsResponse(
+        deleted=deleted,
+        retention_days=retention,
+    )
+
+
+@app.post("/api/bess-dispatch/jobs:vacuum", response_model=VacuumJobsResponse)
+async def vacuum_jobs_endpoint():
+    """
+    Vacuum the job store database to reclaim space.
+
+    This is useful after pruning a large number of jobs.
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    result = vacuum_jobs_db()
+
+    return VacuumJobsResponse(
+        size_before_bytes=result["size_before_bytes"],
+        size_after_bytes=result["size_after_bytes"],
+        freed_bytes=result["freed_bytes"],
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/stats", response_model=JobStoreStatsResponse)
+async def get_job_store_stats():
+    """
+    Get job store statistics.
+
+    Returns total jobs, size, and breakdown by status and type.
+    """
+    if not JOB_STORE_ENABLED:
+        return JobStoreStatsResponse(
+            total_jobs=0,
+            size_bytes=0,
+            by_status={},
+            by_type={},
+            oldest_job=None,
+            newest_job=None,
+            job_store_enabled=False,
+        )
+
+    stats = get_jobs_db_stats()
+
+    return JobStoreStatsResponse(
+        total_jobs=stats["total_jobs"],
+        size_bytes=stats["size_bytes"],
+        by_status=stats["by_status"],
+        by_type=stats["by_type"],
+        oldest_job=stats["oldest_job"],
+        newest_job=stats["newest_job"],
+        job_store_enabled=True,
     )
 
 
