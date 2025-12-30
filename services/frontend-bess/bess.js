@@ -5896,4 +5896,388 @@ window.startJobSSE = startJobSSE;
 window.stopJobSSE = stopJobSSE;
 window.downloadJobExport = downloadJobExport;
 
-console.log('[BESS] bess.js v3.24 - v1.2.0 SSE progress + job export');
+// =============================================================================
+// v1.3.0: Run Explorer (Run History + Metadata Edit)
+// =============================================================================
+
+/** Run Explorer state */
+const runExplorerState = {
+  runs: [],
+  total: 0,
+  limit: 10,
+  offset: 0,
+  currentSort: 'created_at_desc',
+  currentTag: '',
+  currentQuery: '',
+  currentEndpoint: '',
+  selectedRunId: null,
+  debounceTimer: null,
+  knownTags: new Set()
+};
+
+/**
+ * Refresh the run list from API.
+ */
+async function refreshRunList() {
+  const tbody = document.getElementById('runsTableBody');
+  if (!tbody) return;
+
+  tbody.innerHTML = '<tr><td colspan="7" class="loading-row">Ladowanie...</td></tr>';
+
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', runExplorerState.limit);
+    params.set('offset', runExplorerState.offset);
+    params.set('sort', runExplorerState.currentSort);
+
+    if (runExplorerState.currentTag) {
+      params.set('tag', runExplorerState.currentTag);
+    }
+    if (runExplorerState.currentQuery) {
+      params.set('q', runExplorerState.currentQuery);
+    }
+    if (runExplorerState.currentEndpoint) {
+      params.set('endpoint', runExplorerState.currentEndpoint);
+    }
+
+    const response = await fetch(`http://localhost:8031/runs?${params.toString()}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    runExplorerState.runs = data.items || [];
+    runExplorerState.total = data.total || 0;
+
+    // Collect tags for filter dropdown
+    runExplorerState.runs.forEach(run => {
+      if (run.tags && Array.isArray(run.tags)) {
+        run.tags.forEach(tag => runExplorerState.knownTags.add(tag));
+      }
+    });
+    updateTagFilterDropdown();
+
+    displayRunsTable();
+    updateRunsPagination();
+  } catch (err) {
+    console.error('[RunExplorer] Error fetching runs:', err);
+    tbody.innerHTML = `<tr><td colspan="7" class="error-row">Blad: ${err.message}</td></tr>`;
+  }
+}
+
+/**
+ * Display runs in the table.
+ */
+function displayRunsTable() {
+  const tbody = document.getElementById('runsTableBody');
+  if (!tbody) return;
+
+  if (runExplorerState.runs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-row">Brak uruchomien</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = runExplorerState.runs.map(run => {
+    const shortId = run.run_id.substring(0, 8) + '...';
+    const createdDate = new Date(run.created_at).toLocaleString('pl-PL');
+    const label = run.label || '-';
+    const tags = (run.tags && run.tags.length > 0) ? run.tags.join(', ') : '-';
+
+    // Try to extract NPV from the run (if available)
+    let npvDisplay = '-';
+    // NPV might be in response if we fetched full run details
+
+    return `
+      <tr class="run-row ${runExplorerState.selectedRunId === run.run_id ? 'selected' : ''}"
+          onclick="selectRun('${run.run_id}')">
+        <td class="run-id-cell" title="${run.run_id}">${shortId}</td>
+        <td>${createdDate}</td>
+        <td><span class="endpoint-badge">${run.endpoint || 'sizing'}</span></td>
+        <td class="run-label-cell">${escapeHtml(label)}</td>
+        <td class="run-tags-cell">${escapeHtml(tags)}</td>
+        <td>${npvDisplay}</td>
+        <td>
+          <button class="btn btn-tiny btn-primary" onclick="event.stopPropagation(); selectRun('${run.run_id}')">Szczegoly</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+/**
+ * Escape HTML characters.
+ */
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+}
+
+/**
+ * Update pagination controls.
+ */
+function updateRunsPagination() {
+  const pageInfo = document.getElementById('runsPageInfo');
+  const prevBtn = document.getElementById('runsPrevBtn');
+  const nextBtn = document.getElementById('runsNextBtn');
+
+  const currentPage = Math.floor(runExplorerState.offset / runExplorerState.limit) + 1;
+  const totalPages = Math.ceil(runExplorerState.total / runExplorerState.limit) || 1;
+
+  if (pageInfo) {
+    pageInfo.textContent = `Strona ${currentPage} z ${totalPages} (${runExplorerState.total} wynikow)`;
+  }
+  if (prevBtn) {
+    prevBtn.disabled = runExplorerState.offset === 0;
+  }
+  if (nextBtn) {
+    nextBtn.disabled = runExplorerState.offset + runExplorerState.limit >= runExplorerState.total;
+  }
+}
+
+/**
+ * Go to previous page.
+ */
+function prevRunsPage() {
+  if (runExplorerState.offset > 0) {
+    runExplorerState.offset -= runExplorerState.limit;
+    if (runExplorerState.offset < 0) runExplorerState.offset = 0;
+    refreshRunList();
+  }
+}
+
+/**
+ * Go to next page.
+ */
+function nextRunsPage() {
+  if (runExplorerState.offset + runExplorerState.limit < runExplorerState.total) {
+    runExplorerState.offset += runExplorerState.limit;
+    refreshRunList();
+  }
+}
+
+/**
+ * Update tag filter dropdown with known tags.
+ */
+function updateTagFilterDropdown() {
+  const select = document.getElementById('runTagFilter');
+  if (!select) return;
+
+  // Keep current selection
+  const currentValue = select.value;
+
+  // Rebuild options
+  select.innerHTML = '<option value="">Wszystkie</option>';
+  Array.from(runExplorerState.knownTags).sort().forEach(tag => {
+    const option = document.createElement('option');
+    option.value = tag;
+    option.textContent = tag;
+    select.appendChild(option);
+  });
+
+  // Restore selection
+  select.value = currentValue;
+}
+
+/**
+ * Filter by tag.
+ */
+function filterRunsByTag(tag) {
+  runExplorerState.currentTag = tag;
+  runExplorerState.offset = 0;
+  refreshRunList();
+}
+
+/**
+ * Filter by endpoint.
+ */
+function filterRunsByEndpoint(endpoint) {
+  runExplorerState.currentEndpoint = endpoint;
+  runExplorerState.offset = 0;
+  refreshRunList();
+}
+
+/**
+ * Debounced search handler.
+ */
+function debounceRunSearch(query) {
+  clearTimeout(runExplorerState.debounceTimer);
+  runExplorerState.debounceTimer = setTimeout(() => {
+    runExplorerState.currentQuery = query;
+    runExplorerState.offset = 0;
+    refreshRunList();
+  }, 300);
+}
+
+/**
+ * Change sort order.
+ */
+function changeRunSort(sort) {
+  runExplorerState.currentSort = sort;
+  runExplorerState.offset = 0;
+  refreshRunList();
+}
+
+/**
+ * Select a run and show details panel.
+ */
+async function selectRun(runId) {
+  runExplorerState.selectedRunId = runId;
+  displayRunsTable(); // Re-render to show selection
+
+  // Show detail panel
+  const panel = document.getElementById('runDetailPanel');
+  if (panel) panel.style.display = 'block';
+
+  // Fetch full run details
+  try {
+    const response = await fetch(`http://localhost:8031/runs/${runId}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const run = await response.json();
+    displayRunDetail(run);
+  } catch (err) {
+    console.error('[RunExplorer] Error fetching run details:', err);
+    showRunMetadataStatus(`Blad: ${err.message}`, 'error');
+  }
+}
+
+/**
+ * Display run details in the panel.
+ */
+function displayRunDetail(run) {
+  document.getElementById('detailRunId').textContent = run.run_id;
+  document.getElementById('detailRequestHash').textContent = run.request_hash || '-';
+  document.getElementById('detailCreatedAt').textContent = run.created_at ? new Date(run.created_at).toLocaleString('pl-PL') : '-';
+  document.getElementById('detailUpdatedAt').textContent = run.updated_at ? new Date(run.updated_at).toLocaleString('pl-PL') : '-';
+  document.getElementById('detailEndpoint').textContent = run.endpoint || 'sizing';
+  document.getElementById('detailCacheHit').textContent = run.cache_hit ? 'Tak' : 'Nie';
+
+  // Populate metadata form
+  document.getElementById('editRunLabel').value = run.label || '';
+  document.getElementById('editRunTags').value = (run.tags && run.tags.length > 0) ? run.tags.join(', ') : '';
+  document.getElementById('editRunNotes').value = run.notes || '';
+
+  // Clear save status
+  showRunMetadataStatus('', '');
+}
+
+/**
+ * Close run detail panel.
+ */
+function closeRunDetail() {
+  const panel = document.getElementById('runDetailPanel');
+  if (panel) panel.style.display = 'none';
+  runExplorerState.selectedRunId = null;
+  displayRunsTable();
+}
+
+/**
+ * Save run metadata via PATCH.
+ */
+async function saveRunMetadata() {
+  if (!runExplorerState.selectedRunId) return;
+
+  const label = document.getElementById('editRunLabel').value.trim() || null;
+  const tagsStr = document.getElementById('editRunTags').value.trim();
+  const notes = document.getElementById('editRunNotes').value.trim() || null;
+
+  // Parse tags
+  let tags = null;
+  if (tagsStr) {
+    tags = tagsStr.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    // Validate tags
+    const tagRegex = /^[a-zA-Z0-9_-]+$/;
+    for (const tag of tags) {
+      if (tag.length > 32) {
+        showRunMetadataStatus(`Tag "${tag}" za dlugi (max 32 znaki)`, 'error');
+        return;
+      }
+      if (!tagRegex.test(tag)) {
+        showRunMetadataStatus(`Tag "${tag}" zawiera niedozwolone znaki`, 'error');
+        return;
+      }
+    }
+    if (tags.length > 20) {
+      showRunMetadataStatus('Za duzo tagow (max 20)', 'error');
+      return;
+    }
+  }
+
+  const payload = {};
+  if (label !== null) payload.label = label;
+  if (tags !== null) payload.tags = tags;
+  if (notes !== null) payload.notes = notes;
+
+  try {
+    showRunMetadataStatus('Zapisywanie...', 'info');
+
+    const response = await fetch(`http://localhost:8031/runs/${runExplorerState.selectedRunId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errBody}`);
+    }
+
+    const result = await response.json();
+    showRunMetadataStatus('Zapisano!', 'success');
+
+    // Add any new tags to known tags
+    if (tags && tags.length > 0) {
+      tags.forEach(t => runExplorerState.knownTags.add(t));
+      updateTagFilterDropdown();
+    }
+
+    // Refresh the list to show updated label/tags
+    refreshRunList();
+  } catch (err) {
+    console.error('[RunExplorer] Error saving metadata:', err);
+    showRunMetadataStatus(`Blad: ${err.message}`, 'error');
+  }
+}
+
+/**
+ * Show metadata save status.
+ */
+function showRunMetadataStatus(message, type) {
+  const status = document.getElementById('runMetadataSaveStatus');
+  if (!status) return;
+
+  status.textContent = message;
+  status.className = 'save-status';
+  if (type) status.classList.add(type);
+
+  // Auto-clear success message
+  if (type === 'success') {
+    setTimeout(() => {
+      status.textContent = '';
+      status.className = 'save-status';
+    }, 3000);
+  }
+}
+
+// Export Run Explorer functions
+window.refreshRunList = refreshRunList;
+window.prevRunsPage = prevRunsPage;
+window.nextRunsPage = nextRunsPage;
+window.filterRunsByTag = filterRunsByTag;
+window.filterRunsByEndpoint = filterRunsByEndpoint;
+window.debounceRunSearch = debounceRunSearch;
+window.changeRunSort = changeRunSort;
+window.selectRun = selectRun;
+window.closeRunDetail = closeRunDetail;
+window.saveRunMetadata = saveRunMetadata;
+
+// Initialize Run Explorer on load
+document.addEventListener('DOMContentLoaded', () => {
+  // Delay to allow page to render
+  setTimeout(() => {
+    refreshRunList();
+  }, 500);
+});
+
+console.log('[BESS] bess.js v3.25 - v1.3.0 Run Explorer');
