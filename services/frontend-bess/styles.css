@@ -5013,3 +5013,209 @@ body {
     display: none;
   }
 }
+
+/* ========================================================================
+   v1.4.0: Validation Card Styles
+   ======================================================================== */
+
+.validation-card {
+  border-left: 4px solid #4caf50 !important;
+}
+
+.validation-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scenario-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scenario-selector label {
+  font-weight: 500;
+  color: #555;
+  min-width: 80px;
+}
+
+.scenario-selector select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+  cursor: pointer;
+}
+
+.scenario-selector select:focus {
+  outline: none;
+  border-color: #4caf50;
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.15);
+}
+
+.scenario-details {
+  background: #f5f5f5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.scenario-details .detail-row {
+  display: flex;
+  margin-bottom: 4px;
+}
+
+.scenario-details .detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.scenario-details .detail-label {
+  color: #777;
+  min-width: 100px;
+}
+
+.scenario-details .detail-value {
+  color: #333;
+  font-weight: 500;
+}
+
+.validation-results-container {
+  margin-top: 16px;
+  border-top: 1px solid #eee;
+  padding-top: 16px;
+}
+
+.validation-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #e3f2fd;
+}
+
+.validation-status.passed {
+  background: #e8f5e9;
+}
+
+.validation-status.failed {
+  background: #ffebee;
+}
+
+.validation-status .status-icon {
+  font-size: 24px;
+}
+
+.validation-status .status-text {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.validation-status.passed .status-text {
+  color: #2e7d32;
+}
+
+.validation-status.failed .status-text {
+  color: #c62828;
+}
+
+.validation-summary {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 6px;
+}
+
+.validation-summary .summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.validation-summary .label {
+  color: #666;
+  font-size: 12px;
+}
+
+.validation-summary .value {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.validation-summary .value.passed {
+  color: #2e7d32;
+}
+
+.validation-summary .value.failed {
+  color: #c62828;
+}
+
+.validation-summary .value.monospace {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  color: #555;
+}
+
+.validation-diffs {
+  margin-top: 12px;
+}
+
+.diffs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.diffs-table th,
+.diffs-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.diffs-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  color: #555;
+}
+
+.diffs-table tr.pass-row td:first-child {
+  color: #2e7d32;
+}
+
+.diffs-table tr.fail-row td:first-child {
+  color: #c62828;
+  font-weight: 600;
+}
+
+.diffs-table tr.fail-row {
+  background: #fff5f5;
+}
+
+.diffs-table .numeric {
+  text-align: right;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.diffs-table .status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.diffs-table .status-badge.pass {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.diffs-table .status-badge.fail {
+  background: #ffebee;
+  color: #c62828;
+}

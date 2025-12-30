@@ -6597,4 +6597,281 @@ window.selectRunForCompare = selectRunForCompare;
 window.compareRuns = compareRuns;
 window.clearCompareResults = clearCompareResults;
 
-console.log('[BESS] bess.js v3.26 - v1.3.0 Run Explorer + Compare Runs');
+// ============================================================================
+// v1.4.0: Scenario Validation
+// ============================================================================
+
+/**
+ * Scenario validation state
+ */
+const validationState = {
+  scenarios: [],
+  selectedScenario: null,
+  isLoading: false
+};
+
+/**
+ * Load available scenarios from docs/scenarios/ (via API)
+ */
+async function loadAvailableScenarios() {
+  console.log('[Validation] Loading available scenarios...');
+
+  // For now, use hardcoded list matching docs/scenarios/*.json
+  // In a full implementation, this could fetch from an API endpoint
+  const scenarios = [
+    {
+      id: 'baseline_stacked_no_arb',
+      description: 'Baseline scenario: STACKED mode without arbitrage (from smoke test)',
+      request_file: 'scripts/smoke/sizing_stacked_no_arbitrage.json'
+    },
+    {
+      id: 'baseline_stacked_with_arb',
+      description: 'Baseline scenario: STACKED mode with ToU arbitrage (C12a/PGE)',
+      request_file: 'scripts/smoke/sizing_stacked_with_arbitrage.json'
+    }
+  ];
+
+  validationState.scenarios = scenarios;
+
+  // Populate the select dropdown
+  const select = document.getElementById('validationScenarioSelect');
+  if (!select) return;
+
+  // Clear existing options (except the first placeholder)
+  while (select.options.length > 1) {
+    select.remove(1);
+  }
+
+  // Add scenario options
+  scenarios.forEach(scenario => {
+    const option = document.createElement('option');
+    option.value = scenario.id;
+    option.textContent = scenario.id;
+    select.appendChild(option);
+  });
+
+  console.log(`[Validation] Loaded ${scenarios.length} scenarios`);
+}
+
+/**
+ * Refresh scenario list
+ */
+function refreshScenarioList() {
+  loadAvailableScenarios();
+}
+
+/**
+ * Load scenario details when selected
+ */
+function loadScenarioDetails() {
+  const select = document.getElementById('validationScenarioSelect');
+  const scenarioId = select.value;
+
+  const detailsDiv = document.getElementById('scenarioDetails');
+  const runBtn = document.getElementById('runValidationBtn');
+
+  if (!scenarioId) {
+    detailsDiv.style.display = 'none';
+    runBtn.disabled = true;
+    validationState.selectedScenario = null;
+    return;
+  }
+
+  // Find scenario
+  const scenario = validationState.scenarios.find(s => s.id === scenarioId);
+  if (!scenario) {
+    detailsDiv.style.display = 'none';
+    runBtn.disabled = true;
+    return;
+  }
+
+  validationState.selectedScenario = scenario;
+
+  // Update details
+  document.getElementById('scenarioDescription').textContent = scenario.description;
+  document.getElementById('scenarioRequestFile').textContent = scenario.request_file;
+
+  detailsDiv.style.display = 'block';
+  runBtn.disabled = false;
+}
+
+/**
+ * Run scenario validation via POST /validate/sizing
+ */
+async function runScenarioValidation() {
+  const scenario = validationState.selectedScenario;
+  if (!scenario) {
+    console.warn('[Validation] No scenario selected');
+    return;
+  }
+
+  console.log(`[Validation] Running validation for scenario: ${scenario.id}`);
+
+  // Show loading state
+  const resultsContainer = document.getElementById('validationResultsContainer');
+  const statusDiv = document.getElementById('validationStatus');
+  const statusIcon = document.getElementById('validationStatusIcon');
+  const statusText = document.getElementById('validationStatusText');
+  const summaryDiv = document.getElementById('validationSummary');
+  const diffsDiv = document.getElementById('validationDiffs');
+
+  resultsContainer.style.display = 'block';
+  statusDiv.className = 'validation-status';
+  statusIcon.textContent = '⏳';
+  statusText.textContent = 'Uruchamianie walidacji...';
+  summaryDiv.style.display = 'none';
+  diffsDiv.style.display = 'none';
+
+  // Disable button
+  const runBtn = document.getElementById('runValidationBtn');
+  runBtn.disabled = true;
+  runBtn.textContent = '⏳ Walidacja...';
+
+  try {
+    // Load scenario file to get expected_kpis
+    const scenarioResponse = await fetch(`docs/scenarios/${scenario.id}.json`);
+    if (!scenarioResponse.ok) {
+      throw new Error(`Failed to load scenario file: ${scenarioResponse.status}`);
+    }
+    const scenarioData = await scenarioResponse.json();
+
+    // Load request file
+    const requestResponse = await fetch(scenario.request_file);
+    if (!requestResponse.ok) {
+      throw new Error(`Failed to load request file: ${requestResponse.status}`);
+    }
+    const requestData = await requestResponse.json();
+
+    // Build validation request
+    const validateRequest = {
+      request: requestData,
+      expected_kpis: scenarioData.expected_kpis,
+      tolerances: scenarioData.tolerances || null,
+      scenario_id: scenario.id
+    };
+
+    // Call validation endpoint
+    const apiUrl = BESS_CONFIG?.apiBaseUrl || 'http://localhost:8031';
+    const response = await fetch(`${apiUrl}/validate/sizing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(validateRequest)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || `Validation API error: ${response.status}`);
+    }
+
+    const result = await response.json();
+    displayValidationResults(result);
+
+  } catch (error) {
+    console.error('[Validation] Error:', error);
+
+    statusDiv.className = 'validation-status failed';
+    statusIcon.textContent = '❌';
+    statusText.textContent = `Blad: ${error.message}`;
+
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = '🧪 Uruchom Walidacje';
+  }
+}
+
+/**
+ * Display validation results
+ * @param {Object} result - Validation API response
+ */
+function displayValidationResults(result) {
+  console.log('[Validation] Displaying results:', result);
+
+  const statusDiv = document.getElementById('validationStatus');
+  const statusIcon = document.getElementById('validationStatusIcon');
+  const statusText = document.getElementById('validationStatusText');
+  const summaryDiv = document.getElementById('validationSummary');
+  const diffsDiv = document.getElementById('validationDiffs');
+
+  // Update status
+  if (result.passed) {
+    statusDiv.className = 'validation-status passed';
+    statusIcon.textContent = '✅';
+    statusText.textContent = 'Walidacja PASSED - wszystkie KPI w tolerancji';
+  } else {
+    statusDiv.className = 'validation-status failed';
+    statusIcon.textContent = '❌';
+    statusText.textContent = `Walidacja FAILED - ${result.failed_fields?.length || 0} pol poza tolerancja`;
+  }
+
+  // Update summary
+  const passedCount = result.passed_fields?.length || 0;
+  const failedCount = result.failed_fields?.length || 0;
+
+  document.getElementById('validationPassedCount').textContent = passedCount;
+  document.getElementById('validationFailedCount').textContent = failedCount;
+  document.getElementById('validationRunId').textContent = result.run_id ? result.run_id.substring(0, 8) : '-';
+
+  summaryDiv.style.display = 'flex';
+
+  // Update diffs table
+  const diffsBody = document.getElementById('validationDiffsBody');
+  diffsBody.innerHTML = '';
+
+  if (result.diffs && result.diffs.length > 0) {
+    // Sort: failed first, then by field name
+    const sortedDiffs = [...result.diffs].sort((a, b) => {
+      if (a.pass !== b.pass) return a.pass ? 1 : -1;
+      return a.field.localeCompare(b.field);
+    });
+
+    sortedDiffs.forEach(diff => {
+      const row = document.createElement('tr');
+      row.className = diff.pass ? 'pass-row' : 'fail-row';
+
+      const statusBadge = diff.pass
+        ? '<span class="status-badge pass">PASS</span>'
+        : '<span class="status-badge fail">FAIL</span>';
+
+      const relPct = diff.rel_diff !== null && diff.rel_diff !== undefined
+        ? `${(diff.rel_diff * 100).toFixed(2)}%`
+        : '-';
+
+      row.innerHTML = `
+        <td>${statusBadge}</td>
+        <td>${diff.field}</td>
+        <td class="numeric">${formatNumber(diff.expected)}</td>
+        <td class="numeric">${formatNumber(diff.actual)}</td>
+        <td class="numeric">${formatNumber(diff.abs_diff)}</td>
+        <td class="numeric">${relPct}</td>
+      `;
+
+      diffsBody.appendChild(row);
+    });
+
+    diffsDiv.style.display = 'block';
+  }
+}
+
+/**
+ * Format number for display
+ */
+function formatNumber(value) {
+  if (value === null || value === undefined) return '-';
+  if (typeof value !== 'number') return value;
+  if (Math.abs(value) < 0.01) return value.toExponential(2);
+  if (Math.abs(value) >= 1000) return value.toLocaleString('pl-PL', { maximumFractionDigits: 2 });
+  return value.toFixed(4);
+}
+
+// Initialize validation on load
+document.addEventListener('DOMContentLoaded', () => {
+  loadAvailableScenarios();
+});
+
+// Export Validation functions
+window.loadAvailableScenarios = loadAvailableScenarios;
+window.refreshScenarioList = refreshScenarioList;
+window.loadScenarioDetails = loadScenarioDetails;
+window.runScenarioValidation = runScenarioValidation;
+
+console.log('[BESS] bess.js v3.27 - v1.4.0 Scenario Validation');
