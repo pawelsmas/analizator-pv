@@ -454,6 +454,130 @@ async def compare_runs(request: CompareRunsRequest):
     )
 
 
+@app.get("/runs/{run_id}/export/json")
+async def export_run_json(run_id: str):
+    """
+    Export run as downloadable JSON file.
+
+    Returns the full run record as a JSON file attachment.
+    Filename: run_{run_id}.json
+
+    Returns 404 if run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    import json
+    content = json.dumps(stored, indent=2, ensure_ascii=False, default=str)
+
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="run_{run_id}.json"'
+        }
+    )
+
+
+def _flatten_dict(d: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """Flatten nested dict for CSV export."""
+    items = {}
+    for k, v in d.items():
+        new_key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            items.update(_flatten_dict(v, new_key))
+        elif isinstance(v, list):
+            # For lists, store as JSON string
+            import json
+            items[new_key] = json.dumps(v, default=str)
+        else:
+            items[new_key] = v
+    return items
+
+
+@app.get("/runs/{run_id}/export/csv")
+async def export_run_csv(run_id: str):
+    """
+    Export run as downloadable CSV file.
+
+    Returns run metadata and key metrics as CSV.
+    Filename: run_{run_id}.csv
+
+    CSV contains:
+    - Run metadata (run_id, request_hash, created_at, endpoint, status, cache_hit)
+    - Key metrics from recommended variant (npv_pln, payback_years, net_savings_pln)
+
+    Returns 404 if run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    import csv
+
+    # Build CSV data
+    rows = []
+
+    # Row 1: Metadata
+    metadata = {
+        "run_id": stored.get("run_id"),
+        "request_hash": stored.get("request_hash"),
+        "created_at": stored.get("created_at"),
+        "endpoint": stored.get("endpoint"),
+        "status": stored.get("status"),
+        "cache_hit": stored.get("cache_hit"),
+        "schema_version": stored.get("schema_version"),
+        "assumptions_version": stored.get("assumptions_version"),
+        "compute_time_ms": stored.get("compute_time_ms"),
+    }
+
+    # Extract key metrics from response
+    response = stored.get("response", {})
+    rec_variant = response.get("recommended_variant")
+    metadata["recommended_variant"] = rec_variant
+
+    # Get top_variants_details for recommended variant metrics
+    tvd = response.get("top_variants_details", [])
+    if len(tvd) > 0:
+        rec = tvd[0]
+        metadata["npv_pln"] = rec.get("npv_pln")
+        metadata["payback_years"] = rec.get("payback_years")
+        metadata["net_savings_pln"] = rec.get("net_savings_pln")
+        metadata["score"] = rec.get("score")
+
+    # Get period_info
+    period_info = response.get("period_info", {})
+    metadata["period_hours"] = period_info.get("period_hours")
+    metadata["period_days"] = period_info.get("period_days")
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Write headers and values
+    writer.writerow(list(metadata.keys()))
+    writer.writerow(list(metadata.values()))
+
+    csv_content = output.getvalue()
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="run_{run_id}.csv"'
+        }
+    )
+
+
 # =============================================================================
 # Dispatch Endpoint
 # =============================================================================
