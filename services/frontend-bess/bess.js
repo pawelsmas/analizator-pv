@@ -1,4 +1,4 @@
-console.log('[BESS] bess.js LOADED v=3.23 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.24 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -5216,6 +5216,7 @@ window.displayCapexSensitivity = displayCapexSensitivity;
 // Active job tracking
 let activeJobId = null;
 let jobPollingInterval = null;
+let activeEventSource = null;  // SSE connection for job progress
 
 /**
  * Run batch sizing with multiple scenarios.
@@ -5293,10 +5294,10 @@ async function runBatchSizing() {
     const result = await response.json();
 
     if (asyncMode) {
-      // Async mode: received job_id, start polling
+      // Async mode: received job_id, start SSE (with polling fallback)
       activeJobId = result.job_id;
       displayJobStatus(result);
-      startJobPolling(result.job_id);
+      startJobSSE(result.job_id);
     } else {
       // Sync mode: received full result
       displayBatchResults(result);
@@ -5311,7 +5312,7 @@ async function runBatchSizing() {
 }
 
 /**
- * Display job status for async mode.
+ * Display job status for async mode (v1.2.0 with SSE + export buttons).
  */
 function displayJobStatus(jobData) {
   const container = document.getElementById('batchResultsContainer');
@@ -5325,10 +5326,16 @@ function displayJobStatus(jobData) {
                       status === 'failed' ? 'status-failed' :
                       status === 'cancelled' ? 'status-cancelled' : 'status-pending';
 
+  // SSE indicator
+  const sseActive = activeEventSource !== null;
+  const connectionIndicator = sseActive ?
+    '<span class="sse-indicator active" title="SSE streaming active">⚡</span>' :
+    '<span class="sse-indicator" title="Polling mode">📡</span>';
+
   let html = `
     <div class="job-status-card">
       <div class="job-header">
-        <span class="job-id">Job: ${job_id.substring(0, 8)}...</span>
+        <span class="job-id">Job: ${job_id.substring(0, 8)}... ${connectionIndicator}</span>
         <span class="job-status ${statusClass}">${status.toUpperCase()}</span>
       </div>
       <div class="job-progress">
@@ -5343,8 +5350,16 @@ function displayJobStatus(jobData) {
         ${status === 'pending' || status === 'running' ? `
           <button class="btn btn-small btn-danger" onclick="cancelJob('${job_id}')">Cancel</button>
         ` : ''}
-        ${status === 'done' || status === 'failed' ? `
+        ${status === 'done' ? `
           <button class="btn btn-small btn-primary" onclick="fetchJobResult('${job_id}')">View Results</button>
+          <div class="export-buttons">
+            <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${job_id}', 'json')" title="Download JSON">📄 JSON</button>
+            <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${job_id}', 'csv')" title="Download CSV">📊 CSV</button>
+            <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${job_id}', 'zip')" title="Download ZIP">📦 ZIP</button>
+          </div>
+        ` : ''}
+        ${status === 'failed' ? `
+          <button class="btn btn-small btn-primary" onclick="fetchJobResult('${job_id}')">View Details</button>
         ` : ''}
       </div>
     </div>
@@ -5354,11 +5369,132 @@ function displayJobStatus(jobData) {
 }
 
 /**
- * Start polling for job status.
+ * Start SSE-based progress tracking for a job (v1.2.0).
+ * Falls back to polling if SSE is not supported.
+ */
+function startJobSSE(jobId) {
+  // Stop any existing SSE or polling
+  stopJobSSE();
+  stopJobPolling();
+
+  if (typeof EventSource === 'undefined') {
+    console.warn('[BATCH] EventSource not supported, falling back to polling');
+    startJobPolling(jobId);
+    return;
+  }
+
+  const bessDispatchUrl = '/api/bess-dispatch';
+  activeEventSource = new EventSource(`${bessDispatchUrl}/jobs/${jobId}/events?poll_interval=0.5`);
+
+  activeEventSource.addEventListener('progress', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('[SSE] Progress event:', data);
+      displayJobStatus({
+        job_id: jobId,
+        status: 'running',
+        items_done: data.items_done,
+        items_total: data.items_total,
+        error_count: data.error_count || 0
+      });
+    } catch (e) {
+      console.error('[SSE] Failed to parse progress event:', e);
+    }
+  });
+
+  activeEventSource.addEventListener('done', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('[SSE] Done event:', data);
+      displayJobStatus({
+        job_id: jobId,
+        status: 'done',
+        items_done: data.items_done,
+        items_total: data.items_total,
+        error_count: data.error_count || 0
+      });
+      stopJobSSE();
+      activeJobId = null;
+
+      // Fetch full results
+      fetchJobResult(jobId);
+    } catch (e) {
+      console.error('[SSE] Failed to parse done event:', e);
+    }
+  });
+
+  activeEventSource.addEventListener('error', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('[SSE] Error event:', data);
+      displayJobStatus({
+        job_id: jobId,
+        status: 'failed',
+        items_done: data.items_done || 0,
+        items_total: data.items_total || 0,
+        error_count: data.error_count || 0,
+        message: data.message
+      });
+      stopJobSSE();
+      activeJobId = null;
+    } catch (e) {
+      console.error('[SSE] Failed to parse error event:', e);
+    }
+  });
+
+  activeEventSource.addEventListener('cancelled', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('[SSE] Cancelled event:', data);
+      displayJobStatus({
+        job_id: jobId,
+        status: 'cancelled',
+        items_done: data.items_done || 0,
+        items_total: data.items_total || 0,
+        error_count: data.error_count || 0
+      });
+      stopJobSSE();
+      activeJobId = null;
+    } catch (e) {
+      console.error('[SSE] Failed to parse cancelled event:', e);
+    }
+  });
+
+  activeEventSource.addEventListener('timeout', (event) => {
+    console.warn('[SSE] Stream timed out, falling back to polling');
+    stopJobSSE();
+    startJobPolling(jobId);
+  });
+
+  activeEventSource.onerror = (error) => {
+    console.error('[SSE] Connection error:', error);
+    stopJobSSE();
+    // Fall back to polling on connection error
+    startJobPolling(jobId);
+  };
+
+  console.log('[SSE] Started SSE stream for job:', jobId);
+}
+
+/**
+ * Stop SSE connection.
+ */
+function stopJobSSE() {
+  if (activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+    console.log('[SSE] Stopped SSE stream');
+  }
+}
+
+/**
+ * Start polling for job status (fallback when SSE not available).
  */
 function startJobPolling(jobId) {
   // Clear any existing polling
   stopJobPolling();
+
+  console.log('[BATCH] Starting polling for job:', jobId);
 
   jobPollingInterval = setInterval(async () => {
     try {
@@ -5399,6 +5535,55 @@ function stopJobPolling() {
 }
 
 /**
+ * Download job export in specified format (v1.2.0).
+ * @param {string} jobId - Job ID
+ * @param {string} format - Export format: 'json', 'csv', or 'zip'
+ */
+async function downloadJobExport(jobId, format = 'json') {
+  const validFormats = ['json', 'csv', 'zip'];
+  if (!validFormats.includes(format)) {
+    console.error('[EXPORT] Invalid format:', format);
+    return;
+  }
+
+  try {
+    const bessDispatchUrl = '/api/bess-dispatch';
+    const response = await fetch(`${bessDispatchUrl}/jobs/${jobId}/export/${format}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Export failed: ${response.status} - ${errorText}`);
+    }
+
+    // Get filename from Content-Disposition header or generate one
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = `job_${jobId.substring(0, 8)}.${format}`;
+    if (contentDisposition) {
+      const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (match && match[1]) {
+        filename = match[1].replace(/['"]/g, '');
+      }
+    }
+
+    // Download the file
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    console.log('[EXPORT] Downloaded:', filename);
+  } catch (e) {
+    console.error('[EXPORT] Download failed:', e);
+    alert(`Export failed: ${e.message}`);
+  }
+}
+
+/**
  * Cancel an active job.
  */
 async function cancelJob(jobId) {
@@ -5414,6 +5599,7 @@ async function cancelJob(jobId) {
 
     const result = await response.json();
     displayJobStatus(result);
+    stopJobSSE();
     stopJobPolling();
 
   } catch (e) {
@@ -5442,7 +5628,7 @@ async function fetchJobResult(jobId) {
     const jobData = await response.json();
 
     if (jobData.result) {
-      displayBatchResults(jobData.result);
+      displayBatchResults(jobData.result, jobId);
     } else {
       container.innerHTML = `<div class="batch-error">No results available (status: ${jobData.status})</div>`;
     }
@@ -5540,13 +5726,25 @@ function displayJobList(jobsData) {
 }
 
 /**
- * Display batch sizing results including portfolio summary.
+ * Display batch sizing results including portfolio summary (v1.2.0 with export buttons).
+ * @param {object} batchResult - Batch result object
+ * @param {string} [jobId] - Optional job ID for export buttons (when results fetched from job)
  */
-function displayBatchResults(batchResult) {
+function displayBatchResults(batchResult, jobId = null) {
   const container = document.getElementById('batchResultsContainer');
   if (!container) return;
 
   const { batch_id, summary, portfolio_summary, results } = batchResult;
+
+  // Export buttons (only when jobId is available)
+  const exportButtonsHtml = jobId ? `
+    <div class="export-buttons-header">
+      <span class="export-label">Export:</span>
+      <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${jobId}', 'json')" title="Download JSON">📄 JSON</button>
+      <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${jobId}', 'csv')" title="Download CSV">📊 CSV</button>
+      <button class="btn btn-small btn-secondary" onclick="downloadJobExport('${jobId}', 'zip')" title="Download ZIP">📦 ZIP</button>
+    </div>
+  ` : '';
 
   // Build HTML
   let html = `
@@ -5558,6 +5756,7 @@ function displayBatchResults(batchResult) {
           <span class="stat-error">${summary.error_count} errors</span>
           <span class="stat-time">${summary.processing_time_ms.toFixed(0)}ms</span>
         </div>
+        ${exportButtonsHtml}
       </div>
   `;
 
@@ -5692,5 +5891,9 @@ window.cancelJob = cancelJob;
 window.fetchJobResult = fetchJobResult;
 window.refreshJobList = refreshJobList;
 window.displayJobList = displayJobList;
+// v1.2.0 exports
+window.startJobSSE = startJobSSE;
+window.stopJobSSE = stopJobSSE;
+window.downloadJobExport = downloadJobExport;
 
-console.log('[BESS] bess.js v3.23 - v1.1.0 async jobs UI');
+console.log('[BESS] bess.js v3.24 - v1.2.0 SSE progress + job export');

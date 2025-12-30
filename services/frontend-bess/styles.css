@@ -4079,3 +4079,109 @@ body {
   color: #888;
   font-size: 13px;
 }
+
+/* =============================================================================
+   v1.2.0: SSE Indicator and Export Buttons
+   ============================================================================= */
+
+/* SSE connection indicator */
+.sse-indicator {
+  display: inline-block;
+  font-size: 12px;
+  margin-left: 6px;
+  opacity: 0.7;
+}
+
+.sse-indicator.active {
+  animation: sse-pulse 1s ease-in-out infinite;
+}
+
+@keyframes sse-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Export buttons in job status card */
+.job-status-card .export-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.job-status-card .export-buttons .btn {
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+/* Export buttons in batch results header */
+.export-buttons-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.export-buttons-header .export-label {
+  font-size: 12px;
+  color: #666;
+  font-weight: 500;
+}
+
+.export-buttons-header .btn {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* Job actions layout */
+.job-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.job-actions > .btn {
+  align-self: flex-start;
+}
+
+/* Batch summary header with export buttons */
+.batch-summary-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-summary-header h4 {
+  flex: 1;
+  min-width: 200px;
+}
+
+.batch-summary-header .batch-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-summary-header .export-buttons-header {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+/* Responsive export buttons */
+@media (max-width: 768px) {
+  .export-buttons-header {
+    width: 100%;
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+
+  .batch-summary-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .job-status-card .export-buttons {
+    justify-content: flex-start;
+  }
+}
