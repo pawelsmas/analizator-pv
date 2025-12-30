@@ -158,6 +158,30 @@ from .jobs_metrics import (
     record_job_export,
 )
 
+from .metadata_metrics import (
+    # v1.3.0 run metadata metrics
+    RUN_METADATA_PATCH_TOTAL,
+    RUN_METADATA_PATCH_ERRORS_TOTAL,
+    RUN_METADATA_TAGS_COUNT,
+    RUN_METADATA_NOTES_LENGTH,
+    RUN_LIST_TAG_FILTER_TOTAL,
+    RUN_LIST_SEARCH_TOTAL,
+    RUN_LIST_SORT_TOTAL,
+    # v1.3.0 job metadata metrics
+    JOB_METADATA_PATCH_TOTAL,
+    JOB_METADATA_PATCH_ERRORS_TOTAL,
+    JOB_METADATA_TAGS_COUNT,
+    JOB_METADATA_NOTES_LENGTH,
+    # Helper functions
+    record_run_metadata_patch,
+    record_run_metadata_patch_error,
+    record_job_metadata_patch,
+    record_job_metadata_patch_error,
+    record_run_list_tag_filter,
+    record_run_list_search,
+    record_run_list_sort,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -290,4 +314,24 @@ __all__ = [
     # Jobs export metrics (v1.2.0)
     "JOBS_EXPORT_TOTAL",
     "record_job_export",
+    # Run metadata metrics (v1.3.0)
+    "RUN_METADATA_PATCH_TOTAL",
+    "RUN_METADATA_PATCH_ERRORS_TOTAL",
+    "RUN_METADATA_TAGS_COUNT",
+    "RUN_METADATA_NOTES_LENGTH",
+    "RUN_LIST_TAG_FILTER_TOTAL",
+    "RUN_LIST_SEARCH_TOTAL",
+    "RUN_LIST_SORT_TOTAL",
+    "record_run_metadata_patch",
+    "record_run_metadata_patch_error",
+    "record_run_list_tag_filter",
+    "record_run_list_search",
+    "record_run_list_sort",
+    # Job metadata metrics (v1.3.0)
+    "JOB_METADATA_PATCH_TOTAL",
+    "JOB_METADATA_PATCH_ERRORS_TOTAL",
+    "JOB_METADATA_TAGS_COUNT",
+    "JOB_METADATA_NOTES_LENGTH",
+    "record_job_metadata_patch",
+    "record_job_metadata_patch_error",
 ]
