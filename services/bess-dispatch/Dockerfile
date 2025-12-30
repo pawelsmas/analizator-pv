@@ -26,6 +26,7 @@ COPY job_store.py .
 COPY job_processor.py .
 COPY job_export_helper.py .
 COPY worker.py .
+COPY validation_kpis.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/
