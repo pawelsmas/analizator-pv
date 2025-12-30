@@ -125,6 +125,10 @@ from run_store import (
     get_run,
     list_runs,
     prune_runs,
+    update_run_metadata,
+    validate_tags,
+    validate_label,
+    validate_notes,
     RUN_STORE_ENABLED,
     RUN_STORE_RETENTION_DAYS,
 )
@@ -354,6 +358,34 @@ class RetentionConfigResponse(BaseModel):
     run_store_enabled: bool = Field(..., description="Whether run store is enabled")
 
 
+class PatchRunMetadataRequest(BaseModel):
+    """Request model for updating run metadata (v1.3.0)."""
+    label: Optional[str] = Field(
+        None,
+        max_length=80,
+        description="Label for the run (max 80 chars)"
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        max_length=20,
+        description="Tags list (max 20 tags, each 1-32 chars [a-zA-Z0-9_-])"
+    )
+    notes: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Notes for the run (max 2000 chars)"
+    )
+
+
+class PatchRunMetadataResponse(BaseModel):
+    """Response model for PATCH run metadata (v1.3.0)."""
+    run_id: str = Field(..., description="Run identifier")
+    label: Optional[str] = Field(None, description="Updated label")
+    tags: Optional[List[str]] = Field(None, description="Updated tags")
+    notes: Optional[str] = Field(None, description="Updated notes")
+    updated_at: str = Field(..., description="ISO 8601 timestamp of update")
+
+
 @app.get("/runs/retention")
 async def get_retention_config():
     """
@@ -406,6 +438,54 @@ async def get_run_by_id(run_id: str):
         raise HTTPException(404, f"Run {run_id} not found")
     record_runstore_get(found=True)
     return stored
+
+
+@app.patch("/runs/{run_id}")
+async def patch_run_metadata(run_id: str, request: PatchRunMetadataRequest):
+    """
+    Update metadata for a run (v1.3.0).
+
+    Allows updating label, tags, and notes fields.
+    Returns 404 if run_id not found.
+    Returns 422 if validation fails.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    # Validate tags more strictly (Pydantic only validates list length)
+    try:
+        validate_tags(request.tags)
+        validate_label(request.label)
+        validate_notes(request.notes)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    try:
+        updated = update_run_metadata(
+            run_id=run_id,
+            label=request.label,
+            tags=request.tags,
+            notes=request.notes,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    if not updated:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    # Fetch updated run to get the updated_at timestamp
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(500, "Run updated but not found on re-fetch")
+
+    return PatchRunMetadataResponse(
+        run_id=run_id,
+        label=stored.get("label"),
+        tags=stored.get("tags"),
+        notes=stored.get("notes"),
+        updated_at=stored.get("updated_at") or "",
+    )
 
 
 @app.get("/runs")
