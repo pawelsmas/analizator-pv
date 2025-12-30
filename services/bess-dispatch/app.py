@@ -14,6 +14,7 @@ Port: 8031
 """
 
 import io
+import json
 import time
 import uuid
 from typing import List, Optional, Dict, Any, Union
@@ -2959,6 +2960,146 @@ async def export_job_zip(job_id: str):
         content=zip_content,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# -----------------------------------------------------------------------------
+# Job SSE Progress Streaming (v1.2.0)
+# -----------------------------------------------------------------------------
+
+import asyncio
+from starlette.responses import StreamingResponse as StarletteStreamingResponse
+
+
+async def _job_progress_generator(job_id: str, poll_interval: float = 0.5, timeout: float = 600.0):
+    """
+    Generator that yields SSE events for job progress.
+
+    Event types:
+    - status: Job status update (pending/running/done/failed/cancelled)
+    - progress: Progress update with items_done, items_total, error_count
+    - done: Job completed with final result summary
+    - error: Job failed with error message
+    - cancelled: Job was cancelled
+    - timeout: Stream timed out waiting for job completion
+    """
+    start_time = time.time()
+    last_items_done = -1
+    last_status = None
+
+    while True:
+        # Check timeout
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            yield f"event: timeout\ndata: {json.dumps({'message': 'Stream timed out', 'elapsed_seconds': elapsed})}\n\n"
+            break
+
+        # Get current job state
+        job = get_job(job_id)
+        if not job:
+            yield f"event: error\ndata: {json.dumps({'message': 'Job not found'})}\n\n"
+            break
+
+        current_status = job["status"]
+        items_done = job.get("items_done", 0)
+        items_total = job.get("items_total", 0)
+        error_count = job.get("error_count", 0)
+
+        # Send status change event
+        if current_status != last_status:
+            yield f"event: status\ndata: {json.dumps({'status': current_status, 'items_done': items_done, 'items_total': items_total})}\n\n"
+            last_status = current_status
+
+        # Send progress update (only if items_done changed)
+        if items_done != last_items_done and current_status == "running":
+            progress_pct = (items_done / items_total * 100) if items_total > 0 else 0
+            yield f"event: progress\ndata: {json.dumps({'items_done': items_done, 'items_total': items_total, 'error_count': error_count, 'progress_pct': round(progress_pct, 1)})}\n\n"
+            last_items_done = items_done
+
+        # Check for terminal states
+        if current_status == "done":
+            # Send final done event with summary
+            result = job.get("result", {})
+            summary = result.get("summary", {})
+            yield f"event: done\ndata: {json.dumps({'items_done': items_done, 'items_total': items_total, 'error_count': error_count, 'processing_time_ms': summary.get('processing_time_ms', 0)})}\n\n"
+            break
+
+        if current_status == "failed":
+            yield f"event: error\ndata: {json.dumps({'message': job.get('message', 'Job failed'), 'error_count': error_count})}\n\n"
+            break
+
+        if current_status == "cancelled":
+            yield f"event: cancelled\ndata: {json.dumps({'message': 'Job was cancelled', 'items_done': items_done})}\n\n"
+            break
+
+        # Wait before next poll
+        await asyncio.sleep(poll_interval)
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/events")
+async def stream_job_events(
+    job_id: str,
+    poll_interval: float = Query(0.5, ge=0.1, le=5.0, description="Poll interval in seconds"),
+    timeout: float = Query(600.0, ge=1.0, le=3600.0, description="Stream timeout in seconds"),
+):
+    """
+    Stream job progress events using Server-Sent Events (SSE).
+
+    Event types:
+    - status: Job status changed (pending/running/done/failed/cancelled)
+    - progress: Item processing progress (items_done, items_total, progress_pct)
+    - done: Job completed successfully
+    - error: Job failed with error
+    - cancelled: Job was cancelled
+    - timeout: Stream timed out
+
+    Example usage with JavaScript EventSource:
+    ```javascript
+    const eventSource = new EventSource('/api/bess-dispatch/jobs/{job_id}/events');
+    eventSource.addEventListener('progress', (e) => console.log(JSON.parse(e.data)));
+    eventSource.addEventListener('done', (e) => { console.log('Done!'); eventSource.close(); });
+    ```
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    # Verify job exists
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    # If job is already complete, return single event
+    if job["status"] in ("done", "failed", "cancelled"):
+        async def single_event():
+            status = job["status"]
+            if status == "done":
+                result = job.get("result", {})
+                summary = result.get("summary", {})
+                yield f"event: done\ndata: {json.dumps({'items_done': job['items_done'], 'items_total': job['items_total'], 'error_count': job['error_count'], 'processing_time_ms': summary.get('processing_time_ms', 0)})}\n\n"
+            elif status == "failed":
+                yield f"event: error\ndata: {json.dumps({'message': job.get('message', 'Job failed'), 'error_count': job['error_count']})}\n\n"
+            else:
+                yield f"event: cancelled\ndata: {json.dumps({'message': 'Job was cancelled', 'items_done': job['items_done']})}\n\n"
+
+        return StarletteStreamingResponse(
+            single_event(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+            },
+        )
+
+    # Stream progress events
+    return StarletteStreamingResponse(
+        _job_progress_generator(job_id, poll_interval=poll_interval, timeout=timeout),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
     )
 
 
