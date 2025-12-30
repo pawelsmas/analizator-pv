@@ -134,6 +134,28 @@ from .jobs_metrics import (
     record_job_get,
     record_job_list,
     record_job_cancel,
+    # v1.2.0 retention/pruning/vacuum metrics
+    JOBS_PRUNE_TOTAL,
+    JOBS_PRUNED_COUNT,
+    JOBS_PRUNE_RETENTION_DAYS,
+    JOBS_VACUUM_TOTAL,
+    JOBS_VACUUM_FREED_BYTES,
+    JOBS_STATS_TOTAL,
+    JOBS_RETENTION_CONFIG_TOTAL,
+    record_jobs_prune,
+    record_jobs_vacuum,
+    record_jobs_stats,
+    record_jobs_retention_config,
+    # v1.2.0 SSE streaming metrics
+    JOBS_SSE_CONNECTIONS_TOTAL,
+    JOBS_SSE_EVENTS_SENT_TOTAL,
+    JOBS_SSE_CONNECTION_DURATION_SECONDS,
+    record_sse_connection,
+    record_sse_event,
+    record_sse_connection_duration,
+    # v1.2.0 job export metrics
+    JOBS_EXPORT_TOTAL,
+    record_job_export,
 )
 
 __all__ = [
@@ -246,4 +268,26 @@ __all__ = [
     "record_job_get",
     "record_job_list",
     "record_job_cancel",
+    # Jobs retention/pruning/vacuum metrics (v1.2.0)
+    "JOBS_PRUNE_TOTAL",
+    "JOBS_PRUNED_COUNT",
+    "JOBS_PRUNE_RETENTION_DAYS",
+    "JOBS_VACUUM_TOTAL",
+    "JOBS_VACUUM_FREED_BYTES",
+    "JOBS_STATS_TOTAL",
+    "JOBS_RETENTION_CONFIG_TOTAL",
+    "record_jobs_prune",
+    "record_jobs_vacuum",
+    "record_jobs_stats",
+    "record_jobs_retention_config",
+    # Jobs SSE streaming metrics (v1.2.0)
+    "JOBS_SSE_CONNECTIONS_TOTAL",
+    "JOBS_SSE_EVENTS_SENT_TOTAL",
+    "JOBS_SSE_CONNECTION_DURATION_SECONDS",
+    "record_sse_connection",
+    "record_sse_event",
+    "record_sse_connection_duration",
+    # Jobs export metrics (v1.2.0)
+    "JOBS_EXPORT_TOTAL",
+    "record_job_export",
 ]

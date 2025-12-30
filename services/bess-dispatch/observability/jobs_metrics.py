@@ -1,10 +1,12 @@
 """
-Async jobs metrics for Prometheus instrumentation (v1.1.0).
+Async jobs metrics for Prometheus instrumentation (v1.2.0).
 
 Provides:
 - Counters for job creation, completion, cancellation
 - Histograms for job duration and items count
 - Status-labeled counters for job transitions
+- Retention, pruning, and vacuum metrics (v1.2.0)
+- SSE progress streaming metrics (v1.2.0)
 
 Label cardinality rules:
 - status: pending, running, done, failed, cancelled (5 values)
@@ -220,3 +222,152 @@ def record_job_cancel(result: str):
         result: 'cancelled', 'not_found', or 'already_done'
     """
     JOBS_CANCEL_TOTAL.labels(result=result).inc()
+
+
+# ============================================
+# JOB RETENTION/PRUNING/VACUUM METRICS (v1.2.0)
+# ============================================
+
+JOBS_PRUNE_TOTAL = Counter(
+    "bess_jobs_prune_total",
+    "Total POST /jobs:prune requests",
+)
+
+JOBS_PRUNED_COUNT = Histogram(
+    "bess_jobs_pruned_count",
+    "Number of jobs deleted per prune operation",
+    buckets=(0, 1, 5, 10, 25, 50, 100, 500, 1000),
+)
+
+JOBS_PRUNE_RETENTION_DAYS = Histogram(
+    "bess_jobs_prune_retention_days",
+    "Retention days used in prune operations",
+    buckets=(1, 3, 7, 14, 30, 60, 90, 180, 365),
+)
+
+JOBS_VACUUM_TOTAL = Counter(
+    "bess_jobs_vacuum_total",
+    "Total POST /jobs:vacuum requests",
+)
+
+JOBS_VACUUM_FREED_BYTES = Histogram(
+    "bess_jobs_vacuum_freed_bytes",
+    "Bytes freed by vacuum operations",
+    buckets=(0, 1024, 10240, 102400, 1048576, 10485760, 104857600),  # 0, 1KB, 10KB, 100KB, 1MB, 10MB, 100MB
+)
+
+JOBS_STATS_TOTAL = Counter(
+    "bess_jobs_stats_total",
+    "Total GET /jobs/stats requests",
+)
+
+JOBS_RETENTION_CONFIG_TOTAL = Counter(
+    "bess_jobs_retention_config_total",
+    "Total GET /jobs/retention requests",
+)
+
+
+# ============================================
+# SSE STREAMING METRICS (v1.2.0)
+# ============================================
+
+JOBS_SSE_CONNECTIONS_TOTAL = Counter(
+    "bess_jobs_sse_connections_total",
+    "Total SSE event stream connections",
+    ["job_status"],  # pending, running, done, failed, cancelled
+)
+
+JOBS_SSE_EVENTS_SENT_TOTAL = Counter(
+    "bess_jobs_sse_events_sent_total",
+    "Total SSE events sent",
+    ["event_type"],  # status, done, error, cancelled
+)
+
+JOBS_SSE_CONNECTION_DURATION_SECONDS = Histogram(
+    "bess_jobs_sse_connection_duration_seconds",
+    "Duration of SSE connections in seconds",
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+)
+
+
+# ============================================
+# JOB EXPORT METRICS (v1.2.0)
+# ============================================
+
+JOBS_EXPORT_TOTAL = Counter(
+    "bess_jobs_export_total",
+    "Total job export requests",
+    ["format"],  # json, csv, zip
+)
+
+
+# ============================================
+# v1.2.0 HELPER FUNCTIONS
+# ============================================
+
+def record_jobs_prune(deleted_count: int, retention_days: int):
+    """Record job prune operation.
+
+    Args:
+        deleted_count: Number of jobs deleted
+        retention_days: Retention days used
+    """
+    JOBS_PRUNE_TOTAL.inc()
+    JOBS_PRUNED_COUNT.observe(deleted_count)
+    JOBS_PRUNE_RETENTION_DAYS.observe(retention_days)
+
+
+def record_jobs_vacuum(freed_bytes: int):
+    """Record job vacuum operation.
+
+    Args:
+        freed_bytes: Bytes freed by vacuum
+    """
+    JOBS_VACUUM_TOTAL.inc()
+    JOBS_VACUUM_FREED_BYTES.observe(freed_bytes)
+
+
+def record_jobs_stats():
+    """Record job stats request."""
+    JOBS_STATS_TOTAL.inc()
+
+
+def record_jobs_retention_config():
+    """Record job retention config request."""
+    JOBS_RETENTION_CONFIG_TOTAL.inc()
+
+
+def record_sse_connection(job_status: str):
+    """Record SSE connection.
+
+    Args:
+        job_status: Status of job when connection established
+    """
+    JOBS_SSE_CONNECTIONS_TOTAL.labels(job_status=job_status).inc()
+
+
+def record_sse_event(event_type: str):
+    """Record SSE event sent.
+
+    Args:
+        event_type: Type of event (status, done, error, cancelled)
+    """
+    JOBS_SSE_EVENTS_SENT_TOTAL.labels(event_type=event_type).inc()
+
+
+def record_sse_connection_duration(duration_seconds: float):
+    """Record SSE connection duration.
+
+    Args:
+        duration_seconds: Duration of SSE connection
+    """
+    JOBS_SSE_CONNECTION_DURATION_SECONDS.observe(duration_seconds)
+
+
+def record_job_export(format: str):
+    """Record job export request.
+
+    Args:
+        format: Export format (json, csv, zip)
+    """
+    JOBS_EXPORT_TOTAL.labels(format=format).inc()
