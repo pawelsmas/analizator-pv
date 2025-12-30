@@ -23,6 +23,8 @@ COPY excel_export.py .
 COPY cache_helper.py .
 COPY run_store.py .
 COPY job_store.py .
+COPY job_processor.py .
+COPY worker.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/
