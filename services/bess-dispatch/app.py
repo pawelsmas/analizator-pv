@@ -321,6 +321,139 @@ async def list_runs_endpoint(
     return result
 
 
+class CompareRunsRequest(BaseModel):
+    """Request model for comparing two runs."""
+    run_id_a: str = Field(..., description="First run ID (baseline)")
+    run_id_b: str = Field(..., description="Second run ID (comparison)")
+
+
+class CompareFieldDelta(BaseModel):
+    """Delta between two field values."""
+    field: str = Field(..., description="Field path (e.g., 'npv_pln')")
+    a: Optional[float] = Field(None, description="Value in run A")
+    b: Optional[float] = Field(None, description="Value in run B")
+    delta: Optional[float] = Field(None, description="b - a")
+    pct_change: Optional[float] = Field(None, description="Percent change from a to b")
+
+
+class CompareRunsResponse(BaseModel):
+    """Response model for run comparison."""
+    run_id_a: str
+    run_id_b: str
+    same_request_hash: bool = Field(..., description="Whether runs have same request")
+    recommended_variant_a: Optional[str] = None
+    recommended_variant_b: Optional[str] = None
+    variant_changed: bool = False
+    key_deltas: List[CompareFieldDelta] = Field(default_factory=list)
+
+
+def _safe_delta(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    """Calculate delta, returning None if either value is None."""
+    if a is None or b is None:
+        return None
+    return b - a
+
+
+def _safe_pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    """Calculate percent change, returning None if base is 0 or None."""
+    if a is None or b is None or a == 0:
+        return None
+    return ((b - a) / abs(a)) * 100.0
+
+
+def _extract_numeric(response: Dict, path: str) -> Optional[float]:
+    """Extract numeric value from response by path."""
+    try:
+        parts = path.split(".")
+        val = response
+        for part in parts:
+            if isinstance(val, dict):
+                val = val.get(part)
+            else:
+                return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        return None
+    except (KeyError, TypeError):
+        return None
+
+
+@app.post("/runs:compare")
+async def compare_runs(request: CompareRunsRequest):
+    """
+    Compare two runs and compute deltas for key metrics.
+
+    Returns comparison of recommended variant and key economic metrics.
+    Useful for A/B testing or tracking changes across runs.
+    Returns 404 if either run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    run_a = get_run(request.run_id_a)
+    run_b = get_run(request.run_id_b)
+
+    if run_a is None:
+        raise HTTPException(404, f"Run {request.run_id_a} not found")
+    if run_b is None:
+        raise HTTPException(404, f"Run {request.run_id_b} not found")
+
+    # Extract response data
+    resp_a = run_a.get("response", {})
+    resp_b = run_b.get("response", {})
+
+    # Same request hash?
+    same_hash = run_a.get("request_hash") == run_b.get("request_hash")
+
+    # Get recommended variants
+    rec_a = resp_a.get("recommended_variant")
+    rec_b = resp_b.get("recommended_variant")
+    variant_changed = rec_a != rec_b
+
+    # Key metrics to compare
+    key_paths = [
+        "recommended_variant_npv_pln",  # From top_variants_details
+        "recommended_variant_payback_years",
+    ]
+
+    # Extract from top_variants_details (first element is recommended)
+    tvd_a = resp_a.get("top_variants_details", [])
+    tvd_b = resp_b.get("top_variants_details", [])
+
+    npv_a = tvd_a[0].get("npv_pln") if len(tvd_a) > 0 else None
+    npv_b = tvd_b[0].get("npv_pln") if len(tvd_b) > 0 else None
+    payback_a = tvd_a[0].get("payback_years") if len(tvd_a) > 0 else None
+    payback_b = tvd_b[0].get("payback_years") if len(tvd_b) > 0 else None
+
+    key_deltas = [
+        CompareFieldDelta(
+            field="recommended_npv_pln",
+            a=npv_a,
+            b=npv_b,
+            delta=_safe_delta(npv_a, npv_b),
+            pct_change=_safe_pct_change(npv_a, npv_b),
+        ),
+        CompareFieldDelta(
+            field="recommended_payback_years",
+            a=payback_a,
+            b=payback_b,
+            delta=_safe_delta(payback_a, payback_b),
+            pct_change=_safe_pct_change(payback_a, payback_b),
+        ),
+    ]
+
+    return CompareRunsResponse(
+        run_id_a=request.run_id_a,
+        run_id_b=request.run_id_b,
+        same_request_hash=same_hash,
+        recommended_variant_a=rec_a,
+        recommended_variant_b=rec_b,
+        variant_changed=variant_changed,
+        key_deltas=key_deltas,
+    )
+
+
 # =============================================================================
 # Dispatch Endpoint
 # =============================================================================
