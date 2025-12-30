@@ -928,6 +928,129 @@
         <!-- Arbitrage config is now in Settings module -->
         <!-- Use USTAWIENIA > BESS Advanced Features > Arbitraż Taryfowy OSD / Arbitraż RDN -->
 
+        <!-- v1.3.0: Run Explorer (Run History + Metadata Edit) -->
+        <div class="config-card run-explorer-card">
+          <h3>Run Explorer</h3>
+          <div class="config-description">
+            Historia uruchomien i zarzadzanie metadanymi
+          </div>
+
+          <!-- Filters Row -->
+          <div class="run-explorer-filters">
+            <div class="filter-group">
+              <label for="runTagFilter">Tag</label>
+              <select id="runTagFilter" onchange="filterRunsByTag(this.value)">
+                <option value="">Wszystkie</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label for="runSearchInput">Szukaj</label>
+              <input type="text" id="runSearchInput" placeholder="Szukaj w label/notes..." onkeyup="debounceRunSearch(this.value)">
+            </div>
+            <div class="filter-group">
+              <label for="runEndpointFilter">Endpoint</label>
+              <select id="runEndpointFilter" onchange="filterRunsByEndpoint(this.value)">
+                <option value="">Wszystkie</option>
+                <option value="sizing">sizing</option>
+                <option value="batch.sizing">batch.sizing</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label for="runSortSelect">Sortuj</label>
+              <select id="runSortSelect" onchange="changeRunSort(this.value)">
+                <option value="created_at_desc">Najnowsze</option>
+                <option value="created_at_asc">Najstarsze</option>
+                <option value="updated_at_desc">Ostatnio zmienione</option>
+              </select>
+            </div>
+            <button class="btn btn-small btn-secondary" onclick="refreshRunList()">Odswiez</button>
+          </div>
+
+          <!-- Runs Table -->
+          <div class="runs-table-container" id="runsTableContainer">
+            <table class="runs-table" id="runsTable">
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>Data</th>
+                  <th>Endpoint</th>
+                  <th>Label</th>
+                  <th>Tags</th>
+                  <th>NPV</th>
+                  <th>Akcje</th>
+                </tr>
+              </thead>
+              <tbody id="runsTableBody">
+                <tr><td colspan="7" class="loading-row">Ladowanie...</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="runs-pagination" id="runsPagination">
+            <button class="btn btn-tiny" id="runsPrevBtn" onclick="prevRunsPage()" disabled>Poprzednia</button>
+            <span id="runsPageInfo">Strona 1</span>
+            <button class="btn btn-tiny" id="runsNextBtn" onclick="nextRunsPage()" disabled>Nastepna</button>
+          </div>
+
+          <!-- Run Detail Panel (hidden by default) -->
+          <div class="run-detail-panel" id="runDetailPanel" style="display: none;">
+            <div class="run-detail-header">
+              <h4>Szczegoly Run</h4>
+              <button class="btn btn-tiny btn-secondary" onclick="closeRunDetail()">Zamknij</button>
+            </div>
+            <div class="run-detail-content">
+              <div class="run-detail-info">
+                <div class="info-row">
+                  <span class="info-label">Run ID:</span>
+                  <span class="info-value" id="detailRunId">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Request Hash:</span>
+                  <span class="info-value" id="detailRequestHash">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Utworzono:</span>
+                  <span class="info-value" id="detailCreatedAt">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Zmieniono:</span>
+                  <span class="info-value" id="detailUpdatedAt">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Endpoint:</span>
+                  <span class="info-value" id="detailEndpoint">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Cache:</span>
+                  <span class="info-value" id="detailCacheHit">-</span>
+                </div>
+              </div>
+
+              <!-- Metadata Edit Form -->
+              <div class="run-metadata-edit">
+                <h5>Metadane</h5>
+                <div class="metadata-field">
+                  <label for="editRunLabel">Label (max 80)</label>
+                  <input type="text" id="editRunLabel" maxlength="80" placeholder="Nazwa uruchomienia...">
+                </div>
+                <div class="metadata-field">
+                  <label for="editRunTags">Tags (oddzielone przecinkiem)</label>
+                  <input type="text" id="editRunTags" placeholder="tag1, tag2, tag3...">
+                </div>
+                <div class="metadata-field">
+                  <label for="editRunNotes">Notes (max 2000)</label>
+                  <textarea id="editRunNotes" rows="4" maxlength="2000" placeholder="Notatki..."></textarea>
+                </div>
+                <div class="metadata-actions">
+                  <button class="btn btn-small btn-primary" onclick="saveRunMetadata()">Zapisz</button>
+                  <span id="runMetadataSaveStatus" class="save-status"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Batch Sizing with Async Jobs (v1.1.0) -->
         <div class="config-card batch-sizing-card">
           <h3>Batch Sizing</h3>
