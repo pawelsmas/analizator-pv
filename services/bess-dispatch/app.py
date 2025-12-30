@@ -87,6 +87,11 @@ from cache_helper import (
     get_cache_stats,
     DEFAULT_CACHE_TTL_SECONDS,
 )
+from run_store import (
+    save_run,
+    get_run,
+    RUN_STORE_ENABLED,
+)
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
 from sensitivity_runner import run_sensitivity_analysis
@@ -265,6 +270,28 @@ async def cache_clear():
     """
     count = clear_cache()
     return {"cleared": count}
+
+
+# =============================================================================
+# Run Store Endpoints (v1.0.0)
+# =============================================================================
+
+@app.get("/runs/{run_id}")
+async def get_run_by_id(run_id: str):
+    """
+    Get stored run by run_id.
+
+    Returns the full run record including request and response payloads.
+    Returns 404 if run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    return stored
 
 
 # =============================================================================
@@ -990,14 +1017,32 @@ async def run_sizing_optimization(request: SizingRequestAPI):
         cache_entry = get_cache_entry(request_hash)
         if cache_entry:
             # Cache hit - return cached result with updated cache_info
-            result_dict, run_id, cached_at = cache_entry
+            result_dict, original_run_id, cached_at = cache_entry
+            # v1.0.0: Generate new run_id for this request (audit trail)
+            new_run_id = generate_run_id()
             cache_info = build_cache_info(
                 request_hash=request_hash,
-                run_id=run_id,
+                run_id=new_run_id,
                 cache_status=CacheStatus.HIT,
                 cached_at=cached_at,
             )
             result_dict["cache_info"] = cache_info.model_dump(mode="json")
+
+            # v1.0.0: Save cache hit to RunStore for audit trail
+            compute_time_ms = int((time.time() - start_time) * 1000)
+            save_run(
+                run_id=new_run_id,
+                request_hash=request_hash,
+                endpoint="sizing",
+                status="ok",
+                cache_hit=True,
+                schema_version=result_dict.get("schema_version"),
+                assumptions_version=result_dict.get("assumptions_version"),
+                compute_time_ms=compute_time_ms,
+                request=request_dict,
+                response=result_dict,
+            )
+
             return result_dict
 
         # Cache miss - run computation
@@ -1015,6 +1060,21 @@ async def run_sizing_optimization(request: SizingRequestAPI):
         # Store in cache
         result_dict = result.model_dump(mode="json")
         set_cache_entry(request_hash, result_dict, run_id)
+
+        # v1.0.0: Save run to RunStore for audit trail
+        compute_time_ms = int((time.time() - start_time) * 1000)
+        save_run(
+            run_id=run_id,
+            request_hash=request_hash,
+            endpoint="sizing",
+            status="ok",
+            cache_hit=False,
+            schema_version=result_dict.get("schema_version"),
+            assumptions_version=result_dict.get("assumptions_version"),
+            compute_time_ms=compute_time_ms,
+            request=request_dict,
+            response=result_dict,
+        )
 
         return result
 

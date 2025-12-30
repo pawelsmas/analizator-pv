@@ -3,6 +3,7 @@ Shared helpers for contract tests.
 
 Provides:
 - post_json(): POST request with error handling
+- get_json(): GET request with error handling
 - load_smoke_payload(): Load JSON payload from scripts/smoke/
 - pick_recommended_variant(): Extract recommended variant from sizing response
 """
@@ -40,6 +41,27 @@ def post_json(path: str, payload: Dict[str, Any], timeout: int = 120) -> Dict[st
     # In contract tests we want to see body when something fails
     if r.status_code >= 400:
         raise AssertionError(f"POST {path} -> {r.status_code}\n{r.text[:2000]}")
+    return r.json()
+
+
+def get_json(path: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    GET JSON from API endpoint.
+
+    Args:
+        path: API path (e.g., "/runs/abc123")
+        timeout: Request timeout in seconds
+
+    Returns:
+        Response JSON as dict
+
+    Raises:
+        AssertionError: If response status >= 400
+    """
+    url = DEFAULT_BASE_URL.rstrip("/") + path
+    r = requests.get(url, timeout=timeout)
+    if r.status_code >= 400:
+        raise AssertionError(f"GET {path} -> {r.status_code}\n{r.text[:2000]}")
     return r.json()
 
 
