@@ -146,6 +146,7 @@ from job_store import (
     prune_old_jobs,
     vacuum_jobs_db,
     get_jobs_db_stats,
+    update_job_metadata,
     JOB_STORE_ENABLED,
     JOBS_MAX_ITEMS,
     JOBS_INLINE_WAIT_MAX_SECONDS,
@@ -2765,6 +2766,10 @@ class JobDetailResponse(BaseModel):
     message: Optional[str] = Field(None, description="Status message")
     result: Optional[Dict[str, Any]] = Field(None, description="Job result (only for done/failed/cancelled)")
     request: Optional[Dict[str, Any]] = Field(None, description="Original request (only for done/failed/cancelled)")
+    # v1.3.0 metadata fields
+    label: Optional[str] = Field(None, description="Job label (v1.3.0)")
+    tags: Optional[List[str]] = Field(None, description="Job tags (v1.3.0)")
+    notes: Optional[str] = Field(None, description="Job notes (v1.3.0)")
 
 
 class JobListResponse(BaseModel):
@@ -2779,6 +2784,34 @@ class CancelJobResponse(BaseModel):
     """Response for job cancellation."""
     cancelled: bool = Field(..., description="Whether cancellation succeeded")
     status: str = Field(..., description="Current job status")
+
+
+class PatchJobMetadataRequest(BaseModel):
+    """Request model for updating job metadata (v1.3.0)."""
+    label: Optional[str] = Field(
+        None,
+        max_length=80,
+        description="Label for the job (max 80 chars)"
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        max_length=20,
+        description="Tags list (max 20 tags, each 1-32 chars [a-zA-Z0-9_-])"
+    )
+    notes: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Notes for the job (max 2000 chars)"
+    )
+
+
+class PatchJobMetadataResponse(BaseModel):
+    """Response model for PATCH job metadata (v1.3.0)."""
+    job_id: str = Field(..., description="Job identifier")
+    label: Optional[str] = Field(None, description="Updated label")
+    tags: Optional[List[str]] = Field(None, description="Updated tags")
+    notes: Optional[str] = Field(None, description="Updated notes")
+    updated_at: str = Field(..., description="ISO 8601 timestamp of update")
 
 
 def _process_sizing_item_for_job(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -3094,6 +3127,58 @@ async def get_job_detail(job_id: str):
         message=job.get("message"),
         result=job.get("result"),
         request=job.get("request"),
+        # v1.3.0 metadata fields
+        label=job.get("label"),
+        tags=job.get("tags"),
+        notes=job.get("notes"),
+    )
+
+
+@app.patch("/api/bess-dispatch/jobs/{job_id}", response_model=PatchJobMetadataResponse)
+async def patch_job_metadata(job_id: str, request: PatchJobMetadataRequest):
+    """
+    Update metadata for a job (v1.3.0).
+
+    Allows updating label, tags, and notes fields.
+    Returns 404 if job_id not found.
+    Returns 422 if validation fails.
+    Returns 503 if job store is disabled.
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    # Validate tags more strictly (Pydantic only validates list length)
+    try:
+        validate_tags(request.tags)
+        validate_label(request.label)
+        validate_notes(request.notes)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    try:
+        updated = update_job_metadata(
+            job_id=job_id,
+            label=request.label,
+            tags=request.tags,
+            notes=request.notes,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    if not updated:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    # Fetch updated job to get the updated_at timestamp
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(500, "Job updated but not found on re-fetch")
+
+    return PatchJobMetadataResponse(
+        job_id=job_id,
+        label=job.get("label"),
+        tags=job.get("tags"),
+        notes=job.get("notes"),
+        updated_at=job.get("updated_at") or "",
     )
 
 
