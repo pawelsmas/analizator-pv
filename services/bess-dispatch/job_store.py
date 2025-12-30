@@ -1,5 +1,5 @@
 """
-SQLite-backed JobStore for async batch sizing jobs (v1.2.0).
+SQLite-backed JobStore for async batch sizing jobs (v1.3.0).
 
 Provides:
 - Persistent job storage with compressed request/result blobs
@@ -8,17 +8,90 @@ Provides:
 - Idempotency key support for duplicate detection
 - Multi-worker safe job leasing with heartbeat/reclaim
 - Atomic claim with lease expiration for fault tolerance
+- Metadata support: label, tags, notes (v1.3.0)
 """
 
 import hashlib
 import json
 import os
+import re
 import socket
 import sqlite3
 import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+
+# -----------------------------------------------------------------------------
+# Validation constants for metadata (v1.3.0)
+# -----------------------------------------------------------------------------
+MAX_TAGS = 20
+MAX_TAG_LENGTH = 32
+TAG_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+MAX_LABEL_LENGTH = 80
+MAX_NOTES_LENGTH = 2000
+
+
+def validate_tags(tags: Optional[List[str]]) -> None:
+    """
+    Validate tags list for metadata.
+
+    Args:
+        tags: List of tag strings
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if tags is None:
+        return
+    if not isinstance(tags, list):
+        raise ValueError("tags must be a list")
+    if len(tags) > MAX_TAGS:
+        raise ValueError(f"Maximum {MAX_TAGS} tags allowed, got {len(tags)}")
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise ValueError(f"Tag must be a string, got {type(tag).__name__}")
+        if not tag or len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(f"Tag must be 1-{MAX_TAG_LENGTH} chars, got {len(tag)}")
+        if not TAG_PATTERN.match(tag):
+            raise ValueError(f"Tag '{tag}' contains invalid characters. Only [a-zA-Z0-9_-] allowed")
+
+
+def validate_label(label: Optional[str]) -> None:
+    """
+    Validate label string for metadata.
+
+    Args:
+        label: Label string
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if label is None:
+        return
+    if not isinstance(label, str):
+        raise ValueError(f"label must be a string, got {type(label).__name__}")
+    if len(label) > MAX_LABEL_LENGTH:
+        raise ValueError(f"label must be max {MAX_LABEL_LENGTH} chars, got {len(label)}")
+
+
+def validate_notes(notes: Optional[str]) -> None:
+    """
+    Validate notes string for metadata.
+
+    Args:
+        notes: Notes string
+
+    Raises:
+        ValueError: If validation fails
+    """
+    if notes is None:
+        return
+    if not isinstance(notes, str):
+        raise ValueError(f"notes must be a string, got {type(notes).__name__}")
+    if len(notes) > MAX_NOTES_LENGTH:
+        raise ValueError(f"notes must be max {MAX_NOTES_LENGTH} chars, got {len(notes)}")
 
 
 # -----------------------------------------------------------------------------
@@ -97,12 +170,17 @@ class JobStore:
                     max_attempts INTEGER NOT NULL DEFAULT 3,
                     started_at TEXT,
                     finished_at TEXT,
-                    last_error TEXT
+                    last_error TEXT,
+                    -- v1.3.0 metadata columns
+                    label TEXT,
+                    tags_json TEXT,
+                    notes TEXT
                 )
             """)
 
             # Migration: add columns for existing databases (BEFORE creating indexes on new columns)
             self._migrate_add_leasing_columns(conn)
+            self._migrate_add_metadata_columns(conn)
 
             # Create indexes (including on new columns, after migration)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
@@ -130,6 +208,26 @@ class JobStore:
             ("started_at", "TEXT"),
             ("finished_at", "TEXT"),
             ("last_error", "TEXT"),
+        ]
+
+        for col_name, col_def in migrations:
+            if col_name not in existing_columns:
+                try:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass  # Column might already exist
+
+    def _migrate_add_metadata_columns(self, conn: sqlite3.Connection) -> None:
+        """Add v1.3.0 metadata columns to existing tables (migration)."""
+        # Get existing columns
+        cursor = conn.execute("PRAGMA table_info(jobs)")
+        existing_columns = {row["name"] for row in cursor.fetchall()}
+
+        # Add missing columns
+        migrations = [
+            ("label", "TEXT"),
+            ("tags_json", "TEXT"),
+            ("notes", "TEXT"),
         ]
 
         for col_name, col_def in migrations:
@@ -167,6 +265,9 @@ class JobStore:
         # Remove blob fields from output
         d.pop("request_blob", None)
         d.pop("result_blob", None)
+        # Parse tags_json to tags list (v1.3.0)
+        tags_json = d.pop("tags_json", None)
+        d["tags"] = json.loads(tags_json) if tags_json else None
         return d
 
     # -------------------------------------------------------------------------
@@ -413,6 +514,77 @@ class JobStore:
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def update_metadata(
+        self,
+        job_id: str,
+        label: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update job metadata (label, tags, notes).
+
+        Args:
+            job_id: Job identifier
+            label: Optional label (max 80 chars)
+            tags: Optional list of tags (max 20 tags, each 1-32 chars, [a-zA-Z0-9_-])
+            notes: Optional notes (max 2000 chars)
+
+        Returns:
+            Updated job dict, or None if job not found
+
+        Raises:
+            ValueError: If validation fails
+        """
+        # Validate inputs
+        validate_label(label)
+        validate_tags(tags)
+        validate_notes(notes)
+
+        conn = self._get_conn()
+        try:
+            # Check if job exists
+            cursor = conn.execute(
+                "SELECT job_id FROM jobs WHERE job_id = ?",
+                (job_id,)
+            )
+            if cursor.fetchone() is None:
+                return None
+
+            # Build update query dynamically
+            now = self._now_iso()
+            updates = ["updated_at = ?"]
+            params: List[Any] = [now]
+
+            if label is not None:
+                updates.append("label = ?")
+                params.append(label if label else None)
+            if tags is not None:
+                updates.append("tags_json = ?")
+                # Empty list should be saved as "[]", not NULL
+                params.append(json.dumps(tags))
+            if notes is not None:
+                updates.append("notes = ?")
+                params.append(notes if notes else None)
+
+            params.append(job_id)
+
+            conn.execute(
+                f"UPDATE jobs SET {', '.join(updates)} WHERE job_id = ?",
+                params
+            )
+            conn.commit()
+
+            # Fetch and return updated job
+            cursor = conn.execute(
+                "SELECT * FROM jobs WHERE job_id = ?",
+                (job_id,)
+            )
+            row = cursor.fetchone()
+            return self._row_to_dict(row, include_blobs=False) if row else None
         finally:
             conn.close()
 
@@ -951,3 +1123,13 @@ def get_jobs_db_stats() -> Dict[str, Any]:
 def count_jobs_by_status() -> Dict[str, int]:
     """Count jobs by status."""
     return get_job_store().count_by_status()
+
+
+def update_job_metadata(
+    job_id: str,
+    label: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    notes: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update job metadata (label, tags, notes)."""
+    return get_job_store().update_metadata(job_id, label, tags, notes)
