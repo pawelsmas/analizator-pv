@@ -1,4 +1,4 @@
-console.log('[BESS] bess.js LOADED v=3.22 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.23 - timestamp:', new Date().toISOString());
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -5210,17 +5210,22 @@ window.displayEnergyPriceSensitivity = displayEnergyPriceSensitivity;
 window.displayCapexSensitivity = displayCapexSensitivity;
 
 // =============================================================================
-// Batch Sizing UI (v0.9.0)
+// Batch Sizing UI with Async Jobs (v1.1.0)
 // =============================================================================
+
+// Active job tracking
+let activeJobId = null;
+let jobPollingInterval = null;
 
 /**
  * Run batch sizing with multiple scenarios.
- * Collects scenario data from the batch input and sends to /sizing:batch API.
+ * Uses /jobs/sizing:batch endpoint with wait=true|false support.
  */
 async function runBatchSizing() {
   const batchInput = document.getElementById('batchScenariosInput');
   const runBtn = document.getElementById('runBatchBtn');
   const resultsContainer = document.getElementById('batchResultsContainer');
+  const asyncModeCheckbox = document.getElementById('batchAsyncMode');
 
   if (!batchInput || !resultsContainer) {
     console.error('[BATCH] Missing batch UI elements');
@@ -5235,12 +5240,14 @@ async function runBatchSizing() {
       scenarios = [scenarios]; // Single scenario
     }
   } catch (e) {
+    resultsContainer.style.display = 'block';
     resultsContainer.innerHTML = `<div class="batch-error">Invalid JSON: ${e.message}</div>`;
     return;
   }
 
   // Validate scenarios
   if (scenarios.length === 0) {
+    resultsContainer.style.display = 'block';
     resultsContainer.innerHTML = '<div class="batch-error">No scenarios provided</div>';
     return;
   }
@@ -5249,43 +5256,287 @@ async function runBatchSizing() {
   const batchRequest = {
     batch_id: `batch_${Date.now()}`,
     items: scenarios.map((scenario, idx) => ({
-      item_id: scenario.name || `scenario_${idx + 1}`,
+      item_id: scenario.name || scenario.item_id || `scenario_${idx + 1}`,
       request: {
-        load_kw: scenario.load_kw,
-        pv_generation_kw: scenario.pv_generation_kw,
-        energy_price_pln_kwh: scenario.energy_price_pln_kwh || 0.8,
-        mode: scenario.mode || 'stacked',
-        ...scenario  // Allow additional fields
+        load_kw: scenario.load_kw || scenario.request?.load_kw,
+        pv_generation_kw: scenario.pv_generation_kw || scenario.request?.pv_generation_kw,
+        energy_price_pln_kwh: scenario.energy_price_pln_kwh || scenario.request?.energy_price_pln_kwh || 0.8,
+        mode: scenario.mode || scenario.request?.mode || 'stacked',
+        ...(scenario.request || scenario)  // Allow additional fields
       }
     }))
   };
 
+  // Check async mode
+  const asyncMode = asyncModeCheckbox?.checked || false;
+  const waitParam = asyncMode ? 'false' : 'true';
+
   // Show loading state
   runBtn.disabled = true;
-  runBtn.textContent = 'Processing...';
-  resultsContainer.innerHTML = '<div class="batch-loading">Processing batch...</div>';
+  runBtn.textContent = asyncMode ? 'Submitting...' : 'Processing...';
+  resultsContainer.style.display = 'block';
+  resultsContainer.innerHTML = '<div class="batch-loading"><div class="spinner"></div>Processing batch...</div>';
 
   try {
     const bessDispatchUrl = '/api/bess-dispatch';
-    const response = await fetch(`${bessDispatchUrl}/sizing:batch`, {
+    const response = await fetch(`${bessDispatchUrl}/jobs/sizing:batch?wait=${waitParam}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(batchRequest)
     });
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`API error: ${response.status} - ${errorText}`);
     }
 
     const result = await response.json();
-    displayBatchResults(result);
+
+    if (asyncMode) {
+      // Async mode: received job_id, start polling
+      activeJobId = result.job_id;
+      displayJobStatus(result);
+      startJobPolling(result.job_id);
+    } else {
+      // Sync mode: received full result
+      displayBatchResults(result);
+    }
 
   } catch (e) {
     resultsContainer.innerHTML = `<div class="batch-error">Batch request failed: ${e.message}</div>`;
   } finally {
     runBtn.disabled = false;
-    runBtn.textContent = 'Run Batch Sizing';
+    runBtn.textContent = 'Uruchom Batch';
   }
+}
+
+/**
+ * Display job status for async mode.
+ */
+function displayJobStatus(jobData) {
+  const container = document.getElementById('batchResultsContainer');
+  if (!container) return;
+
+  const { job_id, status, items_done, items_total, error_count, message, created_at } = jobData;
+
+  const progressPct = items_total > 0 ? Math.round((items_done / items_total) * 100) : 0;
+  const statusClass = status === 'done' ? 'status-done' :
+                      status === 'running' ? 'status-running' :
+                      status === 'failed' ? 'status-failed' :
+                      status === 'cancelled' ? 'status-cancelled' : 'status-pending';
+
+  let html = `
+    <div class="job-status-card">
+      <div class="job-header">
+        <span class="job-id">Job: ${job_id.substring(0, 8)}...</span>
+        <span class="job-status ${statusClass}">${status.toUpperCase()}</span>
+      </div>
+      <div class="job-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${progressPct}%"></div>
+        </div>
+        <div class="progress-text">${items_done || 0} / ${items_total || '?'} items (${progressPct}%)</div>
+        ${error_count > 0 ? `<div class="error-count">${error_count} errors</div>` : ''}
+      </div>
+      ${message ? `<div class="job-message">${message}</div>` : ''}
+      <div class="job-actions">
+        ${status === 'pending' || status === 'running' ? `
+          <button class="btn btn-small btn-danger" onclick="cancelJob('${job_id}')">Cancel</button>
+        ` : ''}
+        ${status === 'done' || status === 'failed' ? `
+          <button class="btn btn-small btn-primary" onclick="fetchJobResult('${job_id}')">View Results</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+/**
+ * Start polling for job status.
+ */
+function startJobPolling(jobId) {
+  // Clear any existing polling
+  stopJobPolling();
+
+  jobPollingInterval = setInterval(async () => {
+    try {
+      const bessDispatchUrl = '/api/bess-dispatch';
+      const response = await fetch(`${bessDispatchUrl}/jobs/${jobId}`);
+
+      if (!response.ok) {
+        throw new Error(`Failed to get job status: ${response.status}`);
+      }
+
+      const jobData = await response.json();
+      displayJobStatus(jobData);
+
+      // Stop polling if job is complete
+      if (jobData.status === 'done' || jobData.status === 'failed' || jobData.status === 'cancelled') {
+        stopJobPolling();
+        activeJobId = null;
+
+        // Auto-fetch results if done
+        if (jobData.status === 'done' && jobData.result) {
+          displayBatchResults(jobData.result);
+        }
+      }
+    } catch (e) {
+      console.error('[BATCH] Polling error:', e);
+    }
+  }, 2000); // Poll every 2 seconds
+}
+
+/**
+ * Stop job polling.
+ */
+function stopJobPolling() {
+  if (jobPollingInterval) {
+    clearInterval(jobPollingInterval);
+    jobPollingInterval = null;
+  }
+}
+
+/**
+ * Cancel an active job.
+ */
+async function cancelJob(jobId) {
+  try {
+    const bessDispatchUrl = '/api/bess-dispatch';
+    const response = await fetch(`${bessDispatchUrl}/jobs/${jobId}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to cancel job: ${response.status}`);
+    }
+
+    const result = await response.json();
+    displayJobStatus(result);
+    stopJobPolling();
+
+  } catch (e) {
+    console.error('[BATCH] Cancel error:', e);
+    alert(`Failed to cancel job: ${e.message}`);
+  }
+}
+
+/**
+ * Fetch and display job results.
+ */
+async function fetchJobResult(jobId) {
+  const container = document.getElementById('batchResultsContainer');
+  if (!container) return;
+
+  container.innerHTML = '<div class="batch-loading"><div class="spinner"></div>Loading results...</div>';
+
+  try {
+    const bessDispatchUrl = '/api/bess-dispatch';
+    const response = await fetch(`${bessDispatchUrl}/jobs/${jobId}`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to get job: ${response.status}`);
+    }
+
+    const jobData = await response.json();
+
+    if (jobData.result) {
+      displayBatchResults(jobData.result);
+    } else {
+      container.innerHTML = `<div class="batch-error">No results available (status: ${jobData.status})</div>`;
+    }
+
+  } catch (e) {
+    container.innerHTML = `<div class="batch-error">Failed to load results: ${e.message}</div>`;
+  }
+}
+
+/**
+ * Refresh job list.
+ */
+async function refreshJobList() {
+  const container = document.getElementById('jobListContainer');
+  if (!container) return;
+
+  try {
+    const bessDispatchUrl = '/api/bess-dispatch';
+    const response = await fetch(`${bessDispatchUrl}/jobs?limit=10`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to get jobs: ${response.status}`);
+    }
+
+    const jobsData = await response.json();
+    displayJobList(jobsData);
+
+  } catch (e) {
+    container.innerHTML = `<div class="batch-error">Failed to load jobs: ${e.message}</div>`;
+  }
+}
+
+/**
+ * Display list of recent jobs.
+ */
+function displayJobList(jobsData) {
+  const container = document.getElementById('jobListContainer');
+  if (!container) return;
+
+  const { items, total } = jobsData;
+
+  if (!items || items.length === 0) {
+    container.innerHTML = '<div class="no-jobs">No recent jobs</div>';
+    return;
+  }
+
+  let html = `
+    <div class="job-list">
+      <div class="job-list-header">
+        <span>Recent Jobs (${items.length} of ${total})</span>
+        <button class="btn btn-small btn-secondary" onclick="refreshJobList()">Refresh</button>
+      </div>
+      <table class="job-list-table">
+        <thead>
+          <tr>
+            <th>Job ID</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(job => {
+            const statusClass = job.status === 'done' ? 'status-done' :
+                                job.status === 'running' ? 'status-running' :
+                                job.status === 'failed' ? 'status-failed' :
+                                job.status === 'cancelled' ? 'status-cancelled' : 'status-pending';
+            const progressPct = job.items_total > 0 ? Math.round((job.items_done / job.items_total) * 100) : 0;
+            const createdTime = new Date(job.created_at).toLocaleTimeString();
+
+            return `
+              <tr>
+                <td class="job-id-cell">${job.job_id.substring(0, 8)}...</td>
+                <td><span class="job-status-badge ${statusClass}">${job.status}</span></td>
+                <td>${job.items_done || 0}/${job.items_total || '?'} (${progressPct}%)</td>
+                <td>${createdTime}</td>
+                <td>
+                  ${job.status === 'done' ? `
+                    <button class="btn btn-tiny btn-primary" onclick="fetchJobResult('${job.job_id}')">View</button>
+                  ` : ''}
+                  ${job.status === 'pending' || job.status === 'running' ? `
+                    <button class="btn btn-tiny btn-danger" onclick="cancelJob('${job.job_id}')">Cancel</button>
+                  ` : ''}
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  container.innerHTML = html;
 }
 
 /**
@@ -5432,9 +5683,14 @@ function loadSampleBatchScenarios() {
   }
 }
 
-// Export batch functions
+// Export batch and job functions
 window.runBatchSizing = runBatchSizing;
 window.displayBatchResults = displayBatchResults;
 window.loadSampleBatchScenarios = loadSampleBatchScenarios;
+window.displayJobStatus = displayJobStatus;
+window.cancelJob = cancelJob;
+window.fetchJobResult = fetchJobResult;
+window.refreshJobList = refreshJobList;
+window.displayJobList = displayJobList;
 
-console.log('[BESS] bess.js v3.22 - v0.9.0 batch sizing UI');
+console.log('[BESS] bess.js v3.23 - v1.1.0 async jobs UI');
