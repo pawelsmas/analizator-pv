@@ -119,6 +119,7 @@ from job_store import (
     JOBS_MAX_ITEMS,
     JOBS_INLINE_WAIT_MAX_SECONDS,
 )
+from job_processor import process_job
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
 from sensitivity_runner import run_sensitivity_analysis
@@ -2662,62 +2663,31 @@ class CancelJobResponse(BaseModel):
     status: str = Field(..., description="Current job status")
 
 
+def _process_sizing_item_for_job(request: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process a single sizing item for a job.
+
+    This wraps _process_single_sizing_item to convert Pydantic model to dict.
+    """
+    sizing_result = _process_single_sizing_item(request)
+    return sizing_result.model_dump(mode="json")
+
+
 def _process_job_inline(job_id: str, items: List[JobSizingBatchItem], fail_fast: bool) -> Dict[str, Any]:
     """
     Process a job inline (for wait=true mode).
 
-    This re-uses the same sizing logic as the batch endpoint.
+    Uses shared process_job function from job_processor module.
     """
-    results = []
-    ok_count = 0
-    error_count = 0
-    start_time = time.time()
+    # Convert items to dict format expected by process_job
+    items_dict = [{"item_id": item.item_id, "request": item.request} for item in items]
 
-    for item in items:
-        # Check if job was cancelled
-        if is_cancelled(job_id):
-            break
-
-        try:
-            sizing_result = _process_single_sizing_item(item.request)
-            result_dict = sizing_result.model_dump(mode="json")
-
-            results.append({
-                "item_id": item.item_id,
-                "status": "ok",
-                "response": result_dict,
-                "error": None,
-            })
-            ok_count += 1
-
-        except Exception as e:
-            error_msg = str(e)
-            results.append({
-                "item_id": item.item_id,
-                "status": "error",
-                "response": None,
-                "error": error_msg,
-            })
-            error_count += 1
-
-            if fail_fast:
-                break
-
-        # Update progress
-        update_progress(job_id, items_done=ok_count + error_count, error_count=error_count)
-
-    processing_time_ms = (time.time() - start_time) * 1000
-
-    # Build result
-    return {
-        "results": results,
-        "summary": {
-            "total_items": len(items),
-            "ok_count": ok_count,
-            "error_count": error_count,
-            "processing_time_ms": processing_time_ms,
-        }
-    }
+    return process_job(
+        job_id=job_id,
+        items=items_dict,
+        fail_fast=fail_fast,
+        process_item_fn=_process_sizing_item_for_job,
+    )
 
 
 @app.post("/api/bess-dispatch/jobs/sizing-batch", response_model=JobStatusResponse)

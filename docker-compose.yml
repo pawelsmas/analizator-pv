@@ -539,6 +539,11 @@ services:
       - RUN_STORE_PATH=/data/runs.sqlite
       - RUN_STORE_ENABLED=true
       - RUN_STORE_RETENTION_DAYS=30
+      - JOB_STORE_PATH=/data/jobs.sqlite
+      - JOB_STORE_ENABLED=true
+      - JOB_STORE_RETENTION_DAYS=14
+      - JOBS_MAX_ITEMS=100
+      - JOBS_INLINE_WAIT_MAX_SECONDS=60
     volumes:
       - bess-dispatch-data:/data
     networks:
@@ -550,6 +555,27 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # Optional: BESS Dispatch Worker for async job processing
+  # Uncomment to enable background job processing
+  # bess-dispatch-worker:
+  #   build:
+  #     context: ./services/bess-dispatch
+  #     dockerfile: Dockerfile
+  #   container_name: pv-bess-dispatch-worker
+  #   command: ["python", "worker.py"]
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - JOB_STORE_PATH=/data/jobs.sqlite
+  #     - JOB_STORE_ENABLED=true
+  #     - WORKER_POLL_INTERVAL=5.0
+  #   volumes:
+  #     - bess-dispatch-data:/data
+  #   networks:
+  #     - pv-network
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - bess-dispatch
 
   # Profile Analysis Frontend Module
   frontend-profile:
