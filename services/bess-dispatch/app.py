@@ -37,6 +37,15 @@ from observability.batch_metrics import (
     record_portfolio_summary,
 )
 
+from observability.runstore_metrics import (
+    record_runstore_save,
+    record_runstore_get,
+    record_runstore_list,
+    record_runstore_prune,
+    record_runstore_compare,
+    record_runstore_export,
+)
+
 from models import (
     DispatchRequest,
     DispatchResult,
@@ -329,6 +338,7 @@ async def prune_old_runs(request: PruneRunsRequest):
 
     retention = request.retention_days or RUN_STORE_RETENTION_DAYS
     deleted = prune_runs(retention)
+    record_runstore_prune(deleted=deleted, retention_days=retention)
     return PruneRunsResponse(
         deleted=deleted,
         retention_days=retention,
@@ -349,7 +359,9 @@ async def get_run_by_id(run_id: str):
 
     stored = get_run(run_id)
     if stored is None:
+        record_runstore_get(found=False)
         raise HTTPException(404, f"Run {run_id} not found")
+    record_runstore_get(found=True)
     return stored
 
 
@@ -376,6 +388,8 @@ async def list_runs_endpoint(
         request_hash=request_hash,
         endpoint=endpoint,
     )
+    has_filters = request_hash is not None or endpoint is not None
+    record_runstore_list(has_filters=has_filters, results_count=len(result.get("items", [])))
     return result
 
 
@@ -501,6 +515,8 @@ async def compare_runs(request: CompareRunsRequest):
         ),
     ]
 
+    record_runstore_compare(variant_changed=variant_changed)
+
     return CompareRunsResponse(
         run_id_a=request.run_id_a,
         run_id_b=request.run_id_b,
@@ -532,6 +548,8 @@ async def export_run_json(run_id: str):
 
     import json
     content = json.dumps(stored, indent=2, ensure_ascii=False, default=str)
+
+    record_runstore_export(format_type="json")
 
     return Response(
         content=content,
@@ -626,6 +644,8 @@ async def export_run_csv(run_id: str):
     writer.writerow(list(metadata.values()))
 
     csv_content = output.getvalue()
+
+    record_runstore_export(format_type="csv")
 
     return Response(
         content=csv_content,
@@ -1384,6 +1404,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 request=request_dict,
                 response=result_dict,
             )
+            record_runstore_save(endpoint="sizing", cache_hit=True)
 
             return result_dict
 
@@ -1417,6 +1438,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             request=request_dict,
             response=result_dict,
         )
+        record_runstore_save(endpoint="sizing", cache_hit=False)
 
         return result
 
