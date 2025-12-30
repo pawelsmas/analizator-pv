@@ -24,6 +24,7 @@ COPY cache_helper.py .
 COPY run_store.py .
 COPY job_store.py .
 COPY job_processor.py .
+COPY job_export_helper.py .
 COPY worker.py .
 
 # Copy subpackages

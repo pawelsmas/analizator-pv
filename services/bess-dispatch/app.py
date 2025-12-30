@@ -2852,6 +2852,116 @@ async def get_job_detail(job_id: str):
     )
 
 
+# -----------------------------------------------------------------------------
+# Job Export Endpoints (v1.2.0)
+# -----------------------------------------------------------------------------
+
+from job_export_helper import (
+    export_job_to_json,
+    export_job_to_csv,
+    export_job_to_zip,
+)
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/export/json")
+async def export_job_json(job_id: str, enriched: bool = Query(True)):
+    """
+    Export job results to JSON format.
+
+    Args:
+        job_id: Job identifier
+        enriched: Include enriched item data with request_summary (default: true)
+
+    Returns:
+        JSON file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    json_content = export_job_to_json(job, enriched=enriched)
+    batch_id = job.get("batch_id", "batch")
+    filename = f"{batch_id}_{job_id[:8]}_results.json"
+
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/export/csv")
+async def export_job_csv(job_id: str):
+    """
+    Export job results to CSV format.
+
+    Flattens key metrics for spreadsheet analysis.
+
+    Args:
+        job_id: Job identifier
+
+    Returns:
+        CSV file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    csv_content = export_job_to_csv(job)
+    batch_id = job.get("batch_id", "batch")
+    filename = f"{batch_id}_{job_id[:8]}_summary.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/export/zip")
+async def export_job_zip(job_id: str):
+    """
+    Export job results to ZIP archive containing JSON and CSV.
+
+    Args:
+        job_id: Job identifier
+
+    Returns:
+        ZIP file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    zip_content = export_job_to_zip(job)
+    batch_id = job.get("batch_id", "batch")
+    filename = f"{batch_id}_{job_id[:8]}_export.zip"
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/bess-dispatch/jobs", response_model=JobListResponse)
 async def list_sizing_jobs(
     limit: int = Query(20, ge=1, le=100, description="Results per page"),
