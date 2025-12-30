@@ -167,6 +167,14 @@ from job_processor import process_job
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
 from sensitivity_runner import run_sensitivity_analysis
+from validation_kpis import (
+    KpiSnapshot,
+    ToleranceConfig,
+    KpiDiff,
+    extract_kpis_from_sizing_response,
+    compute_kpi_diffs,
+    kpi_snapshot_to_dict,
+)
 from common.logging_structured import (
     log_dispatch_request,
     log_dispatch_response,
@@ -3562,6 +3570,114 @@ async def cancel_job_endpoint(job_id: str):
 
 # -----------------------------------------------------------------------------
 # Job Retention/Pruning/Vacuum Endpoints (v1.2.0)
+# =============================================================================
+
+
+# =============================================================================
+# Validation Endpoints (v1.4.0)
+# =============================================================================
+
+
+class ValidateSizingRequest(BaseModel):
+    """Request for /validate/sizing endpoint."""
+    request: Dict[str, Any] = Field(..., description="Sizing request payload")
+    expected_kpis: Dict[str, float] = Field(..., description="Expected KPI values")
+    tolerances: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Tolerance configuration (default_abs, default_rel, per_field_abs, per_field_rel)"
+    )
+    scenario_id: Optional[str] = Field(None, description="Optional scenario ID for tracking")
+
+
+class ValidateSizingResponse(BaseModel):
+    """Response from /validate/sizing endpoint."""
+    passed: bool = Field(..., description="True if all KPIs pass within tolerances")
+    run_id: str = Field(..., description="Run ID of the sizing calculation")
+    scenario_id: Optional[str] = Field(None, description="Echoed scenario ID")
+    actual_kpis: Dict[str, Any] = Field(..., description="Extracted KPI values from sizing response")
+    diffs: List[Dict[str, Any]] = Field(..., description="Per-field comparison results")
+    failed_fields: List[str] = Field(..., description="List of fields that failed validation")
+    passed_fields: List[str] = Field(..., description="List of fields that passed validation")
+
+
+@app.post("/validate/sizing", response_model=ValidateSizingResponse)
+async def validate_sizing(body: ValidateSizingRequest):
+    """
+    Run sizing and validate results against expected KPIs.
+
+    This endpoint:
+    1. Runs sizing with the provided request payload
+    2. Extracts KPIs from the recommended variant
+    3. Compares actual vs expected with tolerances
+    4. Returns pass/fail status with detailed diffs
+
+    Tolerance formula: abs_diff <= max(abs_tol, abs(expected) * rel_tol)
+
+    Default tolerances:
+    - default_abs: 1.0
+    - default_rel: 0.001 (0.1%)
+    """
+    start_time = time.time()
+
+    # Build tolerances config
+    tol_dict = body.tolerances or {}
+    tolerances = ToleranceConfig(
+        default_abs=tol_dict.get("default_abs", 1.0),
+        default_rel=tol_dict.get("default_rel", 0.001),
+        per_field_abs=tol_dict.get("per_field_abs", {}),
+        per_field_rel=tol_dict.get("per_field_rel", {}),
+    )
+
+    # Parse and run sizing
+    try:
+        sizing_req = SizingRequestAPI(**body.request)
+    except Exception as e:
+        raise HTTPException(422, f"Invalid sizing request: {e}")
+
+    # Run sizing (reuse existing endpoint logic)
+    sizing_response = await run_sizing_optimization(sizing_req)
+
+    # Convert to dict if it's a Pydantic model (can be SizingResult or dict from cache)
+    if hasattr(sizing_response, 'model_dump'):
+        response_dict = sizing_response.model_dump(mode="json")
+    else:
+        response_dict = sizing_response
+
+    # Extract actual KPIs
+    actual_kpis = extract_kpis_from_sizing_response(response_dict)
+    actual_kpis_dict = kpi_snapshot_to_dict(actual_kpis)
+
+    # Add recommended_variant to actual_kpis for completeness
+    actual_kpis_full = actual_kpis.model_dump()
+
+    # Compute diffs
+    diffs = compute_kpi_diffs(body.expected_kpis, actual_kpis_dict, tolerances)
+
+    # Determine pass/fail
+    failed_fields = [d.field for d in diffs if not d.pass_]
+    passed_fields = [d.field for d in diffs if d.pass_]
+    passed = len(failed_fields) == 0
+
+    # Get run_id from cache_info
+    run_id = response_dict.get("cache_info", {}).get("run_id", "unknown")
+
+    # Convert diffs to dicts with "pass" key (not "pass_")
+    diffs_as_dicts = []
+    for d in diffs:
+        d_dict = d.model_dump(by_alias=True)
+        diffs_as_dicts.append(d_dict)
+
+    return ValidateSizingResponse(
+        passed=passed,
+        run_id=run_id,
+        scenario_id=body.scenario_id,
+        actual_kpis=actual_kpis_full,
+        diffs=diffs_as_dicts,
+        failed_fields=failed_fields,
+        passed_fields=passed_fields,
+    )
+
+
 # =============================================================================
 # Main
 # =============================================================================

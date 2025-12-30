@@ -148,7 +148,7 @@ def extract_kpis_from_sizing_response(resp: Dict[str, Any]) -> KpiSnapshot:
     pv_curtail_mwh = totals.get("pv_curtail_mwh", 0.0)
 
     # Unserved load from constraint_summary
-    constraint_summary = dispatch.get("constraint_summary", {})
+    constraint_summary = dispatch.get("constraint_summary") or {}
     unserved_load_kwh = constraint_summary.get("unserved_load_kwh", 0.0)
 
     return KpiSnapshot(
