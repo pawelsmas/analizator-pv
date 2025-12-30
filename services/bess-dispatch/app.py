@@ -3632,6 +3632,8 @@ async def validate_sizing(body: ValidateSizingRequest):
     try:
         sizing_req = SizingRequestAPI(**body.request)
     except Exception as e:
+        from observability import record_validation_error
+        record_validation_error("422")
         raise HTTPException(422, f"Invalid sizing request: {e}")
 
     # Run sizing (reuse existing endpoint logic)
@@ -3657,6 +3659,23 @@ async def validate_sizing(body: ValidateSizingRequest):
     failed_fields = [d.field for d in diffs if not d.pass_]
     passed_fields = [d.field for d in diffs if d.pass_]
     passed = len(failed_fields) == 0
+
+    # Record validation metrics (v1.4.0)
+    from observability import (
+        record_validation_request,
+        record_validation_result,
+        record_validation_duration,
+        record_validation_tolerance,
+    )
+    record_validation_request(body.scenario_id or "unknown")
+    record_validation_result(
+        scenario_id=body.scenario_id or "unknown",
+        passed=passed,
+        num_kpis=len(diffs),
+        num_failed=len(failed_fields),
+    )
+    record_validation_duration(time.time() - start_time)
+    record_validation_tolerance(tolerances.default_rel, tolerances.default_abs)
 
     # Get run_id from cache_info
     run_id = response_dict.get("cache_info", {}).get("run_id", "unknown")
