@@ -46,6 +46,17 @@ from observability.runstore_metrics import (
     record_runstore_export,
 )
 
+from observability.jobs_metrics import (
+    record_job_created,
+    record_job_idempotency_hit,
+    record_job_status_transition,
+    record_job_completed,
+    record_job_cancelled,
+    record_job_get,
+    record_job_list,
+    record_job_cancel,
+)
+
 from models import (
     DispatchRequest,
     DispatchResult,
@@ -2733,6 +2744,7 @@ async def create_sizing_batch_job(request: CreateJobRequest):
 
     # If job already done (idempotency hit), return it
     if job["status"] in ("done", "failed", "cancelled"):
+        record_job_idempotency_hit()
         return JobStatusResponse(
             job_id=job["job_id"],
             status=job["status"],
@@ -2744,6 +2756,10 @@ async def create_sizing_batch_job(request: CreateJobRequest):
             message=job.get("message"),
         )
 
+    # Record job creation metrics
+    wait_mode = "sync" if request.wait else "async"
+    record_job_created(wait_mode=wait_mode, items_count=len(request.items))
+
     # If wait=true, process inline
     if request.wait:
         # Mark running
@@ -2754,6 +2770,7 @@ async def create_sizing_batch_job(request: CreateJobRequest):
 
         # Check if cancelled during processing
         if is_cancelled(job_id):
+            record_job_cancelled()
             return JobStatusResponse(
                 job_id=job_id,
                 status="cancelled",
@@ -2768,6 +2785,15 @@ async def create_sizing_batch_job(request: CreateJobRequest):
         # Save result
         final_status = "done" if result["summary"]["error_count"] == 0 else "done"
         save_result(job_id, result, status=final_status)
+
+        # Record completion metrics
+        processing_time_ms = result["summary"]["processing_time_ms"]
+        record_job_completed(
+            final_status=final_status,
+            duration_seconds=processing_time_ms / 1000.0,
+            ok_count=result["summary"]["ok_count"],
+            error_count=result["summary"]["error_count"],
+        )
 
         # Get updated job
         job = get_job(job_id)
@@ -2807,8 +2833,10 @@ async def get_job_detail(job_id: str):
 
     job = get_job(job_id)
     if not job:
+        record_job_get(found=False)
         raise HTTPException(404, f"Job not found: {job_id}")
 
+    record_job_get(found=True)
     return JobDetailResponse(
         job_id=job["job_id"],
         status=job["status"],
@@ -2843,6 +2871,10 @@ async def list_sizing_jobs(
 
     result = list_jobs(limit=limit, offset=offset, status=status, type=type)
 
+    # Record metrics
+    has_filters = status is not None or type is not None
+    record_job_list(has_filters=has_filters, results_count=len(result["items"]))
+
     return JobListResponse(
         items=result["items"],
         total=result["total"],
@@ -2864,9 +2896,25 @@ async def cancel_job_endpoint(job_id: str):
 
     job = get_job(job_id)
     if not job:
+        record_job_cancel(result="not_found")
         raise HTTPException(404, f"Job not found: {job_id}")
 
+    # Check if job is already completed
+    if job["status"] in ("done", "failed", "cancelled"):
+        record_job_cancel(result="already_done")
+        return CancelJobResponse(
+            cancelled=False,
+            status=job["status"],
+        )
+
     cancelled = cancel_job(job_id)
+
+    # Record metrics
+    if cancelled:
+        record_job_cancel(result="cancelled")
+        record_job_cancelled()
+    else:
+        record_job_cancel(result="already_done")
 
     # Get updated status
     updated_job = get_job(job_id)

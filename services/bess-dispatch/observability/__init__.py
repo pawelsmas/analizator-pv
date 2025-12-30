@@ -106,6 +106,36 @@ from .runstore_metrics import (
     record_runstore_export,
 )
 
+from .jobs_metrics import (
+    # v1.1.0 async jobs metrics
+    JOBS_CREATED_TOTAL,
+    JOBS_IDEMPOTENCY_HIT_TOTAL,
+    JOBS_ITEMS_COUNT,
+    JOBS_STATUS_TRANSITIONS,
+    JOBS_COMPLETED_TOTAL,
+    JOBS_CANCELLED_TOTAL,
+    JOBS_DURATION_SECONDS,
+    JOBS_WAIT_TIME_SECONDS,
+    JOBS_PROCESSING_TIME_SECONDS,
+    JOBS_OK_ITEMS_COUNT,
+    JOBS_ERROR_ITEMS_COUNT,
+    JOBS_GET_TOTAL,
+    JOBS_LIST_TOTAL,
+    JOBS_LIST_RESULTS_COUNT,
+    JOBS_CANCEL_TOTAL,
+    # Helper functions
+    record_job_created,
+    record_job_idempotency_hit,
+    record_job_status_transition,
+    record_job_completed,
+    record_job_cancelled,
+    record_job_wait_time,
+    record_job_processing_time,
+    record_job_get,
+    record_job_list,
+    record_job_cancel,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -190,4 +220,30 @@ __all__ = [
     "record_runstore_prune",
     "record_runstore_compare",
     "record_runstore_export",
+    # Async jobs metrics (v1.1.0)
+    "JOBS_CREATED_TOTAL",
+    "JOBS_IDEMPOTENCY_HIT_TOTAL",
+    "JOBS_ITEMS_COUNT",
+    "JOBS_STATUS_TRANSITIONS",
+    "JOBS_COMPLETED_TOTAL",
+    "JOBS_CANCELLED_TOTAL",
+    "JOBS_DURATION_SECONDS",
+    "JOBS_WAIT_TIME_SECONDS",
+    "JOBS_PROCESSING_TIME_SECONDS",
+    "JOBS_OK_ITEMS_COUNT",
+    "JOBS_ERROR_ITEMS_COUNT",
+    "JOBS_GET_TOTAL",
+    "JOBS_LIST_TOTAL",
+    "JOBS_LIST_RESULTS_COUNT",
+    "JOBS_CANCEL_TOTAL",
+    "record_job_created",
+    "record_job_idempotency_hit",
+    "record_job_status_transition",
+    "record_job_completed",
+    "record_job_cancelled",
+    "record_job_wait_time",
+    "record_job_processing_time",
+    "record_job_get",
+    "record_job_list",
+    "record_job_cancel",
 ]
