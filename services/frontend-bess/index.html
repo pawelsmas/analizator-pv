@@ -1051,6 +1051,89 @@
           </div>
         </div>
 
+        <!-- v1.3.0: Compare Runs (Delta Table) -->
+        <div class="config-card run-compare-card">
+          <h3>Porownaj Uruchomienia</h3>
+          <div class="config-description">
+            Porownaj wyniki dwoch uruchomien i zobacz roznice
+          </div>
+
+          <!-- Compare Selection -->
+          <div class="compare-selection">
+            <div class="compare-run-select">
+              <label for="compareRunA">Run A (Bazowy)</label>
+              <input type="text" id="compareRunA" placeholder="Wpisz Run ID lub wybierz z listy..." readonly>
+              <button class="btn btn-tiny btn-secondary" onclick="openRunPickerForCompare('A')">Wybierz</button>
+            </div>
+            <div class="compare-arrow">→</div>
+            <div class="compare-run-select">
+              <label for="compareRunB">Run B (Porownywany)</label>
+              <input type="text" id="compareRunB" placeholder="Wpisz Run ID lub wybierz z listy..." readonly>
+              <button class="btn btn-tiny btn-secondary" onclick="openRunPickerForCompare('B')">Wybierz</button>
+            </div>
+            <button class="btn btn-small btn-primary" id="compareRunsBtn" onclick="compareRuns()" disabled>Porownaj</button>
+          </div>
+
+          <!-- Compare Results (hidden by default) -->
+          <div class="compare-results" id="compareResultsPanel" style="display: none;">
+            <div class="compare-summary">
+              <div class="compare-summary-item">
+                <span class="summary-label">Request Hash</span>
+                <span class="summary-value" id="compareSameHash">-</span>
+              </div>
+              <div class="compare-summary-item">
+                <span class="summary-label">Wariant A</span>
+                <span class="summary-value" id="compareVariantA">-</span>
+              </div>
+              <div class="compare-summary-item">
+                <span class="summary-label">Wariant B</span>
+                <span class="summary-value" id="compareVariantB">-</span>
+              </div>
+              <div class="compare-summary-item">
+                <span class="summary-label">Zmiana wariantu</span>
+                <span class="summary-value" id="compareVariantChanged">-</span>
+              </div>
+            </div>
+
+            <!-- Delta Table -->
+            <div class="delta-table-container">
+              <h5>Porownanie metryk</h5>
+              <table class="delta-table" id="deltaTable">
+                <thead>
+                  <tr>
+                    <th>Metryka</th>
+                    <th>Run A</th>
+                    <th>Run B</th>
+                    <th>Roznica</th>
+                    <th>Zmiana %</th>
+                  </tr>
+                </thead>
+                <tbody id="deltaTableBody">
+                  <tr><td colspan="5" class="empty-row">Wybierz dwa uruchomienia do porownania</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <button class="btn btn-tiny btn-secondary" onclick="clearCompareResults()">Wyczysc</button>
+          </div>
+
+          <!-- Run Picker Modal (shared) -->
+          <div class="run-picker-modal" id="runPickerModal" style="display: none;">
+            <div class="run-picker-content">
+              <div class="run-picker-header">
+                <h4>Wybierz Run</h4>
+                <button class="btn btn-tiny btn-secondary" onclick="closeRunPicker()">×</button>
+              </div>
+              <div class="run-picker-search">
+                <input type="text" id="runPickerSearch" placeholder="Szukaj po ID lub label..." onkeyup="filterRunPickerList(this.value)">
+              </div>
+              <div class="run-picker-list" id="runPickerList">
+                <div class="loading-row">Ladowanie...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Batch Sizing with Async Jobs (v1.1.0) -->
         <div class="config-card batch-sizing-card">
           <h3>Batch Sizing</h3>
