@@ -104,6 +104,21 @@ from run_store import (
     RUN_STORE_ENABLED,
     RUN_STORE_RETENTION_DAYS,
 )
+from job_store import (
+    JobStore,
+    get_job_store,
+    create_job,
+    get_job,
+    list_jobs,
+    cancel_job,
+    is_cancelled,
+    save_result,
+    mark_running,
+    update_progress,
+    JOB_STORE_ENABLED,
+    JOBS_MAX_ITEMS,
+    JOBS_INLINE_WAIT_MAX_SECONDS,
+)
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
 from sensitivity_runner import run_sensitivity_analysis
@@ -2585,6 +2600,310 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
         raise
     except Exception as e:
         raise HTTPException(500, f"Excel export error: {str(e)}")
+
+
+# =============================================================================
+# Jobs API (v1.1.0)
+# =============================================================================
+
+class JobSizingBatchItem(BaseModel):
+    """Single item in a job sizing batch request."""
+    item_id: str = Field(..., description="Client-provided item identifier")
+    request: Dict[str, Any] = Field(..., description="Standard sizing request payload")
+
+
+class CreateJobRequest(BaseModel):
+    """Request to create a sizing batch job."""
+    batch_id: Optional[str] = Field(None, description="Optional batch identifier")
+    idempotency_key: Optional[str] = Field(None, description="Optional key for duplicate detection")
+    fail_fast: bool = Field(False, description="Stop on first error")
+    wait: bool = Field(False, description="Wait for job completion (inline processing)")
+    items: List[JobSizingBatchItem] = Field(..., description="List of sizing requests")
+
+
+class JobStatusResponse(BaseModel):
+    """Response for job status."""
+    job_id: str = Field(..., description="Job identifier")
+    status: str = Field(..., description="Job status (pending, running, done, failed, cancelled)")
+    created_at: str = Field(..., description="Job creation timestamp")
+    items_total: int = Field(..., description="Total number of items")
+    items_done: int = Field(..., description="Number of completed items")
+    error_count: int = Field(..., description="Number of items with errors")
+    batch_id: Optional[str] = Field(None, description="Batch identifier")
+    message: Optional[str] = Field(None, description="Status message")
+
+
+class JobDetailResponse(BaseModel):
+    """Response for job detail including result."""
+    job_id: str = Field(..., description="Job identifier")
+    status: str = Field(..., description="Job status")
+    created_at: str = Field(..., description="Job creation timestamp")
+    updated_at: str = Field(..., description="Last update timestamp")
+    items_total: int = Field(..., description="Total number of items")
+    items_done: int = Field(..., description="Number of completed items")
+    error_count: int = Field(..., description="Number of items with errors")
+    batch_id: Optional[str] = Field(None, description="Batch identifier")
+    message: Optional[str] = Field(None, description="Status message")
+    result: Optional[Dict[str, Any]] = Field(None, description="Job result (only for done/failed/cancelled)")
+    request: Optional[Dict[str, Any]] = Field(None, description="Original request (only for done/failed/cancelled)")
+
+
+class JobListResponse(BaseModel):
+    """Response for job list."""
+    items: List[Dict[str, Any]] = Field(..., description="List of jobs")
+    total: int = Field(..., description="Total number of matching jobs")
+    limit: int = Field(..., description="Results per page")
+    offset: int = Field(..., description="Pagination offset")
+
+
+class CancelJobResponse(BaseModel):
+    """Response for job cancellation."""
+    cancelled: bool = Field(..., description="Whether cancellation succeeded")
+    status: str = Field(..., description="Current job status")
+
+
+def _process_job_inline(job_id: str, items: List[JobSizingBatchItem], fail_fast: bool) -> Dict[str, Any]:
+    """
+    Process a job inline (for wait=true mode).
+
+    This re-uses the same sizing logic as the batch endpoint.
+    """
+    results = []
+    ok_count = 0
+    error_count = 0
+    start_time = time.time()
+
+    for item in items:
+        # Check if job was cancelled
+        if is_cancelled(job_id):
+            break
+
+        try:
+            sizing_result = _process_single_sizing_item(item.request)
+            result_dict = sizing_result.model_dump(mode="json")
+
+            results.append({
+                "item_id": item.item_id,
+                "status": "ok",
+                "response": result_dict,
+                "error": None,
+            })
+            ok_count += 1
+
+        except Exception as e:
+            error_msg = str(e)
+            results.append({
+                "item_id": item.item_id,
+                "status": "error",
+                "response": None,
+                "error": error_msg,
+            })
+            error_count += 1
+
+            if fail_fast:
+                break
+
+        # Update progress
+        update_progress(job_id, items_done=ok_count + error_count, error_count=error_count)
+
+    processing_time_ms = (time.time() - start_time) * 1000
+
+    # Build result
+    return {
+        "results": results,
+        "summary": {
+            "total_items": len(items),
+            "ok_count": ok_count,
+            "error_count": error_count,
+            "processing_time_ms": processing_time_ms,
+        }
+    }
+
+
+@app.post("/api/bess-dispatch/jobs/sizing-batch", response_model=JobStatusResponse)
+async def create_sizing_batch_job(request: CreateJobRequest):
+    """
+    Create an async sizing batch job.
+
+    Features:
+    - idempotency_key: Returns existing job if key already exists
+    - wait=true: Process inline and return completed job
+    - wait=false: Return immediately with pending job (requires worker for processing)
+    - fail_fast: Stop on first error
+
+    Items limit: Max 100 items per batch (configurable via JOBS_MAX_ITEMS).
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    # Validate items count
+    if len(request.items) > JOBS_MAX_ITEMS:
+        raise HTTPException(422, f"Too many items: {len(request.items)} > {JOBS_MAX_ITEMS}")
+
+    if len(request.items) == 0:
+        raise HTTPException(422, "At least one item is required")
+
+    # Build request payload for storage
+    job_request = {
+        "batch_id": request.batch_id,
+        "fail_fast": request.fail_fast,
+        "items": [{"item_id": item.item_id, "request": item.request} for item in request.items],
+    }
+
+    # Create job (idempotency handled by JobStore)
+    job_id = create_job(
+        type="sizing_batch",
+        request=job_request,
+        batch_id=request.batch_id,
+        idempotency_key=request.idempotency_key,
+    )
+
+    # Get job to check if it already existed
+    job = get_job(job_id)
+
+    # If job already done (idempotency hit), return it
+    if job["status"] in ("done", "failed", "cancelled"):
+        return JobStatusResponse(
+            job_id=job["job_id"],
+            status=job["status"],
+            created_at=job["created_at"],
+            items_total=job["items_total"],
+            items_done=job["items_done"],
+            error_count=job["error_count"],
+            batch_id=job.get("batch_id"),
+            message=job.get("message"),
+        )
+
+    # If wait=true, process inline
+    if request.wait:
+        # Mark running
+        mark_running(job_id)
+
+        # Process items
+        result = _process_job_inline(job_id, request.items, request.fail_fast)
+
+        # Check if cancelled during processing
+        if is_cancelled(job_id):
+            return JobStatusResponse(
+                job_id=job_id,
+                status="cancelled",
+                created_at=job["created_at"],
+                items_total=len(request.items),
+                items_done=result["summary"]["ok_count"] + result["summary"]["error_count"],
+                error_count=result["summary"]["error_count"],
+                batch_id=request.batch_id,
+                message="Job cancelled during processing",
+            )
+
+        # Save result
+        final_status = "done" if result["summary"]["error_count"] == 0 else "done"
+        save_result(job_id, result, status=final_status)
+
+        # Get updated job
+        job = get_job(job_id)
+        return JobStatusResponse(
+            job_id=job["job_id"],
+            status=job["status"],
+            created_at=job["created_at"],
+            items_total=job["items_total"],
+            items_done=job["items_done"],
+            error_count=job["error_count"],
+            batch_id=job.get("batch_id"),
+            message=job.get("message"),
+        )
+
+    # Return pending job (worker will process later)
+    return JobStatusResponse(
+        job_id=job_id,
+        status="pending",
+        created_at=job["created_at"],
+        items_total=len(request.items),
+        items_done=0,
+        error_count=0,
+        batch_id=request.batch_id,
+        message=None,
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}", response_model=JobDetailResponse)
+async def get_job_detail(job_id: str):
+    """
+    Get job status and result.
+
+    Returns full result/request only for completed jobs (done, failed, cancelled).
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    return JobDetailResponse(
+        job_id=job["job_id"],
+        status=job["status"],
+        created_at=job["created_at"],
+        updated_at=job["updated_at"],
+        items_total=job["items_total"],
+        items_done=job["items_done"],
+        error_count=job["error_count"],
+        batch_id=job.get("batch_id"),
+        message=job.get("message"),
+        result=job.get("result"),
+        request=job.get("request"),
+    )
+
+
+@app.get("/api/bess-dispatch/jobs", response_model=JobListResponse)
+async def list_sizing_jobs(
+    limit: int = Query(20, ge=1, le=100, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    type: Optional[str] = Query(None, description="Filter by job type"),
+):
+    """
+    List jobs with pagination and filtering.
+
+    Supports filtering by:
+    - status: pending, running, done, failed, cancelled
+    - type: sizing_batch
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    result = list_jobs(limit=limit, offset=offset, status=status, type=type)
+
+    return JobListResponse(
+        items=result["items"],
+        total=result["total"],
+        limit=result["limit"],
+        offset=result["offset"],
+    )
+
+
+@app.delete("/api/bess-dispatch/jobs/{job_id}", response_model=CancelJobResponse)
+async def cancel_job_endpoint(job_id: str):
+    """
+    Cancel a pending or running job.
+
+    Only pending or running jobs can be cancelled.
+    Returns cancelled=true if successfully cancelled, false otherwise.
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    cancelled = cancel_job(job_id)
+
+    # Get updated status
+    updated_job = get_job(job_id)
+    return CancelJobResponse(
+        cancelled=cancelled,
+        status=updated_job["status"] if updated_job else job["status"],
+    )
 
 
 # =============================================================================
