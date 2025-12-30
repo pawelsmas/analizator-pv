@@ -83,6 +83,27 @@ def load_smoke_payload(name: str) -> Dict[str, Any]:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def delete_json(path: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    DELETE JSON from API endpoint.
+
+    Args:
+        path: API path (e.g., "/api/bess-dispatch/jobs/abc123")
+        timeout: Request timeout in seconds
+
+    Returns:
+        Response JSON as dict
+
+    Raises:
+        AssertionError: If response status >= 400
+    """
+    url = DEFAULT_BASE_URL.rstrip("/") + path
+    r = requests.delete(url, timeout=timeout)
+    if r.status_code >= 400:
+        raise AssertionError(f"DELETE {path} -> {r.status_code}\n{r.text[:2000]}")
+    return r.json()
+
+
 def pick_recommended_variant(resp: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract recommended variant from sizing response.
