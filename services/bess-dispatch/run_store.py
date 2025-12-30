@@ -323,15 +323,21 @@ class RunStore:
         offset: int = 0,
         request_hash: Optional[str] = None,
         endpoint: Optional[str] = None,
+        tag: Optional[str] = None,
+        q: Optional[str] = None,
+        sort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        List runs with optional filtering.
+        List runs with optional filtering and sorting (v1.3.0).
 
         Args:
             limit: Max results to return (default 20)
             offset: Offset for pagination (default 0)
             request_hash: Filter by request hash
             endpoint: Filter by endpoint
+            tag: Filter by tag (exact match in tags_json array)
+            q: Free-text search in label and notes
+            sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
 
         Returns:
             Dict with items list and pagination info
@@ -349,26 +355,57 @@ class RunStore:
             if endpoint:
                 conditions.append("endpoint = ?")
                 params.append(endpoint)
+            if tag:
+                # Search for tag in JSON array using LIKE pattern
+                # This matches "tag" as a complete item in the JSON array
+                conditions.append("(tags_json LIKE ? OR tags_json LIKE ? OR tags_json LIKE ? OR tags_json LIKE ?)")
+                params.append(f'["{tag}"]')  # Only tag: ["tag"]
+                params.append(f'["{tag}",%')  # First tag: ["tag", ...]
+                params.append(f'%,"{tag}"]')  # Last tag: [..., "tag"]
+                params.append(f'%,"{tag}",%')  # Middle tag: [..., "tag", ...]
+            if q:
+                # Free-text search in label and notes (case-insensitive)
+                conditions.append("(LOWER(label) LIKE ? OR LOWER(notes) LIKE ?)")
+                search_pattern = f"%{q.lower()}%"
+                params.append(search_pattern)
+                params.append(search_pattern)
 
             where_clause = ""
             if conditions:
                 where_clause = "WHERE " + " AND ".join(conditions)
 
+            # Determine sort order
+            sort_mapping = {
+                "created_at_asc": "created_at ASC",
+                "created_at_desc": "created_at DESC",
+                "updated_at_desc": "updated_at DESC",
+            }
+            order_by = sort_mapping.get(sort, "created_at DESC")  # Default: newest first
+
             # Get total count
             cursor.execute(f"SELECT COUNT(*) FROM runs {where_clause}", params)
             total = cursor.fetchone()[0]
 
-            # Get items (without blobs for efficiency)
+            # Get items (without blobs for efficiency, include metadata)
             query = f"""
-                SELECT run_id, request_hash, created_at, endpoint, status, cache_hit
+                SELECT run_id, request_hash, created_at, endpoint, status, cache_hit,
+                       label, tags_json, notes, updated_at
                 FROM runs {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
             """
             cursor.execute(query, params + [limit, offset])
 
             items = []
             for row in cursor.fetchall():
+                # Parse tags from JSON
+                tags = None
+                if row[7]:
+                    try:
+                        tags = json.loads(row[7])
+                    except json.JSONDecodeError:
+                        tags = None
+
                 items.append({
                     "run_id": row[0],
                     "request_hash": row[1],
@@ -376,6 +413,10 @@ class RunStore:
                     "endpoint": row[3],
                     "status": row[4],
                     "cache_hit": bool(row[5]),
+                    "label": row[6],
+                    "tags": tags,
+                    "notes": row[8],
+                    "updated_at": row[9],
                 })
 
             return {
@@ -581,8 +622,21 @@ def list_runs(
     offset: int = 0,
     request_hash: Optional[str] = None,
     endpoint: Optional[str] = None,
+    tag: Optional[str] = None,
+    q: Optional[str] = None,
+    sort: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List runs using the global store."""
+    """List runs using the global store (v1.3.0).
+
+    Args:
+        limit: Max results to return (default 20)
+        offset: Offset for pagination (default 0)
+        request_hash: Filter by request hash
+        endpoint: Filter by endpoint
+        tag: Filter by tag (exact match)
+        q: Free-text search in label and notes
+        sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
+    """
     if not RUN_STORE_ENABLED:
         return {"items": [], "limit": limit, "offset": offset, "total": 0}
     return get_run_store().list(
@@ -590,6 +644,9 @@ def list_runs(
         offset=offset,
         request_hash=request_hash,
         endpoint=endpoint,
+        tag=tag,
+        q=q,
+        sort=sort,
     )
 
 

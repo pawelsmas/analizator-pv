@@ -494,12 +494,20 @@ async def list_runs_endpoint(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     request_hash: Optional[str] = Query(None, description="Filter by request_hash"),
     endpoint: Optional[str] = Query(None, description="Filter by endpoint (e.g., 'sizing')"),
+    tag: Optional[str] = Query(None, description="Filter by tag (exact match in tags array)"),
+    q: Optional[str] = Query(None, description="Free-text search in label and notes"),
+    sort: Optional[str] = Query(
+        None,
+        description="Sort order: created_at_asc, created_at_desc (default), updated_at_desc",
+        regex="^(created_at_asc|created_at_desc|updated_at_desc)$",
+    ),
 ):
     """
-    List stored runs with optional filtering and pagination.
+    List stored runs with optional filtering, search, and sorting (v1.3.0).
 
     Returns items list with metadata (without full request/response blobs).
-    Supports filtering by request_hash to find related runs.
+    Supports filtering by request_hash, endpoint, tag, and free-text search.
+    Supports sorting by created_at or updated_at.
     Returns 503 if run store is disabled.
     """
     if not RUN_STORE_ENABLED:
@@ -510,8 +518,11 @@ async def list_runs_endpoint(
         offset=offset,
         request_hash=request_hash,
         endpoint=endpoint,
+        tag=tag,
+        q=q,
+        sort=sort,
     )
-    has_filters = request_hash is not None or endpoint is not None
+    has_filters = any([request_hash, endpoint, tag, q])
     record_runstore_list(has_filters=has_filters, results_count=len(result.get("items", [])))
     return result
 
