@@ -1167,6 +1167,75 @@
             <!-- Job list will be rendered here by displayJobList() -->
           </div>
         </div>
+
+        <!-- v1.4.0: Scenario Validation Card -->
+        <div class="config-card validation-card">
+          <h3>✅ Walidacja Scenariuszy</h3>
+          <div class="config-description">
+            Sprawdz poprawnosc obliczen wzgledem oczekiwanych KPI
+          </div>
+          <div class="validation-inputs">
+            <div class="scenario-selector">
+              <label>Scenariusz:</label>
+              <select id="validationScenarioSelect" onchange="loadScenarioDetails()">
+                <option value="">-- Wybierz scenariusz --</option>
+                <!-- Dynamically filled by loadAvailableScenarios() -->
+              </select>
+              <button class="btn btn-tiny btn-secondary" onclick="refreshScenarioList()">🔄</button>
+            </div>
+            <div class="scenario-details" id="scenarioDetails" style="display: none;">
+              <div class="detail-row">
+                <span class="detail-label">Opis:</span>
+                <span class="detail-value" id="scenarioDescription">-</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">Plik request:</span>
+                <span class="detail-value" id="scenarioRequestFile">-</span>
+              </div>
+            </div>
+            <button class="btn btn-small btn-primary" id="runValidationBtn" onclick="runScenarioValidation()" disabled>
+              🧪 Uruchom Walidacje
+            </button>
+          </div>
+          <!-- Validation Results Container -->
+          <div id="validationResultsContainer" class="validation-results-container" style="display: none;">
+            <div class="validation-status" id="validationStatus">
+              <span class="status-icon" id="validationStatusIcon">⏳</span>
+              <span class="status-text" id="validationStatusText">Oczekiwanie...</span>
+            </div>
+            <div class="validation-summary" id="validationSummary" style="display: none;">
+              <div class="summary-item">
+                <span class="label">Passed:</span>
+                <span class="value passed" id="validationPassedCount">0</span>
+              </div>
+              <div class="summary-item">
+                <span class="label">Failed:</span>
+                <span class="value failed" id="validationFailedCount">0</span>
+              </div>
+              <div class="summary-item">
+                <span class="label">Run ID:</span>
+                <span class="value monospace" id="validationRunId">-</span>
+              </div>
+            </div>
+            <div class="validation-diffs" id="validationDiffs" style="display: none;">
+              <table class="diffs-table">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Pole</th>
+                    <th>Oczekiwane</th>
+                    <th>Rzeczywiste</th>
+                    <th>Roznica</th>
+                    <th>% Zmiana</th>
+                  </tr>
+                </thead>
+                <tbody id="validationDiffsBody">
+                  <!-- Dynamically filled by displayValidationResults() -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Apply Configuration Button -->
