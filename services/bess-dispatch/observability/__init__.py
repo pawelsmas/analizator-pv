@@ -86,6 +86,26 @@ from .batch_metrics import (
     record_portfolio_summary,
 )
 
+from .runstore_metrics import (
+    # v1.0.0 run store metrics
+    RUNSTORE_SAVES_TOTAL,
+    RUNSTORE_GETS_TOTAL,
+    RUNSTORE_LIST_REQUESTS_TOTAL,
+    RUNSTORE_PRUNE_TOTAL,
+    RUNSTORE_COMPARE_TOTAL,
+    RUNSTORE_EXPORT_TOTAL,
+    RUNSTORE_DELETED_COUNT,
+    RUNSTORE_LIST_RESULTS_COUNT,
+    RUNSTORE_RETENTION_DAYS,
+    # Helper functions
+    record_runstore_save,
+    record_runstore_get,
+    record_runstore_list,
+    record_runstore_prune,
+    record_runstore_compare,
+    record_runstore_export,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -154,4 +174,20 @@ __all__ = [
     "PORTFOLIO_TOTAL_NPV_KPLN",
     "PORTFOLIO_AVG_PAYBACK_YEARS",
     "record_portfolio_summary",
+    # Run store metrics (v1.0.0)
+    "RUNSTORE_SAVES_TOTAL",
+    "RUNSTORE_GETS_TOTAL",
+    "RUNSTORE_LIST_REQUESTS_TOTAL",
+    "RUNSTORE_PRUNE_TOTAL",
+    "RUNSTORE_COMPARE_TOTAL",
+    "RUNSTORE_EXPORT_TOTAL",
+    "RUNSTORE_DELETED_COUNT",
+    "RUNSTORE_LIST_RESULTS_COUNT",
+    "RUNSTORE_RETENTION_DAYS",
+    "record_runstore_save",
+    "record_runstore_get",
+    "record_runstore_list",
+    "record_runstore_prune",
+    "record_runstore_compare",
+    "record_runstore_export",
 ]
