@@ -6280,4 +6280,321 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 500);
 });
 
-console.log('[BESS] bess.js v3.25 - v1.3.0 Run Explorer');
+// ============================================
+// v1.3.0: Compare Runs UI (PR 5/6)
+// ============================================
+
+// Compare state
+const compareState = {
+  runIdA: null,
+  runIdB: null,
+  pickerTarget: null, // 'A' or 'B'
+  pickerRuns: [],
+  pickerFilter: ''
+};
+
+/**
+ * Open run picker modal for selecting comparison run
+ */
+function openRunPickerForCompare(target) {
+  compareState.pickerTarget = target;
+  compareState.pickerFilter = '';
+
+  const modal = document.getElementById('runPickerModal');
+  const searchInput = document.getElementById('runPickerSearch');
+
+  modal.style.display = 'flex';
+  searchInput.value = '';
+
+  loadRunsForPicker();
+}
+
+/**
+ * Close run picker modal
+ */
+function closeRunPicker() {
+  const modal = document.getElementById('runPickerModal');
+  modal.style.display = 'none';
+  compareState.pickerTarget = null;
+}
+
+/**
+ * Load runs for picker (uses existing run list API)
+ */
+async function loadRunsForPicker() {
+  const listContainer = document.getElementById('runPickerList');
+  listContainer.innerHTML = '<div class="loading-row">Ladowanie...</div>';
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/runs?limit=50&sort=created_at_desc`);
+    if (!response.ok) throw new Error('Failed to load runs');
+
+    const data = await response.json();
+    compareState.pickerRuns = data.items || [];
+    renderRunPickerList();
+  } catch (error) {
+    console.error('[Compare] Failed to load runs for picker:', error);
+    listContainer.innerHTML = '<div class="error-row">Blad ladowania</div>';
+  }
+}
+
+/**
+ * Render the run picker list with optional filter
+ */
+function renderRunPickerList() {
+  const listContainer = document.getElementById('runPickerList');
+  const filter = compareState.pickerFilter.toLowerCase();
+
+  const filteredRuns = compareState.pickerRuns.filter(run => {
+    if (!filter) return true;
+    const runId = (run.run_id || '').toLowerCase();
+    const label = (run.label || '').toLowerCase();
+    return runId.includes(filter) || label.includes(filter);
+  });
+
+  if (filteredRuns.length === 0) {
+    listContainer.innerHTML = '<div class="empty-row">Brak wynikow</div>';
+    return;
+  }
+
+  listContainer.innerHTML = filteredRuns.map(run => {
+    const shortId = (run.run_id || '').substring(0, 8);
+    const label = run.label || '-';
+    const createdAt = formatDateTime(run.created_at);
+    return `
+      <div class="run-picker-item" onclick="selectRunForCompare('${run.run_id}')">
+        <span class="picker-run-id">${shortId}</span>
+        <span class="picker-run-label">${label}</span>
+        <span class="picker-run-date">${createdAt}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Filter run picker list
+ */
+function filterRunPickerList(value) {
+  compareState.pickerFilter = value;
+  renderRunPickerList();
+}
+
+/**
+ * Select a run for comparison
+ */
+function selectRunForCompare(runId) {
+  const target = compareState.pickerTarget;
+
+  if (target === 'A') {
+    compareState.runIdA = runId;
+    document.getElementById('compareRunA').value = runId.substring(0, 8) + '...';
+  } else if (target === 'B') {
+    compareState.runIdB = runId;
+    document.getElementById('compareRunB').value = runId.substring(0, 8) + '...';
+  }
+
+  closeRunPicker();
+  updateCompareButton();
+}
+
+/**
+ * Update compare button state
+ */
+function updateCompareButton() {
+  const btn = document.getElementById('compareRunsBtn');
+  btn.disabled = !(compareState.runIdA && compareState.runIdB);
+}
+
+/**
+ * Compare the two selected runs
+ */
+async function compareRuns() {
+  if (!compareState.runIdA || !compareState.runIdB) {
+    alert('Wybierz dwa uruchomienia do porownania');
+    return;
+  }
+
+  const btn = document.getElementById('compareRunsBtn');
+  btn.disabled = true;
+  btn.textContent = 'Porownywanie...';
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/runs:compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        run_id_a: compareState.runIdA,
+        run_id_b: compareState.runIdB
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Compare failed');
+    }
+
+    const result = await response.json();
+    displayCompareResults(result);
+  } catch (error) {
+    console.error('[Compare] Failed:', error);
+    alert('Blad porownania: ' + error.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Porownaj';
+  }
+}
+
+/**
+ * Display compare results
+ */
+function displayCompareResults(result) {
+  const panel = document.getElementById('compareResultsPanel');
+  panel.style.display = 'block';
+
+  // Summary
+  document.getElementById('compareSameHash').textContent =
+    result.same_request_hash ? 'Identyczny' : 'Rozny';
+  document.getElementById('compareSameHash').className =
+    'summary-value ' + (result.same_request_hash ? 'same' : 'different');
+
+  document.getElementById('compareVariantA').textContent =
+    result.recommended_variant_a || '-';
+  document.getElementById('compareVariantB').textContent =
+    result.recommended_variant_b || '-';
+
+  document.getElementById('compareVariantChanged').textContent =
+    result.variant_changed ? 'Tak' : 'Nie';
+  document.getElementById('compareVariantChanged').className =
+    'summary-value ' + (result.variant_changed ? 'changed' : 'unchanged');
+
+  // Delta table
+  const tbody = document.getElementById('deltaTableBody');
+  const deltas = result.key_deltas || [];
+
+  if (deltas.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-row">Brak danych do porownania</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = deltas.map(delta => {
+    const fieldName = formatFieldName(delta.field);
+    const valueA = formatDeltaValue(delta.a, delta.field);
+    const valueB = formatDeltaValue(delta.b, delta.field);
+    const deltaVal = formatDeltaValue(delta.delta, delta.field);
+    const pctChange = formatPctChange(delta.pct_change);
+    const deltaClass = getDeltaClass(delta.delta, delta.field);
+
+    return `
+      <tr>
+        <td class="field-name">${fieldName}</td>
+        <td class="value-a">${valueA}</td>
+        <td class="value-b">${valueB}</td>
+        <td class="delta-value ${deltaClass}">${deltaVal}</td>
+        <td class="pct-change ${deltaClass}">${pctChange}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+/**
+ * Format field name for display
+ */
+function formatFieldName(field) {
+  const fieldNames = {
+    'npv_pln': 'NPV',
+    'payback_years': 'Payback',
+    'capex_pln': 'CAPEX',
+    'net_savings_pln': 'Oszczednosci',
+    'irr_pct': 'IRR',
+    'power_kw': 'Moc',
+    'energy_kwh': 'Energia'
+  };
+  return fieldNames[field] || field;
+}
+
+/**
+ * Format delta value for display
+ */
+function formatDeltaValue(value, field) {
+  if (value === null || value === undefined) return '-';
+
+  if (field.includes('pln') || field.includes('PLN')) {
+    return formatNumber(value) + ' PLN';
+  }
+  if (field.includes('years')) {
+    return value.toFixed(1) + ' lat';
+  }
+  if (field.includes('pct') || field.includes('%')) {
+    return value.toFixed(1) + '%';
+  }
+  if (field.includes('kw') || field.includes('kW')) {
+    return formatNumber(value) + ' kW';
+  }
+  if (field.includes('kwh') || field.includes('kWh')) {
+    return formatNumber(value) + ' kWh';
+  }
+
+  return typeof value === 'number' ? formatNumber(value) : value;
+}
+
+/**
+ * Format percentage change
+ */
+function formatPctChange(pct) {
+  if (pct === null || pct === undefined) return '-';
+  const sign = pct >= 0 ? '+' : '';
+  return sign + pct.toFixed(1) + '%';
+}
+
+/**
+ * Get CSS class for delta value
+ */
+function getDeltaClass(delta, field) {
+  if (delta === null || delta === undefined || delta === 0) return 'neutral';
+
+  // For NPV, savings, IRR - positive is good
+  if (field.includes('npv') || field.includes('savings') || field.includes('irr')) {
+    return delta > 0 ? 'positive' : 'negative';
+  }
+
+  // For CAPEX, payback - negative is good (less cost, faster payback)
+  if (field.includes('capex') || field.includes('payback')) {
+    return delta < 0 ? 'positive' : 'negative';
+  }
+
+  return 'neutral';
+}
+
+/**
+ * Format number with thousands separator
+ */
+function formatNumber(num) {
+  if (typeof num !== 'number') return num;
+  return Math.round(num).toLocaleString('pl-PL');
+}
+
+/**
+ * Clear compare results
+ */
+function clearCompareResults() {
+  const panel = document.getElementById('compareResultsPanel');
+  panel.style.display = 'none';
+
+  compareState.runIdA = null;
+  compareState.runIdB = null;
+
+  document.getElementById('compareRunA').value = '';
+  document.getElementById('compareRunB').value = '';
+
+  updateCompareButton();
+}
+
+// Export Compare Runs functions
+window.openRunPickerForCompare = openRunPickerForCompare;
+window.closeRunPicker = closeRunPicker;
+window.filterRunPickerList = filterRunPickerList;
+window.selectRunForCompare = selectRunForCompare;
+window.compareRuns = compareRuns;
+window.clearCompareResults = clearCompareResults;
+
+console.log('[BESS] bess.js v3.26 - v1.3.0 Run Explorer + Compare Runs');
