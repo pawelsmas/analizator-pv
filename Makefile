@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -151,3 +151,13 @@ wait-ready: ## Wait for bess-dispatch to be ready
 	@timeout 60 bash -c 'until curl -sf http://localhost:8031/health 2>/dev/null; do sleep 2; done' 2>/dev/null || \
 		python -c "import time,urllib.request as u; [time.sleep(2) for _ in range(30) if not (lambda: (u.urlopen('http://localhost:8031/health'),True)[1])()]" 2>/dev/null || true
 	@echo "${GREEN}✓ Services ready${RESET}"
+
+# ===== CORRECTNESS VALIDATION =====
+
+validate: ## Run scenario validation tests (correctness)
+	@echo "${BLUE}Running scenario validation...${RESET}"
+	@python scripts/validate_scenarios.py
+	@echo "${GREEN}✓ Validation passed${RESET}"
+
+validate-list: ## List available validation scenarios
+	@python scripts/validate_scenarios.py --list
