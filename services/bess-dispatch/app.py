@@ -20,7 +20,7 @@ from typing import List, Optional, Dict, Any, Union
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -90,6 +90,7 @@ from cache_helper import (
 from run_store import (
     save_run,
     get_run,
+    list_runs,
     RUN_STORE_ENABLED,
 )
 from dispatch_engine import run_dispatch
@@ -292,6 +293,32 @@ async def get_run_by_id(run_id: str):
     if stored is None:
         raise HTTPException(404, f"Run {run_id} not found")
     return stored
+
+
+@app.get("/runs")
+async def list_runs_endpoint(
+    limit: int = Query(20, ge=1, le=100, description="Max results per page"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    request_hash: Optional[str] = Query(None, description="Filter by request_hash"),
+    endpoint: Optional[str] = Query(None, description="Filter by endpoint (e.g., 'sizing')"),
+):
+    """
+    List stored runs with optional filtering and pagination.
+
+    Returns items list with metadata (without full request/response blobs).
+    Supports filtering by request_hash to find related runs.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    result = list_runs(
+        limit=limit,
+        offset=offset,
+        request_hash=request_hash,
+        endpoint=endpoint,
+    )
+    return result
 
 
 # =============================================================================
