@@ -91,7 +91,9 @@ from run_store import (
     save_run,
     get_run,
     list_runs,
+    prune_runs,
     RUN_STORE_ENABLED,
+    RUN_STORE_RETENTION_DAYS,
 )
 from dispatch_engine import run_dispatch
 from sizing_runner import run_sizing, run_quick_sizing
@@ -276,6 +278,62 @@ async def cache_clear():
 # =============================================================================
 # Run Store Endpoints (v1.0.0)
 # =============================================================================
+
+
+class PruneRunsRequest(BaseModel):
+    """Request model for pruning old runs."""
+    retention_days: Optional[int] = Field(
+        None,
+        ge=1,
+        le=365,
+        description="Days to keep. If None, uses RUN_STORE_RETENTION_DAYS env var."
+    )
+
+
+class PruneRunsResponse(BaseModel):
+    """Response model for prune operation."""
+    deleted: int = Field(..., description="Number of runs deleted")
+    retention_days: int = Field(..., description="Retention days used")
+
+
+class RetentionConfigResponse(BaseModel):
+    """Response model for retention configuration."""
+    retention_days: int = Field(..., description="Current retention days setting")
+    run_store_enabled: bool = Field(..., description="Whether run store is enabled")
+
+
+@app.get("/runs/retention")
+async def get_retention_config():
+    """
+    Get current retention configuration.
+
+    Returns the retention days setting and whether run store is enabled.
+    """
+    return RetentionConfigResponse(
+        retention_days=RUN_STORE_RETENTION_DAYS,
+        run_store_enabled=RUN_STORE_ENABLED,
+    )
+
+
+@app.post("/runs:prune")
+async def prune_old_runs(request: PruneRunsRequest):
+    """
+    Prune runs older than retention period.
+
+    If retention_days is not provided, uses RUN_STORE_RETENTION_DAYS env var.
+    Returns the number of runs deleted.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    retention = request.retention_days or RUN_STORE_RETENTION_DAYS
+    deleted = prune_runs(retention)
+    return PruneRunsResponse(
+        deleted=deleted,
+        retention_days=retention,
+    )
+
 
 @app.get("/runs/{run_id}")
 async def get_run_by_id(run_id: str):
