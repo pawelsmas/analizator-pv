@@ -57,6 +57,17 @@ from observability.jobs_metrics import (
     record_job_get,
     record_job_list,
     record_job_cancel,
+    # v1.2.0 retention/prune/vacuum metrics
+    record_jobs_prune,
+    record_jobs_vacuum,
+    record_jobs_stats,
+    record_jobs_retention_config,
+    # v1.2.0 SSE streaming metrics
+    record_sse_connection,
+    record_sse_event,
+    record_sse_connection_duration,
+    # v1.2.0 job export metrics
+    record_job_export,
 )
 
 from models import (
@@ -2879,6 +2890,7 @@ async def get_job_retention_config():
 
     Returns the retention days setting and whether job store is enabled.
     """
+    record_jobs_retention_config()
     return JobRetentionConfig(
         retention_days=JOB_STORE_RETENTION_DAYS,
         job_store_enabled=JOB_STORE_ENABLED,
@@ -2898,6 +2910,9 @@ async def prune_jobs_endpoint(request: PruneJobsRequest):
     retention = request.retention_days or JOB_STORE_RETENTION_DAYS
     deleted = prune_old_jobs(retention)
 
+    # Record metrics
+    record_jobs_prune(deleted_count=deleted, retention_days=retention)
+
     return PruneJobsResponse(
         deleted=deleted,
         retention_days=retention,
@@ -2916,6 +2931,9 @@ async def vacuum_jobs_endpoint():
 
     result = vacuum_jobs_db()
 
+    # Record metrics
+    record_jobs_vacuum(freed_bytes=result["freed_bytes"])
+
     return VacuumJobsResponse(
         size_before_bytes=result["size_before_bytes"],
         size_after_bytes=result["size_after_bytes"],
@@ -2930,6 +2948,9 @@ async def get_job_store_stats():
 
     Returns total jobs, size, and breakdown by status and type.
     """
+    # Record metrics
+    record_jobs_stats()
+
     if not JOB_STORE_ENABLED:
         return JobStoreStatsResponse(
             total_jobs=0,
@@ -3022,6 +3043,9 @@ async def export_job_json(job_id: str, enriched: bool = Query(True)):
     batch_id = job.get("batch_id", "batch")
     filename = f"{batch_id}_{job_id[:8]}_results.json"
 
+    # Record metrics
+    record_job_export(format="json")
+
     return Response(
         content=json_content,
         media_type="application/json",
@@ -3056,6 +3080,9 @@ async def export_job_csv(job_id: str):
     batch_id = job.get("batch_id", "batch")
     filename = f"{batch_id}_{job_id[:8]}_summary.csv"
 
+    # Record metrics
+    record_job_export(format="csv")
+
     return Response(
         content=csv_content,
         media_type="text/csv",
@@ -3087,6 +3114,9 @@ async def export_job_zip(job_id: str):
     zip_content = export_job_to_zip(job)
     batch_id = job.get("batch_id", "batch")
     filename = f"{batch_id}_{job_id[:8]}_export.zip"
+
+    # Record metrics
+    record_job_export(format="zip")
 
     return Response(
         content=zip_content,
@@ -3200,6 +3230,9 @@ async def stream_job_events(
     if not job:
         raise HTTPException(404, f"Job not found: {job_id}")
 
+    # Record SSE connection metric
+    record_sse_connection(job_status=job["status"])
+
     # If job is already complete, return single event
     if job["status"] in ("done", "failed", "cancelled"):
         async def single_event():
@@ -3207,10 +3240,13 @@ async def stream_job_events(
             if status == "done":
                 result = job.get("result", {})
                 summary = result.get("summary", {})
+                record_sse_event(event_type="done")
                 yield f"event: done\ndata: {json.dumps({'items_done': job['items_done'], 'items_total': job['items_total'], 'error_count': job['error_count'], 'processing_time_ms': summary.get('processing_time_ms', 0)})}\n\n"
             elif status == "failed":
+                record_sse_event(event_type="error")
                 yield f"event: error\ndata: {json.dumps({'message': job.get('message', 'Job failed'), 'error_count': job['error_count']})}\n\n"
             else:
+                record_sse_event(event_type="cancelled")
                 yield f"event: cancelled\ndata: {json.dumps({'message': 'Job was cancelled', 'items_done': job['items_done']})}\n\n"
 
         return StarletteStreamingResponse(
