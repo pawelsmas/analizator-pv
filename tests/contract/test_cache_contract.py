@@ -142,19 +142,24 @@ class TestCacheStatus:
         resp2 = post_json(SIZING_PATH, MINIMAL_SIZING_REQUEST)
         assert resp2["cache_info"]["cache_status"] == "hit"
 
-    def test_cache_hit_preserves_run_id(self):
-        """Verify cache hit returns same run_id as original."""
+    def test_cache_hit_has_unique_run_id(self):
+        """Verify each request gets unique run_id (v1.0.0 audit trail).
+
+        Note: Changed from preserving run_id to unique run_id per request
+        to support per-request audit trail in RunStore.
+        """
         requests.delete(CACHE_CLEAR_URL)
 
         # First request
         resp1 = post_json(SIZING_PATH, MINIMAL_SIZING_REQUEST)
         run_id1 = resp1["cache_info"]["run_id"]
 
-        # Second request - should have same run_id
+        # Second request - should have different run_id (unique per request)
         resp2 = post_json(SIZING_PATH, MINIMAL_SIZING_REQUEST)
         run_id2 = resp2["cache_info"]["run_id"]
 
-        assert run_id1 == run_id2
+        # v1.0.0: Each request gets unique run_id for audit trail
+        assert run_id1 != run_id2
 
     def test_cache_hit_has_cached_at_timestamp(self):
         """Verify cache hit includes cached_at timestamp."""

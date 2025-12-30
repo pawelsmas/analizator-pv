@@ -536,6 +536,11 @@ services:
       - "8031:8031"
     environment:
       - PYTHONUNBUFFERED=1
+      - RUN_STORE_PATH=/data/runs.sqlite
+      - RUN_STORE_ENABLED=true
+      - RUN_STORE_RETENTION_DAYS=30
+    volumes:
+      - bess-dispatch-data:/data
     networks:
       - pv-network
     restart: unless-stopped
@@ -750,6 +755,9 @@ volumes:
     name: pv-projects-data
   postgres-data:
     name: pv-postgres-data
+  # BESS dispatch run store volume (v1.0.0)
+  bess-dispatch-data:
+    name: pv-bess-dispatch-data
   # Monitoring volumes
   prometheus-data:
     name: pv-prometheus-data
