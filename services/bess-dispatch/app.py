@@ -70,6 +70,18 @@ from observability.jobs_metrics import (
     record_job_export,
 )
 
+from observability.metadata_metrics import (
+    # v1.3.0 run metadata metrics
+    record_run_metadata_patch,
+    record_run_metadata_patch_error,
+    record_run_list_tag_filter,
+    record_run_list_search,
+    record_run_list_sort,
+    # v1.3.0 job metadata metrics
+    record_job_metadata_patch,
+    record_job_metadata_patch_error,
+)
+
 from models import (
     DispatchRequest,
     DispatchResult,
@@ -473,12 +485,22 @@ async def patch_run_metadata(run_id: str, request: PatchRunMetadataRequest):
         raise HTTPException(422, str(e))
 
     if not updated:
+        record_run_metadata_patch_error("not_found")
         raise HTTPException(404, f"Run {run_id} not found")
 
     # Fetch updated run to get the updated_at timestamp
     stored = get_run(run_id)
     if stored is None:
         raise HTTPException(500, "Run updated but not found on re-fetch")
+
+    # Record metrics for successful PATCH
+    record_run_metadata_patch(
+        has_label=request.label is not None,
+        has_tags=request.tags is not None,
+        has_notes=request.notes is not None,
+        tags_count=len(request.tags) if request.tags else 0,
+        notes_length=len(request.notes) if request.notes else 0,
+    )
 
     return PatchRunMetadataResponse(
         run_id=run_id,
@@ -525,6 +547,15 @@ async def list_runs_endpoint(
     )
     has_filters = any([request_hash, endpoint, tag, q])
     record_runstore_list(has_filters=has_filters, results_count=len(result.get("items", [])))
+
+    # Record v1.3.0 metadata filter metrics
+    if tag:
+        record_run_list_tag_filter()
+    if q:
+        record_run_list_search()
+    if sort:
+        record_run_list_sort(sort_order=sort)
+
     return result
 
 
@@ -3166,12 +3197,22 @@ async def patch_job_metadata(job_id: str, request: PatchJobMetadataRequest):
         raise HTTPException(422, str(e))
 
     if not updated:
+        record_job_metadata_patch_error("not_found")
         raise HTTPException(404, f"Job {job_id} not found")
 
     # Fetch updated job to get the updated_at timestamp
     job = get_job(job_id)
     if job is None:
         raise HTTPException(500, "Job updated but not found on re-fetch")
+
+    # Record metrics for successful PATCH
+    record_job_metadata_patch(
+        has_label=request.label is not None,
+        has_tags=request.tags is not None,
+        has_notes=request.notes is not None,
+        tags_count=len(request.tags) if request.tags else 0,
+        notes_length=len(request.notes) if request.notes else 0,
+    )
 
     return PatchJobMetadataResponse(
         job_id=job_id,
