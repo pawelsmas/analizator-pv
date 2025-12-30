@@ -182,6 +182,25 @@ from .metadata_metrics import (
     record_run_list_sort,
 )
 
+from .validation_metrics import (
+    # v1.4.0 validation metrics
+    VALIDATION_REQUESTS_TOTAL,
+    VALIDATION_PASSED_TOTAL,
+    VALIDATION_FAILED_TOTAL,
+    VALIDATION_ERRORS_TOTAL,
+    VALIDATION_KPIS_COUNT,
+    VALIDATION_DIFFS_FAILED_COUNT,
+    VALIDATION_DURATION_SECONDS,
+    VALIDATION_TOLERANCE_REL,
+    VALIDATION_TOLERANCE_ABS,
+    # Helper functions
+    record_validation_request,
+    record_validation_result,
+    record_validation_error,
+    record_validation_duration,
+    record_validation_tolerance,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -334,4 +353,19 @@ __all__ = [
     "JOB_METADATA_NOTES_LENGTH",
     "record_job_metadata_patch",
     "record_job_metadata_patch_error",
+    # Validation metrics (v1.4.0)
+    "VALIDATION_REQUESTS_TOTAL",
+    "VALIDATION_PASSED_TOTAL",
+    "VALIDATION_FAILED_TOTAL",
+    "VALIDATION_ERRORS_TOTAL",
+    "VALIDATION_KPIS_COUNT",
+    "VALIDATION_DIFFS_FAILED_COUNT",
+    "VALIDATION_DURATION_SECONDS",
+    "VALIDATION_TOLERANCE_REL",
+    "VALIDATION_TOLERANCE_ABS",
+    "record_validation_request",
+    "record_validation_result",
+    "record_validation_error",
+    "record_validation_duration",
+    "record_validation_tolerance",
 ]
