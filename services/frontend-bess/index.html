@@ -1236,6 +1236,75 @@
             </div>
           </div>
         </div>
+
+        <!-- v1.7.0: Baseline Health Card -->
+        <div class="config-card baseline-health-card">
+          <h3>🏥 Baseline Health</h3>
+          <div class="config-description">
+            Uruchom walidacje pakietu scenariuszy i sprawdz poprawnosc obliczen
+          </div>
+          <div class="baseline-health-inputs">
+            <div class="pack-selector">
+              <label>Pakiet:</label>
+              <select id="baselineHealthPackSelect" onchange="loadPackDetails()">
+                <option value="">-- Wybierz pakiet --</option>
+                <!-- Dynamically filled by loadAvailablePacks() -->
+              </select>
+              <button class="btn btn-tiny btn-secondary" onclick="refreshPackList()">🔄</button>
+            </div>
+            <button class="btn btn-small btn-primary" id="runBaselineHealthBtn" onclick="runBaselineHealth()" disabled>
+              🏥 Uruchom Walidacje Pakietu
+            </button>
+          </div>
+          <!-- Baseline Health Results Container -->
+          <div id="baselineHealthResultsContainer" class="baseline-health-results-container" style="display: none;">
+            <div class="baseline-health-status" id="baselineHealthStatus">
+              <span class="status-icon" id="baselineHealthStatusIcon">⏳</span>
+              <span class="status-text" id="baselineHealthStatusText">Oczekiwanie...</span>
+            </div>
+            <div class="baseline-health-summary" id="baselineHealthSummary" style="display: none;">
+              <div class="summary-row">
+                <div class="summary-item">
+                  <span class="label">Total:</span>
+                  <span class="value" id="baselineHealthTotalCount">0</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Passed:</span>
+                  <span class="value passed" id="baselineHealthPassedCount">0</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Failed:</span>
+                  <span class="value failed" id="baselineHealthFailedCount">0</span>
+                </div>
+              </div>
+              <div class="summary-row">
+                <div class="summary-item">
+                  <span class="label">Job ID:</span>
+                  <span class="value monospace" id="baselineHealthJobId">-</span>
+                </div>
+              </div>
+            </div>
+            <div class="baseline-health-scenarios" id="baselineHealthScenarios" style="display: none;">
+              <table class="scenarios-table">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Scenariusz</th>
+                    <th>Mismatches</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody id="baselineHealthScenariosBody">
+                  <!-- Dynamically filled by displayBaselineHealthResults() -->
+                </tbody>
+              </table>
+            </div>
+            <div class="baseline-health-actions" id="baselineHealthActions" style="display: none;">
+              <button class="btn btn-tiny btn-secondary" onclick="exportBaselineHealthCSV()">📥 Export CSV</button>
+              <button class="btn btn-tiny btn-secondary" onclick="exportBaselineHealthZIP()">📦 Export ZIP</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Apply Configuration Button -->

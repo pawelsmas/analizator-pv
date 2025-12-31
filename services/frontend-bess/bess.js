@@ -6863,9 +6863,267 @@ function formatNumber(value) {
   return value.toFixed(4);
 }
 
+// ============================================
+// BASELINE HEALTH (v1.7.0)
+// ============================================
+
+/**
+ * Baseline health state
+ */
+const baselineHealthState = {
+  packs: [],
+  selectedPack: null,
+  lastJobId: null,
+  lastResult: null,
+};
+
+/**
+ * Load available packs from GET /api/bess-dispatch/validation/packs
+ */
+async function loadAvailablePacks() {
+  try {
+    const response = await fetch('/api/bess-dispatch/validation/packs');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    baselineHealthState.packs = data.packs || [];
+
+    // Populate select
+    const select = document.getElementById('baselineHealthPackSelect');
+    if (!select) return;
+
+    // Clear existing options except first
+    while (select.options.length > 1) {
+      select.remove(1);
+    }
+
+    // Add pack options
+    for (const packName of baselineHealthState.packs) {
+      const option = document.createElement('option');
+      option.value = packName;
+      option.textContent = packName;
+      select.appendChild(option);
+    }
+
+    console.log(`[BaselineHealth] Loaded ${baselineHealthState.packs.length} packs`);
+  } catch (error) {
+    console.error('[BaselineHealth] Failed to load packs:', error);
+  }
+}
+
+/**
+ * Refresh pack list
+ */
+function refreshPackList() {
+  loadAvailablePacks();
+}
+
+/**
+ * Handle pack selection
+ */
+function loadPackDetails() {
+  const select = document.getElementById('baselineHealthPackSelect');
+  const packName = select.value;
+  const runBtn = document.getElementById('runBaselineHealthBtn');
+
+  if (!packName) {
+    baselineHealthState.selectedPack = null;
+    runBtn.disabled = true;
+    return;
+  }
+
+  baselineHealthState.selectedPack = packName;
+  runBtn.disabled = false;
+  console.log(`[BaselineHealth] Selected pack: ${packName}`);
+}
+
+/**
+ * Run baseline health validation
+ */
+async function runBaselineHealth() {
+  const packName = baselineHealthState.selectedPack;
+  if (!packName) {
+    alert('Wybierz pakiet do walidacji');
+    return;
+  }
+
+  console.log(`[BaselineHealth] Running validation for pack: ${packName}`);
+
+  // Show results container
+  const resultsContainer = document.getElementById('baselineHealthResultsContainer');
+  const statusDiv = document.getElementById('baselineHealthStatus');
+  const statusIcon = document.getElementById('baselineHealthStatusIcon');
+  const statusText = document.getElementById('baselineHealthStatusText');
+  const summaryDiv = document.getElementById('baselineHealthSummary');
+  const scenariosDiv = document.getElementById('baselineHealthScenarios');
+  const actionsDiv = document.getElementById('baselineHealthActions');
+
+  resultsContainer.style.display = 'block';
+  statusDiv.className = 'baseline-health-status';
+  statusIcon.textContent = '⏳';
+  statusText.textContent = 'Uruchamianie walidacji...';
+  summaryDiv.style.display = 'none';
+  scenariosDiv.style.display = 'none';
+  actionsDiv.style.display = 'none';
+
+  try {
+    // Call validate-pack job with wait=true
+    const response = await fetch('/api/bess-dispatch/jobs/validate-pack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack: packName, wait: true }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const jobResult = await response.json();
+    console.log('[BaselineHealth] Validation result:', jobResult);
+
+    baselineHealthState.lastJobId = jobResult.job_id;
+    baselineHealthState.lastResult = jobResult.result;
+
+    // Display results
+    displayBaselineHealthResults(jobResult);
+  } catch (error) {
+    console.error('[BaselineHealth] Validation failed:', error);
+    statusDiv.className = 'baseline-health-status failed';
+    statusIcon.textContent = '❌';
+    statusText.textContent = `Blad: ${error.message}`;
+  }
+}
+
+/**
+ * Display baseline health results
+ */
+function displayBaselineHealthResults(jobResult) {
+  const statusDiv = document.getElementById('baselineHealthStatus');
+  const statusIcon = document.getElementById('baselineHealthStatusIcon');
+  const statusText = document.getElementById('baselineHealthStatusText');
+  const summaryDiv = document.getElementById('baselineHealthSummary');
+  const scenariosDiv = document.getElementById('baselineHealthScenarios');
+  const actionsDiv = document.getElementById('baselineHealthActions');
+
+  const result = jobResult.result || {};
+  const allPassed = result.pass === true;
+  const summary = result.summary || {};
+
+  // Update status
+  if (allPassed) {
+    statusDiv.className = 'baseline-health-status passed';
+    statusIcon.textContent = '✅';
+    statusText.textContent = 'Wszystkie scenariusze PASSED';
+  } else {
+    statusDiv.className = 'baseline-health-status failed';
+    statusIcon.textContent = '❌';
+    statusText.textContent = `${summary.fail || 0} scenariuszy FAILED`;
+  }
+
+  // Update summary
+  document.getElementById('baselineHealthTotalCount').textContent = summary.total || 0;
+  document.getElementById('baselineHealthPassedCount').textContent = summary.pass || 0;
+  document.getElementById('baselineHealthFailedCount').textContent = summary.fail || 0;
+  document.getElementById('baselineHealthJobId').textContent = jobResult.job_id || '-';
+  summaryDiv.style.display = 'block';
+
+  // Populate scenarios table
+  const tbody = document.getElementById('baselineHealthScenariosBody');
+  tbody.innerHTML = '';
+
+  const scenarios = result.scenarios || [];
+  for (const scenario of scenarios) {
+    const row = document.createElement('tr');
+    row.className = scenario.pass ? 'passed-row' : 'failed-row';
+
+    const statusCell = document.createElement('td');
+    statusCell.textContent = scenario.pass ? '✅' : '❌';
+    row.appendChild(statusCell);
+
+    const nameCell = document.createElement('td');
+    nameCell.textContent = scenario.name || '-';
+    row.appendChild(nameCell);
+
+    const mismatchCell = document.createElement('td');
+    mismatchCell.textContent = scenario.mismatch_count || 0;
+    row.appendChild(mismatchCell);
+
+    const errorCell = document.createElement('td');
+    errorCell.textContent = scenario.error || '-';
+    errorCell.style.maxWidth = '300px';
+    errorCell.style.overflow = 'hidden';
+    errorCell.style.textOverflow = 'ellipsis';
+    errorCell.title = scenario.error || '';
+    row.appendChild(errorCell);
+
+    tbody.appendChild(row);
+  }
+
+  scenariosDiv.style.display = 'block';
+  actionsDiv.style.display = 'block';
+}
+
+/**
+ * Export baseline health CSV
+ */
+async function exportBaselineHealthCSV() {
+  const jobId = baselineHealthState.lastJobId;
+  if (!jobId) {
+    alert('Brak wynikow do eksportu');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/bess-dispatch/jobs/${jobId}/validate-pack/export/csv`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `validate_${baselineHealthState.selectedPack}_${jobId.substring(0, 8)}_summary.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('[BaselineHealth] CSV export failed:', error);
+    alert('Eksport CSV nie powiodl sie: ' + error.message);
+  }
+}
+
+/**
+ * Export baseline health ZIP
+ */
+async function exportBaselineHealthZIP() {
+  const jobId = baselineHealthState.lastJobId;
+  if (!jobId) {
+    alert('Brak wynikow do eksportu');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/bess-dispatch/jobs/${jobId}/validate-pack/export/zip`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `validate_${baselineHealthState.selectedPack}_${jobId.substring(0, 8)}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('[BaselineHealth] ZIP export failed:', error);
+    alert('Eksport ZIP nie powiodl sie: ' + error.message);
+  }
+}
+
 // Initialize validation on load
 document.addEventListener('DOMContentLoaded', () => {
   loadAvailableScenarios();
+  loadAvailablePacks();  // v1.7.0: Load packs for Baseline Health
 });
 
 // Export Validation functions
@@ -6874,4 +7132,12 @@ window.refreshScenarioList = refreshScenarioList;
 window.loadScenarioDetails = loadScenarioDetails;
 window.runScenarioValidation = runScenarioValidation;
 
-console.log('[BESS] bess.js v3.27 - v1.4.0 Scenario Validation');
+// Export Baseline Health functions (v1.7.0)
+window.loadAvailablePacks = loadAvailablePacks;
+window.refreshPackList = refreshPackList;
+window.loadPackDetails = loadPackDetails;
+window.runBaselineHealth = runBaselineHealth;
+window.exportBaselineHealthCSV = exportBaselineHealthCSV;
+window.exportBaselineHealthZIP = exportBaselineHealthZIP;
+
+console.log('[BESS] bess.js v3.28 - v1.7.0 Baseline Health');
