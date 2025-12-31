@@ -42,6 +42,7 @@ COPY determinism_helper.py .
 COPY validate_pack.py .
 COPY validate_pack_api.py .
 COPY validate_pack_export_helper.py .
+COPY debug_events_helper.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/

@@ -68,6 +68,7 @@ from dispatch_engine import (
     check_degradation_budget,
 )
 from common.versioning import get_version_info
+from debug_events_helper import compute_debug_events
 from common.logging_structured import (
     log_sizing_request,
     log_sizing_response,
@@ -1166,6 +1167,13 @@ def run_sizing_for_variant(
         result.degradation = check_degradation_budget(
             result.degradation, request.degradation_budget
         )
+
+    # Compute debug events (v1.8.0)
+    result.debug_events = compute_debug_events(
+        n_timesteps=result.n_timesteps,
+        constraint_summary=result.constraint_summary,
+        energy_flows=result.energy_flows,
+    )
 
     # ==========================================================================
     # Calculate Savings Breakdown (transparent NPV components)

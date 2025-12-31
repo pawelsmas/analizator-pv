@@ -1086,6 +1086,12 @@ class DispatchResult(BaseModel):
         description="Summary of grid constraint impacts (export_cap_hit_steps, curtailed_kwh, etc.)"
     )
 
+    # Debug events summary (v1.8.0) - aggregates constraint/curtail/unserved info for debugging
+    debug_events: Optional["DebugEvents"] = Field(
+        None,
+        description="Summary of debug events (caps/curtail/unserved) for debugging and repro analysis"
+    )
+
 
 # =============================================================================
 # Sizing Request/Result
@@ -1315,6 +1321,49 @@ class ConstraintSummary(BaseModel):
     unserved_load_kwh: float = Field(
         0.0,
         description="Total energy unserved due to import cap [kWh]"
+    )
+
+
+class DebugEvents(BaseModel):
+    """
+    Debug events summary (v1.8.0).
+
+    Aggregates key debugging information from constraint_summary and energy_flows
+    into a single, easy-to-read block for debugging and repro analysis.
+    """
+    # Total timesteps in simulation
+    steps: int = Field(0, description="Total number of timesteps in simulation")
+
+    # Export limiting (from constraint_summary)
+    export_limited_steps: int = Field(
+        0, description="Steps where export was limited by max_export_kw"
+    )
+    export_limited_mwh: float = Field(
+        0.0, description="Total export energy limited [MWh]"
+    )
+
+    # Import limiting (from constraint_summary)
+    import_limited_steps: int = Field(
+        0, description="Steps where import was limited by max_import_kw"
+    )
+    import_limited_mwh: float = Field(
+        0.0, description="Total import energy limited (unserved load) [MWh]"
+    )
+
+    # PV curtailment (from energy_flows)
+    pv_curtail_steps: int = Field(
+        0, description="Steps where PV was curtailed"
+    )
+    pv_curtail_mwh: float = Field(
+        0.0, description="Total PV energy curtailed [MWh]"
+    )
+
+    # Unserved load (from constraint_summary or energy_flows)
+    unserved_load_steps: int = Field(
+        0, description="Steps with unserved load"
+    )
+    unserved_load_kwh: float = Field(
+        0.0, description="Total unserved load [kWh]"
     )
 
 
