@@ -38,6 +38,19 @@ class ScenarioMismatch:
 
 
 @dataclass
+class LedgerCategoryDiff:
+    """Category-level diff between expected and actual money ledger (v1.9.0)."""
+    category: str  # e.g., "import_energy_cost_pln", "export_revenue_pln"
+    baseline_expected: float
+    baseline_actual: float
+    project_expected: float
+    project_actual: float
+    delta_expected: float
+    delta_actual: float
+    diff_pln: float  # delta_expected - delta_actual
+
+
+@dataclass
 class ScenarioResult:
     """Result of validating a single scenario."""
     name: str
@@ -46,6 +59,7 @@ class ScenarioResult:
     run_id: Optional[str] = None
     request_hash: Optional[str] = None
     top_mismatches: List[Dict[str, Any]] = field(default_factory=list)
+    ledger_diffs: List[Dict[str, Any]] = field(default_factory=list)  # v1.9.0
     error: Optional[str] = None
 
 
@@ -288,6 +302,7 @@ def run_validate_pack(
             diffs = result.get("diffs", [])
             run_id = result.get("run_id")
             request_hash = result.get("request_hash")
+            ledger_diffs = result.get("ledger_diffs", [])  # v1.9.0
 
             # Count mismatches (failed diffs)
             mismatches = [d for d in diffs if not d.get("pass", True)]
@@ -308,6 +323,7 @@ def run_validate_pack(
                 run_id=run_id,
                 request_hash=request_hash,
                 top_mismatches=top_mismatches,
+                ledger_diffs=ledger_diffs,  # v1.9.0
             ))
 
         except Exception as e:
@@ -358,6 +374,70 @@ def _get_top_mismatches(mismatches: List[Dict], max_count: int = 5) -> List[Dict
     return top
 
 
+def compute_ledger_diffs(
+    expected_ledger: Optional[Dict[str, Any]],
+    actual_ledger: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Compute category-level diffs between expected and actual money ledger (v1.9.0).
+
+    Args:
+        expected_ledger: Expected money_ledger from scenario expected_kpis
+        actual_ledger: Actual money_ledger from sizing response
+
+    Returns:
+        List of ledger category diffs with baseline/project/delta values
+    """
+    if not expected_ledger or not actual_ledger:
+        return []
+
+    # Cost categories to compare
+    categories = [
+        "import_energy_cost_pln",
+        "export_revenue_pln",
+        "other_fees_pln",
+        "capacity_fee_pln",
+        "demand_charge_pln",
+        "unserved_penalty_pln",
+        "degradation_cost_pln",
+        "total_cost_pln",
+    ]
+
+    diffs = []
+
+    for category in categories:
+        # Get expected values
+        expected_baseline = expected_ledger.get("baseline_annual", {}).get(category, 0)
+        expected_project = expected_ledger.get("project_annual", {}).get(category, 0)
+        expected_delta = expected_ledger.get("delta_annual_pln", {}).get(category, 0)
+
+        # Get actual values
+        actual_baseline = actual_ledger.get("baseline_annual", {}).get(category, 0)
+        actual_project = actual_ledger.get("project_annual", {}).get(category, 0)
+        actual_delta = actual_ledger.get("delta_annual_pln", {}).get(category, 0)
+
+        # Calculate diff (expected - actual)
+        diff_pln = expected_delta - actual_delta
+
+        # Only include if there's a meaningful difference (> 0.01 PLN)
+        if abs(diff_pln) > 0.01:
+            diffs.append({
+                "category": category,
+                "baseline_expected": expected_baseline,
+                "baseline_actual": actual_baseline,
+                "project_expected": expected_project,
+                "project_actual": actual_project,
+                "delta_expected": expected_delta,
+                "delta_actual": actual_delta,
+                "diff_pln": diff_pln,
+            })
+
+    # Sort by absolute diff (largest first)
+    diffs.sort(key=lambda d: abs(d.get("diff_pln", 0)), reverse=True)
+
+    return diffs
+
+
 def _scenario_result_to_dict(result: ScenarioResult) -> Dict[str, Any]:
     """Convert ScenarioResult to dict for JSON serialization."""
     d = {
@@ -372,6 +452,8 @@ def _scenario_result_to_dict(result: ScenarioResult) -> Dict[str, Any]:
         d["request_hash"] = result.request_hash
     if result.top_mismatches:
         d["top_mismatches"] = result.top_mismatches
+    if result.ledger_diffs:  # v1.9.0
+        d["ledger_diffs"] = result.ledger_diffs
     if result.error:
         d["error"] = result.error
 

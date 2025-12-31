@@ -15,6 +15,7 @@ from validate_pack import (
     list_packs as list_pack_names,
     load_pack,
     run_validate_pack,
+    compute_ledger_diffs,  # v1.9.0
     SCENARIOS_ROOT,
     PACKS_DIR,
 )
@@ -120,9 +121,21 @@ def validate_one_scenario_sync(
         for d in diffs
     ]
 
+    # Compute ledger_diffs if money_ledger is present (v1.9.0)
+    ledger_diffs = []
+    expected_ledger = expected_kpis.get("money_ledger")
+    # Get actual money_ledger from recommended variant
+    variants = response_dict.get("variants", [])
+    recommended = next((v for v in variants if v.get("is_recommended")), None)
+    actual_ledger = recommended.get("money_ledger") if recommended else None
+
+    if expected_ledger and actual_ledger:
+        ledger_diffs = compute_ledger_diffs(expected_ledger, actual_ledger)
+
     return {
         "passed": passed,
         "diffs": diffs_as_dicts,
+        "ledger_diffs": ledger_diffs,  # v1.9.0
         "run_id": run_id,
         "request_hash": request_hash,
     }
