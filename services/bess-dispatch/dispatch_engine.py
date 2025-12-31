@@ -46,7 +46,10 @@ from models import (
     # v0.7.0 Grid Constraints
     GridConstraints,
     ConstraintSummary,
+    # v1.8.0 Debug Events
+    DebugEvents,
 )
+from debug_events_helper import compute_debug_events
 
 
 @dataclass
@@ -1997,5 +2000,12 @@ def run_dispatch(
         result, request.grid_constraints, dt_hours
     )
     result.constraint_summary = constraint_summary
+
+    # Compute debug events (v1.8.0) - aggregates constraint/curtail/unserved info
+    result.debug_events = compute_debug_events(
+        n_timesteps=result.n_timesteps,
+        constraint_summary=constraint_summary,
+        energy_flows=result.energy_flows,
+    )
 
     return result
