@@ -5393,3 +5393,169 @@ body {
   gap: 8px;
   margin-top: 12px;
 }
+
+/* v1.8.0: Scenario Drilldown Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 700px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.scenario-drilldown-modal .modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f5f5f5;
+  border-radius: 12px 12px 0 0;
+}
+
+.scenario-drilldown-modal .modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #333;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #666;
+  padding: 0 8px;
+}
+
+.modal-close-btn:hover {
+  color: #333;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.drilldown-section {
+  margin-bottom: 20px;
+}
+
+.drilldown-section h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #333;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.drilldown-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.drilldown-status.passed {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.drilldown-status.failed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.mismatches-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.mismatches-table th {
+  background: #f5f5f5;
+  padding: 8px;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+  font-weight: 600;
+}
+
+.mismatches-table td {
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+  font-family: monospace;
+}
+
+.mismatches-table tr:hover {
+  background: #fafafa;
+}
+
+.debug-events-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.debug-event-item {
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.debug-event-item .event-label {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.debug-event-item .event-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+}
+
+.debug-event-item.warning .event-value {
+  color: #f57c00;
+}
+
+.debug-event-item.error .event-value {
+  color: #c62828;
+}
+
+.repro-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.repro-hint {
+  font-size: 11px;
+  color: #888;
+}
+
+/* Clickable scenario rows */
+.baseline-health-scenarios .scenarios-table tbody tr {
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.baseline-health-scenarios .scenarios-table tbody tr:hover {
+  background: #e3f2fd !important;
+}

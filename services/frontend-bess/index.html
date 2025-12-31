@@ -1604,6 +1604,63 @@
     <h3>Brak danych BESS</h3>
     <p>Włącz BESS w module USTAWIENIA i wykonaj analizę w module KONFIGURACJA.</p>
   </div>
+
+  <!-- v1.8.0: Scenario Drilldown Modal -->
+  <div id="scenarioDrilldownModal" class="modal-overlay" style="display:none;" onclick="closeScenarioDrilldownModal(event)">
+    <div class="modal-content scenario-drilldown-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="scenarioDrilldownTitle">Scenariusz: -</h3>
+        <button class="modal-close-btn" onclick="closeScenarioDrilldownModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- Status -->
+        <div class="drilldown-section">
+          <div class="drilldown-status" id="scenarioDrilldownStatus">
+            <span class="status-icon">⏳</span>
+            <span class="status-text">Ładowanie...</span>
+          </div>
+        </div>
+
+        <!-- Top Mismatches -->
+        <div class="drilldown-section" id="topMismatchesSection" style="display:none;">
+          <h4>📊 Top Mismatches</h4>
+          <table class="mismatches-table">
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Diff</th>
+                <th>Rel %</th>
+              </tr>
+            </thead>
+            <tbody id="topMismatchesBody">
+              <!-- Dynamically filled -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Debug Summary -->
+        <div class="drilldown-section" id="debugSummarySection" style="display:none;">
+          <h4>🐛 Debug Events</h4>
+          <div class="debug-events-grid" id="debugEventsGrid">
+            <!-- Dynamically filled -->
+          </div>
+        </div>
+
+        <!-- Repro Download -->
+        <div class="drilldown-section">
+          <h4>📦 Repro Bundle</h4>
+          <div class="repro-actions">
+            <button class="btn btn-small btn-secondary" id="downloadReproBtn" onclick="downloadScenarioRepro()" disabled>
+              📥 Pobierz repro.zip
+            </button>
+            <span class="repro-hint">Zawiera request.json, response.json, debug_events.json</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
