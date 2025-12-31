@@ -1250,6 +1250,12 @@ class SizingRequestAPI(BaseModel):
         description="If True, include per-timestep energy flows in response. Default: False to keep response small."
     )
 
+    # Economics timeseries (v1.5.0 - optional, off by default)
+    include_economics_timeseries: bool = Field(
+        False,
+        description="If True, include per-timestep economics breakdown in response. Default: False to keep response small."
+    )
+
     # Finance configuration (v0.5.0) - explicit financial parameters
     finance_config: Optional[Dict[str, Any]] = Field(
         None,
@@ -1536,6 +1542,7 @@ async def run_sizing_optimization(request: SizingRequestAPI):
             degradation_budget=budget,
             optimization=optimization_config,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            include_economics_timeseries=request.include_economics_timeseries,
             # Finance (v0.5.0)
             finance_config=finance_config,
             # Grid constraints (v0.7.0)
@@ -1902,6 +1909,7 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         degradation_budget=budget,
         optimization=optimization_config,
         include_energy_flows_timeseries=api_request.include_energy_flows_timeseries,
+        include_economics_timeseries=api_request.include_economics_timeseries,
         finance_config=finance_config,
         grid_constraints=grid_constraints,
         constraints_config=constraints_config,
