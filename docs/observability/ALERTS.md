@@ -290,6 +290,56 @@ Fires when grid constraints are frequently limiting energy flows.
     description: "Export or import limits are frequently activated. Review grid connection capacity."
 ```
 
+## Ledger Reconciliation Alerts (v1.9.0)
+
+### Critical: Ledger Reconciliation Failure
+
+Fires when money ledger reconciliation fails (net_savings != ledger delta).
+This indicates a calculation inconsistency that should be investigated immediately.
+
+```yaml
+- alert: BESSLedgerReconciliationFailure
+  expr: increase(bess_ledger_reconciliation_total{status="failed"}[5m]) > 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Ledger reconciliation failed"
+    description: "{{ $value }} sizing runs had ledger reconciliation failures in the last 5 minutes. net_savings_pln does not match delta_annual_pln.total_cost_pln."
+    runbook: "Check logs for affected run_id, compare savings_breakdown vs money_ledger values"
+```
+
+### Warning: High Reconciliation Error
+
+Fires when ledger reconciliation error magnitude is unexpectedly high.
+
+```yaml
+- alert: BESSLedgerReconciliationErrorHigh
+  expr: histogram_quantile(0.99, rate(bess_ledger_reconciliation_error_pln_bucket[15m])) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High ledger reconciliation error"
+    description: "99th percentile reconciliation error exceeds 0.1 PLN. May indicate rounding drift or calculation inconsistencies."
+```
+
+### Info: Money Ledger Adoption Rate
+
+Tracks adoption of include_money_ledger feature.
+
+```yaml
+- alert: BESSMoneyLedgerAdoption
+  expr: |
+    sum(rate(bess_ledger_requests_total{include_money_ledger="true"}[1d])) /
+    sum(rate(bess_ledger_requests_total[1d])) * 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Money ledger adoption: {{ $value | humanize }}%"
+    description: "{{ $value | humanize }}% of sizing requests include money_ledger"
+```
+
 ## Repro Bundle Alerts (v1.8.0)
 
 ### Warning: High Repro Download Failure Rate
@@ -322,3 +372,5 @@ When alerts fire, operators should:
 7. **UnservedLoadDetected**: Review BESS sizing constraints, possibly increase battery capacity
 8. **HighPVCurtailment**: Consider increasing BESS capacity or grid export limits
 9. **ReproDownloadFailures**: Check run store retention policy, may need to extend retention days
+10. **LedgerReconciliationFailure**: Compare net_savings_pln vs money_ledger.delta_annual_pln.total_cost_pln for affected run
+11. **LedgerReconciliationErrorHigh**: Review rounding policies in money_ledger_helper.py and savings_breakdown calculation
