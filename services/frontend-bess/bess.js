@@ -7036,6 +7036,9 @@ function displayBaselineHealthResults(jobResult) {
   for (const scenario of scenarios) {
     const row = document.createElement('tr');
     row.className = scenario.pass ? 'passed-row' : 'failed-row';
+    // v1.8.0: Add click handler for drilldown
+    row.onclick = () => openScenarioDrilldown(scenario);
+    row.title = 'Kliknij aby zobaczyc szczegoly';
 
     const statusCell = document.createElement('td');
     statusCell.textContent = scenario.pass ? '✅' : '❌';
@@ -7118,6 +7121,154 @@ async function exportBaselineHealthZIP() {
     console.error('[BaselineHealth] ZIP export failed:', error);
     alert('Eksport ZIP nie powiodl sie: ' + error.message);
   }
+}
+
+// =============================================================================
+// SCENARIO DRILLDOWN MODAL (v1.8.0)
+// =============================================================================
+
+// State for scenario drilldown
+let scenarioDrilldownState = {
+  currentScenario: null,
+  currentRunId: null,
+};
+
+/**
+ * Open scenario drilldown modal
+ */
+function openScenarioDrilldown(scenario) {
+  scenarioDrilldownState.currentScenario = scenario;
+  scenarioDrilldownState.currentRunId = scenario.run_id || null;
+
+  // Update title
+  document.getElementById('scenarioDrilldownTitle').textContent = `Scenariusz: ${scenario.name || '-'}`;
+
+  // Update status
+  const statusDiv = document.getElementById('scenarioDrilldownStatus');
+  if (scenario.pass) {
+    statusDiv.className = 'drilldown-status passed';
+    statusDiv.innerHTML = '<span class="status-icon">✅</span><span class="status-text">PASSED</span>';
+  } else {
+    statusDiv.className = 'drilldown-status failed';
+    statusDiv.innerHTML = `<span class="status-icon">❌</span><span class="status-text">FAILED - ${scenario.mismatch_count || 0} mismatches</span>`;
+  }
+
+  // Populate top mismatches
+  const mismatchesSection = document.getElementById('topMismatchesSection');
+  const mismatchesBody = document.getElementById('topMismatchesBody');
+  mismatchesBody.innerHTML = '';
+
+  const topMismatches = scenario.top_mismatches || [];
+  if (topMismatches.length > 0) {
+    for (const m of topMismatches) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${m.field || '-'}</td>
+        <td>${formatNumber(m.expected)}</td>
+        <td>${formatNumber(m.actual)}</td>
+        <td>${formatNumber(m.abs_diff)}</td>
+        <td>${m.rel_diff_pct != null ? m.rel_diff_pct.toFixed(1) + '%' : '-'}</td>
+      `;
+      mismatchesBody.appendChild(row);
+    }
+    mismatchesSection.style.display = 'block';
+  } else {
+    mismatchesSection.style.display = 'none';
+  }
+
+  // Populate debug summary
+  const debugSection = document.getElementById('debugSummarySection');
+  const debugGrid = document.getElementById('debugEventsGrid');
+  debugGrid.innerHTML = '';
+
+  const debugSummary = scenario.debug_summary || null;
+  if (debugSummary) {
+    const events = [
+      { label: 'Steps', value: debugSummary.steps || 0, key: 'steps' },
+      { label: 'Export Limited Steps', value: debugSummary.export_limited_steps || 0, key: 'export_limited_steps', warnIfPositive: true },
+      { label: 'Export Limited MWh', value: debugSummary.export_limited_mwh || 0, key: 'export_limited_mwh', warnIfPositive: true },
+      { label: 'Import Limited Steps', value: debugSummary.import_limited_steps || 0, key: 'import_limited_steps', warnIfPositive: true },
+      { label: 'PV Curtail Steps', value: debugSummary.pv_curtail_steps || 0, key: 'pv_curtail_steps', warnIfPositive: true },
+      { label: 'PV Curtail MWh', value: debugSummary.pv_curtail_mwh || 0, key: 'pv_curtail_mwh', warnIfPositive: true },
+      { label: 'Unserved Load Steps', value: debugSummary.unserved_load_steps || 0, key: 'unserved_load_steps', errorIfPositive: true },
+      { label: 'Unserved Load kWh', value: debugSummary.unserved_load_kwh || 0, key: 'unserved_load_kwh', errorIfPositive: true },
+    ];
+
+    for (const e of events) {
+      const item = document.createElement('div');
+      let className = 'debug-event-item';
+      if (e.errorIfPositive && e.value > 0) className += ' error';
+      else if (e.warnIfPositive && e.value > 0) className += ' warning';
+      item.className = className;
+      item.innerHTML = `
+        <div class="event-label">${e.label}</div>
+        <div class="event-value">${formatNumber(e.value)}</div>
+      `;
+      debugGrid.appendChild(item);
+    }
+    debugSection.style.display = 'block';
+  } else {
+    debugSection.style.display = 'none';
+  }
+
+  // Enable/disable repro download
+  const reproBtn = document.getElementById('downloadReproBtn');
+  if (scenarioDrilldownState.currentRunId) {
+    reproBtn.disabled = false;
+  } else {
+    reproBtn.disabled = true;
+  }
+
+  // Show modal
+  document.getElementById('scenarioDrilldownModal').style.display = 'flex';
+}
+
+/**
+ * Close scenario drilldown modal
+ */
+function closeScenarioDrilldownModal(event) {
+  // If clicked on overlay (not content), close
+  if (event && event.target.id !== 'scenarioDrilldownModal') return;
+  document.getElementById('scenarioDrilldownModal').style.display = 'none';
+}
+
+/**
+ * Download scenario repro bundle
+ */
+async function downloadScenarioRepro() {
+  const runId = scenarioDrilldownState.currentRunId;
+  if (!runId) {
+    alert('Brak run_id dla tego scenariusza');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/runs/${runId}/repro.zip`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `repro_${runId}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('[Drilldown] Repro download failed:', error);
+    alert('Pobieranie repro.zip nie powiodlo sie: ' + error.message);
+  }
+}
+
+/**
+ * Format number for display
+ */
+function formatNumber(val) {
+  if (val === null || val === undefined) return '-';
+  if (typeof val === 'number') {
+    return val.toLocaleString('pl-PL', { maximumFractionDigits: 4 });
+  }
+  return String(val);
 }
 
 // =============================================================================
