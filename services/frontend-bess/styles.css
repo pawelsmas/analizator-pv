@@ -5559,3 +5559,77 @@ body {
 .baseline-health-scenarios .scenarios-table tbody tr:hover {
   background: #e3f2fd !important;
 }
+
+/* v1.9.0: Money Ledger (Koszty) Section */
+.money-ledger-section {
+  margin-top: 16px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.ledger-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.ledger-table th {
+  background: #f0f0f0;
+  padding: 6px 8px;
+  text-align: right;
+  font-weight: 600;
+  border-bottom: 2px solid #ddd;
+}
+
+.ledger-table th:first-child {
+  text-align: left;
+}
+
+.ledger-table td {
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid #eee;
+}
+
+.ledger-table td:first-child {
+  text-align: left;
+  color: #555;
+}
+
+.ledger-table .positive {
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.ledger-table .negative {
+  color: #c62828;
+  font-weight: 500;
+}
+
+.ledger-table .degradation-row td {
+  background: #fff8e1;
+}
+
+.ledger-table .penalty-row td {
+  background: #ffebee;
+}
+
+.ledger-table .total-row td {
+  background: #e3f2fd;
+  border-top: 2px solid #1976d2;
+}
+
+.ledger-table .total-delta {
+  font-size: 12px;
+}

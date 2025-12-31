@@ -2385,6 +2385,76 @@ function displaySizingVariants(sizingResult) {
             `}
           </div>
           ` : ''}
+          ${v.money_ledger ? `
+          <!-- v1.9.0: Money Ledger - Koszty panel -->
+          <div class="money-ledger-section">
+            <div class="ledger-title">💰 Koszty (rocznie)</div>
+            <table class="ledger-table">
+              <thead>
+                <tr>
+                  <th>Kategoria</th>
+                  <th>Baseline</th>
+                  <th>Projekt</th>
+                  <th>Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Import energii</td>
+                  <td>${formatNumberEU(v.money_ledger.baseline_annual.import_energy_cost_pln, 0)}</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.import_energy_cost_pln, 0)}</td>
+                  <td class="${v.money_ledger.delta_annual_pln.import_energy_cost_pln > 0 ? 'positive' : ''}">${formatNumberEU(v.money_ledger.delta_annual_pln.import_energy_cost_pln, 0)}</td>
+                </tr>
+                <tr>
+                  <td>Eksport do sieci</td>
+                  <td>${formatNumberEU(v.money_ledger.baseline_annual.export_revenue_pln, 0)}</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.export_revenue_pln, 0)}</td>
+                  <td class="${v.money_ledger.delta_annual_pln.export_revenue_pln > 0 ? 'positive' : ''}">${formatNumberEU(v.money_ledger.delta_annual_pln.export_revenue_pln, 0)}</td>
+                </tr>
+                ${v.money_ledger.baseline_annual.capacity_fee_pln > 0 || v.money_ledger.project_annual.capacity_fee_pln > 0 ? `
+                <tr>
+                  <td>Opłata mocowa</td>
+                  <td>${formatNumberEU(v.money_ledger.baseline_annual.capacity_fee_pln, 0)}</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.capacity_fee_pln, 0)}</td>
+                  <td class="${v.money_ledger.delta_annual_pln.capacity_fee_pln > 0 ? 'positive' : ''}">${formatNumberEU(v.money_ledger.delta_annual_pln.capacity_fee_pln, 0)}</td>
+                </tr>
+                ` : ''}
+                ${v.money_ledger.baseline_annual.demand_charge_pln > 0 || v.money_ledger.project_annual.demand_charge_pln > 0 ? `
+                <tr>
+                  <td>Opłata za moc</td>
+                  <td>${formatNumberEU(v.money_ledger.baseline_annual.demand_charge_pln, 0)}</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.demand_charge_pln, 0)}</td>
+                  <td class="${v.money_ledger.delta_annual_pln.demand_charge_pln > 0 ? 'positive' : ''}">${formatNumberEU(v.money_ledger.delta_annual_pln.demand_charge_pln, 0)}</td>
+                </tr>
+                ` : ''}
+                ${v.money_ledger.project_annual.degradation_cost_pln > 0 ? `
+                <tr class="degradation-row">
+                  <td>Degradacja baterii</td>
+                  <td>0</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.degradation_cost_pln, 0)}</td>
+                  <td class="negative">-${formatNumberEU(v.money_ledger.delta_annual_pln.degradation_cost_pln, 0)}</td>
+                </tr>
+                ` : ''}
+                ${v.money_ledger.project_annual.unserved_penalty_pln > 0 ? `
+                <tr class="penalty-row">
+                  <td>Kara za nieobsłużone</td>
+                  <td>0</td>
+                  <td>${formatNumberEU(v.money_ledger.project_annual.unserved_penalty_pln, 0)}</td>
+                  <td class="negative">-${formatNumberEU(v.money_ledger.delta_annual_pln.unserved_penalty_pln, 0)}</td>
+                </tr>
+                ` : ''}
+              </tbody>
+              <tfoot>
+                <tr class="total-row">
+                  <td><strong>SUMA</strong></td>
+                  <td><strong>${formatNumberEU(v.money_ledger.baseline_annual.total_cost_pln, 0)}</strong></td>
+                  <td><strong>${formatNumberEU(v.money_ledger.project_annual.total_cost_pln, 0)}</strong></td>
+                  <td class="${v.money_ledger.delta_annual_pln.total_cost_pln > 0 ? 'positive' : ''} total-delta"><strong>${formatNumberEU(v.money_ledger.delta_annual_pln.total_cost_pln, 0)} PLN</strong></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          ` : ''}
         </div>
 
         <div class="variant-degradation">
