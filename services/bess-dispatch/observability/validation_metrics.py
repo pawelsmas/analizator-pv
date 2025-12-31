@@ -1,11 +1,12 @@
 """
-Prometheus metrics for scenario validation operations (v1.4.0).
+Prometheus metrics for scenario validation operations (v1.5.0).
 
 Tracks:
 - POST /validate/sizing requests
 - Validation results (passed/failed)
 - KPI diff counts and tolerances
 - Validation duration
+- Per-field mismatch tracking (v1.5.0)
 """
 
 from prometheus_client import Counter, Histogram
@@ -42,6 +43,23 @@ VALIDATION_ERRORS_TOTAL = Counter(
     "bess_validation_errors_total",
     "Total validation errors (422/500)",
     ["error_type"],
+)
+
+
+# -----------------------------------------------------------------------------
+# Counters - Per-Field Mismatch Tracking (v1.5.0)
+# -----------------------------------------------------------------------------
+
+VALIDATION_FIELD_MISMATCH_TOTAL = Counter(
+    "bess_validation_field_mismatch_total",
+    "Total mismatches per KPI field (field failed tolerance check)",
+    ["scenario_id", "field"],
+)
+
+VALIDATION_FIELD_CHECKED_TOTAL = Counter(
+    "bess_validation_field_checked_total",
+    "Total checks per KPI field (field was in expected_kpis)",
+    ["scenario_id", "field"],
 )
 
 
@@ -114,3 +132,36 @@ def record_validation_tolerance(rel_tol: float, abs_tol: float):
     """Record tolerance values used in validation."""
     VALIDATION_TOLERANCE_REL.observe(rel_tol)
     VALIDATION_TOLERANCE_ABS.observe(abs_tol)
+
+
+def record_field_checked(scenario_id: str, field: str):
+    """Record that a KPI field was checked during validation."""
+    VALIDATION_FIELD_CHECKED_TOTAL.labels(
+        scenario_id=scenario_id or "unknown",
+        field=field,
+    ).inc()
+
+
+def record_field_mismatch(scenario_id: str, field: str):
+    """Record that a KPI field failed tolerance check."""
+    VALIDATION_FIELD_MISMATCH_TOTAL.labels(
+        scenario_id=scenario_id or "unknown",
+        field=field,
+    ).inc()
+
+
+def record_field_diffs(scenario_id: str, diffs: list):
+    """
+    Record per-field metrics for all KPI diffs.
+
+    Args:
+        scenario_id: Scenario identifier
+        diffs: List of diff objects with 'field' and 'pass' keys
+    """
+    for diff in diffs:
+        field = diff.get("field", "unknown")
+        passed = diff.get("pass", True)
+
+        record_field_checked(scenario_id, field)
+        if not passed:
+            record_field_mismatch(scenario_id, field)

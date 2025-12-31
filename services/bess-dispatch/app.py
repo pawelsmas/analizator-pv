@@ -3685,6 +3685,11 @@ async def validate_sizing(body: ValidateSizingRequest):
     record_validation_duration(time.time() - start_time)
     record_validation_tolerance(tolerances.default_rel, tolerances.default_abs)
 
+    # v1.5.0: Record per-field mismatch metrics
+    from observability import record_field_diffs
+    diffs_for_metrics = [{"field": d.field, "pass": d.pass_} for d in diffs]
+    record_field_diffs(body.scenario_id or "unknown", diffs_for_metrics)
+
     # Get run_id from cache_info
     run_id = response_dict.get("cache_info", {}).get("run_id", "unknown")
 

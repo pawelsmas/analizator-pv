@@ -199,6 +199,12 @@ from .validation_metrics import (
     record_validation_error,
     record_validation_duration,
     record_validation_tolerance,
+    # v1.5.0 per-field mismatch metrics
+    VALIDATION_FIELD_MISMATCH_TOTAL,
+    VALIDATION_FIELD_CHECKED_TOTAL,
+    record_field_checked,
+    record_field_mismatch,
+    record_field_diffs,
 )
 
 __all__ = [
