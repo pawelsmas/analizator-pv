@@ -109,6 +109,11 @@ from observability.sizing_constraint_metrics import (
     record_sizing_feasibility,
     record_pareto_frontier,
 )
+from observability.ledger_metrics import (
+    # v1.9.0 ledger reconciliation metrics
+    record_ledger_reconciliation,
+    record_ledger_request,
+)
 from determinism_helper import select_best_variant_deterministic
 
 logger = logging.getLogger(__name__)
@@ -2010,7 +2015,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         object.__setattr__(variant_result, 'feasibility', feasibility)
 
         # Compute MoneyLedger if requested (v1.9.0)
-        if getattr(request, 'include_money_ledger', False):
+        include_ledger = getattr(request, 'include_money_ledger', False)
+        record_ledger_request(include_ledger)
+
+        if include_ledger:
             if dispatch_result.savings_breakdown:
                 # Get period_hours from data length (n = len(load_kw))
                 period_hours = int(n * dt_hours)
@@ -2023,6 +2031,13 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                     annualization_factor=annualization_factor,
                 )
                 object.__setattr__(variant_result, 'money_ledger', money_ledger)
+
+                # Record reconciliation metrics (v1.9.0)
+                net_savings = dispatch_result.savings_breakdown.net_savings_pln
+                ledger_delta = money_ledger.delta_annual_pln.total_cost_pln
+                reconciliation_error = abs(net_savings - ledger_delta)
+                reconciliation_passed = reconciliation_error <= 1.0  # 1 PLN tolerance
+                record_ledger_reconciliation(reconciliation_passed, reconciliation_error)
 
         variants.append(variant_result)
 
