@@ -1,0 +1,7 @@
+# Regression scenario pack for v1.9.0 money ledger features
+# Tests edge cases: export disabled, unserved penalty, DST boundaries
+name: regression
+scenarios:
+  - regression_export_disabled
+  - regression_unserved_penalty
+  - regression_dst_boundary

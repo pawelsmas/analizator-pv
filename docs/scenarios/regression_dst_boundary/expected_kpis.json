@@ -1,0 +1,9 @@
+{
+  "description": "Regression test: DST boundary (spring forward March 26-27)",
+  "notes": "Verifies correct handling of DST transition. March 26, 2023 has 23 hours in Poland (2:00 AM -> 3:00 AM).",
+  "net_savings_pln": 0.0,
+  "money_ledger": {
+    "period_hours": 47,
+    "is_full_year": false
+  }
+}

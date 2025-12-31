@@ -1,0 +1,7 @@
+{
+  "default_abs": 1.0,
+  "default_rel": 0.01,
+  "per_field_abs": {
+    "export_revenue_pln": 0.01
+  }
+}

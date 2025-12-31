@@ -1,0 +1,9 @@
+{
+  "description": "Regression test: Unserved load penalty",
+  "notes": "Verifies unserved load penalties are correctly calculated when import is capped below load requirement. Expected: unserved_penalty > 0 in money_ledger.",
+  "money_ledger": {
+    "project_annual": {
+      "unserved_penalty_pln": 0.0
+    }
+  }
+}

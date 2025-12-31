@@ -1,0 +1,11 @@
+{
+  "description": "Regression test: Export disabled (export_cap_kw=0)",
+  "notes": "Verifies BESS operates correctly when export to grid is disabled. Expected: export_revenue = 0, money_ledger present.",
+  "export_revenue_pln": 0.0,
+  "net_savings_pln": 0.0,
+  "money_ledger": {
+    "delta_annual_pln": {
+      "export_revenue_pln": 0.0
+    }
+  }
+}
