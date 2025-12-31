@@ -546,6 +546,7 @@ services:
       - JOBS_INLINE_WAIT_MAX_SECONDS=60
     volumes:
       - bess-dispatch-data:/data
+      - ./docs/scenarios:/app/docs/scenarios:ro
     networks:
       - pv-network
     restart: unless-stopped

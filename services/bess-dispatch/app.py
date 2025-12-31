@@ -138,6 +138,14 @@ from invariants_helper import (
     InvariantViolationError,
     STRICT_INVARIANTS,
 )
+from validate_pack import (
+    list_packs as list_pack_names,
+    load_pack,
+    load_scenario_files,
+    run_validate_pack,
+    SCENARIOS_ROOT,
+    PACKS_DIR,
+)
 from observability.invariant_metrics import (
     record_invariant_result,
     record_strict_invariants_status,
@@ -3743,6 +3751,154 @@ async def validate_sizing(body: ValidateSizingRequest):
         diffs=diffs_as_dicts,
         failed_fields=failed_fields,
         passed_fields=passed_fields,
+    )
+
+
+# =============================================================================
+# Validation Packs API (v1.7.0)
+# =============================================================================
+
+class PackListResponse(BaseModel):
+    """Response for GET /validation/packs"""
+    packs: List[str] = Field(..., description="List of available pack names")
+
+
+class CreateValidatePackJobRequest(BaseModel):
+    """Request for POST /jobs/validate-pack"""
+    pack: str = Field(..., description="Pack name to validate")
+    idempotency_key: Optional[str] = Field(None, description="Idempotency key")
+    wait: bool = Field(False, description="Process inline if true")
+    strict: bool = Field(True, description="Fail on any validation errors")
+
+
+class ValidatePackJobResponse(BaseModel):
+    """Response for validate-pack job"""
+    job_id: str
+    type: str = "validate_pack"
+    pack: str
+    status: str
+    items_total: int
+    items_done: int = 0
+    error_count: int = 0
+    result: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+
+@app.get("/api/bess-dispatch/validation/packs", response_model=PackListResponse)
+async def get_validation_packs():
+    """List available scenario packs."""
+    packs = list_pack_names(PACKS_DIR)
+    return PackListResponse(packs=packs)
+
+
+def _validate_one_scenario_for_pack(
+    request: Dict[str, Any],
+    expected_kpis: Dict[str, Any],
+    tolerances: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Validate single scenario for pack validation."""
+    from sizing_runner import run_sizing
+
+    tol_config = ToleranceConfig(
+        default_abs=tolerances.get("default_abs", 1.0),
+        default_rel=tolerances.get("default_rel", 0.001),
+        per_field_abs=tolerances.get("per_field_abs", {}),
+        per_field_rel=tolerances.get("per_field_rel", {}),
+    )
+
+    try:
+        sizing_req = SizingRequestAPI(**request)
+        internal_req = build_internal_sizing_request(sizing_req)
+        sizing_result = run_sizing(internal_req)
+        response_dict = sizing_result.model_dump(mode="json")
+    except Exception as e:
+        return {"passed": False, "error": str(e), "diffs": []}
+
+    run_id = response_dict.get("cache_info", {}).get("run_id")
+    request_hash = response_dict.get("cache_info", {}).get("request_hash")
+
+    actual_kpis = extract_kpis_from_sizing_response(response_dict)
+    actual_kpis_dict = kpi_snapshot_to_dict(actual_kpis)
+
+    diffs = compute_kpi_diffs(expected_kpis, actual_kpis_dict, tol_config)
+    failed_fields = [d.field for d in diffs if not d.pass_]
+    passed = len(failed_fields) == 0
+
+    diffs_as_dicts = [
+        {"field": d.field, "expected": d.expected, "actual": d.actual,
+         "abs_diff": d.abs_diff, "rel_diff": d.rel_diff,
+         "tolerance_abs": d.tolerance_abs, "tolerance_rel": d.tolerance_rel,
+         "pass": d.pass_}
+        for d in diffs
+    ]
+
+    return {"passed": passed, "diffs": diffs_as_dicts, "run_id": run_id, "request_hash": request_hash}
+
+
+@app.post("/api/bess-dispatch/jobs/validate-pack", response_model=ValidatePackJobResponse)
+async def create_validate_pack_job(request: CreateValidatePackJobRequest):
+    """Create a validate-pack job."""
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    packs = list_pack_names(PACKS_DIR)
+    if request.pack not in packs:
+        raise HTTPException(404, f"Pack not found: {request.pack}")
+
+    try:
+        scenarios = load_pack(request.pack, PACKS_DIR)
+    except Exception as e:
+        raise HTTPException(422, f"Failed to load pack: {e}")
+
+    job_request = {"pack": request.pack, "strict": request.strict, "scenarios": scenarios}
+
+    job_id = create_job(
+        type="validate_pack",
+        request=job_request,
+        idempotency_key=request.idempotency_key,
+    )
+
+    job = get_job(job_id)
+
+    if job["status"] in ("done", "failed", "cancelled"):
+        return ValidatePackJobResponse(
+            job_id=job["job_id"], pack=request.pack, status=job["status"],
+            items_total=job["items_total"], items_done=job["items_done"],
+            error_count=job["error_count"], result=job.get("result"),
+            message=job.get("message"),
+        )
+
+    if request.wait:
+        mark_running(job_id)
+        try:
+            result = run_validate_pack(
+                pack_name=request.pack,
+                validate_one_fn=_validate_one_scenario_for_pack,
+                scenarios_root=SCENARIOS_ROOT,
+                packs_dir=PACKS_DIR,
+            )
+            all_passed = result.get("pass", False)
+            error_count = result.get("summary", {}).get("fail", 0)
+            save_result(job_id, result=result, status="done",
+                       message=None if all_passed else f"{error_count} scenario(s) failed")
+            update_progress(job_id, items_done=len(scenarios), error_count=error_count)
+            return ValidatePackJobResponse(
+                job_id=job_id, pack=request.pack, status="done",
+                items_total=len(scenarios), items_done=len(scenarios),
+                error_count=error_count, result=result,
+                message=None if all_passed else f"{error_count} scenario(s) failed",
+            )
+        except Exception as e:
+            save_result(job_id, result={"pack": request.pack, "pass": False, "error": str(e)},
+                       status="failed", message=str(e))
+            return ValidatePackJobResponse(
+                job_id=job_id, pack=request.pack, status="failed",
+                items_total=len(scenarios), items_done=0, error_count=0, message=str(e),
+            )
+
+    return ValidatePackJobResponse(
+        job_id=job_id, pack=request.pack, status="pending",
+        items_total=len(scenarios), items_done=0, error_count=0,
     )
 
 
