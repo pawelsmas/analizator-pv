@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list capture-scenario test-frontend
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -161,6 +161,11 @@ validate: ## Run scenario validation tests (correctness)
 
 validate-list: ## List available validation scenarios
 	@python scripts/validate_scenarios.py --list
+
+validate-pack: ## Run scenario pack validation (usage: PACK=baseline make validate-pack)
+	@echo "${BLUE}Running pack validation: $(PACK)...${RESET}"
+	@python scripts/validate_scenarios.py --pack docs/scenarios/packs/$(PACK).yml
+	@echo "${GREEN}✓ Pack validation passed${RESET}"
 
 capture-scenario: ## Capture scenario from run_id (usage: make capture-scenario RUN_ID=xxx NAME=yyy)
 	@echo "${BLUE}Capturing scenario from run $(RUN_ID)...${RESET}"
