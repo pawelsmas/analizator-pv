@@ -1,0 +1,6 @@
+# Baseline scenario pack for correctness validation
+# All scenarios in this pack must pass before release
+name: baseline
+scenarios:
+  - baseline_stacked_no_arb
+  - baseline_stacked_with_arb

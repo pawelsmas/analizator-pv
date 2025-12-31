@@ -6,6 +6,7 @@ Usage:
     python scripts/validate_scenarios.py                    # Run all scenarios
     python scripts/validate_scenarios.py baseline_stacked   # Run single scenario
     python scripts/validate_scenarios.py --list             # List available scenarios
+    python scripts/validate_scenarios.py --pack docs/scenarios/packs/baseline.yml  # Run pack
 """
 
 import argparse
@@ -17,9 +18,15 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore
+
 
 # Configuration
 SCENARIOS_DIR = Path("docs/scenarios")
+PACKS_DIR = Path("docs/scenarios/packs")
 API_BASE_URL = os.environ.get("BESS_API_URL", "http://localhost:8031")
 VALIDATE_ENDPOINT = f"{API_BASE_URL}/validate/sizing"
 
@@ -34,6 +41,44 @@ def load_request(request_file: str) -> Dict:
     """Load sizing request from file path (relative to repo root)."""
     with open(request_file) as f:
         return json.load(f)
+
+
+def load_pack(pack_path: Path) -> Dict:
+    """
+    Load scenario pack from YAML file.
+
+    Returns dict with 'name' and 'scenarios' list.
+    """
+    if yaml is None:
+        raise ImportError("PyYAML is required for --pack support. Install with: pip install pyyaml")
+
+    with open(pack_path) as f:
+        return yaml.safe_load(f)
+
+
+def parse_pack_scenarios(pack_data: Dict) -> List[str]:
+    """Extract scenario IDs from pack data."""
+    return pack_data.get("scenarios", [])
+
+
+def get_scenario_files_from_pack(pack_path: Path) -> List[Path]:
+    """
+    Load pack and resolve scenario IDs to file paths.
+
+    Returns list of scenario file paths in pack order.
+    """
+    pack_data = load_pack(pack_path)
+    scenario_ids = parse_pack_scenarios(pack_data)
+
+    scenario_files = []
+    for scenario_id in scenario_ids:
+        scenario_file = find_scenario_file(scenario_id)
+        if scenario_file:
+            scenario_files.append(scenario_file)
+        else:
+            print(f"Warning: Scenario '{scenario_id}' from pack not found", file=sys.stderr)
+
+    return scenario_files
 
 
 def run_validation(scenario: Dict) -> Tuple[bool, Dict]:
@@ -120,6 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description="Validate BESS sizing scenarios")
     parser.add_argument("scenario", nargs="?", help="Scenario ID or filename pattern to run")
     parser.add_argument("--list", action="store_true", help="List available scenarios")
+    parser.add_argument("--pack", type=str, help="Path to scenario pack YAML file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     args = parser.parse_args()
@@ -135,7 +181,22 @@ def main():
         return 0
 
     # Determine which scenarios to run
-    if args.scenario:
+    if args.pack:
+        pack_path = Path(args.pack)
+        if not pack_path.exists():
+            print(f"Error: Pack file '{args.pack}' not found", file=sys.stderr)
+            return 1
+        try:
+            pack_data = load_pack(pack_path)
+            print(f"Running pack: {pack_data.get('name', pack_path.stem)}")
+            scenario_files = get_scenario_files_from_pack(pack_path)
+        except ImportError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        if not scenario_files:
+            print("No valid scenarios found in pack", file=sys.stderr)
+            return 1
+    elif args.scenario:
         scenario_file = find_scenario_file(args.scenario)
         if not scenario_file:
             print(f"Error: Scenario '{args.scenario}' not found", file=sys.stderr)
