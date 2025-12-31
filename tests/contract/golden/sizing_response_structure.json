@@ -39,6 +39,7 @@
     "energy_kwh",
     "feasibility",
     "finance_summary",
+    "invariants",
     "irr_pct",
     "is_recommended",
     "npv_pln",

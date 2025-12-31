@@ -1531,6 +1531,13 @@ class SizingVariantResult(BaseModel):
         description="Feasibility status based on constraints_config. "
                     "is_feasible=True if variant satisfies all constraints, with violations list."
     )
+    
+    # Invariants (v1.6.0) - correctness checks
+    invariants: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Invariant check results if include_invariants=True. "
+                    "Contains energy_balance_ok, non_negative_ok, cost_sums_ok, annualization_ok."
+    )
 
     def model_post_init(self, __context):
         """Pydantic v2: populate alias fields after init"""
