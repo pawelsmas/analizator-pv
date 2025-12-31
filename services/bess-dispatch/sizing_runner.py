@@ -85,6 +85,7 @@ from economics_helper import (
     get_time_index_for_request,
     create_economics_breakdown,
 )
+from money_ledger_helper import compute_money_ledger
 from observability.finance_metrics import (
     record_finance_cashflow_metrics,
     record_finance_sensitivity_metrics,
@@ -2007,6 +2008,21 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         feasibility = evaluate_feasibility(variant_result, request.constraints_config)
         # Use object.__setattr__ to set on Pydantic model after creation
         object.__setattr__(variant_result, 'feasibility', feasibility)
+
+        # Compute MoneyLedger if requested (v1.9.0)
+        if getattr(request, 'include_money_ledger', False):
+            if dispatch_result.savings_breakdown:
+                # Get period_hours from data length (n = len(load_kw))
+                period_hours = int(n * dt_hours)
+                annualization_factor = 8760.0 / period_hours if period_hours > 0 else 1.0
+
+                money_ledger = compute_money_ledger(
+                    savings_breakdown=dispatch_result.savings_breakdown,
+                    economics_breakdown=dispatch_result.economics_breakdown,
+                    period_hours=period_hours,
+                    annualization_factor=annualization_factor,
+                )
+                object.__setattr__(variant_result, 'money_ledger', money_ledger)
 
         variants.append(variant_result)
 
