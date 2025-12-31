@@ -84,6 +84,90 @@ Fires when validation success rate drops significantly.
     description: "More than 10% of validations are failing"
 ```
 
+## Validate-Pack Alerts (v1.7.0)
+
+### Critical: Baseline Pack Failing
+
+Fires when the baseline pack validation fails. This indicates that expected scenario
+results are no longer matching, which could mean a regression in calculation logic.
+
+```yaml
+- alert: BESSBaselinePackFailing
+  expr: bess_validation_last_pack_passed{pack="baseline"} == 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Baseline pack validation is failing"
+    description: "The baseline pack validation is failing. {{ $value }} scenarios are not matching expected results."
+    runbook: "Run `make validate-pack PACK=baseline` locally to see diff details"
+```
+
+### Warning: Pack Validation Failures
+
+Fires when any pack validation starts failing.
+
+```yaml
+- alert: BESSPackValidationFailing
+  expr: increase(bess_validation_pack_failed_total[1h]) > 0
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Pack validation failures detected"
+    description: "Pack {{ $labels.pack }} validation is failing"
+```
+
+### Warning: Scenario Errors
+
+Fires when scenarios have errors (not mismatches, but actual errors like file not found).
+
+```yaml
+- alert: BESSScenarioErrors
+  expr: increase(bess_validation_scenario_error_total[1h]) > 0
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Scenario validation errors"
+    description: "Scenario {{ $labels.scenario }} in pack {{ $labels.pack }} has errors"
+```
+
+### Warning: High Pack Validation Duration
+
+Fires when pack validation takes too long.
+
+```yaml
+- alert: BESSPackValidationSlow
+  expr: histogram_quantile(0.99, rate(bess_validation_pack_duration_seconds_bucket[1h])) > 60
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Pack validation is slow"
+    description: "99th percentile pack validation duration exceeds 60 seconds for pack {{ $labels.pack }}"
+```
+
+### Info: Nightly Baseline Health Summary
+
+For Slack notifications, send a daily summary of baseline health.
+
+```yaml
+- alert: BESSNightlyBaselineHealthSummary
+  expr: |
+    bess_validation_last_scenarios_passed{pack="baseline"} /
+    bess_validation_last_scenarios_total{pack="baseline"}
+  labels:
+    severity: info
+  annotations:
+    summary: "Nightly baseline health: {{ $value | humanizePercentage }} passing"
+    description: |
+      Baseline pack results:
+      - Total: {{ with query "bess_validation_last_scenarios_total{pack='baseline'}" }}{{ . | first | value }}{{ end }}
+      - Passed: {{ with query "bess_validation_last_scenarios_passed{pack='baseline'}" }}{{ . | first | value }}{{ end }}
+      - Failed: {{ with query "bess_validation_last_scenarios_failed{pack='baseline'}" }}{{ . | first | value }}{{ end }}
+```
+
 ## Service Health Alerts
 
 ### Critical: Service Down
@@ -164,3 +248,6 @@ When alerts fire, operators should:
 1. **InvariantFailure**: Check logs for specific variant and failed check type
 2. **ValidationFailure**: Run `python scripts/validate_scenarios.py --verbose` to see diff details
 3. **StrictInvariantsViolation**: Consider disabling STRICT_INVARIANTS temporarily while investigating
+4. **BaselinePackFailing**: Run `make validate-pack PACK=baseline` to see detailed diff output
+5. **ScenarioErrors**: Check if scenario request files exist in `docs/scenarios/packs/` directory
+6. **PackValidationSlow**: Consider reducing number of scenarios in pack or optimizing sizing engine

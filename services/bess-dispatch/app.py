@@ -151,6 +151,12 @@ from observability.invariant_metrics import (
     record_strict_invariants_status,
     record_strict_invariants_violation,
 )
+from observability.validation_pack_metrics import (
+    record_pack_validation_request,
+    record_pack_validation_result,
+    record_scenario_validation,
+    record_pack_validation_duration,
+)
 from run_store import (
     save_run,
     get_run,
@@ -3870,6 +3876,9 @@ async def create_validate_pack_job(request: CreateValidatePackJobRequest):
 
     if request.wait:
         mark_running(job_id)
+        import time
+        start_time = time.time()
+        record_pack_validation_request(request.pack)
         try:
             result = run_validate_pack(
                 pack_name=request.pack,
@@ -3878,10 +3887,25 @@ async def create_validate_pack_job(request: CreateValidatePackJobRequest):
                 packs_dir=PACKS_DIR,
             )
             all_passed = result.get("pass", False)
-            error_count = result.get("summary", {}).get("fail", 0)
+            summary = result.get("summary", {})
+            error_count = summary.get("fail", 0)
             save_result(job_id, result=result, status="done",
                        message=None if all_passed else f"{error_count} scenario(s) failed")
             update_progress(job_id, items_done=len(scenarios), error_count=error_count)
+
+            # Record metrics (v1.7.0)
+            duration = time.time() - start_time
+            record_pack_validation_duration(request.pack, duration)
+            record_pack_validation_result(request.pack, all_passed, summary)
+            for scenario in result.get("scenarios", []):
+                record_scenario_validation(
+                    pack=request.pack,
+                    scenario=scenario.get("name", "unknown"),
+                    passed=scenario.get("pass", False),
+                    error=bool(scenario.get("error")),
+                    mismatch_count=scenario.get("mismatch_count", 0),
+                )
+
             return ValidatePackJobResponse(
                 job_id=job_id, pack=request.pack, status="done",
                 items_total=len(scenarios), items_done=len(scenarios),
