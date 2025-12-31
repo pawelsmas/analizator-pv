@@ -1,0 +1,34 @@
+{
+  "job_id": "c31e72a7-a1a7-4521-a0c1-122272e40a21",
+  "type": "validate_pack",
+  "pack": "baseline",
+  "status": "done",
+  "items_total": 2,
+  "items_done": 2,
+  "error_count": 2,
+  "result": {
+    "pack": "baseline",
+    "pass": false,
+    "summary": {
+      "total": 2,
+      "pass": 0,
+      "fail": 2,
+      "error": 2
+    },
+    "scenarios": [
+      {
+        "name": "baseline_stacked_no_arb",
+        "pass": false,
+        "mismatch_count": 0,
+        "error": "Request file not found: scripts/smoke/sizing_stacked_no_arbitrage.json"
+      },
+      {
+        "name": "baseline_stacked_with_arb",
+        "pass": false,
+        "mismatch_count": 0,
+        "error": "Request file not found: scripts/smoke/sizing_stacked_with_arbitrage.json"
+      }
+    ]
+  },
+  "message": "2 scenario(s) failed"
+}
