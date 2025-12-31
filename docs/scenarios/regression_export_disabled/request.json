@@ -1,0 +1,21 @@
+{
+  "load_kw": [250, 230, 220, 210, 220, 280, 450, 580, 650, 720, 780, 800, 750, 720, 700, 680, 620, 550, 480, 420, 380, 340, 300, 270],
+  "pv_generation_kw": [0, 0, 0, 0, 0, 0, 0, 80, 240, 400, 520, 600, 640, 600, 520, 400, 240, 80, 0, 0, 0, 0, 0, 0],
+  "mode": "stacked",
+  "durations_h": [1.0, 2.0],
+  "interval_minutes": 60,
+  "peak_limit_kw": 500,
+  "discount_rate": 0.08,
+  "analysis_years": 15,
+  "capex_pln_per_kwh": 1800.0,
+  "capex_pln_per_kw": 0.0,
+  "grid_constraints": {
+    "export_cap_kw": 0,
+    "import_cap_kw": 10000
+  },
+  "prices": {
+    "import_price_pln_mwh": 800.0,
+    "export_price_pln_mwh": 0.0
+  },
+  "include_money_ledger": true
+}

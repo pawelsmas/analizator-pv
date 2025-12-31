@@ -1,0 +1,24 @@
+{
+  "description": "DST boundary test: March 26-27, 2023 (spring forward)",
+  "load_kw": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+              100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+  "pv_generation_kw": [0, 0, 0, 0, 0, 0, 0, 50, 100, 150, 200, 200, 200, 150, 100, 50, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0, 50, 100, 150, 200, 200, 200, 150, 100, 50, 0, 0, 0, 0, 0, 0, 0],
+  "mode": "pv_surplus",
+  "durations_h": [1.0],
+  "interval_minutes": 60,
+  "discount_rate": 0.08,
+  "analysis_years": 15,
+  "capex_pln_per_kwh": 1800.0,
+  "capex_pln_per_kw": 0.0,
+  "prices": {
+    "import_price_pln_mwh": 800.0,
+    "export_price_pln_mwh": 400.0
+  },
+  "analytical_period": {
+    "start_date": "2023-03-26",
+    "interval_minutes": 60,
+    "period_days": 2
+  },
+  "include_money_ledger": true
+}
