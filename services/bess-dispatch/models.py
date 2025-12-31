@@ -828,6 +828,133 @@ class SavingsBreakdown(BaseModel):
 
 
 # =============================================================================
+# Money Ledger SSoT (v1.9.0)
+# =============================================================================
+
+class MoneyLedgerTotalsPln(BaseModel):
+    """
+    Cost breakdown totals for a scenario (baseline or project).
+
+    All values in PLN. Costs are positive, revenue is positive but subtracted
+    from total_cost (so higher revenue = lower total_cost).
+
+    This is the SINGLE SOURCE OF TRUTH for cost accounting.
+    """
+    # Energy costs (import from grid)
+    import_energy_cost_pln: float = Field(
+        0.0,
+        description="Cost of importing energy from grid [PLN] - includes ToU rate"
+    )
+
+    # Export revenue (positive = money earned)
+    export_revenue_pln: float = Field(
+        0.0,
+        description="Revenue from exporting energy to grid [PLN] - positive value"
+    )
+
+    # Fees and charges
+    other_fees_pln: float = Field(
+        0.0,
+        description="Other fees [PLN]: OZE, kogeneracja, jakość, akcyza"
+    )
+    capacity_fee_pln: float = Field(
+        0.0,
+        description="Capacity fee (opłata mocowa PL) [PLN]"
+    )
+    demand_charge_pln: float = Field(
+        0.0,
+        description="Demand charge / peak shaving fee (opłata za moc umowną) [PLN]"
+    )
+
+    # Penalties and costs
+    unserved_penalty_pln: float = Field(
+        0.0,
+        description="Penalty for unserved load due to import constraints [PLN]"
+    )
+    degradation_cost_pln: float = Field(
+        0.0,
+        description="Battery degradation cost (throughput-based) [PLN]"
+    )
+
+    # SSoT Total
+    total_cost_pln: float = Field(
+        0.0,
+        description="Total net cost [PLN] = import + fees + penalties - export_revenue"
+    )
+
+    def calculate_total(self) -> float:
+        """
+        Calculate total cost from components.
+
+        Formula: total = import + other_fees + capacity_fee + demand_charge
+                        + unserved_penalty + degradation - export_revenue
+        """
+        return (
+            self.import_energy_cost_pln +
+            self.other_fees_pln +
+            self.capacity_fee_pln +
+            self.demand_charge_pln +
+            self.unserved_penalty_pln +
+            self.degradation_cost_pln -
+            self.export_revenue_pln  # Revenue reduces total cost
+        )
+
+
+class MoneyLedger(BaseModel):
+    """
+    Complete money ledger comparing baseline vs project costs (v1.9.0 SSoT).
+
+    Provides full cost breakdown for:
+    - baseline_period: Costs for the analysis period WITHOUT battery
+    - project_period: Costs for the analysis period WITH battery
+    - delta_period_pln: Difference (baseline - project) for period
+    - baseline_annual: Annualized costs WITHOUT battery
+    - project_annual: Annualized costs WITH battery
+    - delta_annual_pln: Annualized difference (baseline - project)
+
+    The delta values represent SAVINGS (positive = money saved).
+    delta.total_cost_pln should match net_savings_pln (SSoT reconciliation).
+    """
+    # Period costs (actual analysis period)
+    baseline_period: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Baseline costs for the analysis period (no battery)"
+    )
+    project_period: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Project costs for the analysis period (with battery)"
+    )
+    delta_period_pln: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Delta (baseline - project) for period = savings per category"
+    )
+
+    # Annualized costs
+    baseline_annual: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Baseline costs annualized"
+    )
+    project_annual: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Project costs annualized"
+    )
+    delta_annual_pln: MoneyLedgerTotalsPln = Field(
+        default_factory=MoneyLedgerTotalsPln,
+        description="Delta (baseline - project) annualized = annual savings per category"
+    )
+
+    # Period metadata
+    is_full_year: bool = Field(
+        False,
+        description="True if analysis period is exactly 8760 hours (1 year)"
+    )
+    period_hours: int = Field(
+        0,
+        description="Number of hours in analysis period"
+    )
+
+
+# =============================================================================
 # Energy Flows SSoT
 # =============================================================================
 
@@ -1495,6 +1622,13 @@ class SizingRequest(BaseModel):
                     "False = only totals_pln (small). True = also timeseries_pln (large)."
     )
 
+    # Money ledger control (new in v1.9.0)
+    include_money_ledger: bool = Field(
+        False,
+        description="Include MoneyLedger (baseline/project cost breakdown) in response. "
+                    "Shows all cost categories for transparency and reconciliation."
+    )
+
     # Finance configuration (v0.5.0)
     finance_config: Optional["FinanceConfig"] = Field(
         None,
@@ -1586,6 +1720,13 @@ class SizingVariantResult(BaseModel):
         None,
         description="Invariant check results if include_invariants=True. "
                     "Contains energy_balance_ok, non_negative_ok, cost_sums_ok, annualization_ok."
+    )
+
+    # Money ledger (v1.9.0) - cost breakdown SSoT
+    money_ledger: Optional["MoneyLedger"] = Field(
+        None,
+        description="Money ledger with baseline/project cost breakdown if include_money_ledger=True. "
+                    "Provides full transparency into cost categories and reconciliation."
     )
 
     def model_post_init(self, __context):
