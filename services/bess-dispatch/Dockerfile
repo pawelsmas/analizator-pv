@@ -32,6 +32,7 @@ COPY invariants_helper.py .
 COPY rounding_helper.py .
 COPY determinism_helper.py .
 COPY validate_pack.py .
+COPY validate_pack_api.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/
