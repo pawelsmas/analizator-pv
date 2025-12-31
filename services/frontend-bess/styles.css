@@ -47,6 +47,20 @@ body {
 .header-info {
   font-size: 13px;
   opacity: 0.9;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* Backend version badge (v1.8.0) */
+.backend-version-badge {
+  font-size: 10px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  background: rgba(255,255,255,0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  opacity: 0.8;
 }
 
 /* Variant Selector - Sticky on scroll */

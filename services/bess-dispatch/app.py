@@ -205,6 +205,7 @@ from common.logging_structured import (
     log_dispatch_response,
     record_dispatch_metrics,
 )
+from common.versioning import get_full_version_info
 
 
 # =============================================================================
@@ -347,6 +348,30 @@ async def service_info():
             "Batch sizing endpoint (v0.9.0)",
         ]
     )
+
+
+# =============================================================================
+# Version Endpoint (v1.8.0)
+# =============================================================================
+
+class VersionResponse(BaseModel):
+    """Service version information."""
+    service: str = Field(..., description="Service name")
+    git_sha: str = Field(..., description="Git commit SHA")
+    build_time_utc: str = Field(..., description="Build timestamp (UTC)")
+    schema_version: str = Field(..., description="API schema version")
+    assumptions_version: str = Field(..., description="Assumptions file version hash")
+
+
+@app.get("/api/bess-dispatch/version", response_model=VersionResponse)
+async def get_version():
+    """
+    Get service version information.
+
+    Returns git SHA, build time, schema version, and assumptions version.
+    Useful for debugging and ensuring frontend/backend compatibility.
+    """
+    return VersionResponse(**get_full_version_info())
 
 
 # =============================================================================
