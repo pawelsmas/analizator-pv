@@ -35,6 +35,28 @@ jobs:
           docker compose ps
           docker compose logs --tail=50
 
+      # v1.6.0: Nightly baseline validation
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install validation dependencies
+        run: |
+          pip install pyyaml requests
+
+      - name: Run baseline pack validation
+        run: |
+          python scripts/validate_scenarios.py --pack baseline --json
+        env:
+          BASE_URL: http://localhost:8031
+
+      - name: Run all scenario validations
+        run: |
+          python scripts/validate_scenarios.py --json
+        env:
+          BASE_URL: http://localhost:8031
+
       - name: Stop services
         if: always()
         run: docker compose down

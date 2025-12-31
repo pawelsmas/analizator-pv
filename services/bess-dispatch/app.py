@@ -138,6 +138,11 @@ from invariants_helper import (
     InvariantViolationError,
     STRICT_INVARIANTS,
 )
+from observability.invariant_metrics import (
+    record_invariant_result,
+    record_strict_invariants_status,
+    record_strict_invariants_violation,
+)
 from run_store import (
     save_run,
     get_run,
@@ -1608,12 +1613,17 @@ async def run_sizing_optimization(request: SizingRequestAPI):
         
         # v1.6.0: Add invariants to variants if requested
         if request.include_invariants:
+            # Record STRICT_INVARIANTS mode status
+            record_strict_invariants_status(STRICT_INVARIANTS)
             for variant in result.variants:
                 variant_dict = variant.model_dump(mode="json")
                 invariants_result = compute_invariants(variant_dict)
                 object.__setattr__(variant, 'invariants', invariants_result)
+                # Record invariant metrics for observability
+                record_invariant_result(invariants_result)
                 # Strict mode validation
                 if STRICT_INVARIANTS and not invariants_result.get("all_passed", True):
+                    record_strict_invariants_violation()
                     raise InvariantViolationError(
                         f"Invariant violation in variant {variant.variant}",
                         failed_invariants=[k for k, v in invariants_result.items() if k.endswith("_ok") and not v],
