@@ -106,6 +106,7 @@ from observability.sizing_constraint_metrics import (
     record_sizing_feasibility,
     record_pareto_frontier,
 )
+from determinism_helper import select_best_variant_deterministic
 
 logger = logging.getLogger(__name__)
 
@@ -2005,25 +2006,35 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     constraints_report = build_constraints_report(variants, request.constraints_config)
     none_feasible = constraints_report.none_feasible
 
-    # Find recommended variant (highest score, preferring feasible variants)
+    # Find recommended variant (highest score, with deterministic tie-breaking)
+    # v1.6.0: Use deterministic selection for reproducibility
+    # Tie-breakers: 1) higher NPV, 2) lower CAPEX, 3) alphabetical variant name
     recommended_reason = None
     structured_reason = None
     if variants:
+        # Define accessor functions for deterministic selection
+        def _score(v): return v.score
+        def _npv(v): return v.npv_pln
+        def _capex(v): return v.capex_pln
+        def _name(v): return v.variant.value if hasattr(v.variant, 'value') else str(v.variant)
+
         # If constraints_config is applied, prefer feasible variants (v0.8.0)
         if request.constraints_config is not None and not none_feasible:
-            # Select from feasible variants only
-            feasible_variants = [v for v in variants if v.feasibility and v.feasibility.is_feasible]
-            if feasible_variants:
-                best_idx = max(
-                    range(len(variants)),
-                    key=lambda i: variants[i].score if variants[i].feasibility and variants[i].feasibility.is_feasible else -float('inf')
+            # Select from feasible variants only using deterministic tie-breaking
+            filter_fn = lambda v: v.feasibility and v.feasibility.is_feasible
+            best_idx = select_best_variant_deterministic(
+                variants, _score, _npv, _capex, _name, filter_fn
+            )
+            if best_idx is None:
+                # Fallback: none feasible, use highest score with tie-breaking
+                best_idx = select_best_variant_deterministic(
+                    variants, _score, _npv, _capex, _name, None
                 )
-            else:
-                # Fallback: none feasible, use highest score anyway
-                best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
         else:
-            # No constraints or none feasible: use highest score
-            best_idx = max(range(len(variants)), key=lambda i: variants[i].score)
+            # No constraints or none feasible: use deterministic selection
+            best_idx = select_best_variant_deterministic(
+                variants, _score, _npv, _capex, _name, None
+            )
 
         variants[best_idx].is_recommended = True
         recommended = variants[best_idx]
