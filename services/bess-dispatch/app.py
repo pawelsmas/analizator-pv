@@ -3903,6 +3903,176 @@ async def create_validate_pack_job(request: CreateValidatePackJobRequest):
 
 
 # =============================================================================
+# Validate-Pack Exports (v1.7.0)
+# =============================================================================
+
+from validate_pack_export_helper import (
+    export_validate_pack_to_csv,
+    export_validate_pack_diffs_to_csv,
+    export_validate_pack_to_json,
+    export_validate_pack_to_zip,
+)
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/validate-pack/export/csv")
+async def export_validate_pack_csv(job_id: str):
+    """
+    Export validate-pack results to CSV format.
+
+    Returns a summary CSV with one row per scenario.
+
+    Args:
+        job_id: Job identifier (must be a validate_pack job)
+
+    Returns:
+        CSV file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job.get("type") != "validate_pack":
+        raise HTTPException(400, f"Job is not a validate-pack job: type={job.get('type')}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    result = job.get("result", {})
+    csv_content = export_validate_pack_to_csv(result)
+    pack_name = result.get("pack", "pack")
+    filename = f"validate_{pack_name}_{job_id[:8]}_summary.csv"
+
+    record_job_export(format="csv")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/validate-pack/export/diffs")
+async def export_validate_pack_diffs(job_id: str):
+    """
+    Export validate-pack diffs to CSV format.
+
+    Returns a detailed CSV with one row per field diff.
+
+    Args:
+        job_id: Job identifier (must be a validate_pack job)
+
+    Returns:
+        CSV file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job.get("type") != "validate_pack":
+        raise HTTPException(400, f"Job is not a validate-pack job: type={job.get('type')}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    result = job.get("result", {})
+    csv_content = export_validate_pack_diffs_to_csv(result)
+    pack_name = result.get("pack", "pack")
+    filename = f"validate_{pack_name}_{job_id[:8]}_diffs.csv"
+
+    record_job_export(format="csv")
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/validate-pack/export/json")
+async def export_validate_pack_json(job_id: str):
+    """
+    Export validate-pack results to JSON format.
+
+    Args:
+        job_id: Job identifier (must be a validate_pack job)
+
+    Returns:
+        JSON file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job.get("type") != "validate_pack":
+        raise HTTPException(400, f"Job is not a validate-pack job: type={job.get('type')}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    result = job.get("result", {})
+    json_content = export_validate_pack_to_json(result, job_id)
+    pack_name = result.get("pack", "pack")
+    filename = f"validate_{pack_name}_{job_id[:8]}_result.json"
+
+    record_job_export(format="json")
+
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/validate-pack/export/zip")
+async def export_validate_pack_zip(job_id: str):
+    """
+    Export validate-pack results to ZIP archive.
+
+    Contains summary.csv, diffs.csv, result.json, and metadata.json.
+
+    Args:
+        job_id: Job identifier (must be a validate_pack job)
+
+    Returns:
+        ZIP file download
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job.get("type") != "validate_pack":
+        raise HTTPException(400, f"Job is not a validate-pack job: type={job.get('type')}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    result = job.get("result", {})
+    zip_content = export_validate_pack_to_zip(result, job_id)
+    pack_name = result.get("pack", "pack")
+    filename = f"validate_{pack_name}_{job_id[:8]}.zip"
+
+    record_job_export(format="zip")
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
