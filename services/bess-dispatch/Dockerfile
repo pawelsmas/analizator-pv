@@ -31,6 +31,7 @@ COPY annualization_helper.py .
 COPY invariants_helper.py .
 COPY rounding_helper.py .
 COPY determinism_helper.py .
+COPY validate_pack.py .
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/
