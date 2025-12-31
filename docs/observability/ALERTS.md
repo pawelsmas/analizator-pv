@@ -241,6 +241,74 @@ route:
       receiver: 'bess-critical'
 ```
 
+## Debug Events Alerts (v1.8.0)
+
+### Warning: Unserved Load Detected
+
+Fires when any run has unserved load, indicating the BESS configuration is undersized.
+
+```yaml
+- alert: BESSUnservedLoadDetected
+  expr: increase(bess_debug_events_unserved_load_total[15m]) > 0
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Unserved load detected in sizing runs"
+    description: "{{ $value }} runs had unserved load in the last 15 minutes. Consider reviewing BESS sizing constraints."
+```
+
+### Warning: High PV Curtailment
+
+Fires when PV curtailment exceeds threshold.
+
+```yaml
+- alert: BESSHighPVCurtailment
+  expr: histogram_quantile(0.99, rate(bess_debug_events_pv_curtail_mwh_bucket[1h])) > 1.0
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High PV curtailment detected"
+    description: "99th percentile PV curtailment exceeds 1.0 MWh. Consider increasing BESS capacity or grid export limits."
+```
+
+### Info: Export/Import Limited Runs
+
+Fires when grid constraints are frequently limiting energy flows.
+
+```yaml
+- alert: BESSGridLimited
+  expr: |
+    rate(bess_debug_events_export_limited_total[1h]) > 0.1
+    or rate(bess_debug_events_import_limited_total[1h]) > 0.1
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "Grid constraints limiting BESS operation"
+    description: "Export or import limits are frequently activated. Review grid connection capacity."
+```
+
+## Repro Bundle Alerts (v1.8.0)
+
+### Warning: High Repro Download Failure Rate
+
+Fires when repro bundle downloads are frequently failing (run not found).
+
+```yaml
+- alert: BESSReproDownloadFailures
+  expr: |
+    sum(rate(bess_repro_run_downloads_total{status="not_found"}[15m])) /
+    sum(rate(bess_repro_run_downloads_total[15m])) > 0.1
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High repro bundle download failure rate"
+    description: "More than 10% of repro.zip downloads are failing due to run not found. Check run retention policy."
+```
+
 ## Runbook Links
 
 When alerts fire, operators should:
@@ -251,3 +319,6 @@ When alerts fire, operators should:
 4. **BaselinePackFailing**: Run `make validate-pack PACK=baseline` to see detailed diff output
 5. **ScenarioErrors**: Check if scenario request files exist in `docs/scenarios/packs/` directory
 6. **PackValidationSlow**: Consider reducing number of scenarios in pack or optimizing sizing engine
+7. **UnservedLoadDetected**: Review BESS sizing constraints, possibly increase battery capacity
+8. **HighPVCurtailment**: Consider increasing BESS capacity or grid export limits
+9. **ReproDownloadFailures**: Check run store retention policy, may need to extend retention days

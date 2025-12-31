@@ -69,6 +69,7 @@ from dispatch_engine import (
 )
 from common.versioning import get_version_info
 from debug_events_helper import compute_debug_events
+from observability.repro_metrics import record_debug_events
 from common.logging_structured import (
     log_sizing_request,
     log_sizing_response,
@@ -1174,6 +1175,10 @@ def run_sizing_for_variant(
         constraint_summary=result.constraint_summary,
         energy_flows=result.energy_flows,
     )
+
+    # Record debug events metrics (v1.8.0)
+    if result.debug_events:
+        record_debug_events(result.debug_events)
 
     # ==========================================================================
     # Calculate Savings Breakdown (transparent NPV components)

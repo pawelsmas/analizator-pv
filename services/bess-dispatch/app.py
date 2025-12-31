@@ -82,6 +82,13 @@ from observability.metadata_metrics import (
     record_job_metadata_patch_error,
 )
 
+from observability.repro_metrics import (
+    # v1.8.0 repro bundle and debug events metrics
+    record_repro_run_download,
+    record_repro_job_download,
+    record_debug_events,
+)
+
 from models import (
     DispatchRequest,
     DispatchResult,
@@ -900,6 +907,7 @@ async def export_run_repro_bundle(run_id: str):
 
     stored = get_run(run_id)
     if stored is None:
+        record_repro_run_download(success=False)
         raise HTTPException(404, f"Run {run_id} not found")
 
     import zipfile
@@ -952,6 +960,7 @@ async def export_run_repro_bundle(run_id: str):
     zip_content = zip_buffer.getvalue()
 
     record_runstore_export(format_type="repro_zip")
+    record_repro_run_download(success=True)
 
     return Response(
         content=zip_content,
@@ -3539,6 +3548,7 @@ async def export_job_repro_bundle(job_id: str):
 
     job = get_job(job_id)
     if not job:
+        record_repro_job_download(success=False)
         raise HTTPException(404, f"Job not found: {job_id}")
 
     if job["status"] not in ("done", "failed", "cancelled"):
@@ -3606,6 +3616,7 @@ async def export_job_repro_bundle(job_id: str):
     zip_content = zip_buffer.getvalue()
 
     record_job_export(format="repro_zip")
+    record_repro_job_download(success=True)
 
     return Response(
         content=zip_content,
