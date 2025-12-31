@@ -2,6 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Build arguments for version info
+ARG GIT_SHA=unknown
+ARG BUILD_TIME_UTC=unknown
+
+# Set as environment variables
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_TIME_UTC=${BUILD_TIME_UTC}
+
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 

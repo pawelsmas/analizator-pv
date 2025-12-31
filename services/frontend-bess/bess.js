@@ -7120,8 +7120,69 @@ async function exportBaselineHealthZIP() {
   }
 }
 
-// Initialize validation on load
+// =============================================================================
+// BACKEND VERSION BADGE (v1.8.0)
+// =============================================================================
+
+/**
+ * Fetch backend version and display in header
+ */
+async function loadBackendVersion() {
+  try {
+    const response = await fetch('/api/bess-dispatch/version');
+    if (!response.ok) {
+      console.warn('[Version] Failed to fetch backend version:', response.status);
+      return;
+    }
+    const data = await response.json();
+    displayBackendVersion(data);
+  } catch (error) {
+    console.warn('[Version] Failed to fetch backend version:', error);
+  }
+}
+
+/**
+ * Display backend version in header badge
+ * @param {object} versionInfo - Version info from /version endpoint
+ */
+function displayBackendVersion(versionInfo) {
+  const badge = document.getElementById('backendVersion');
+  if (!badge) return;
+
+  // Format: "Backend: schema_version (git_sha short)"
+  const shortSha = (versionInfo.git_sha || 'unknown').substring(0, 7);
+  const schemaVer = versionInfo.schema_version || '?';
+
+  badge.textContent = `Backend: v${schemaVer} (${shortSha})`;
+  badge.title = `Build: ${versionInfo.build_time_utc || 'unknown'}\nAssumptions: ${versionInfo.assumptions_version || 'unknown'}`;
+  badge.style.display = 'inline';
+}
+
+/**
+ * Map version response to display format
+ * @param {object} versionResponse - Raw version response
+ * @returns {object} Mapped version for display
+ */
+function mapVersionResponse(versionResponse) {
+  return {
+    service: versionResponse.service || 'unknown',
+    gitSha: versionResponse.git_sha || 'unknown',
+    gitShaShort: (versionResponse.git_sha || 'unknown').substring(0, 7),
+    buildTime: versionResponse.build_time_utc || 'unknown',
+    schemaVersion: versionResponse.schema_version || 'unknown',
+    assumptionsVersion: versionResponse.assumptions_version || 'unknown',
+    displayText: `v${versionResponse.schema_version || '?'} (${(versionResponse.git_sha || 'unknown').substring(0, 7)})`,
+  };
+}
+
+// Export version functions (v1.8.0)
+window.loadBackendVersion = loadBackendVersion;
+window.displayBackendVersion = displayBackendVersion;
+window.mapVersionResponse = mapVersionResponse;
+
+// Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
+  loadBackendVersion();  // v1.8.0: Load backend version
   loadAvailableScenarios();
   loadAvailablePacks();  // v1.7.0: Load packs for Baseline Health
 });
@@ -7140,4 +7201,4 @@ window.runBaselineHealth = runBaselineHealth;
 window.exportBaselineHealthCSV = exportBaselineHealthCSV;
 window.exportBaselineHealthZIP = exportBaselineHealthZIP;
 
-console.log('[BESS] bess.js v3.28 - v1.7.0 Baseline Health');
+console.log('[BESS] bess.js v3.29 - v1.8.0 Backend Version Badge');
