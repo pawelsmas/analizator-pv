@@ -142,6 +142,43 @@ def check_annualization(variant: Dict[str, Any], tolerance_pct: float = 0.01) ->
     )
 
 
+def check_ledger_reconciliation(variant: Dict[str, Any], tolerance_pln: float = 1.0) -> InvariantResult:
+    """
+    Check ledger reconciliation invariant (v1.9.0).
+
+    When money_ledger is present:
+    net_savings_pln == delta_annual_pln.total_cost_pln
+
+    The MoneyLedger delta represents the cost reduction (savings) from baseline to project.
+    This must match the net_savings_pln reported in savings_breakdown.
+    """
+    money_ledger = variant.get("money_ledger")
+
+    # If no money_ledger, skip this check
+    if money_ledger is None:
+        return InvariantResult(
+            name="ledger_reconciliation_ok",
+            passed=True,
+            details="money_ledger not present (skipped)"
+        )
+
+    sb = variant.get("savings_breakdown", {})
+    net_savings = sb.get("net_savings_pln", 0)
+
+    delta_annual = money_ledger.get("delta_annual_pln", {})
+    ledger_delta = delta_annual.get("total_cost_pln", 0)
+
+    diff = abs(net_savings - ledger_delta)
+    passed = diff <= tolerance_pln
+
+    return InvariantResult(
+        name="ledger_reconciliation_ok",
+        passed=passed,
+        max_abs_error=diff,
+        details=f"net_savings={net_savings:.2f}, ledger_delta={ledger_delta:.2f}, diff={diff:.2f}" if not passed else None
+    )
+
+
 def compute_invariants(variant: Dict[str, Any]) -> Dict[str, Any]:
     """
     Compute all invariants for a variant.
@@ -153,6 +190,7 @@ def compute_invariants(variant: Dict[str, Any]) -> Dict[str, Any]:
         check_non_negative(variant),
         check_cost_sums(variant),
         check_annualization(variant),
+        check_ledger_reconciliation(variant),  # v1.9.0
     ]
 
     result = {}
