@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list capture-scenario test-frontend
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -161,3 +161,13 @@ validate: ## Run scenario validation tests (correctness)
 
 validate-list: ## List available validation scenarios
 	@python scripts/validate_scenarios.py --list
+
+capture-scenario: ## Capture scenario from run_id (usage: make capture-scenario RUN_ID=xxx NAME=yyy)
+	@echo "${BLUE}Capturing scenario from run $(RUN_ID)...${RESET}"
+	@python scripts/capture_scenario.py --run-id $(RUN_ID) --name $(NAME)
+	@echo "${GREEN}✓ Scenario captured to docs/scenarios/$(NAME)/${RESET}"
+
+test-frontend: ## Run frontend JavaScript syntax checks
+	@echo "${BLUE}Checking frontend JavaScript syntax...${RESET}"
+	@node --check services/frontend-bess/bess.js
+	@echo "${GREEN}✓ Frontend syntax OK${RESET}"
