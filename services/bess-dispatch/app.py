@@ -3672,6 +3672,15 @@ class ValidateSizingRequest(BaseModel):
     scenario_id: Optional[str] = Field(None, description="Optional scenario ID for tracking")
 
 
+class TopMismatch(BaseModel):
+    """A single top mismatch entry (v1.8.0)."""
+    field: str = Field(..., description="Field name that mismatched")
+    expected: Any = Field(..., description="Expected value")
+    actual: Any = Field(..., description="Actual value")
+    abs_diff: float = Field(..., description="Absolute difference")
+    rel_diff_pct: Optional[float] = Field(None, description="Relative difference as percentage")
+
+
 class ValidateSizingResponse(BaseModel):
     """Response from /validate/sizing endpoint."""
     passed: bool = Field(..., description="True if all KPIs pass within tolerances")
@@ -3681,6 +3690,15 @@ class ValidateSizingResponse(BaseModel):
     diffs: List[Dict[str, Any]] = Field(..., description="Per-field comparison results")
     failed_fields: List[str] = Field(..., description="List of fields that failed validation")
     passed_fields: List[str] = Field(..., description="List of fields that passed validation")
+    # v1.8.0: Top mismatches and debug summary for drilldown
+    top_mismatches: List[TopMismatch] = Field(
+        default_factory=list,
+        description="Top 5 mismatches sorted by abs_diff descending (v1.8.0)"
+    )
+    debug_summary: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Debug events summary from sizing response (v1.8.0)"
+    )
 
 
 @app.post("/validate/sizing", response_model=ValidateSizingResponse)
@@ -3774,6 +3792,31 @@ async def validate_sizing(body: ValidateSizingRequest):
         d_dict = d.model_dump(by_alias=True)
         diffs_as_dicts.append(d_dict)
 
+    # v1.8.0: Compute top_mismatches (top 5 failed fields by abs_diff)
+    failed_diffs = [d for d in diffs if not d.pass_]
+    # Sort by abs_diff descending
+    failed_diffs_sorted = sorted(failed_diffs, key=lambda x: x.abs_diff, reverse=True)
+    top_mismatches = []
+    for d in failed_diffs_sorted[:5]:
+        rel_diff_pct = None
+        if d.expected is not None and d.expected != 0:
+            rel_diff_pct = (d.abs_diff / abs(d.expected)) * 100
+        top_mismatches.append(TopMismatch(
+            field=d.field,
+            expected=d.expected,
+            actual=d.actual,
+            abs_diff=d.abs_diff,
+            rel_diff_pct=rel_diff_pct,
+        ))
+
+    # v1.8.0: Extract debug_summary from recommended variant
+    debug_summary = None
+    variants = response_dict.get("variants", [])
+    recommended = next((v for v in variants if v.get("is_recommended")), None)
+    if recommended:
+        dispatch_summary = recommended.get("dispatch_summary", {})
+        debug_summary = dispatch_summary.get("debug_events")
+
     return ValidateSizingResponse(
         passed=passed,
         run_id=run_id,
@@ -3782,6 +3825,8 @@ async def validate_sizing(body: ValidateSizingRequest):
         diffs=diffs_as_dicts,
         failed_fields=failed_fields,
         passed_fields=passed_fields,
+        top_mismatches=top_mismatches,
+        debug_summary=debug_summary,
     )
 
 
