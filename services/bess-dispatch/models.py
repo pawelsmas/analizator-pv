@@ -587,6 +587,13 @@ class DispatchRequest(BaseModel):
                     "False = only totals_mwh (small). True = also timeseries_kwh (large)."
     )
 
+    # Economics timeseries control (new in v1.5.0)
+    include_economics_timeseries: bool = Field(
+        False,
+        description="Include per-timestep economics breakdown in response. "
+                    "False = only totals_pln (small). True = also timeseries_pln (large)."
+    )
+
     # Grid constraints (v0.7.0)
     grid_constraints: Optional["GridConstraints"] = Field(
         None,
@@ -881,6 +888,102 @@ class EnergyFlows(BaseModel):
     )
 
 
+# =============================================================================
+# Economics Breakdown (v1.5.0)
+# =============================================================================
+
+class EconomicsTotalsPln(BaseModel):
+    """
+    Aggregate economics totals in PLN for the analysis period.
+
+    Always present in EconomicsBreakdown (small payload).
+    These are per-period totals that sum up to the same values as savings_breakdown.
+    """
+    energy_cost_baseline_pln: float = Field(
+        0.0, description="Total energy cost without battery [PLN]"
+    )
+    energy_cost_project_pln: float = Field(
+        0.0, description="Total energy cost with battery [PLN]"
+    )
+    energy_savings_pln: float = Field(
+        0.0, description="Energy cost savings = baseline - project [PLN]"
+    )
+    capacity_fee_baseline_pln: float = Field(
+        0.0, description="Capacity fee without battery [PLN]"
+    )
+    capacity_fee_project_pln: float = Field(
+        0.0, description="Capacity fee with battery [PLN]"
+    )
+    capacity_fee_savings_pln: float = Field(
+        0.0, description="Capacity fee savings = baseline - project [PLN]"
+    )
+    demand_charge_baseline_pln: float = Field(
+        0.0, description="Demand charge without battery [PLN]"
+    )
+    demand_charge_project_pln: float = Field(
+        0.0, description="Demand charge with battery [PLN]"
+    )
+    demand_charge_savings_pln: float = Field(
+        0.0, description="Demand charge savings = baseline - project [PLN]"
+    )
+    export_revenue_pln: float = Field(
+        0.0, description="Revenue from grid export [PLN]"
+    )
+    degradation_cost_pln: float = Field(
+        0.0, description="Battery degradation cost [PLN]"
+    )
+
+
+class EconomicsTimeseriesPln(BaseModel):
+    """
+    Per-timestep economics in PLN.
+
+    Only included when include_economics_timeseries=True.
+    Useful for debugging and detailed economic analysis.
+
+    Invariants:
+    - sum(energy_cost_baseline_pln) = totals.energy_cost_baseline_pln
+    - sum(energy_cost_project_pln) = totals.energy_cost_project_pln
+    - sum(capacity_fee_pln) = totals.capacity_fee_project_pln (if applicable)
+    """
+    energy_cost_baseline_pln: List[float] = Field(
+        default_factory=list,
+        description="Per-step energy cost without battery [PLN]"
+    )
+    energy_cost_project_pln: List[float] = Field(
+        default_factory=list,
+        description="Per-step energy cost with battery [PLN]"
+    )
+    export_revenue_pln: List[float] = Field(
+        default_factory=list,
+        description="Per-step export revenue [PLN]"
+    )
+    # Note: Capacity fee and demand charge are typically monthly/annual,
+    # so timeseries may not be meaningful for them in hourly resolution
+
+
+class EconomicsBreakdown(BaseModel):
+    """
+    Complete economics breakdown structure (v1.5.0).
+
+    Contains:
+    - totals_pln: Always present (aggregate values matching savings_breakdown)
+    - timeseries_pln: Only when requested via include_economics_timeseries flag
+
+    Usage invariants:
+    - sum(timeseries_pln.energy_cost_baseline_pln) ≈ totals_pln.energy_cost_baseline_pln
+    - totals_pln.energy_savings_pln ≈ savings_breakdown.energy_savings_pln
+    """
+    totals_pln: EconomicsTotalsPln = Field(
+        default_factory=EconomicsTotalsPln,
+        description="Aggregate totals in PLN (always present)"
+    )
+    timeseries_pln: Optional[EconomicsTimeseriesPln] = Field(
+        None,
+        description="Per-timestep values in PLN (only if include_economics_timeseries=True)"
+    )
+
+
 class PricesSummary(BaseModel):
     """
     Summary of prices used in simulation.
@@ -955,6 +1058,12 @@ class DispatchResult(BaseModel):
     energy_flows: Optional[EnergyFlows] = Field(
         None,
         description="Detailed energy flows. totals_mwh always present, timeseries_kwh only on request."
+    )
+
+    # Economics breakdown SSoT (new in v1.5.0)
+    economics_breakdown: Optional[EconomicsBreakdown] = Field(
+        None,
+        description="Detailed economics breakdown. totals_pln always present, timeseries_pln only on request."
     )
 
     # Hourly arrays (optional, for charts)
@@ -1328,6 +1437,13 @@ class SizingRequest(BaseModel):
         False,
         description="Include per-timestep energy flows in response. "
                     "False = only totals_mwh (small). True = also timeseries_kwh (large)."
+    )
+
+    # Economics timeseries control (new in v1.5.0)
+    include_economics_timeseries: bool = Field(
+        False,
+        description="Include per-timestep economics breakdown in response. "
+                    "False = only totals_pln (small). True = also timeseries_pln (large)."
     )
 
     # Finance configuration (v0.5.0)

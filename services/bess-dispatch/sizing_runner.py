@@ -81,6 +81,7 @@ from economics_helper import (
     build_time_index_cet_fixed,
     build_time_index_from_period,
     get_time_index_for_request,
+    create_economics_breakdown,
 )
 from observability.finance_metrics import (
     record_finance_cashflow_metrics,
@@ -1380,6 +1381,42 @@ def run_sizing_for_variant(
         request.opex_pct_per_year,
         request.discount_rate,
         request.analysis_years,
+    )
+
+    # ==========================================================================
+    # Economics Breakdown SSoT (v1.5.0)
+    # Creates per-timestep and aggregate economics with sum invariants
+    # ==========================================================================
+    include_econ_timeseries = getattr(request, 'include_economics_timeseries', False)
+
+    # Build PricingConfig for economics helper
+    econ_pricing_config = PricingConfig(
+        tariff_id=request.prices.tariff_id,
+        flat_import_pln_mwh=request.prices.import_price_pln_mwh,
+        flat_export_pln_mwh=request.prices.export_price_pln_mwh,
+        other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
+        analysis_year=request.prices.analysis_year,
+    )
+
+    # Get actual grid export from result
+    if result.hourly_grid_export_kw is not None:
+        actual_grid_export_kw = np.array(result.hourly_grid_export_kw)
+    else:
+        actual_grid_export_kw = np.zeros(n_timesteps)
+
+    result.economics_breakdown = create_economics_breakdown(
+        grid_import_baseline_kw=baseline_grid_import_kw,
+        grid_import_project_kw=actual_grid_import_kw,
+        config=econ_pricing_config,
+        interval_minutes=int(dt_hours * 60),
+        analytical_period=request.analytical_period,
+        include_timeseries=include_econ_timeseries,
+        capacity_fee_baseline_pln=0.0,
+        capacity_fee_project_pln=0.0,
+        demand_charge_baseline_pln=0.0,
+        demand_charge_project_pln=0.0,
+        degradation_cost_pln=savings_breakdown.degradation_cost_pln,
+        grid_export_project_kw=actual_grid_export_kw,
     )
 
     # Remove hourly arrays to save memory (we only needed them for calculations)

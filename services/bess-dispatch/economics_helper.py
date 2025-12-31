@@ -683,3 +683,140 @@ def create_custom_tariff(
         )
     else:
         raise ValueError(f"Unknown tariff group: {group}. Supported: C11, C12a, C12b")
+
+
+# =============================================================================
+# Economics Breakdown SSoT (v1.5.0)
+# =============================================================================
+
+def create_economics_breakdown(
+    grid_import_baseline_kw: np.ndarray,
+    grid_import_project_kw: np.ndarray,
+    grid_export_project_kw: np.ndarray,
+    config: PricingConfig,
+    interval_minutes: int = 60,
+    analytical_period: Optional["AnalyticalPeriodConfig"] = None,
+    include_timeseries: bool = False,
+    capacity_fee_baseline_pln: float = 0.0,
+    capacity_fee_project_pln: float = 0.0,
+    demand_charge_baseline_pln: float = 0.0,
+    demand_charge_project_pln: float = 0.0,
+    degradation_cost_pln: float = 0.0,
+) -> "EconomicsBreakdown":
+    """
+    Create EconomicsBreakdown object with per-timestep and aggregate economics.
+
+    This is the SSoT for economic calculations - the sum of per-step costs
+    should match the aggregate totals used in savings_breakdown.
+
+    Args:
+        grid_import_baseline_kw: Baseline grid import (without BESS) [kW]
+        grid_import_project_kw: Project grid import (with BESS) [kW]
+        grid_export_project_kw: Project grid export [kW]
+        config: Pricing configuration
+        interval_minutes: Time resolution (15 or 60)
+        analytical_period: Time axis configuration
+        include_timeseries: If True, include per-step arrays in response
+        capacity_fee_baseline_pln: Aggregate capacity fee without BESS [PLN]
+        capacity_fee_project_pln: Aggregate capacity fee with BESS [PLN]
+        demand_charge_baseline_pln: Aggregate demand charge without BESS [PLN]
+        demand_charge_project_pln: Aggregate demand charge with BESS [PLN]
+        degradation_cost_pln: Aggregate degradation cost [PLN]
+
+    Returns:
+        EconomicsBreakdown with totals_pln (always) and timeseries_pln (if requested)
+
+    Invariants:
+        - sum(timeseries_pln.energy_cost_baseline_pln) == totals_pln.energy_cost_baseline_pln
+        - totals_pln.energy_savings_pln == savings_breakdown.energy_savings_pln
+    """
+    # Import models here to avoid circular import
+    from models import EconomicsBreakdown, EconomicsTotalsPln, EconomicsTimeseriesPln
+
+    n_timesteps = len(grid_import_baseline_kw)
+    dt_hours = interval_minutes / 60
+
+    # Get price series for per-step calculations
+    if analytical_period is not None:
+        start_dt = datetime.fromisoformat(analytical_period.start_datetime)
+        start_date = start_dt.date()
+        total_hours = (analytical_period.n_points * analytical_period.interval_minutes) / 60
+        total_days = int(np.ceil(total_hours / 24))
+        end_date = start_date + timedelta(days=total_days - 1)
+    else:
+        start_date, end_date = get_analysis_dates(
+            config.analysis_year, n_timesteps, interval_minutes
+        )
+
+    # Get import price array
+    if config.tariff_id:
+        osd_tariff = get_preset_by_id(config.tariff_id)
+        if osd_tariff is not None:
+            tou_config = ToUPriceConfig(
+                osd_tariff=osd_tariff,
+                capacity_fee_pln_kwh=0.0,
+                other_components_pln_kwh=config.other_fees_pln_kwh,
+                export_rate_pln_kwh=config.flat_export_pln_mwh / 1000.0,
+            )
+            provider = ToUPriceProvider(tou_config)
+        else:
+            provider = FlatPriceProvider(
+                import_price_pln_kwh=config.flat_import_pln_mwh / 1000.0 + config.other_fees_pln_kwh,
+                export_price_pln_kwh=config.flat_export_pln_mwh / 1000.0,
+            )
+    else:
+        provider = FlatPriceProvider(
+            import_price_pln_kwh=config.flat_import_pln_mwh / 1000.0 + config.other_fees_pln_kwh,
+            export_price_pln_kwh=config.flat_export_pln_mwh / 1000.0,
+        )
+
+    price_bundle = provider.get_series(start_date, end_date, interval_minutes)
+    import_prices = price_bundle.get_import_array()
+    export_price_pln_kwh = config.flat_export_pln_mwh / 1000.0
+
+    # Ensure price array matches timesteps
+    if len(import_prices) < n_timesteps:
+        extension = [import_prices[-1]] * (n_timesteps - len(import_prices))
+        import_prices = np.concatenate([import_prices, extension])
+    import_prices = import_prices[:n_timesteps]
+
+    # Calculate per-step costs
+    baseline_import_kwh = grid_import_baseline_kw * dt_hours
+    project_import_kwh = grid_import_project_kw * dt_hours
+    project_export_kwh = grid_export_project_kw * dt_hours
+
+    # Per-step energy costs [PLN]
+    energy_cost_baseline_step = baseline_import_kwh * import_prices
+    energy_cost_project_step = project_import_kwh * import_prices
+    export_revenue_step = project_export_kwh * export_price_pln_kwh
+
+    # Aggregate totals
+    energy_cost_baseline_total = float(np.sum(energy_cost_baseline_step))
+    energy_cost_project_total = float(np.sum(energy_cost_project_step))
+    export_revenue_total = float(np.sum(export_revenue_step))
+
+    # Create totals model
+    totals = EconomicsTotalsPln(
+        energy_cost_baseline_pln=energy_cost_baseline_total,
+        energy_cost_project_pln=energy_cost_project_total,
+        energy_savings_pln=energy_cost_baseline_total - energy_cost_project_total,
+        capacity_fee_baseline_pln=capacity_fee_baseline_pln,
+        capacity_fee_project_pln=capacity_fee_project_pln,
+        capacity_fee_savings_pln=capacity_fee_baseline_pln - capacity_fee_project_pln,
+        demand_charge_baseline_pln=demand_charge_baseline_pln,
+        demand_charge_project_pln=demand_charge_project_pln,
+        demand_charge_savings_pln=demand_charge_baseline_pln - demand_charge_project_pln,
+        export_revenue_pln=export_revenue_total,
+        degradation_cost_pln=degradation_cost_pln,
+    )
+
+    # Create timeseries if requested
+    timeseries = None
+    if include_timeseries:
+        timeseries = EconomicsTimeseriesPln(
+            energy_cost_baseline_pln=energy_cost_baseline_step.tolist(),
+            energy_cost_project_pln=energy_cost_project_step.tolist(),
+            export_revenue_pln=export_revenue_step.tolist(),
+        )
+
+    return EconomicsBreakdown(totals_pln=totals, timeseries_pln=timeseries)
