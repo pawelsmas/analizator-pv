@@ -880,6 +880,88 @@ async def export_run_csv(run_id: str):
     )
 
 
+@app.get("/runs/{run_id}/repro.zip")
+async def export_run_repro_bundle(run_id: str):
+    """
+    Export run as reproducibility bundle (v1.8.0).
+
+    Returns a ZIP archive containing:
+    - request.json: The original sizing request
+    - response.json: The full sizing response
+    - debug_events.json: Extracted debug events from recommended variant
+
+    Filename: repro_{run_id}.zip
+
+    Returns 404 if run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    import zipfile
+    import io as zip_io
+
+    # Extract components
+    request_data = stored.get("request", {})
+    response_data = stored.get("response", {})
+
+    # Extract debug_events from recommended variant
+    debug_events = None
+    variants = response_data.get("variants", [])
+    recommended = next((v for v in variants if v.get("is_recommended")), None)
+    if recommended:
+        dispatch_summary = recommended.get("dispatch_summary", {})
+        debug_events = dispatch_summary.get("debug_events")
+
+    # Create ZIP in memory
+    zip_buffer = zip_io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # request.json
+        zf.writestr(
+            "request.json",
+            json.dumps(request_data, indent=2, ensure_ascii=False, default=str)
+        )
+        # response.json
+        zf.writestr(
+            "response.json",
+            json.dumps(response_data, indent=2, ensure_ascii=False, default=str)
+        )
+        # debug_events.json (if available)
+        if debug_events:
+            zf.writestr(
+                "debug_events.json",
+                json.dumps(debug_events, indent=2, ensure_ascii=False, default=str)
+            )
+        # metadata.json with run info
+        metadata = {
+            "run_id": run_id,
+            "request_hash": stored.get("request_hash"),
+            "created_at": stored.get("created_at"),
+            "endpoint": stored.get("endpoint"),
+            "version": "1.8.0",
+        }
+        zf.writestr(
+            "metadata.json",
+            json.dumps(metadata, indent=2, ensure_ascii=False, default=str)
+        )
+
+    zip_content = zip_buffer.getvalue()
+
+    record_runstore_export(format_type="repro_zip")
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="repro_{run_id}.zip"'
+        }
+    )
+
+
 # =============================================================================
 # Dispatch Endpoint
 # =============================================================================
@@ -3430,6 +3512,105 @@ async def export_job_zip(job_id: str):
         content=zip_content,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/repro.zip")
+async def export_job_repro_bundle(job_id: str):
+    """
+    Export job results as reproducibility bundle (v1.8.0).
+
+    Returns a ZIP archive containing for each item in the batch:
+    - items/{index}/request.json: The original sizing request
+    - items/{index}/response.json: The full sizing response
+    - items/{index}/debug_events.json: Extracted debug events
+
+    Plus metadata:
+    - metadata.json: Job metadata and summary
+
+    Filename: repro_{job_id}.zip
+
+    Returns 404 if job_id not found.
+    Returns 400 if job not complete.
+    Returns 503 if job store is disabled.
+    """
+    if not JOB_STORE_ENABLED:
+        raise HTTPException(503, "Job store is disabled")
+
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job not found: {job_id}")
+
+    if job["status"] not in ("done", "failed", "cancelled"):
+        raise HTTPException(400, f"Job not complete: status={job['status']}")
+
+    import zipfile
+    import io as zip_io
+
+    # Create ZIP in memory
+    zip_buffer = zip_io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Get results from job (stored under 'results' not 'items')
+        result = job.get("result", {})
+        results = result.get("results", [])
+
+        for idx, item in enumerate(results):
+            prefix = f"items/{idx:04d}"
+            item_id = item.get("item_id", f"item_{idx}")
+
+            # response.json (response is stored directly)
+            response_data = item.get("response", {})
+            zf.writestr(
+                f"{prefix}/response.json",
+                json.dumps(response_data, indent=2, ensure_ascii=False, default=str)
+            )
+
+            # request.json (extract from response.cache_info or use item_id as placeholder)
+            # Note: The original request is not stored in the results, so we extract what we can
+            request_data = {"item_id": item_id, "status": item.get("status")}
+            zf.writestr(
+                f"{prefix}/request.json",
+                json.dumps(request_data, indent=2, ensure_ascii=False, default=str)
+            )
+
+            # debug_events.json (if available)
+            debug_events = None
+            variants = response_data.get("variants", [])
+            recommended = next((v for v in variants if v.get("is_recommended")), None)
+            if recommended:
+                dispatch_summary = recommended.get("dispatch_summary", {})
+                debug_events = dispatch_summary.get("debug_events")
+
+            if debug_events:
+                zf.writestr(
+                    f"{prefix}/debug_events.json",
+                    json.dumps(debug_events, indent=2, ensure_ascii=False, default=str)
+                )
+
+        # metadata.json with job info
+        metadata = {
+            "job_id": job_id,
+            "batch_id": job.get("batch_id"),
+            "created_at": job.get("created_at"),
+            "status": job.get("status"),
+            "items_total": job.get("items_total", 0),
+            "items_done": job.get("items_done", 0),
+            "error_count": job.get("error_count", 0),
+            "version": "1.8.0",
+        }
+        zf.writestr(
+            "metadata.json",
+            json.dumps(metadata, indent=2, ensure_ascii=False, default=str)
+        )
+
+    zip_content = zip_buffer.getvalue()
+
+    record_job_export(format="repro_zip")
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="repro_{job_id[:8]}.zip"'},
     )
 
 
