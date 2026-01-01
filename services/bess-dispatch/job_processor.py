@@ -1,10 +1,11 @@
 """
-Job Processor for async batch sizing jobs (v1.1.0).
+Job Processor for async batch sizing jobs (v1.1.0, v2.3.0 portfolio).
 
 Provides:
 - process_job(): Main function to process a job (used by wait=true and worker)
 - JobProcessor class for managing job processing lifecycle
 - Worker mode for background job processing
+- Portfolio aggregation for sizing-batch results (v2.3.0)
 
 This module is shared between inline processing (wait=true) and background worker.
 """
@@ -20,6 +21,10 @@ from job_store import (
     is_cancelled,
     claim_next_pending_job,
 )
+
+# v2.3.0: Portfolio aggregation for sizing-batch results
+from portfolio_agg import summarize_items, extract_item_summary_from_result
+from models import PortfolioItemSummary
 
 
 def process_job(
@@ -81,6 +86,20 @@ def process_job(
 
     processing_time_ms = (time.time() - start_time) * 1000
 
+    # v2.3.0: Aggregate portfolio summary from OK results
+    portfolio_items = []
+    for result_item in results:
+        if result_item["status"] == "ok" and result_item.get("response"):
+            item_summary = extract_item_summary_from_result(
+                run_id=result_item["item_id"],
+                result=result_item["response"],
+                label=None,
+                tags=None,
+            )
+            portfolio_items.append(item_summary)
+
+    portfolio_summary = summarize_items(portfolio_items)
+
     return {
         "results": results,
         "summary": {
@@ -88,7 +107,10 @@ def process_job(
             "ok_count": ok_count,
             "error_count": error_count,
             "processing_time_ms": processing_time_ms,
-        }
+        },
+        # v2.3.0: Portfolio aggregation
+        "portfolio_summary": portfolio_summary.model_dump(),
+        "portfolio_items": [item.model_dump() for item in portfolio_items],
     }
 
 
