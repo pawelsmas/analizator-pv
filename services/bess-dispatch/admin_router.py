@@ -1,9 +1,10 @@
 """
-Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites/shares API).
+Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites/shares API, v3.2.0 key rotation).
 
 Endpoints:
 - GET /admin/api-keys - List API keys for tenant
 - POST /admin/api-keys - Create new API key
+- POST /admin/api-keys/{key_id}/rotate - Rotate API key (v3.2.0)
 - DELETE /admin/api-keys/{key_id} - Revoke API key
 
 User Management (v3.1.0):
@@ -50,6 +51,8 @@ class ApiKeyResponse(BaseModel):
     role: str
     created_at: str
     revoked_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+    rotated_from: Optional[str] = None
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -97,6 +100,8 @@ def list_api_keys(auth: AuthContext = Depends(require_role(Role.ADMIN))):
             role=key["role"],
             created_at=key["created_at"],
             revoked_at=key["revoked_at"],
+            last_used_at=key.get("last_used_at"),
+            rotated_from=key.get("rotated_from"),
         )
         for key in keys
     ]
@@ -147,6 +152,41 @@ def create_api_key(
         role=key_info["role"],
         created_at=key_info["created_at"],
         api_key=key_info["api_key"],
+    )
+
+
+@router.post("/api-keys/{key_id}/rotate", response_model=ApiKeyCreateResponse)
+def rotate_api_key(
+    key_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Rotate an API key (v3.2.0).
+
+    Creates a new API key with the same label and role, and revokes the old key.
+    The new key's rotated_from field will reference the old key's ID.
+
+    IMPORTANT: The new plaintext key is returned ONLY in this response.
+    Store it securely - it cannot be retrieved later.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+    new_key_info = auth_store.rotate_api_key(key_id, auth.tenant_id)
+
+    if new_key_info is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "KEY_NOT_FOUND", "message": "API key not found or already revoked"},
+        )
+
+    return ApiKeyCreateResponse(
+        id=new_key_info["id"],
+        tenant_id=new_key_info["tenant_id"],
+        label=new_key_info["label"],
+        role=new_key_info["role"],
+        created_at=new_key_info["created_at"],
+        api_key=new_key_info["api_key"],
     )
 
 
