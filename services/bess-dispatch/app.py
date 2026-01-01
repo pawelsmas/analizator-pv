@@ -4433,6 +4433,145 @@ async def export_validate_pack_zip(job_id: str):
 
 
 # =============================================================================
+# Pricing Preview (v2.1.0)
+# =============================================================================
+
+from price_timeseries_helper import generate_price_timeseries, compute_price_hash
+from models import PriceTimeseriesPlnPerMwh
+
+
+class PricingPreviewRequest(BaseModel):
+    """Request for pricing preview (no dispatch, just price generation)."""
+    interval_minutes: int = Field(
+        60,
+        ge=15, le=60,
+        description="Time resolution in minutes (15 or 60)"
+    )
+    timezone: str = Field(
+        "Europe/Warsaw",
+        description="Timezone for ToU zone mapping"
+    )
+    period_start: str = Field(
+        ...,
+        description="Period start (ISO 8601: YYYY-MM-DDTHH:MM:SS)"
+    )
+    period_end: str = Field(
+        ...,
+        description="Period end (ISO 8601: YYYY-MM-DDTHH:MM:SS)"
+    )
+    pricing_config: PriceConfig = Field(
+        ...,
+        description="Pricing configuration"
+    )
+
+
+class PricingPreviewPeriodInfo(BaseModel):
+    """Period info for pricing preview response."""
+    period_start: str
+    period_end: str
+    steps: int
+    step_minutes: int
+    timezone: str
+    period_hours: float
+    period_days: float
+
+
+class PricingPreviewResponse(BaseModel):
+    """Response from pricing preview endpoint."""
+    pricing_mode: str = Field(
+        ...,
+        description="Pricing mode: 'generated', 'override', 'schedule', or 'preset'"
+    )
+    price_hash: str = Field(
+        ...,
+        description="SHA256 hash of price timeseries (64-char hex)"
+    )
+    price_timeseries: PriceTimeseriesPlnPerMwh = Field(
+        ...,
+        description="Generated price timeseries"
+    )
+    period_info: PricingPreviewPeriodInfo = Field(
+        ...,
+        description="Period information"
+    )
+
+
+@app.post("/api/bess-dispatch/pricing/preview", response_model=PricingPreviewResponse)
+async def pricing_preview(request: PricingPreviewRequest):
+    """
+    Generate pricing preview without running dispatch.
+
+    Returns price_timeseries with the same logic as sizing endpoint,
+    but without running the actual dispatch/economics calculations.
+
+    Useful for:
+    - Previewing what prices will be used before running sizing
+    - Verifying ToU zone mapping
+    - Exporting prices for offline analysis
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        # Parse period dates
+        try:
+            start_dt = datetime.fromisoformat(request.period_start.replace('Z', '+00:00'))
+        except ValueError:
+            start_dt = datetime.fromisoformat(request.period_start)
+
+        try:
+            end_dt = datetime.fromisoformat(request.period_end.replace('Z', '+00:00'))
+        except ValueError:
+            end_dt = datetime.fromisoformat(request.period_end)
+
+        # Calculate number of steps
+        period_minutes = (end_dt - start_dt).total_seconds() / 60
+        n_steps = int(period_minutes / request.interval_minutes) + 1
+
+        if n_steps < 1:
+            raise HTTPException(400, "Period must be positive")
+        if n_steps > 35136:  # Max ~4 years at 15-min resolution
+            raise HTTPException(400, f"Too many steps: {n_steps} (max 35136)")
+
+        # Generate price timeseries using the same helper as sizing
+        price_timeseries = generate_price_timeseries(
+            prices=request.pricing_config,
+            n_steps=n_steps,
+            step_minutes=request.interval_minutes,
+            start_datetime=request.period_start,
+            timezone=request.timezone,
+        )
+
+        # Compute deterministic price hash
+        price_hash = compute_price_hash(price_timeseries)
+
+        # Build period info
+        period_hours = n_steps * request.interval_minutes / 60
+        period_info = PricingPreviewPeriodInfo(
+            period_start=request.period_start,
+            period_end=request.period_end,
+            steps=n_steps,
+            step_minutes=request.interval_minutes,
+            timezone=request.timezone,
+            period_hours=period_hours,
+            period_days=period_hours / 24,
+        )
+
+        return PricingPreviewResponse(
+            pricing_mode="generated",
+            price_hash=price_hash,
+            price_timeseries=price_timeseries,
+            period_info=period_info,
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid request: {str(e)}")
+    except Exception as e:
+        raise HTTPException(500, f"Pricing preview error: {str(e)}")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
