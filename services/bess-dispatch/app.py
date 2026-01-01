@@ -380,6 +380,10 @@ app.include_router(auth_router, prefix="/api/bess-dispatch")
 from admin_router import router as admin_router
 app.include_router(admin_router, prefix="/api/bess-dispatch")
 
+# Include audit router (v3.0.0 PR4)
+from audit_router import router as audit_router
+app.include_router(audit_router, prefix="/api/bess-dispatch")
+
 
 # =============================================================================
 # Health and Info Endpoints
