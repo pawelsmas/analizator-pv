@@ -281,6 +281,14 @@ from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
 
 
+# Performance metrics imports (v2.5.0 PR6)
+from observability.perf_metrics import (
+    track_request_duration,
+    track_request_size,
+    track_response_size,
+)
+
+
 # Prometheus HTTP metrics middleware
 @app.middleware("http")
 async def prometheus_http_middleware(request: Request, call_next):
@@ -320,6 +328,9 @@ async def prometheus_http_middleware(request: Request, call_next):
             method=method,
             status=status,
         ).inc()
+
+        # Track performance metrics (v2.5.0 PR6)
+        track_request_duration(endpoint, method, duration)
 
 
 # Include arbitrage router

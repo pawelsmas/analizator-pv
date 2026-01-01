@@ -55,6 +55,10 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
     def _too_large_response(self, actual_size: int = None) -> JSONResponse:
         """Return 413 response with structured error."""
+        # Track limit rejection (v2.5.0 PR6)
+        from observability.perf_metrics import track_limit_rejection
+        track_limit_rejection("request_size")
+
         error_body = {
             "error_code": ErrorCode.REQUEST_TOO_LARGE,
             "detail": f"Request body exceeds maximum allowed size of {self.max_bytes} bytes",
