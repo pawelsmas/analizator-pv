@@ -45,6 +45,7 @@ from limits_config import (
     get_limits_info,
 )
 from middleware.request_size_limit import RequestSizeLimitMiddleware
+from middleware.rate_limit import RateLimitMiddleware
 from timeseries_throttle import (
     resolve_timeseries_mode,
     validate_preview_rows,
@@ -279,6 +280,10 @@ app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 # Compresses responses > minimum_size bytes when client accepts gzip
 from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
+
+# Rate limiting middleware (v3.5.0 PR3)
+# Configurable via RATE_LIMIT_BACKEND=memory|redis
+app.add_middleware(RateLimitMiddleware)
 
 
 # Performance metrics imports (v2.5.0 PR6)
