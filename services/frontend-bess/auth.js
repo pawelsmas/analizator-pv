@@ -476,6 +476,9 @@ async function queryAuditLog(params = {}) {
   const searchParams = new URLSearchParams();
   if (params.action) searchParams.set('action', params.action);
   if (params.actor_id) searchParams.set('actor_id', params.actor_id);
+  if (params.resource_type) searchParams.set('resource_type', params.resource_type);
+  if (params.from_date) searchParams.set('from_date', params.from_date);
+  if (params.to_date) searchParams.set('to_date', params.to_date);
   if (params.limit) searchParams.set('limit', params.limit);
   if (params.offset) searchParams.set('offset', params.offset);
 
@@ -491,13 +494,68 @@ async function queryAuditLog(params = {}) {
 
 /**
  * Export audit log as ZIP
+ * @param {object} params - Export parameters (from_date, to_date)
  * @returns {Promise<Blob>}
  */
-async function exportAuditZip() {
-  const response = await authFetch(`${AUTH_CONFIG.baseUrl}/audit/export/zip`);
+async function exportAuditZip(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.from_date) searchParams.set('from_date', params.from_date);
+  if (params.to_date) searchParams.set('to_date', params.to_date);
+
+  const url = searchParams.toString()
+    ? `${AUTH_CONFIG.baseUrl}/audit/export/zip?${searchParams}`
+    : `${AUTH_CONFIG.baseUrl}/audit/export/zip`;
+
+  const response = await authFetch(url);
 
   if (!response.ok) {
     throw new Error('Failed to export audit log');
+  }
+
+  return response.blob();
+}
+
+/**
+ * Export audit log as CSV
+ * @param {object} params - Export parameters (from_date, to_date)
+ * @returns {Promise<Blob>}
+ */
+async function exportAuditCsv(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.from_date) searchParams.set('from_date', params.from_date);
+  if (params.to_date) searchParams.set('to_date', params.to_date);
+
+  const url = searchParams.toString()
+    ? `${AUTH_CONFIG.baseUrl}/audit/export/csv?${searchParams}`
+    : `${AUTH_CONFIG.baseUrl}/audit/export/csv`;
+
+  const response = await authFetch(url);
+
+  if (!response.ok) {
+    throw new Error('Failed to export audit log as CSV');
+  }
+
+  return response.blob();
+}
+
+/**
+ * Export audit log as JSON
+ * @param {object} params - Export parameters (from_date, to_date)
+ * @returns {Promise<Blob>}
+ */
+async function exportAuditJson(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.from_date) searchParams.set('from_date', params.from_date);
+  if (params.to_date) searchParams.set('to_date', params.to_date);
+
+  const url = searchParams.toString()
+    ? `${AUTH_CONFIG.baseUrl}/audit/export/json?${searchParams}`
+    : `${AUTH_CONFIG.baseUrl}/audit/export/json`;
+
+  const response = await authFetch(url);
+
+  if (!response.ok) {
+    throw new Error('Failed to export audit log as JSON');
   }
 
   return response.blob();
@@ -536,5 +594,7 @@ window.createApiKey = createApiKey;
 window.revokeApiKey = revokeApiKey;
 window.queryAuditLog = queryAuditLog;
 window.exportAuditZip = exportAuditZip;
+window.exportAuditCsv = exportAuditCsv;
+window.exportAuditJson = exportAuditJson;
 
-console.log('[AUTH] auth.js v3.0.0 - Auth Module Ready');
+console.log('[AUTH] auth.js v3.1.0 - Auth Module Ready');
