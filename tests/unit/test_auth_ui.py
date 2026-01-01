@@ -334,3 +334,117 @@ class TestStylesAuthSection:
         content = styles_css.read_text(encoding="utf-8")
 
         assert ".audit-log-table" in content or ".audit-action" in content
+
+    # v3.1.0 Audit Explorer styles
+    def test_styles_has_audit_export_buttons(self):
+        """styles.css should have audit export button styles (v3.1.0)."""
+        styles_css = FRONTEND_DIR / "styles.css"
+        content = styles_css.read_text(encoding="utf-8")
+
+        assert ".audit-export-buttons" in content
+        assert ".btn-export-secondary" in content
+
+    def test_styles_has_audit_date_filters(self):
+        """styles.css should have audit date filter styles (v3.1.0)."""
+        styles_css = FRONTEND_DIR / "styles.css"
+        content = styles_css.read_text(encoding="utf-8")
+
+        assert ".audit-date-filters" in content
+        assert ".date-filter-label" in content
+        assert ".btn-clear-filters" in content
+
+    def test_styles_has_new_audit_actions(self):
+        """styles.css should have new audit action styles (v3.1.0)."""
+        styles_css = FRONTEND_DIR / "styles.css"
+        content = styles_css.read_text(encoding="utf-8")
+
+        assert ".audit-action.user_created" in content
+        assert ".audit-action.invite_created" in content
+        assert ".audit-action.share_created" in content
+
+
+class TestAuditExplorerUI:
+    """Tests for audit explorer UI (v3.1.0 PR5)."""
+
+    def test_audit_section_has_resource_filter(self):
+        """settings.html should have resource type filter (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "auditResourceFilter" in content
+        assert 'value="user"' in content
+        assert 'value="invite"' in content
+        assert 'value="share"' in content
+
+    def test_audit_section_has_date_filters(self):
+        """settings.html should have date filters (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "auditFromDate" in content
+        assert "auditToDate" in content
+        assert 'type="date"' in content
+
+    def test_audit_section_has_csv_export(self):
+        """settings.html should have CSV export button (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "exportAuditCsvFile" in content
+        assert "CSV" in content
+
+    def test_audit_section_has_json_export(self):
+        """settings.html should have JSON export button (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "exportAuditJsonFile" in content
+        assert "JSON" in content
+
+    def test_audit_section_has_clear_filters(self):
+        """settings.html should have clear filters button (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "clearAuditFilters" in content
+        assert "Wyczysc" in content
+
+    def test_audit_has_new_action_options(self):
+        """settings.html should have new action filter options (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert 'value="user_created"' in content
+        assert 'value="invite_created"' in content
+        assert 'value="share_created"' in content
+
+    def test_auth_js_has_csv_export(self):
+        """auth.js should have exportAuditCsv function (v3.1.0)."""
+        auth_js = FRONTEND_DIR / "auth.js"
+        content = auth_js.read_text(encoding="utf-8")
+
+        assert "async function exportAuditCsv" in content
+        assert "window.exportAuditCsv" in content
+
+    def test_auth_js_has_json_export(self):
+        """auth.js should have exportAuditJson function (v3.1.0)."""
+        auth_js = FRONTEND_DIR / "auth.js"
+        content = auth_js.read_text(encoding="utf-8")
+
+        assert "async function exportAuditJson" in content
+        assert "window.exportAuditJson" in content
+
+    def test_auth_js_query_supports_resource_type(self):
+        """auth.js queryAuditLog should support resource_type (v3.1.0)."""
+        auth_js = FRONTEND_DIR / "auth.js"
+        content = auth_js.read_text(encoding="utf-8")
+
+        assert "params.resource_type" in content
+
+    def test_auth_js_query_supports_date_range(self):
+        """auth.js queryAuditLog should support date range (v3.1.0)."""
+        auth_js = FRONTEND_DIR / "auth.js"
+        content = auth_js.read_text(encoding="utf-8")
+
+        assert "params.from_date" in content
+        assert "params.to_date" in content

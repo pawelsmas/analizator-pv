@@ -128,26 +128,79 @@
     <div class="audit-log-container">
       <div class="audit-log-header">
         <h2 class="api-keys-title">Dziennik zdarzen</h2>
-        <button class="btn-create-key" onclick="exportAuditLog()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-          Eksportuj ZIP
-        </button>
+        <div class="audit-export-buttons">
+          <button class="btn-export-secondary" onclick="exportAuditCsvFile()" title="Eksportuj CSV">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            CSV
+          </button>
+          <button class="btn-export-secondary" onclick="exportAuditJsonFile()" title="Eksportuj JSON">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            JSON
+          </button>
+          <button class="btn-create-key" onclick="exportAuditLog()" title="Eksportuj ZIP">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            ZIP
+          </button>
+        </div>
       </div>
 
       <div class="audit-log-filters">
-        <select id="auditActionFilter" onchange="loadAuditLog()">
+        <select id="auditActionFilter" onchange="resetAuditAndLoad()">
           <option value="">Wszystkie akcje</option>
           <option value="login_success">Logowanie udane</option>
           <option value="login_failure">Logowanie nieudane</option>
           <option value="api_key_created">Klucz utworzony</option>
           <option value="api_key_revoked">Klucz uniewazniony</option>
           <option value="sizing_run">Sizing run</option>
+          <option value="user_created">Uzytkownik utworzony</option>
+          <option value="user_updated">Uzytkownik zmieniony</option>
+          <option value="invite_created">Zaproszenie utworzone</option>
+          <option value="invite_accepted">Zaproszenie zaakceptowane</option>
+          <option value="invite_revoked">Zaproszenie odwolane</option>
+          <option value="share_created">Link udostepniony</option>
+          <option value="share_accessed">Link uzyty</option>
+          <option value="share_revoked">Link odwolany</option>
         </select>
-        <input type="text" id="auditActorFilter" placeholder="Filtruj po aktorze..." onchange="loadAuditLog()">
+        <select id="auditResourceFilter" onchange="resetAuditAndLoad()">
+          <option value="">Wszystkie zasoby</option>
+          <option value="user">Uzytkownicy</option>
+          <option value="invite">Zaproszenia</option>
+          <option value="api_key">Klucze API</option>
+          <option value="share">Linki</option>
+          <option value="run">Run</option>
+          <option value="job">Job</option>
+        </select>
+        <input type="text" id="auditActorFilter" placeholder="Filtruj po aktorze..." onchange="resetAuditAndLoad()">
+      </div>
+
+      <div class="audit-log-filters audit-date-filters">
+        <label class="date-filter-label">
+          Od:
+          <input type="date" id="auditFromDate" onchange="resetAuditAndLoad()">
+        </label>
+        <label class="date-filter-label">
+          Do:
+          <input type="date" id="auditToDate" onchange="resetAuditAndLoad()">
+        </label>
+        <button class="btn-clear-filters" onclick="clearAuditFilters()" title="Wyczysc filtry">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+          Wyczysc
+        </button>
       </div>
 
       <div class="audit-log-table" id="auditLogTable">
@@ -801,15 +854,43 @@ async function handleRevokeKey(keyId, label) {
 let auditOffset = 0;
 const auditLimit = 20;
 
+function getAuditFilters() {
+  const action = document.getElementById('auditActionFilter').value;
+  const resourceType = document.getElementById('auditResourceFilter').value;
+  const actorId = document.getElementById('auditActorFilter').value.trim();
+  const fromDate = document.getElementById('auditFromDate').value;
+  const toDate = document.getElementById('auditToDate').value;
+
+  return {
+    action: action || undefined,
+    resource_type: resourceType || undefined,
+    actor_id: actorId || undefined,
+    from_date: fromDate ? `${fromDate}T00:00:00Z` : undefined,
+    to_date: toDate ? `${toDate}T23:59:59Z` : undefined,
+  };
+}
+
+function resetAuditAndLoad() {
+  auditOffset = 0;
+  loadAuditLog();
+}
+
+function clearAuditFilters() {
+  document.getElementById('auditActionFilter').value = '';
+  document.getElementById('auditResourceFilter').value = '';
+  document.getElementById('auditActorFilter').value = '';
+  document.getElementById('auditFromDate').value = '';
+  document.getElementById('auditToDate').value = '';
+  resetAuditAndLoad();
+}
+
 async function loadAuditLog() {
   const tableEl = document.getElementById('auditLogTable');
-  const action = document.getElementById('auditActionFilter').value;
-  const actorId = document.getElementById('auditActorFilter').value.trim();
+  const filters = getAuditFilters();
 
   try {
     const data = await queryAuditLog({
-      action: action || undefined,
-      actor_id: actorId || undefined,
+      ...filters,
       limit: auditLimit,
       offset: auditOffset,
     });
@@ -821,6 +902,7 @@ async function loadAuditLog() {
           <p>Brak zdarzen w dzienniku</p>
         </div>
       `;
+      document.getElementById('auditPagination').innerHTML = '';
       return;
     }
 
@@ -895,19 +977,63 @@ function auditNext() {
   loadAuditLog();
 }
 
+function getExportDateParams() {
+  const fromDate = document.getElementById('auditFromDate').value;
+  const toDate = document.getElementById('auditToDate').value;
+  return {
+    from_date: fromDate ? `${fromDate}T00:00:00Z` : undefined,
+    to_date: toDate ? `${toDate}T23:59:59Z` : undefined,
+  };
+}
+
 async function exportAuditLog() {
   try {
-    const blob = await exportAuditZip();
+    const params = getExportDateParams();
+    const blob = await exportAuditZip(params);
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = `audit_log_${new Date().toISOString().slice(0, 10)}.zip`;
     link.click();
     URL.revokeObjectURL(url);
-    console.log('[SETTINGS] Audit log exported');
+    console.log('[SETTINGS] Audit log exported as ZIP');
   } catch (error) {
     console.error('[SETTINGS] Error exporting audit log:', error);
     alert('Blad eksportu dziennika: ' + error.message);
+  }
+}
+
+async function exportAuditCsvFile() {
+  try {
+    const params = getExportDateParams();
+    const blob = await exportAuditCsv(params);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `audit_log_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    console.log('[SETTINGS] Audit log exported as CSV');
+  } catch (error) {
+    console.error('[SETTINGS] Error exporting audit CSV:', error);
+    alert('Blad eksportu CSV: ' + error.message);
+  }
+}
+
+async function exportAuditJsonFile() {
+  try {
+    const params = getExportDateParams();
+    const blob = await exportAuditJson(params);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `audit_log_${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    console.log('[SETTINGS] Audit log exported as JSON');
+  } catch (error) {
+    console.error('[SETTINGS] Error exporting audit JSON:', error);
+    alert('Blad eksportu JSON: ' + error.message);
   }
 }
 
