@@ -981,6 +981,87 @@ async def export_run_repro_bundle(run_id: str):
 
 
 # =============================================================================
+# Run Report Endpoints (v2.4.0)
+# =============================================================================
+
+@app.get("/api/bess-dispatch/runs/{run_id}/report.zip")
+async def get_run_report_zip(
+    run_id: str,
+    profile: str = Query("client", description="Report profile: client or engineering"),
+    report_title: Optional[str] = Query(None, max_length=120, description="Custom report title"),
+    client_name: Optional[str] = Query(None, max_length=120, description="Client name"),
+    site_name: Optional[str] = Query(None, max_length=120, description="Site name"),
+    prepared_by: Optional[str] = Query(None, max_length=120, description="Prepared by"),
+    prepared_for: Optional[str] = Query(None, max_length=120, description="Prepared for"),
+    notes: Optional[str] = Query(None, max_length=2000, description="Notes"),
+    max_table_rows: int = Query(48, ge=12, le=240, description="Max table rows"),
+):
+    """
+    Get run report as ZIP bundle (v2.4.0).
+
+    Returns a deterministic ZIP archive containing:
+    - report.json: ReportData extracted from run (SSoT)
+    - request.json: Original sizing request
+    - response_meta.json: Run metadata (run_id, schema_version, etc.)
+    - README.md: Repro instructions and bundle documentation
+    - WARNINGS.txt: Extraction warnings (if any)
+
+    Query parameters allow customizing report options:
+    - profile: 'client' (executive summary) or 'engineering' (detailed)
+    - branding: report_title, client_name, site_name, prepared_by, prepared_for
+    - notes: Custom notes to include
+    - max_table_rows: Maximum rows in preview tables (12-240)
+
+    Returns 404 if run_id not found.
+    Returns 503 if run store is disabled.
+    """
+    if not RUN_STORE_ENABLED:
+        raise HTTPException(503, "Run store is disabled")
+
+    stored = get_run(run_id)
+    if stored is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    # Import report modules
+    from report_models import ReportOptions, ReportProfile, ReportBranding
+    from report_zip_helper import build_run_report_zip
+
+    # Build options from query params
+    branding = None
+    if any([report_title, client_name, site_name, prepared_by, prepared_for]):
+        branding = ReportBranding(
+            report_title=report_title,
+            client_name=client_name,
+            site_name=site_name,
+            prepared_by=prepared_by,
+            prepared_for=prepared_for,
+        )
+
+    try:
+        report_profile = ReportProfile(profile)
+    except ValueError:
+        report_profile = ReportProfile.CLIENT
+
+    options = ReportOptions(
+        profile=report_profile,
+        branding=branding,
+        notes=notes,
+        max_table_rows=max_table_rows,
+    )
+
+    # Build report ZIP
+    zip_content = build_run_report_zip(stored, options)
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="report_{run_id}.zip"'
+        }
+    )
+
+
+# =============================================================================
 # Dispatch Endpoint
 # =============================================================================
 
