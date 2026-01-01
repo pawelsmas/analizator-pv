@@ -1,0 +1,10 @@
+# Dispatch scenario pack for v2.2.0 features validation
+# Tests: battery trace, cycle accounting, invariants, power limits
+name: dispatch
+description: Dispatch Trace v2.2.0 regression scenarios
+scenarios:
+  - dispatch_battery_trace_basic
+  - dispatch_cycle_limit_enforcement
+  - dispatch_invariants_soc_bounds
+  - dispatch_power_clamp_charge
+  - dispatch_grid_charge_enabled

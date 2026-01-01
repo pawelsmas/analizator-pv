@@ -1,0 +1,26 @@
+{
+  "load_kw": [50, 50, 50, 50, 50, 50, 50, 80, 100, 120, 130, 140, 140, 130, 120, 100, 80, 70, 60, 55, 50, 50, 50, 50],
+  "pv_generation_kw": [0, 0, 0, 0, 0, 0, 50, 100, 150, 180, 200, 210, 200, 180, 150, 100, 50, 0, 0, 0, 0, 0, 0, 0],
+  "mode": "pv_surplus",
+  "durations_h": [2.0],
+  "interval_minutes": 60,
+  "battery": {
+    "power_kw": 50.0,
+    "energy_kwh": 100.0,
+    "roundtrip_efficiency": 0.9,
+    "soc_min": 0.1,
+    "soc_max": 0.9,
+    "soc_initial": 0.5
+  },
+  "discount_rate": 0.08,
+  "analysis_years": 15,
+  "capex_pln_per_kwh": 1500.0,
+  "capex_pln_per_kw": 300.0,
+  "prices": {
+    "import_price_pln_mwh": 800,
+    "export_price_pln_mwh": 0,
+    "other_fees_pln_mwh": 451
+  },
+  "include_battery_trace": true,
+  "include_invariants": true
+}
