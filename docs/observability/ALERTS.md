@@ -923,3 +923,257 @@ Tracks audit log write volume.
     summary: "High audit log volume"
     description: "{{ $value | humanize }} audit entries in the last hour"
 ```
+
+## HA Infrastructure Alerts (v3.6.0)
+
+Alerting rules for HA deployments with multiple replicas.
+
+### Critical: Pods Below Minimum
+
+Fires when running pods fall below expected replica count.
+
+```yaml
+- alert: PVPortalAPIPodsBelowMinimum
+  expr: sum(up{job=~".*-api"}) < 2
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "API pods below minimum"
+    description: "Only {{ $value }} API pods are running, expected 2+"
+    runbook: "Check pod status with kubectl get pods, check events for scheduling failures"
+
+- alert: PVPortalWorkerPodsBelowMinimum
+  expr: sum(up{job=~".*-worker"}) < 2
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Worker pods below minimum"
+    description: "Only {{ $value }} Worker pods are running, expected 2+"
+```
+
+### Warning: Pod Restarts
+
+Fires when pods are restarting frequently.
+
+```yaml
+- alert: PVPortalPodRestarting
+  expr: |
+    increase(kube_pod_container_status_restarts_total{
+      namespace="default",
+      pod=~"pv-portal.*"
+    }[1h]) > 3
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Pod restarting frequently"
+    description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last hour"
+```
+
+### Critical: Database Pool Timeouts
+
+Fires when database connection pool has checkout timeouts.
+
+```yaml
+- alert: PVPortalDBPoolTimeouts
+  expr: increase(bess_db_pool_timeout_total[5m]) > 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Database connection pool timeouts"
+    description: "Pool {{ $labels.pool_name }} had {{ $value }} timeouts in last 5 minutes"
+    runbook: "Check DB connection count, increase pool size if needed"
+```
+
+### Warning: High DB Connection Usage
+
+Fires when connection pool usage is high.
+
+```yaml
+- alert: PVPortalDBPoolHighUsage
+  expr: (bess_db_pool_checked_out / bess_db_pool_size) > 0.8
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Database connection pool usage high"
+    description: "Pool {{ $labels.pool_name }} is {{ printf \"%.1f\" (multiply $value 100) }}% utilized"
+```
+
+### Warning: Slow Database Queries
+
+Fires when database query latency increases.
+
+```yaml
+- alert: PVPortalDBSlowQueries
+  expr: histogram_quantile(0.99, rate(bess_db_query_duration_seconds_bucket[5m])) > 1.0
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow database queries detected"
+    description: "99th percentile query duration is {{ printf \"%.2f\" $value }}s"
+```
+
+### Critical: Redis Connection Errors
+
+Fires when Redis connection errors occur.
+
+```yaml
+- alert: PVPortalRedisConnectionErrors
+  expr: increase(bess_redis_connection_errors_total[5m]) > 5
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Redis connection errors"
+    description: "{{ $value }} connection errors in last 5 minutes"
+    runbook: "Check Redis pod status, verify Redis service is reachable"
+```
+
+### Warning: Redis Commands Slow
+
+Fires when Redis commands are taking too long.
+
+```yaml
+- alert: PVPortalRedisSlowCommands
+  expr: histogram_quantile(0.99, rate(bess_redis_command_duration_seconds_bucket[5m])) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow Redis commands"
+    description: "99th percentile Redis command duration is {{ printf \"%.3f\" $value }}s"
+```
+
+### Warning: Job Queue Growing
+
+Fires when job queue is growing faster than workers can process.
+
+```yaml
+- alert: PVPortalJobQueueGrowing
+  expr: increase(bess_worker_queue_length[10m]) > 100
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Job queue is growing"
+    description: "Queue {{ $labels.queue_name }} has grown by {{ $value }} jobs in 10 minutes"
+    runbook: "Consider scaling workers, check for slow jobs"
+```
+
+### Critical: Jobs Stuck in Queue
+
+Fires when jobs are stuck waiting in queue for too long.
+
+```yaml
+- alert: PVPortalJobsStuckInQueue
+  expr: bess_worker_queue_oldest_seconds > 600
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Jobs stuck in queue"
+    description: "Oldest job in {{ $labels.queue_name }} is {{ printf \"%.0f\" $value }}s old"
+```
+
+### Warning: High Job Failure Rate
+
+Fires when job failure rate increases.
+
+```yaml
+- alert: PVPortalJobFailureRateHigh
+  expr: |
+    sum(rate(bess_ha_jobs_completed_total{status="failed"}[5m])) /
+    sum(rate(bess_ha_jobs_completed_total[5m])) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High job failure rate"
+    description: "{{ printf \"%.1f\" (multiply $value 100) }}% of jobs are failing"
+```
+
+### Critical: Component Unhealthy
+
+Fires when a health check reports unhealthy status.
+
+```yaml
+- alert: PVPortalComponentUnhealthy
+  expr: bess_component_healthy == 0
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Component unhealthy"
+    description: "Component {{ $labels.component }} is unhealthy"
+```
+
+### Warning: Graceful Shutdown Slow
+
+Fires when graceful shutdown is taking too long.
+
+```yaml
+- alert: PVPortalShutdownSlow
+  expr: bess_shutdown_initiated == 1 and bess_shutdown_jobs_remaining > 0
+  for: 60s
+  labels:
+    severity: warning
+  annotations:
+    summary: "Graceful shutdown taking too long"
+    description: "{{ $value }} jobs remaining after 60s of shutdown"
+```
+
+### Warning: API High Error Rate
+
+Fires when API error rate increases.
+
+```yaml
+- alert: PVPortalAPIHighErrorRate
+  expr: |
+    sum(rate(bess_http_requests_total{status=~"5.."}[5m])) /
+    sum(rate(bess_http_requests_total[5m])) > 0.05
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "API error rate is high"
+    description: "{{ printf \"%.1f\" (multiply $value 100) }}% of requests are failing"
+```
+
+### Critical: API Down
+
+Fires when API stops receiving requests.
+
+```yaml
+- alert: PVPortalAPIDown
+  expr: sum(rate(bess_http_requests_total[1m])) == 0
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "API is not receiving requests"
+    description: "No requests received in the last 5 minutes"
+```
+
+## HA Runbook Summary
+
+When HA alerts fire:
+
+1. **PodsBelowMinimum**: Check `kubectl get pods -l app=pv-portal`, look at events
+2. **PodRestarting**: Check `kubectl logs --previous <pod>`, look for OOMKills
+3. **DBPoolTimeouts**: Increase pool size in values.yaml, check DB max_connections
+4. **DBPoolHighUsage**: Scale horizontally or increase pool size
+5. **DBSlowQueries**: Check for missing indexes, EXPLAIN ANALYZE slow queries
+6. **RedisConnectionErrors**: Verify Redis is running, check network policies
+7. **RedisSlowCommands**: Check Redis memory usage, consider keyspace cleanup
+8. **JobQueueGrowing**: Scale workers, check for stuck jobs
+9. **JobsStuckInQueue**: Look for dead workers, check redis connectivity
+10. **JobFailureRateHigh**: Check worker logs for error patterns
+11. **ComponentUnhealthy**: Check specific component status, restart if needed
+12. **ShutdownSlow**: Increase terminationGracePeriodSeconds
+13. **APIHighErrorRate**: Check error logs, look for patterns in failing requests
+14. **APIDown**: Check ingress, service, pod status
