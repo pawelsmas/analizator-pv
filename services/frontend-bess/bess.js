@@ -7597,3 +7597,378 @@ window.updateCostBucketsChart = updateCostBucketsChart;
 window.handlePriceOverrideCsv = handlePriceOverrideCsv;
 window.clearPriceOverride = clearPriceOverride;
 window.getPriceOverrideForRequest = getPriceOverrideForRequest;
+
+// =============================================================================
+// v2.1.0: Tariff Selector + Pricing Preview Functions
+// =============================================================================
+
+// Current tariff mode: 'preset', 'schedule', 'override'
+let currentTariffMode = 'preset';
+
+// Cached tariff presets from API
+let cachedTariffPresets = [];
+
+// Current preview result for CSV export
+let currentPricePreviewResult = null;
+
+/**
+ * Initialize tariff selector on page load
+ */
+function initTariffSelector() {
+  // Generate schedule input tables
+  generateScheduleTables();
+  // Load presets from API
+  refreshTariffPresets();
+}
+
+/**
+ * Select tariff mode (preset/schedule/override)
+ */
+function selectTariffMode(mode) {
+  currentTariffMode = mode;
+
+  // Update tab styles
+  const tabs = ['preset', 'schedule', 'override'];
+  tabs.forEach(t => {
+    const tab = document.getElementById('tariffTab' + t.charAt(0).toUpperCase() + t.slice(1));
+    const panel = document.getElementById('tariffPanel' + t.charAt(0).toUpperCase() + t.slice(1));
+    if (t === mode) {
+      tab.style.background = '#1976d2';
+      tab.style.color = 'white';
+      panel.style.display = 'block';
+    } else {
+      tab.style.background = '#e0e0e0';
+      tab.style.color = '#333';
+      panel.style.display = 'none';
+    }
+  });
+}
+
+/**
+ * Refresh tariff presets from API
+ */
+async function refreshTariffPresets() {
+  const select = document.getElementById('tariffPresetSelect');
+  select.innerHTML = '<option value="">Ladowanie...</option>';
+
+  try {
+    const response = await fetch(getApiUrl('/api/bess-dispatch/tariffs'));
+    if (!response.ok) {
+      throw new Error('Failed to fetch tariffs');
+    }
+    const data = await response.json();
+    cachedTariffPresets = data.presets || [];
+
+    select.innerHTML = '<option value="">-- Wybierz preset --</option>';
+    cachedTariffPresets.forEach(preset => {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.label;
+      select.appendChild(option);
+    });
+
+    console.log('[BESS] Loaded', cachedTariffPresets.length, 'tariff presets');
+  } catch (err) {
+    console.error('[BESS] Failed to load tariff presets:', err);
+    select.innerHTML = '<option value="">Blad ladowania</option>';
+  }
+}
+
+/**
+ * Handle tariff preset selection change
+ */
+function onTariffPresetChange() {
+  const select = document.getElementById('tariffPresetSelect');
+  const infoDiv = document.getElementById('tariffPresetInfo');
+  const presetId = select.value;
+
+  if (!presetId) {
+    infoDiv.style.display = 'none';
+    return;
+  }
+
+  const preset = cachedTariffPresets.find(p => p.id === presetId);
+  if (preset) {
+    let html = `<strong>${preset.label}</strong><br>`;
+    if (preset.description) {
+      html += `${preset.description}<br>`;
+    }
+    if (preset.import_price_pln_per_mwh !== null) {
+      html += `Import: ${preset.import_price_pln_per_mwh} PLN/MWh<br>`;
+    }
+    if (preset.weekday_peak_price_pln_per_mwh) {
+      html += `Peak: ${preset.weekday_peak_price_pln_per_mwh} PLN/MWh, Off-peak: ${preset.weekday_offpeak_price_pln_per_mwh} PLN/MWh`;
+    }
+    infoDiv.innerHTML = html;
+    infoDiv.style.display = 'block';
+  }
+}
+
+/**
+ * Generate 24-hour schedule input tables
+ */
+function generateScheduleTables() {
+  const weekdayBody = document.getElementById('scheduleWeekdayBody');
+  const weekendBody = document.getElementById('scheduleWeekendBody');
+
+  if (!weekdayBody || !weekendBody) return;
+
+  // Default prices
+  const defaultImport = 500;
+  const defaultExport = 0;
+
+  for (let h = 0; h < 24; h++) {
+    // Weekday row
+    const wdRow = document.createElement('tr');
+    wdRow.innerHTML = `
+      <td style="padding:2px;border:1px solid #a5d6a7;text-align:center;">${h.toString().padStart(2,'0')}</td>
+      <td style="padding:2px;border:1px solid #a5d6a7;">
+        <input type="number" id="wdImport${h}" value="${defaultImport}" style="width:50px;font-size:10px;padding:2px;">
+      </td>
+      <td style="padding:2px;border:1px solid #a5d6a7;">
+        <input type="number" id="wdExport${h}" value="${defaultExport}" style="width:50px;font-size:10px;padding:2px;">
+      </td>
+    `;
+    weekdayBody.appendChild(wdRow);
+
+    // Weekend row
+    const weRow = document.createElement('tr');
+    weRow.innerHTML = `
+      <td style="padding:2px;border:1px solid #a5d6a7;text-align:center;">${h.toString().padStart(2,'0')}</td>
+      <td style="padding:2px;border:1px solid #a5d6a7;">
+        <input type="number" id="weImport${h}" value="${defaultImport}" style="width:50px;font-size:10px;padding:2px;">
+      </td>
+      <td style="padding:2px;border:1px solid #a5d6a7;">
+        <input type="number" id="weExport${h}" value="${defaultExport}" style="width:50px;font-size:10px;padding:2px;">
+      </td>
+    `;
+    weekendBody.appendChild(weRow);
+  }
+}
+
+/**
+ * Get tariff schedule from UI inputs
+ */
+function getTariffScheduleFromUI() {
+  const weekdayImport = [];
+  const weekdayExport = [];
+  const weekendImport = [];
+  const weekendExport = [];
+
+  for (let h = 0; h < 24; h++) {
+    weekdayImport.push(parseFloat(document.getElementById(`wdImport${h}`).value) || 0);
+    weekdayExport.push(parseFloat(document.getElementById(`wdExport${h}`).value) || 0);
+    weekendImport.push(parseFloat(document.getElementById(`weImport${h}`).value) || 0);
+    weekendExport.push(parseFloat(document.getElementById(`weExport${h}`).value) || 0);
+  }
+
+  const holidaysInput = document.getElementById('scheduleHolidays').value.trim();
+  const holidayDates = holidaysInput ? holidaysInput.split(',').map(d => d.trim()).filter(d => d) : [];
+
+  return {
+    weekday_import_price_pln_per_mwh: weekdayImport,
+    weekend_import_price_pln_per_mwh: weekendImport,
+    weekday_export_price_pln_per_mwh: weekdayExport,
+    weekend_export_price_pln_per_mwh: weekendExport,
+    weekday_other_fees_pln_per_mwh: new Array(24).fill(0),
+    weekend_other_fees_pln_per_mwh: new Array(24).fill(0),
+    holiday_dates: holidayDates,
+    timezone: 'Europe/Warsaw',
+  };
+}
+
+/**
+ * Preview prices using the selected tariff configuration
+ */
+async function previewPrices() {
+  const btn = document.getElementById('previewPricesBtn');
+  btn.disabled = true;
+  btn.textContent = 'Ladowanie...';
+
+  try {
+    // Build request based on current mode
+    const request = {
+      interval_minutes: 60,
+      timezone: 'Europe/Warsaw',
+      period_start: '2025-01-01T00:00:00',
+      period_end: '2025-01-07T23:00:00',  // 7 days = 168 hours
+    };
+
+    if (currentTariffMode === 'preset') {
+      const presetId = document.getElementById('tariffPresetSelect').value;
+      if (!presetId) {
+        alert('Wybierz preset taryfowy');
+        return;
+      }
+      request.tariff_preset = presetId;
+    } else if (currentTariffMode === 'schedule') {
+      request.tariff_schedule = getTariffScheduleFromUI();
+    } else if (currentTariffMode === 'override') {
+      if (!priceOverrideData) {
+        alert('Zaladuj plik CSV z cenami');
+        return;
+      }
+      request.price_timeseries_override = priceOverrideData;
+    }
+
+    const response = await fetch(getApiUrl('/api/bess-dispatch/pricing/preview'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API error: ${errText}`);
+    }
+
+    const result = await response.json();
+    currentPricePreviewResult = result;
+
+    // Update UI with results
+    updatePricePreviewDisplay(result);
+
+    console.log('[BESS] Price preview result:', result);
+  } catch (err) {
+    console.error('[BESS] Price preview failed:', err);
+    alert('Blad podgladu cen: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Preview Prices';
+  }
+}
+
+/**
+ * Update price preview display from API result
+ */
+function updatePricePreviewDisplay(result) {
+  const priceTseries = result.price_timeseries;
+  if (!priceTseries) return;
+
+  const importPrices = priceTseries.import_price_pln_per_mwh || [];
+  const exportPrices = priceTseries.export_price_pln_per_mwh || [];
+  const otherFees = priceTseries.other_fees_pln_per_mwh || [];
+
+  // Update mode label
+  const modeLabel = document.getElementById('pricingModeLabel');
+  const mode = result.pricing_mode || 'generated';
+  modeLabel.textContent = mode.toUpperCase();
+  if (mode === 'preset') {
+    modeLabel.style.background = '#1976d2';
+  } else if (mode === 'schedule') {
+    modeLabel.style.background = '#2e7d32';
+  } else if (mode === 'override') {
+    modeLabel.style.background = '#ff9800';
+  } else {
+    modeLabel.style.background = '#4caf50';
+  }
+
+  // Update price hash
+  const priceHashShort = document.getElementById('priceHashShort');
+  if (result.price_hash) {
+    priceHashShort.textContent = result.price_hash.substring(0, 12) + '...';
+    priceHashShort.title = result.price_hash;
+  }
+
+  // Calculate averages
+  const avgImport = importPrices.length > 0
+    ? importPrices.reduce((a, b) => a + b, 0) / importPrices.length
+    : 0;
+  const avgExport = exportPrices.length > 0
+    ? exportPrices.reduce((a, b) => a + b, 0) / exportPrices.length
+    : 0;
+
+  document.getElementById('priceImportValue').textContent = avgImport.toFixed(0) + ' PLN/MWh';
+  document.getElementById('priceExportValue').textContent = avgExport.toFixed(0) + ' PLN/MWh';
+
+  // Update summary stats
+  const statsDiv = document.getElementById('priceSummaryStats');
+  if (importPrices.length > 0) {
+    document.getElementById('priceMinValue').textContent = Math.min(...importPrices).toFixed(0);
+    document.getElementById('priceMaxValue').textContent = Math.max(...importPrices).toFixed(0);
+    document.getElementById('priceStepsValue').textContent = importPrices.length;
+    statsDiv.style.display = 'block';
+  }
+
+  // Update preview table (show first 48 steps)
+  const tableContainer = document.getElementById('pricePreviewTableContainer');
+  const tableBody = document.getElementById('pricePreviewTableBody');
+  tableBody.innerHTML = '';
+
+  const maxRows = Math.min(48, importPrices.length);
+  for (let i = 0; i < maxRows; i++) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td style="padding:2px 4px;border:1px solid #ccc;text-align:center;">${i}</td>
+      <td style="padding:2px 4px;border:1px solid #ccc;text-align:right;">${importPrices[i].toFixed(2)}</td>
+      <td style="padding:2px 4px;border:1px solid #ccc;text-align:right;">${exportPrices[i].toFixed(2)}</td>
+      <td style="padding:2px 4px;border:1px solid #ccc;text-align:right;">${(otherFees[i] || 0).toFixed(2)}</td>
+    `;
+    tableBody.appendChild(row);
+  }
+  tableContainer.style.display = 'block';
+
+  // Show export button
+  document.getElementById('exportPricesCsvBtn').style.display = 'inline-block';
+}
+
+/**
+ * Export current price preview to CSV
+ */
+function exportPricesCsv() {
+  if (!currentPricePreviewResult || !currentPricePreviewResult.price_timeseries) {
+    alert('Brak danych do eksportu');
+    return;
+  }
+
+  const priceTseries = currentPricePreviewResult.price_timeseries;
+  const importPrices = priceTseries.import_price_pln_per_mwh || [];
+  const exportPrices = priceTseries.export_price_pln_per_mwh || [];
+  const otherFees = priceTseries.other_fees_pln_per_mwh || [];
+
+  // Build CSV content
+  let csv = 'step,import_price_pln_per_mwh,export_price_pln_per_mwh,other_fees_pln_per_mwh\n';
+  for (let i = 0; i < importPrices.length; i++) {
+    csv += `${i},${importPrices[i]},${exportPrices[i]},${otherFees[i] || 0}\n`;
+  }
+
+  // Create download link
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `price_timeseries_${currentPricePreviewResult.pricing_mode || 'export'}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Get current tariff configuration for sizing request
+ */
+function getTariffConfigForRequest() {
+  if (currentTariffMode === 'preset') {
+    const presetId = document.getElementById('tariffPresetSelect').value;
+    return presetId ? { tariff_preset: presetId } : null;
+  } else if (currentTariffMode === 'schedule') {
+    return { tariff_schedule: getTariffScheduleFromUI() };
+  } else if (currentTariffMode === 'override') {
+    return priceOverrideData ? { price_timeseries_override: priceOverrideData } : null;
+  }
+  return null;
+}
+
+// Export v2.1.0 tariff functions
+window.initTariffSelector = initTariffSelector;
+window.selectTariffMode = selectTariffMode;
+window.refreshTariffPresets = refreshTariffPresets;
+window.onTariffPresetChange = onTariffPresetChange;
+window.previewPrices = previewPrices;
+window.exportPricesCsv = exportPricesCsv;
+window.getTariffConfigForRequest = getTariffConfigForRequest;
+
+// Initialize on DOM ready
+document.addEventListener('DOMContentLoaded', function() {
+  initTariffSelector();
+});
+
+console.log('[BESS] bess.js v3.31 - v2.1.0 Tariff Selector + Pricing Preview');
