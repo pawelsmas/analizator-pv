@@ -518,6 +518,73 @@ class PriceConfig(BaseModel):
 
 
 # =============================================================================
+# Tariff Schedule Config (v2.1.0)
+# =============================================================================
+
+class TariffScheduleConfig(BaseModel):
+    """
+    Custom tariff schedule configuration (v2.1.0).
+
+    Allows defining 24-hour price schedules for weekdays and weekends,
+    with optional holiday overrides.
+
+    DST-safe: Uses timezone-aware datetime conversion for correct hour mapping.
+    """
+    # Weekday import prices (24 values, one per hour 0-23)
+    weekday_import_price_pln_per_mwh: List[float] = Field(
+        ...,
+        min_length=24,
+        max_length=24,
+        description="Import prices for weekdays [PLN/MWh]. Index 0 = hour 00:00, index 23 = hour 23:00."
+    )
+    # Weekend import prices (24 values, one per hour 0-23)
+    weekend_import_price_pln_per_mwh: List[float] = Field(
+        ...,
+        min_length=24,
+        max_length=24,
+        description="Import prices for weekends [PLN/MWh]. Index 0 = hour 00:00, index 23 = hour 23:00."
+    )
+    # Weekday export prices (24 values)
+    weekday_export_price_pln_per_mwh: List[float] = Field(
+        default_factory=lambda: [0.0] * 24,
+        min_length=24,
+        max_length=24,
+        description="Export prices for weekdays [PLN/MWh]. Defaults to 0."
+    )
+    # Weekend export prices (24 values)
+    weekend_export_price_pln_per_mwh: List[float] = Field(
+        default_factory=lambda: [0.0] * 24,
+        min_length=24,
+        max_length=24,
+        description="Export prices for weekends [PLN/MWh]. Defaults to 0."
+    )
+    # Weekday other fees (24 values)
+    weekday_other_fees_pln_per_mwh: List[float] = Field(
+        default_factory=lambda: [0.0] * 24,
+        min_length=24,
+        max_length=24,
+        description="Other fees for weekdays [PLN/MWh]."
+    )
+    # Weekend other fees (24 values)
+    weekend_other_fees_pln_per_mwh: List[float] = Field(
+        default_factory=lambda: [0.0] * 24,
+        min_length=24,
+        max_length=24,
+        description="Other fees for weekends [PLN/MWh]."
+    )
+    # Holiday dates (YYYY-MM-DD format, treated as weekends)
+    holiday_dates: List[str] = Field(
+        default_factory=list,
+        description="Holiday dates (YYYY-MM-DD) to treat as weekends."
+    )
+    # Timezone for DST-safe hour mapping
+    timezone: str = Field(
+        "Europe/Warsaw",
+        description="Timezone for mapping UTC to local hour (DST-safe)."
+    )
+
+
+# =============================================================================
 # Dispatch Request
 # =============================================================================
 
