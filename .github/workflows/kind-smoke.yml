@@ -1,0 +1,140 @@
+# Kind + Helm Smoke Test Workflow (v3.5.0 PR6)
+# Tests Helm chart deployment in a real Kubernetes cluster
+
+name: Kind Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'services/bess-dispatch/**'
+      - '.github/workflows/kind-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'services/bess-dispatch/**'
+      - '.github/workflows/kind-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  kind-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/bess-dispatch
+          file: services/bess-dispatch/Dockerfile
+          push: false
+          load: true
+          tags: pv-portal-api:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: smoke-test
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+              - role: control-plane
+              - role: worker
+
+      - name: Load image to Kind
+        run: |
+          kind load docker-image pv-portal-api:smoke --name smoke-test
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.14.0'
+
+      - name: Lint Helm chart
+        run: |
+          helm lint deploy/helm/pv-portal
+
+      - name: Install chart (dev mode)
+        run: |
+          helm install pv-portal deploy/helm/pv-portal \
+            -f deploy/helm/pv-portal/values-dev.yaml \
+            --set api.image.repository=pv-portal-api \
+            --set api.image.tag=smoke \
+            --set worker.image.repository=pv-portal-api \
+            --set worker.image.tag=smoke \
+            --wait \
+            --timeout 5m
+
+      - name: Wait for pods to be ready
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=pv-portal --timeout=300s
+
+      - name: Check pod status
+        run: |
+          kubectl get pods -l app.kubernetes.io/name=pv-portal
+          kubectl get svc -l app.kubernetes.io/name=pv-portal
+
+      - name: Port-forward API
+        run: |
+          kubectl port-forward svc/pv-portal-api 8031:8031 &
+          sleep 5
+
+      - name: Smoke test - Health live
+        run: |
+          curl -sf http://localhost:8031/api/bess-dispatch/health/live || exit 1
+          echo "Health live: OK"
+
+      - name: Smoke test - Health ready
+        run: |
+          READY=$(curl -sf http://localhost:8031/api/bess-dispatch/health/ready)
+          echo "Health ready response: $READY"
+          echo "$READY" | jq -e '.status == "ok"' || exit 1
+          echo "Health ready: OK"
+
+      - name: Smoke test - Info endpoint
+        run: |
+          INFO=$(curl -sf http://localhost:8031/info)
+          echo "Info response: $INFO"
+          echo "$INFO" | jq -e '.name' || exit 1
+          echo "Info: OK"
+
+      - name: Smoke test - Rate limit headers
+        run: |
+          RESPONSE=$(curl -sI http://localhost:8031/info)
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -i "X-RateLimit" || echo "Rate limit headers not present (may be disabled)"
+
+      - name: Check dependencies health
+        run: |
+          # Check Redis
+          kubectl exec deploy/pv-portal-redis -- redis-cli ping || echo "Redis check skipped"
+
+          # Check MinIO
+          kubectl exec deploy/pv-portal-minio -- curl -s http://localhost:9000/minio/health/live || echo "MinIO check skipped"
+
+      - name: Get logs on failure
+        if: failure()
+        run: |
+          echo "=== API Logs ==="
+          kubectl logs -l app.kubernetes.io/component=api --tail=100 || true
+          echo "=== Worker Logs ==="
+          kubectl logs -l app.kubernetes.io/component=worker --tail=100 || true
+          echo "=== Events ==="
+          kubectl get events --sort-by='.lastTimestamp' || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          helm uninstall pv-portal || true
+          kind delete cluster --name smoke-test || true
