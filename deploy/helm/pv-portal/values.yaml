@@ -1,0 +1,342 @@
+# Default values for pv-portal Helm chart
+# This is a YAML-formatted file.
+
+# ============================================================================
+# Global Configuration
+# ============================================================================
+global:
+  # Image pull secrets for private registries
+  imagePullSecrets: []
+  # Storage class for persistent volumes
+  storageClass: ""
+
+# ============================================================================
+# HA Mode Configuration
+# ============================================================================
+# IMPORTANT: For HA mode (replicaCount > 1), you MUST configure:
+# - postgresql.enabled: true (or external database)
+# - redis.enabled: true (or external redis)
+# - runstore.backend: db
+#
+# Without these settings, HA mode will NOT work correctly!
+ha:
+  # Enable HA mode guardrails validation
+  enabled: false
+  # Fail deployment if HA requirements not met
+  strict: true
+
+# ============================================================================
+# API Service Configuration
+# ============================================================================
+api:
+  # Number of API replicas
+  # IMPORTANT: If > 1, ensure ha.enabled: true and database is configured
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/pawelsmas/pv-portal-api
+    tag: ""  # Defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8000
+
+  # Resource limits
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  # Health probes
+  livenessProbe:
+    httpGet:
+      path: /health/live
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health/ready
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Pod annotations
+  podAnnotations: {}
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity rules
+  affinity: {}
+
+  # Extra environment variables
+  extraEnv: []
+
+  # Extra environment variables from secrets/configmaps
+  extraEnvFrom: []
+
+# ============================================================================
+# Worker Service Configuration
+# ============================================================================
+worker:
+  # Number of worker replicas
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/pawelsmas/pv-portal-worker
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Resource limits
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  # Worker-specific configuration
+  concurrency: 4
+  queues: "default,sizing,dispatch"
+
+  # Pod annotations
+  podAnnotations: {}
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity rules
+  affinity: {}
+
+  # Extra environment variables
+  extraEnv: []
+
+  # Extra environment variables from secrets/configmaps
+  extraEnvFrom: []
+
+# ============================================================================
+# Frontend Configuration
+# ============================================================================
+frontend:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/pawelsmas/pv-portal-frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# ============================================================================
+# RunStore Configuration
+# ============================================================================
+runstore:
+  # Storage backend: filesystem | db
+  # IMPORTANT: Use 'db' for HA mode (multiple replicas)
+  backend: filesystem
+
+  # Database URL for 'db' backend
+  # Can be set via existingSecret
+  databaseUrl: ""
+
+  # Enable compression for stored payloads
+  compress: false
+
+  # Existing secret containing DATABASE_URL
+  existingSecret: ""
+  existingSecretKey: "DATABASE_URL"
+
+# ============================================================================
+# PostgreSQL Configuration
+# ============================================================================
+postgresql:
+  # Enable bundled PostgreSQL
+  # Set to false if using external database
+  enabled: false
+
+  auth:
+    username: pvportal
+    password: ""  # Set via existingSecret or generate
+    database: pvportal
+    existingSecret: ""
+
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+  # External PostgreSQL configuration (when enabled: false)
+  external:
+    host: ""
+    port: 5432
+    database: pvportal
+    existingSecret: ""
+    existingSecretUserKey: "username"
+    existingSecretPasswordKey: "password"
+
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+redis:
+  # Enable bundled Redis
+  # Required for HA mode (job queue, rate limiting, caching)
+  enabled: false
+
+  auth:
+    enabled: false
+    password: ""
+    existingSecret: ""
+
+  master:
+    persistence:
+      enabled: false
+
+  replica:
+    replicaCount: 0
+
+  # External Redis configuration (when enabled: false)
+  external:
+    host: ""
+    port: 6379
+    password: ""
+    existingSecret: ""
+    existingSecretKey: "password"
+
+# ============================================================================
+# MinIO / S3 Configuration
+# ============================================================================
+minio:
+  # Enable bundled MinIO for artifact storage
+  enabled: false
+
+  auth:
+    rootUser: minio
+    rootPassword: ""
+    existingSecret: ""
+
+  persistence:
+    enabled: true
+    size: 10Gi
+
+  # External S3 configuration (when enabled: false)
+  external:
+    endpoint: ""
+    bucket: "pv-portal-artifacts"
+    accessKey: ""
+    secretKey: ""
+    existingSecret: ""
+    existingSecretAccessKeyKey: "access-key"
+    existingSecretSecretKeyKey: "secret-key"
+    region: "us-east-1"
+    useSSL: true
+
+# ============================================================================
+# Ingress Configuration
+# ============================================================================
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: pv-portal.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: api
+  tls: []
+  #  - secretName: pv-portal-tls
+  #    hosts:
+  #      - pv-portal.local
+
+# ============================================================================
+# Service Account
+# ============================================================================
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ============================================================================
+# External Secrets Operator Integration
+# ============================================================================
+externalSecrets:
+  # Enable External Secrets integration
+  enabled: false
+
+  # Secret store reference
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+
+  # Refresh interval
+  refreshInterval: 1h
+
+  # Secrets to fetch
+  secrets:
+    database:
+      enabled: false
+      remoteRef:
+        key: ""
+        property: ""
+    redis:
+      enabled: false
+      remoteRef:
+        key: ""
+        property: ""
+    s3:
+      enabled: false
+      remoteRef:
+        key: ""
+        property: ""
+
+# ============================================================================
+# Monitoring Configuration
+# ============================================================================
+monitoring:
+  # Enable Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+  # Enable Prometheus alerting rules
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
