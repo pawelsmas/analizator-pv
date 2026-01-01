@@ -955,6 +955,89 @@ class MoneyLedger(BaseModel):
 
 
 # =============================================================================
+# Price Timeseries SSoT (v2.0.0)
+# =============================================================================
+
+class PriceTimeseriesPlnPerMwh(BaseModel):
+    """
+    Per-step price timeseries in PLN/MWh (v2.0.0 SSoT).
+
+    This is the SINGLE SOURCE OF TRUTH for what prices were used in calculations.
+    All values are arrays of length 'steps' (matching period_info.steps).
+
+    Used for:
+    - Debugging: verify which prices were applied at each timestep
+    - Transparency: user can see exact ToU zone mapping
+    - Reproducibility: export prices + use as override for deterministic replay
+    - Validation: sum(price * energy) should match MoneyLedger totals
+    """
+    # Core price arrays (PLN per MWh)
+    import_price_pln_per_mwh: List[float] = Field(
+        ...,
+        description="Grid import price at each timestep [PLN/MWh]. Length = steps."
+    )
+    export_price_pln_per_mwh: List[float] = Field(
+        ...,
+        description="Grid export price at each timestep [PLN/MWh]. Length = steps."
+    )
+    other_fees_pln_per_mwh: List[float] = Field(
+        default_factory=list,
+        description="Other fees (OZE, kogeneracja, etc.) at each timestep [PLN/MWh]. Length = steps."
+    )
+
+    # Penalty rates (may be constant or time-varying)
+    unserved_penalty_pln_per_kwh: List[float] = Field(
+        default_factory=list,
+        description="Unserved load penalty at each timestep [PLN/kWh]. Length = steps."
+    )
+
+    # Period metadata
+    step_minutes: int = Field(
+        ...,
+        ge=15, le=60,
+        description="Time resolution in minutes (15 or 60)"
+    )
+    steps: int = Field(
+        ...,
+        ge=1,
+        description="Number of timesteps"
+    )
+    timezone: str = Field(
+        "Europe/Warsaw",
+        description="Timezone used for ToU zone mapping"
+    )
+    period_start: str = Field(
+        ...,
+        description="Period start (ISO 8601)"
+    )
+    period_end: str = Field(
+        ...,
+        description="Period end (ISO 8601)"
+    )
+
+    def validate_lengths(self) -> bool:
+        """Validate that all arrays have correct length."""
+        if len(self.import_price_pln_per_mwh) != self.steps:
+            return False
+        if len(self.export_price_pln_per_mwh) != self.steps:
+            return False
+        if self.other_fees_pln_per_mwh and len(self.other_fees_pln_per_mwh) != self.steps:
+            return False
+        if self.unserved_penalty_pln_per_kwh and len(self.unserved_penalty_pln_per_kwh) != self.steps:
+            return False
+        return True
+
+    def has_invalid_values(self) -> bool:
+        """Check for NaN or inf values in price arrays."""
+        import math
+        for arr in [self.import_price_pln_per_mwh, self.export_price_pln_per_mwh]:
+            for v in arr:
+                if math.isnan(v) or math.isinf(v):
+                    return True
+        return False
+
+
+# =============================================================================
 # Energy Flows SSoT
 # =============================================================================
 
@@ -1629,6 +1712,13 @@ class SizingRequest(BaseModel):
                     "Shows all cost categories for transparency and reconciliation."
     )
 
+    # Price timeseries control (new in v2.0.0)
+    include_price_timeseries: bool = Field(
+        False,
+        description="Include PriceTimeseries (per-step prices) in response. "
+                    "Shows import/export/fees prices at each timestep for debugging and replay."
+    )
+
     # Finance configuration (v0.5.0)
     finance_config: Optional["FinanceConfig"] = Field(
         None,
@@ -1727,6 +1817,18 @@ class SizingVariantResult(BaseModel):
         None,
         description="Money ledger with baseline/project cost breakdown if include_money_ledger=True. "
                     "Provides full transparency into cost categories and reconciliation."
+    )
+
+    # Price timeseries (v2.0.0) - per-step prices SSoT
+    price_timeseries: Optional["PriceTimeseriesPlnPerMwh"] = Field(
+        None,
+        description="Per-step price timeseries if include_price_timeseries=True. "
+                    "Shows import/export/fees prices at each timestep for debugging and replay."
+    )
+    price_hash: Optional[str] = Field(
+        None,
+        description="SHA256 hash of canonical price_timeseries JSON. "
+                    "Stable identifier for price set - same prices = same hash."
     )
 
     def model_post_init(self, __context):
