@@ -1063,6 +1063,9 @@ async def get_run_report_zip(
     # Import report modules
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_zip_helper import build_run_report_zip
+    from report_cache import (
+        compute_report_cache_key, get_cached_report, set_cached_report, CacheHeader
+    )
 
     # Import metrics
     import time
@@ -1073,6 +1076,34 @@ async def get_run_report_zip(
 
     start_time = time.time()
 
+    # Compute cache key (v2.5.0 PR3)
+    cache_key = compute_report_cache_key(
+        run_id=run_id,
+        format="zip",
+        profile=profile,
+        report_title=report_title,
+        client_name=client_name,
+        site_name=site_name,
+        prepared_by=prepared_by,
+        prepared_for=prepared_for,
+        notes=notes,
+        max_table_rows=max_table_rows,
+    )
+
+    # Check cache
+    cached_content, cache_header = get_cached_report(cache_key, "zip")
+    if cached_content is not None:
+        # Cache hit - return immediately with X-Cache header
+        return Response(
+            content=cached_content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="report_{run_id}.zip"',
+                "X-Cache": cache_header,
+            }
+        )
+
+    # Cache miss - build report
     # Build options from query params
     branding = None
     if any([report_title, client_name, site_name, prepared_by, prepared_for]):
@@ -1108,6 +1139,9 @@ async def get_run_report_zip(
     # Build report ZIP
     zip_content = build_run_report_zip(stored, options)
 
+    # Cache the result (v2.5.0 PR3)
+    set_cached_report(cache_key, "zip", zip_content)
+
     # Track generation metrics
     duration = time.time() - start_time
     track_report_generation("zip", duration, len(zip_content))
@@ -1116,7 +1150,8 @@ async def get_run_report_zip(
         content=zip_content,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="report_{run_id}.zip"'
+            "Content-Disposition": f'attachment; filename="report_{run_id}.zip"',
+            "X-Cache": CacheHeader.MISS,
         }
     )
 
@@ -1159,12 +1194,43 @@ async def get_run_report_pdf(
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_data import build_report_data_from_run
     from report_pdf import render_pdf
+    from report_cache import (
+        compute_report_cache_key, get_cached_report, set_cached_report, CacheHeader
+    )
     from observability.report_metrics import (
         track_report_request, track_report_branding, track_report_generation
     )
 
     start_time = time.time()
 
+    # Compute cache key (v2.5.0 PR3)
+    cache_key = compute_report_cache_key(
+        run_id=run_id,
+        format="pdf",
+        profile=profile,
+        report_title=report_title,
+        client_name=client_name,
+        site_name=site_name,
+        prepared_by=prepared_by,
+        prepared_for=prepared_for,
+        notes=notes,
+        max_table_rows=max_table_rows,
+    )
+
+    # Check cache
+    cached_content, cache_header = get_cached_report(cache_key, "pdf")
+    if cached_content is not None:
+        # Cache hit - return immediately with X-Cache header
+        return Response(
+            content=cached_content,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="report_{run_id}.pdf"',
+                "X-Cache": cache_header,
+            }
+        )
+
+    # Cache miss - build report
     # Build options from query params
     branding = None
     if any([report_title, client_name, site_name, prepared_by, prepared_for]):
@@ -1201,6 +1267,9 @@ async def get_run_report_pdf(
     report_data = build_report_data_from_run(stored, options)
     pdf_content = render_pdf(report_data)
 
+    # Cache the result (v2.5.0 PR3)
+    set_cached_report(cache_key, "pdf", pdf_content)
+
     # Track generation metrics
     duration = time.time() - start_time
     track_report_generation("pdf", duration, len(pdf_content))
@@ -1209,7 +1278,8 @@ async def get_run_report_pdf(
         content=pdf_content,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="report_{run_id}.pdf"'
+            "Content-Disposition": f'attachment; filename="report_{run_id}.pdf"',
+            "X-Cache": CacheHeader.MISS,
         }
     )
 
@@ -1252,12 +1322,43 @@ async def get_run_report_xlsx(
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_data import build_report_data_from_run
     from report_xlsx import render_xlsx
+    from report_cache import (
+        compute_report_cache_key, get_cached_report, set_cached_report, CacheHeader
+    )
     from observability.report_metrics import (
         track_report_request, track_report_branding, track_report_generation
     )
 
     start_time = time.time()
 
+    # Compute cache key (v2.5.0 PR3)
+    cache_key = compute_report_cache_key(
+        run_id=run_id,
+        format="xlsx",
+        profile=profile,
+        report_title=report_title,
+        client_name=client_name,
+        site_name=site_name,
+        prepared_by=prepared_by,
+        prepared_for=prepared_for,
+        notes=notes,
+        max_table_rows=max_table_rows,
+    )
+
+    # Check cache
+    cached_content, cache_header = get_cached_report(cache_key, "xlsx")
+    if cached_content is not None:
+        # Cache hit - return immediately with X-Cache header
+        return Response(
+            content=cached_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="report_{run_id}.xlsx"',
+                "X-Cache": cache_header,
+            }
+        )
+
+    # Cache miss - build report
     # Build options from query params
     branding = None
     if any([report_title, client_name, site_name, prepared_by, prepared_for]):
@@ -1294,6 +1395,9 @@ async def get_run_report_xlsx(
     report_data = build_report_data_from_run(stored, options)
     xlsx_content = render_xlsx(report_data)
 
+    # Cache the result (v2.5.0 PR3)
+    set_cached_report(cache_key, "xlsx", xlsx_content)
+
     # Track generation metrics
     duration = time.time() - start_time
     track_report_generation("xlsx", duration, len(xlsx_content))
@@ -1302,7 +1406,8 @@ async def get_run_report_xlsx(
         content=xlsx_content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="report_{run_id}.xlsx"'
+            "Content-Disposition": f'attachment; filename="report_{run_id}.xlsx"',
+            "X-Cache": CacheHeader.MISS,
         }
     )
 
