@@ -904,6 +904,100 @@
       </div>
     </div>
 
+    <!-- NEW v2.2.0: Dispatch Trace Section -->
+    <div class="dispatch-trace-section full-width" id="dispatchTraceSection">
+      <h2>🔋 Dispatch Trace (v2.2.0)</h2>
+      <div class="chart-info">
+        SOC timeseries, cycle summary, invariants status
+      </div>
+
+      <div class="dispatch-trace-grid" style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-top:16px;">
+        <!-- Left Column: SOC Chart -->
+        <div class="trace-chart-container" style="background:#f8f9fa;border-radius:8px;padding:16px;border:1px solid #e0e0e0;">
+          <h3 style="margin:0 0 12px 0;color:#333;font-size:14px;">📊 SOC Timeseries</h3>
+          <div id="socChartContainer" style="min-height:250px;">
+            <canvas id="socTimeseriesChart" width="600" height="250" style="max-width:100%;"></canvas>
+            <div id="socChartPlaceholder" style="display:flex;align-items:center;justify-content:center;height:250px;color:#999;font-size:12px;">
+              Brak danych - uruchom sizing z include_battery_trace=true
+            </div>
+          </div>
+          <!-- Power Chart -->
+          <h3 style="margin:16px 0 12px 0;color:#333;font-size:14px;">⚡ Charge/Discharge Power</h3>
+          <div id="powerChartContainer" style="min-height:200px;">
+            <canvas id="powerTimeseriesChart" width="600" height="200" style="max-width:100%;"></canvas>
+            <div id="powerChartPlaceholder" style="display:flex;align-items:center;justify-content:center;height:200px;color:#999;font-size:12px;">
+              Brak danych
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column: Cycle Summary + Invariants -->
+        <div class="trace-summary-container">
+          <!-- Cycle Summary Card -->
+          <div class="cycle-summary-card" style="background:#e8f5e9;border-radius:8px;padding:16px;border:1px solid #a5d6a7;margin-bottom:16px;">
+            <h3 style="margin:0 0 12px 0;color:#2e7d32;font-size:14px;">🔄 Cycle Summary</h3>
+            <div class="cycle-stats" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <div class="cycle-stat" style="background:white;padding:8px;border-radius:4px;">
+                <div style="font-size:10px;color:#666;">Total EFC</div>
+                <div id="cycleTotalEfc" style="font-size:18px;font-weight:600;color:#2e7d32;">-</div>
+              </div>
+              <div class="cycle-stat" style="background:white;padding:8px;border-radius:4px;">
+                <div style="font-size:10px;color:#666;">Avg Daily EFC</div>
+                <div id="cycleAvgDailyEfc" style="font-size:18px;font-weight:600;color:#2e7d32;">-</div>
+              </div>
+              <div class="cycle-stat" style="background:white;padding:8px;border-radius:4px;">
+                <div style="font-size:10px;color:#666;">Max Daily EFC</div>
+                <div id="cycleMaxDailyEfc" style="font-size:18px;font-weight:600;color:#ff9800;">-</div>
+              </div>
+              <div class="cycle-stat" style="background:white;padding:8px;border-radius:4px;">
+                <div style="font-size:10px;color:#666;">Throughput</div>
+                <div id="cycleThroughputMwh" style="font-size:18px;font-weight:600;color:#1976d2;">- MWh</div>
+              </div>
+            </div>
+            <div id="cycleLimitWarning" style="margin-top:12px;padding:8px;background:#fff3e0;border-radius:4px;border:1px solid #ffcc80;display:none;">
+              <span style="color:#e65100;font-size:11px;">⚠️ <span id="cycleLimitDays">0</span> days exceeded cycle limit</span>
+            </div>
+          </div>
+
+          <!-- Invariants Status Card -->
+          <div class="invariants-card" style="background:#e3f2fd;border-radius:8px;padding:16px;border:1px solid #90caf9;">
+            <h3 style="margin:0 0 12px 0;color:#1565c0;font-size:14px;">✅ Dispatch Invariants</h3>
+            <div id="invariantsStatus" class="invariants-status">
+              <div class="invariant-row" style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #e0e0e0;">
+                <span style="font-size:12px;">SOC Bounds (0 ≤ SOC ≤ capacity)</span>
+                <span id="invariantSocBounds" style="font-size:12px;font-weight:600;">-</span>
+              </div>
+              <div class="invariant-row" style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #e0e0e0;">
+                <span style="font-size:12px;">Power Limits (P ≤ rated)</span>
+                <span id="invariantPowerLimits" style="font-size:12px;font-weight:600;">-</span>
+              </div>
+              <div class="invariant-row" style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #e0e0e0;">
+                <span style="font-size:12px;">No Simultaneous Charge/Discharge</span>
+                <span id="invariantNoSimultaneous" style="font-size:12px;font-weight:600;">-</span>
+              </div>
+              <div class="invariant-row" style="display:flex;justify-content:space-between;padding:6px 0;">
+                <span style="font-size:12px;">Energy Balance</span>
+                <span id="invariantEnergyBalance" style="font-size:12px;font-weight:600;">-</span>
+              </div>
+            </div>
+            <div id="invariantsAllOk" style="margin-top:12px;padding:8px;background:#c8e6c9;border-radius:4px;text-align:center;display:none;">
+              <span style="color:#2e7d32;font-size:12px;font-weight:600;">✅ All invariants OK</span>
+            </div>
+            <div id="invariantsViolations" style="margin-top:12px;padding:8px;background:#ffcdd2;border-radius:4px;display:none;">
+              <span style="color:#c62828;font-size:11px;">❌ <span id="invariantsViolationCount">0</span> violations detected</span>
+            </div>
+          </div>
+
+          <!-- Trace Export -->
+          <div style="margin-top:16px;">
+            <button id="exportTraceBtn" onclick="exportBatteryTrace()" style="background:#1976d2;color:white;border:none;padding:10px 16px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;width:100%;" disabled>
+              📥 Export Battery Trace CSV
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- NEW v3.5: Advanced Configuration Section -->
     <div class="config-section full-width advanced-config-section" id="advancedConfigSection">
       <h2>⚙️ Konfiguracja Zaawansowana BESS</h2>
