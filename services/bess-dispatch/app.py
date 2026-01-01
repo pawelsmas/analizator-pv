@@ -335,6 +335,7 @@ async def prometheus_http_middleware(request: Request, call_next):
 
 # Deprecation tracking middleware (v2.7.0)
 from deprecations_usage import (
+    add_warnings_to_response,
     clear_request_deprecations,
     get_deprecation_headers,
     has_deprecations_used,
@@ -2463,10 +2464,15 @@ async def run_sizing_optimization(
             # For legacy mode, convert to dict and add deprecated aliases
             result_dict = result.model_dump(mode="json")
             result_dict = apply_compat_mode(result_dict, compat_mode)
+            # Add deprecation warnings if any deprecated fields were used (v2.7.0 PR3)
+            result_dict = add_warnings_to_response(result_dict)
             return result_dict
         else:
             # Clean mode: return as-is (deprecated fields already omitted)
-            return result
+            # Add deprecation warnings if any deprecated fields were used (v2.7.0 PR3)
+            result_dict = result.model_dump(mode="json")
+            result_dict = add_warnings_to_response(result_dict)
+            return result_dict
 
     except ValueError as e:
         raise HTTPException(400, str(e))
