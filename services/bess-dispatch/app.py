@@ -5163,6 +5163,98 @@ async def export_portfolio_summary_zip(request: PortfolioRequest):
 
 
 # =============================================================================
+# Portfolio Report Endpoint (v2.4.0)
+# =============================================================================
+
+class PortfolioReportRequest(BaseModel):
+    """Request for portfolio report generation."""
+    run_ids: List[str] = Field(..., min_length=1, description="List of run_ids to include")
+    labels: Optional[Dict[str, str]] = Field(None, description="Optional labels: run_id -> label")
+    tags: Optional[Dict[str, List[str]]] = Field(None, description="Optional tags: run_id -> [tags]")
+    options: Optional[Dict[str, Any]] = Field(None, description="Report options (profile, branding, notes)")
+
+
+@app.post("/api/bess-dispatch/portfolio/report.zip")
+async def get_portfolio_report_zip(request: PortfolioReportRequest):
+    """
+    Generate portfolio report as ZIP bundle (v2.4.0).
+
+    Returns a ZIP archive containing:
+    - portfolio_summary.json: Aggregated portfolio summary
+    - portfolio_items.csv: Items as CSV
+    - portfolio_items.xlsx: Items as Excel
+    - README.md: Documentation and repro instructions
+    - WARNINGS.txt: Warnings (if any, e.g., mixed assumptions)
+
+    Args:
+        request: PortfolioReportRequest with run_ids and optional options
+
+    Returns:
+        ZIP file attachment
+    """
+    from report_models import ReportOptions, ReportProfile, ReportBranding
+    from portfolio_report_helper import build_portfolio_report_zip
+    from observability.portfolio_metrics import record_portfolio_export_request
+    record_portfolio_export_request(source="api", format="zip")
+
+    try:
+        # Compute portfolio summary
+        response = compute_portfolio_summary(
+            run_ids=request.run_ids,
+            labels=request.labels,
+            tags=request.tags,
+            get_run_fn=get_run,
+        )
+
+        # Build options from request
+        options = None
+        if request.options:
+            opts = request.options
+            branding = None
+            branding_opts = opts.get("branding", {})
+            if branding_opts:
+                branding = ReportBranding(
+                    report_title=branding_opts.get("report_title"),
+                    client_name=branding_opts.get("client_name"),
+                    site_name=branding_opts.get("site_name"),
+                    prepared_by=branding_opts.get("prepared_by"),
+                    prepared_for=branding_opts.get("prepared_for"),
+                )
+
+            profile = ReportProfile.CLIENT
+            if opts.get("profile") == "engineering":
+                profile = ReportProfile.ENGINEERING
+
+            options = ReportOptions(
+                profile=profile,
+                branding=branding,
+                notes=opts.get("notes"),
+                max_table_rows=opts.get("max_table_rows", 48),
+            )
+
+        # Build report ZIP
+        zip_content = build_portfolio_report_zip(
+            portfolio_summary=response.summary.model_dump(),
+            portfolio_items=[item.model_dump() for item in response.items],
+            options=options,
+            source_type="api",
+        )
+
+        filename = f"portfolio_report_{len(request.run_ids)}items.zip"
+
+        return Response(
+            content=zip_content,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio report error: {str(e)}")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
