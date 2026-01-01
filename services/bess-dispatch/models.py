@@ -3240,6 +3240,213 @@ class CacheInfo(BaseModel):
     )
 
 
+# =============================================================================
+# PORTFOLIO MODELS (v2.3.0)
+# =============================================================================
+
+
+class PortfolioItem(BaseModel):
+    """
+    Input item for portfolio aggregation.
+
+    Represents a single run to be included in the portfolio summary.
+    """
+    run_id: str = Field(
+        ...,
+        description="Unique run identifier from sizing response"
+    )
+    label: Optional[str] = Field(
+        None,
+        description="User-defined label for this run (e.g., 'Site A', 'Customer 123')"
+    )
+    tags: Optional[List[str]] = Field(
+        None,
+        description="Optional tags for grouping/filtering (e.g., ['region:north', 'type:industrial'])"
+    )
+    weight: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Optional weight for weighted aggregations. If None, uses CAPEX as weight."
+    )
+
+
+class PortfolioItemSummary(BaseModel):
+    """
+    Summary of a single run within a portfolio.
+
+    Contains extracted KPIs and metadata from the stored run.
+    """
+    run_id: str = Field(..., description="Unique run identifier")
+    label: Optional[str] = Field(None, description="User-defined label")
+    tags: Optional[List[str]] = Field(None, description="Optional tags")
+
+    # KPIs from recommended variant
+    recommended_variant: Optional[str] = Field(
+        None,
+        description="Name of the recommended variant (e.g., 'bess_100kWh')"
+    )
+    objective_used: Optional[str] = Field(
+        None,
+        description="Optimization objective used (e.g., 'npv', 'payback')"
+    )
+    npv_pln: float = Field(
+        0.0,
+        description="Net Present Value in PLN from recommended variant"
+    )
+    payback_years: Optional[float] = Field(
+        None,
+        description="Simple payback period in years"
+    )
+    irr_pct: Optional[float] = Field(
+        None,
+        description="Internal Rate of Return as percentage (if available)"
+    )
+    net_savings_pln: float = Field(
+        0.0,
+        description="Annual net savings in PLN"
+    )
+    capex_pln: float = Field(
+        0.0,
+        description="Total CAPEX in PLN (from finance_summary or assumptions)"
+    )
+
+    # Metadata for compatibility checks
+    assumptions_version: Optional[str] = Field(
+        None,
+        description="Version of assumptions used for this run"
+    )
+    schema_version: Optional[str] = Field(
+        None,
+        description="Schema version of the sizing result"
+    )
+    pricing_mode: Optional[str] = Field(
+        None,
+        description="Pricing mode used (generated/override/preset)"
+    )
+
+    # Status
+    status: str = Field(
+        "ok",
+        description="Item status: 'ok' or 'error'"
+    )
+    error_message: Optional[str] = Field(
+        None,
+        description="Error message if status is 'error'"
+    )
+
+
+class PortfolioSummary(BaseModel):
+    """
+    Aggregated summary of a portfolio of runs.
+
+    Provides total KPIs, weighted averages, and compatibility warnings.
+    """
+    # Counts
+    items_total: int = Field(
+        0,
+        description="Total number of items in portfolio"
+    )
+    items_ok: int = Field(
+        0,
+        description="Number of items successfully aggregated"
+    )
+    items_error: int = Field(
+        0,
+        description="Number of items with errors"
+    )
+
+    # Compatibility warnings
+    mixed_assumptions: bool = Field(
+        False,
+        description="True if items have different assumptions_version values"
+    )
+    assumptions_versions: List[str] = Field(
+        default_factory=list,
+        description="List of unique assumptions_version values found"
+    )
+    schema_versions: List[str] = Field(
+        default_factory=list,
+        description="List of unique schema_version values found"
+    )
+    pricing_modes: List[str] = Field(
+        default_factory=list,
+        description="List of unique pricing_mode values found"
+    )
+
+    # Aggregated KPIs
+    total_npv_pln: float = Field(
+        0.0,
+        description="Sum of NPV across all OK items"
+    )
+    total_net_savings_pln: float = Field(
+        0.0,
+        description="Sum of net_savings_pln across all OK items"
+    )
+    total_capex_pln: float = Field(
+        0.0,
+        description="Sum of CAPEX across all OK items"
+    )
+    weighted_payback_years: Optional[float] = Field(
+        None,
+        description="CAPEX-weighted average payback (simple average if total_capex=0)"
+    )
+    avg_irr_pct: Optional[float] = Field(
+        None,
+        description="Simple average IRR across items with IRR values"
+    )
+
+    # Top performers
+    top_items_by_npv: List[PortfolioItemSummary] = Field(
+        default_factory=list,
+        description="Top 5 items by NPV (descending)"
+    )
+
+
+class PortfolioItemError(BaseModel):
+    """
+    Error details for a failed portfolio item.
+    """
+    run_id: str = Field(..., description="Run ID that failed")
+    error: str = Field(..., description="Error message")
+
+
+class PortfolioRequest(BaseModel):
+    """
+    Request to aggregate multiple runs into a portfolio summary.
+    """
+    run_ids: List[str] = Field(
+        ...,
+        min_length=1,
+        description="List of run IDs to aggregate"
+    )
+    labels: Optional[Dict[str, str]] = Field(
+        None,
+        description="Optional mapping of run_id -> label"
+    )
+    tags: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="Optional mapping of run_id -> tags list"
+    )
+
+
+class PortfolioResponse(BaseModel):
+    """
+    Response from portfolio aggregation.
+    """
+    summary: PortfolioSummary = Field(
+        ...,
+        description="Aggregated portfolio summary"
+    )
+    items: List[PortfolioItemSummary] = Field(
+        default_factory=list,
+        description="Summary of each item in portfolio"
+    )
+    errors: List[PortfolioItemError] = Field(
+        default_factory=list,
+        description="Errors for items that could not be processed"
+    )
+
+
 # Update forward references for Pydantic
 SizingRequest.model_rebuild()
 SizingResult.model_rebuild()
