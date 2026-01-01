@@ -549,6 +549,8 @@ services:
       - DATABASE_URL=${BESS_DATABASE_URL:-}
       - SQLITE_DB_PATH=/data/bess.sqlite
       - DB_MIGRATIONS_REQUIRED=${BESS_DB_MIGRATIONS_REQUIRED:-false}
+      # Job artifacts (v3.4.0)
+      - JOB_ARTIFACTS_DIR=/data/job_artifacts
     volumes:
       - bess-dispatch-data:/data
       - ./docs/scenarios:/app/docs/scenarios:ro
@@ -617,6 +619,8 @@ services:
       - RUN_STORE_ENABLED=true
       - JOB_STORE_PATH=/data/jobs.sqlite
       - JOB_STORE_ENABLED=true
+      # Job artifacts (v3.4.0)
+      - JOB_ARTIFACTS_DIR=/data/job_artifacts
     volumes:
       - bess-dispatch-data:/data
       - ./docs/scenarios:/app/docs/scenarios:ro

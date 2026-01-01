@@ -20,12 +20,14 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth_config import AuthContext
 from auth_deps import get_auth_context
 from db_session import get_db_session
 from db_models import JobQueue
+from job_artifacts import list_artifacts, get_artifact, ArtifactInfo
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -347,3 +349,83 @@ async def cancel_job(
             status="cancelled",
             cancelled=True,
         )
+
+
+# -------------------------------------------------------------------------
+# Artifacts endpoints
+# -------------------------------------------------------------------------
+
+class ArtifactListResponse(BaseModel):
+    """Response for listing job artifacts."""
+    job_id: str
+    artifacts: List[ArtifactInfo]
+
+
+@router.get("/{job_id}/artifacts", response_model=ArtifactListResponse)
+async def list_job_artifacts(
+    job_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """
+    List artifacts produced by a job.
+
+    Returns list of artifact names, content types, and sizes.
+    Only available for succeeded jobs that produced artifacts.
+    """
+    tenant_id = auth.tenant_id or "default"
+
+    with get_db_session() as session:
+        job = session.query(JobQueue).filter(
+            JobQueue.id == job_id,
+            JobQueue.tenant_id == tenant_id,
+        ).first()
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+    # List artifacts from filesystem
+    artifacts = list_artifacts(job_id)
+
+    return ArtifactListResponse(
+        job_id=job_id,
+        artifacts=artifacts,
+    )
+
+
+@router.get("/{job_id}/artifacts/{artifact_name}")
+async def download_artifact(
+    job_id: str,
+    artifact_name: str,
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """
+    Download a specific artifact from a job.
+
+    Returns the artifact file with appropriate content type.
+    """
+    tenant_id = auth.tenant_id or "default"
+
+    with get_db_session() as session:
+        job = session.query(JobQueue).filter(
+            JobQueue.id == job_id,
+            JobQueue.tenant_id == tenant_id,
+        ).first()
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get artifact
+    result = get_artifact(job_id, artifact_name)
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    content, content_type = result
+
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{artifact_name}"',
+        },
+    )

@@ -159,8 +159,7 @@ def execute_job(job: JobQueue) -> Dict[str, Any]:
     """
     Execute a job based on its kind.
 
-    This is a stub implementation that will be extended in PR2/PR3
-    to handle actual job kinds.
+    Delegates to job_handlers module for actual execution.
 
     Args:
         job: The JobQueue record to execute
@@ -172,30 +171,10 @@ def execute_job(job: JobQueue) -> Dict[str, Any]:
         - error_code: Optional error code
         - error_detail: Optional error message
     """
-    kind = job.kind
-    logger.info(f"Executing job {job.id} of kind '{kind}'")
+    # Import handler to avoid circular imports
+    from job_handlers import execute_job as _execute_job
 
-    # Parse payload
-    payload = {}
-    if job.payload_json:
-        try:
-            payload = json.loads(job.payload_json)
-        except json.JSONDecodeError:
-            return {
-                "success": False,
-                "result": None,
-                "error_code": "INVALID_PAYLOAD",
-                "error_detail": "Failed to parse payload JSON",
-            }
-
-    # Stub: Unknown job kind -> fail
-    # Actual implementations will be added in PR3
-    return {
-        "success": False,
-        "result": None,
-        "error_code": "UNKNOWN_JOB_KIND",
-        "error_detail": f"Unknown job kind: {kind}. Job execution not yet implemented.",
-    }
+    return _execute_job(job)
 
 
 def complete_job(session: Session, job: JobQueue, execution_result: Dict[str, Any], now: datetime):
