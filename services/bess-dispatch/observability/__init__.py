@@ -207,6 +207,23 @@ from .validation_metrics import (
     record_field_diffs,
 )
 
+from .pricing_metrics import (
+    # v2.0.0 pricing engine metrics
+    PRICING_REQUESTS_TOTAL,
+    PRICING_MODE_TOTAL,
+    PRICE_OVERRIDE_REQUESTS_TOTAL,
+    PRICE_IMPORT_PLN_MWH,
+    PRICE_EXPORT_PLN_MWH,
+    LEDGER_IMPORT_COST_PLN,
+    LEDGER_EXPORT_REVENUE_PLN,
+    LEDGER_NET_COST_PLN,
+    record_pricing_request,
+    record_pricing_mode,
+    record_price_override_request,
+    record_price_values,
+    record_ledger_costs,
+)
+
 __all__ = [
     # HTTP metrics
     "HTTP_REQUESTS_TOTAL",
@@ -374,4 +391,18 @@ __all__ = [
     "record_validation_error",
     "record_validation_duration",
     "record_validation_tolerance",
+    # Pricing metrics (v2.0.0)
+    "PRICING_REQUESTS_TOTAL",
+    "PRICING_MODE_TOTAL",
+    "PRICE_OVERRIDE_REQUESTS_TOTAL",
+    "PRICE_IMPORT_PLN_MWH",
+    "PRICE_EXPORT_PLN_MWH",
+    "LEDGER_IMPORT_COST_PLN",
+    "LEDGER_EXPORT_REVENUE_PLN",
+    "LEDGER_NET_COST_PLN",
+    "record_pricing_request",
+    "record_pricing_mode",
+    "record_price_override_request",
+    "record_price_values",
+    "record_ledger_costs",
 ]

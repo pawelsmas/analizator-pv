@@ -359,6 +359,55 @@ Fires when repro bundle downloads are frequently failing (run not found).
     description: "More than 10% of repro.zip downloads are failing due to run not found. Check run retention policy."
 ```
 
+## Pricing Engine Alerts (v2.0.0)
+
+### Info: High Override Usage
+
+Fires when price override is used frequently.
+
+```yaml
+- alert: BESSHighPriceOverrideUsage
+  expr: rate(bess_price_override_requests_total[1h]) > 10
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "High price override usage"
+    description: "More than 10 requests/hour are using price_timeseries_override"
+```
+
+### Warning: Unusual Import Price
+
+Fires when average import price is unusually high or low.
+
+```yaml
+- alert: BESSUnusualImportPrice
+  expr: |
+    histogram_quantile(0.95, rate(bess_price_import_pln_mwh_bucket[15m])) > 2000
+    or histogram_quantile(0.05, rate(bess_price_import_pln_mwh_bucket[15m])) < 100
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Unusual import price detected"
+    description: "Import prices are outside normal range (100-2000 PLN/MWh)"
+```
+
+### Info: High Ledger Net Costs
+
+Fires when net costs in ledger are unusually high.
+
+```yaml
+- alert: BESSHighLedgerNetCosts
+  expr: histogram_quantile(0.99, rate(bess_ledger_net_cost_pln_bucket[15m])) > 10000
+  for: 15m
+  labels:
+    severity: info
+  annotations:
+    summary: "High ledger net costs"
+    description: "99th percentile net cost exceeds 10,000 PLN"
+```
+
 ## Runbook Links
 
 When alerts fire, operators should:
@@ -374,3 +423,5 @@ When alerts fire, operators should:
 9. **ReproDownloadFailures**: Check run store retention policy, may need to extend retention days
 10. **LedgerReconciliationFailure**: Compare net_savings_pln vs money_ledger.delta_annual_pln.total_cost_pln for affected run
 11. **LedgerReconciliationErrorHigh**: Review rounding policies in money_ledger_helper.py and savings_breakdown calculation
+12. **HighPriceOverrideUsage**: Review if price_timeseries_override is being used as intended (testing/replay)
+13. **UnusualImportPrice**: Verify price configuration, check for typos in import_price_pln_mwh
