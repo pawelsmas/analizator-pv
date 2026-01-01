@@ -1,0 +1,64 @@
+{
+  "description": "Result of comparing a single KPI field.",
+  "properties": {
+    "abs_diff": {
+      "description": "Absolute difference",
+      "title": "Abs Diff",
+      "type": "number"
+    },
+    "abs_tol": {
+      "description": "Absolute tolerance applied",
+      "title": "Abs Tol",
+      "type": "number"
+    },
+    "actual": {
+      "description": "Actual value",
+      "title": "Actual",
+      "type": "number"
+    },
+    "expected": {
+      "description": "Expected value",
+      "title": "Expected",
+      "type": "number"
+    },
+    "field": {
+      "description": "Field name",
+      "title": "Field",
+      "type": "string"
+    },
+    "pass": {
+      "description": "Whether this field passes validation",
+      "title": "Pass",
+      "type": "boolean"
+    },
+    "rel_diff": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Relative difference (None if expected=0)",
+      "title": "Rel Diff"
+    },
+    "rel_tol": {
+      "description": "Relative tolerance applied",
+      "title": "Rel Tol",
+      "type": "number"
+    }
+  },
+  "required": [
+    "field",
+    "expected",
+    "actual",
+    "abs_diff",
+    "abs_tol",
+    "rel_tol",
+    "pass"
+  ],
+  "title": "KpiDiff",
+  "type": "object"
+}

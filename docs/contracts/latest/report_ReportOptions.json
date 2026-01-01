@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "ReportBranding": {
+      "description": "Customizable branding fields for report header.\n\nAll fields are optional and have max length limits.",
+      "properties": {
+        "client_name": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Client/company name (max 120 chars)",
+          "title": "Client Name"
+        },
+        "prepared_by": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Report author name (max 120 chars)",
+          "title": "Prepared By"
+        },
+        "prepared_for": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Report recipient name (max 120 chars)",
+          "title": "Prepared For"
+        },
+        "report_title": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom report title (max 120 chars)",
+          "title": "Report Title"
+        },
+        "site_name": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Site/project name (max 120 chars)",
+          "title": "Site Name"
+        }
+      },
+      "title": "ReportBranding",
+      "type": "object"
+    },
+    "ReportProfile": {
+      "description": "Report profile determines which sections are included.\n\n- client: Executive summary, MoneyLedger, Flows, Warnings\n- engineering: All of client + debug_events, invariants, cycle_summary, pricing details",
+      "enum": [
+        "client",
+        "engineering"
+      ],
+      "title": "ReportProfile",
+      "type": "string"
+    }
+  },
+  "description": "Options for report generation.\n\nThese options do NOT affect calculation results - only presentation.",
+  "properties": {
+    "branding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReportBranding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Custom branding for report header"
+    },
+    "max_table_rows": {
+      "default": 48,
+      "description": "Maximum rows to show in preview tables (12-240)",
+      "maximum": 240,
+      "minimum": 12,
+      "title": "Max Table Rows",
+      "type": "integer"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Custom notes to include in report (max 2000 chars)",
+      "title": "Notes"
+    },
+    "profile": {
+      "$ref": "#/$defs/ReportProfile",
+      "default": "client",
+      "description": "Report profile: 'client' (executive) or 'engineering' (detailed)"
+    }
+  },
+  "title": "ReportOptions",
+  "type": "object"
+}

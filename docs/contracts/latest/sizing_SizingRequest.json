@@ -1,0 +1,1256 @@
+{
+  "$defs": {
+    "AnalyticalPeriodConfig": {
+      "description": "Time axis definition for analysis.\n\nThis is the SINGLE SOURCE OF TRUTH for time-related calculations.\nAll modules must use this instead of hardcoded 8760/365 or date(year, 1, 1).\n\nThe time axis is defined by:\n- start_datetime: When the analysis period begins\n- interval_minutes: Data resolution (15 or 60)\n- n_points: Number of data points (determines period length)\n\nThe end_datetime is calculated as: start + (n_points - 1) * interval\n\nUsage:\n- ToU pricing: Use time_index derived from this for zone lookup\n- Capacity fee: Use time_index for working day determination\n- Daily metrics: Use groupby(date) on time_index, NOT hardcoded 365 days",
+      "properties": {
+        "clock_mode": {
+          "default": "CET_FIXED",
+          "description": "Clock mode: CET_FIXED (ignore DST) or LOCAL_TZ (honor DST)",
+          "title": "Clock Mode",
+          "type": "string"
+        },
+        "interval_minutes": {
+          "default": 60,
+          "description": "Time resolution: 15 or 60 minutes",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Interval Minutes",
+          "type": "integer"
+        },
+        "n_points": {
+          "description": "Number of data points (determines period length)",
+          "minimum": 1,
+          "title": "N Points",
+          "type": "integer"
+        },
+        "start_datetime": {
+          "description": "Analysis start datetime (ISO 8601: YYYY-MM-DDTHH:MM:SS)",
+          "title": "Start Datetime",
+          "type": "string"
+        },
+        "timestamps": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "If provided, use these timestamps 1:1 instead of generating from start_datetime",
+          "title": "Timestamps"
+        },
+        "timezone": {
+          "default": "Europe/Warsaw",
+          "description": "Timezone for ToU/capacity fee calculations",
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_datetime",
+        "n_points"
+      ],
+      "title": "AnalyticalPeriodConfig",
+      "type": "object"
+    },
+    "ArbitrageConfig": {
+      "description": "Configuration for Time-of-Use (ToU) arbitrage dispatch.\n\nArbitrage exploits price differences between tariff zones:\n- Charge from grid when price is low (below threshold)\n- Discharge when price is high (above threshold)\n\nIMPORTANT: For NPV calculations, capacity fee (opłata mocowa) is NOT\nincluded in price thresholds. It's calculated post-dispatch using\nthe capacity_fee_pl module based on the actual import profile.\n\nIntegration with STACKED mode:\n- Peak shaving has priority 1 (can use full SOC range)\n- PV surplus charging has priority 2 (always before grid charging)\n- Arbitrage grid-charge has priority 3 (only if spare charging capacity)\n- Arbitrage discharge has priority 4 (when price high and SOC > floor)",
+      "properties": {
+        "allow_grid_charging": {
+          "default": true,
+          "description": "Allow charging battery from grid for arbitrage. If False, only PV surplus can charge battery.",
+          "title": "Allow Grid Charging",
+          "type": "boolean"
+        },
+        "arbitrage_soc_min": {
+          "default": 0.2,
+          "description": "Minimum SOC for arbitrage discharge [0-1]",
+          "maximum": 0.5,
+          "minimum": 0.0,
+          "title": "Arbitrage Soc Min",
+          "type": "number"
+        },
+        "capacity_fee_pln_kwh": {
+          "default": 0.0,
+          "description": "Capacity fee in steering prices [PLN/kWh]. Keep 0 for accurate NPV.",
+          "minimum": 0,
+          "title": "Capacity Fee Pln Kwh",
+          "type": "number"
+        },
+        "charge_below_percentile": {
+          "default": 25.0,
+          "description": "Charge from grid when price below this percentile [%]",
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Charge Below Percentile",
+          "type": "number"
+        },
+        "degradation_cost_pln_kwh": {
+          "default": 0.05,
+          "description": "Degradation cost per kWh throughput [PLN/kWh]",
+          "minimum": 0,
+          "title": "Degradation Cost Pln Kwh",
+          "type": "number"
+        },
+        "discharge_above_percentile": {
+          "default": 75.0,
+          "description": "Discharge when price above this percentile [%]",
+          "maximum": 100,
+          "minimum": 50,
+          "title": "Discharge Above Percentile",
+          "type": "number"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable ToU arbitrage in dispatch",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_cycles_per_day": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum EFC cycles per day for arbitrage. None = no limit.",
+          "title": "Max Cycles Per Day"
+        },
+        "max_grid_charge_kw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum power for grid charging [kW]. None = use battery power.",
+          "title": "Max Grid Charge Kw"
+        },
+        "max_throughput_mwh_per_day": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum throughput per day [MWh]. None = no limit.",
+          "title": "Max Throughput Mwh Per Day"
+        },
+        "min_spread_pln_kwh": {
+          "default": 0.1,
+          "description": "Minimum price spread to act [PLN/kWh]",
+          "minimum": 0,
+          "title": "Min Spread Pln Kwh",
+          "type": "number"
+        },
+        "other_components_pln_kwh": {
+          "default": 0.0,
+          "description": "Other components (akcyza, OZE, etc.) [PLN/kWh]",
+          "minimum": 0,
+          "title": "Other Components Pln Kwh",
+          "type": "number"
+        },
+        "strategy": {
+          "$ref": "#/$defs/ArbitrageStrategy",
+          "default": "percentile",
+          "description": "How to calculate charge/discharge thresholds"
+        },
+        "tariff_id": {
+          "default": "pge_c12a_2025",
+          "description": "OSD tariff preset ID (from /osd-tariffs/presets)",
+          "title": "Tariff Id",
+          "type": "string"
+        }
+      },
+      "title": "ArbitrageConfig",
+      "type": "object"
+    },
+    "ArbitrageStrategy": {
+      "description": "Arbitrage strategy for price-driven dispatch.\n\nDetermines how charge/discharge thresholds are calculated.",
+      "enum": [
+        "percentile",
+        "zone_based",
+        "spread"
+      ],
+      "title": "ArbitrageStrategy",
+      "type": "string"
+    },
+    "ConstraintType": {
+      "description": "Types of constraints for BESS sizing",
+      "enum": [
+        "max_capex",
+        "max_payback",
+        "min_npv",
+        "max_efc",
+        "min_self_consumption"
+      ],
+      "title": "ConstraintType",
+      "type": "string"
+    },
+    "ConstraintsConfig": {
+      "description": "User-defined constraints for BESS sizing optimization (v0.8.0).\n\nThese are soft constraints that filter which variants are considered\n\"feasible\" for recommendation. Unlike grid_constraints (physical limits),\nthese are economic/business constraints that affect variant selection.\n\nVariants violating constraints are still returned but marked as not feasible.",
+      "properties": {
+        "max_capex_pln": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum allowed CAPEX [PLN]. Variants exceeding this are not feasible.",
+          "title": "Max Capex Pln"
+        },
+        "max_payback_years": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum allowed payback period [years]. Variants exceeding this are not feasible.",
+          "title": "Max Payback Years"
+        },
+        "max_unserved_load_kwh": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum allowed unserved load [kWh]. If set, variants exceeding this are not feasible.",
+          "title": "Max Unserved Load Kwh"
+        },
+        "min_net_savings_pln": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Minimum required annual net savings [PLN]. Variants below this are not feasible.",
+          "title": "Min Net Savings Pln"
+        },
+        "min_npv_pln": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Minimum required NPV [PLN]. Variants below this are not feasible. Can be negative to allow limited losses.",
+          "title": "Min Npv Pln"
+        },
+        "require_no_unserved_load": {
+          "default": false,
+          "description": "If True, variants with any unserved_load_kwh > 0 are not feasible.",
+          "title": "Require No Unserved Load",
+          "type": "boolean"
+        }
+      },
+      "title": "ConstraintsConfig",
+      "type": "object"
+    },
+    "DegradationBudget": {
+      "description": "Degradation budget constraints for battery lifecycle management.\n\nSupports both annual and daily limits to control battery wear.\nDaily limits are enforced in real-time during dispatch.\nAnnual limits are checked post-dispatch for reporting.",
+      "properties": {
+        "max_cycles_per_day": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max EFC cycles per day. Enforced in real-time during dispatch.",
+          "title": "Max Cycles Per Day"
+        },
+        "max_efc_per_year": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max equivalent full cycles per year",
+          "title": "Max Efc Per Year"
+        },
+        "max_throughput_mwh_per_day": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max throughput per day [MWh]. Enforced in real-time during dispatch.",
+          "title": "Max Throughput Mwh Per Day"
+        },
+        "max_throughput_mwh_per_year": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max throughput MWh per year",
+          "title": "Max Throughput Mwh Per Year"
+        }
+      },
+      "title": "DegradationBudget",
+      "type": "object"
+    },
+    "DispatchMode": {
+      "description": "BESS dispatch modes",
+      "enum": [
+        "pv_surplus",
+        "peak_shaving",
+        "stacked",
+        "arbitrage",
+        "load_only"
+      ],
+      "title": "DispatchMode",
+      "type": "string"
+    },
+    "FinanceConfig": {
+      "description": "Financial parameters for NPV/cashflow calculation.\n\nThis provides explicit control over financial assumptions that affect\nNPV, payback, and IRR calculations. All parameters are optional with\nsensible defaults.\n\nNote: capex_override_pln enables deterministic tests and what-if scenarios\nwithout changing battery sizing assumptions.",
+      "properties": {
+        "bess_degradation_pct_per_year": {
+          "default": 0.0,
+          "description": "BESS capacity degradation [%/year]. Applied to savings as (1 - rate)^year. E.g., 2.0 = 2% annual degradation.",
+          "maximum": 10.0,
+          "minimum": 0,
+          "title": "Bess Degradation Pct Per Year",
+          "type": "number"
+        },
+        "capex_multiplier_sweep": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "CAPEX multipliers for sensitivity analysis (e.g., [0.8, 1.0, 1.2]). NPV calculated at each multiplier. Results in capex_sensitivity.",
+          "title": "Capex Multiplier Sweep"
+        },
+        "capex_override_pln": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Override CAPEX for deterministic tests and what-if scenarios. If None, CAPEX is calculated from battery sizing.",
+          "title": "Capex Override Pln"
+        },
+        "discount_rate": {
+          "default": 0.08,
+          "description": "Discount rate for NPV calculation (0.08 = 8%)",
+          "maximum": 0.3,
+          "minimum": 0,
+          "title": "Discount Rate",
+          "type": "number"
+        },
+        "discount_rate_sweep": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "List of discount rates (e.g., [0.05, 0.08, 0.10, 0.12]) for sensitivity analysis. If provided, finance_summary will include discount_rate_sensitivity array.",
+          "title": "Discount Rate Sweep"
+        },
+        "energy_price_multiplier_sweep": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Energy price multipliers for sensitivity analysis (e.g., [0.8, 1.0, 1.2]). NPV calculated at each multiplier. Results in energy_price_sensitivity.",
+          "title": "Energy Price Multiplier Sweep"
+        },
+        "horizon_years": {
+          "default": 10,
+          "description": "Analysis horizon in years for NPV/cashflow calculation",
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Horizon Years",
+          "type": "integer"
+        },
+        "include_cashflow_timeseries": {
+          "default": false,
+          "description": "If True, include year-by-year cashflow_timeseries in finance_summary.",
+          "title": "Include Cashflow Timeseries",
+          "type": "boolean"
+        },
+        "opex_escalation_rate": {
+          "default": 0.0,
+          "description": "Annual escalation rate for OPEX (0.02 = 2% per year)",
+          "maximum": 0.1,
+          "minimum": 0,
+          "title": "Opex Escalation Rate",
+          "type": "number"
+        },
+        "opex_pln_per_year": {
+          "default": 0.0,
+          "description": "Fixed annual OPEX in PLN (added to % based OPEX)",
+          "minimum": 0,
+          "title": "Opex Pln Per Year",
+          "type": "number"
+        },
+        "pv_degradation_pct_per_year": {
+          "default": 0.0,
+          "description": "PV output degradation [%/year]. Applied to savings as (1 - rate)^year. E.g., 0.5 = 0.5% annual degradation.",
+          "maximum": 5.0,
+          "minimum": 0,
+          "title": "Pv Degradation Pct Per Year",
+          "type": "number"
+        },
+        "replacement_capex_pln": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Replacement cost in PLN. If None, uses original CAPEX.",
+          "title": "Replacement Capex Pln"
+        },
+        "replacement_year": {
+          "anyOf": [
+            {
+              "maximum": 30,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Year for battery replacement (e.g., 10). If None, no replacement event.",
+          "title": "Replacement Year"
+        },
+        "savings_escalation_rate": {
+          "default": 0.0,
+          "description": "Annual escalation rate for savings (0.02 = 2% per year)",
+          "maximum": 0.1,
+          "minimum": 0,
+          "title": "Savings Escalation Rate",
+          "type": "number"
+        }
+      },
+      "title": "FinanceConfig",
+      "type": "object"
+    },
+    "GridConstraints": {
+      "description": "Grid connection constraints (v0.7.0).\n\nDefines physical limits of the grid connection that apply to both\nbaseline and project scenarios. These are hard limits that cannot\nbe exceeded regardless of battery operation.",
+      "properties": {
+        "allow_export": {
+          "default": true,
+          "description": "Whether grid export is allowed. If False, all excess PV is curtailed or stored in battery. Equivalent to max_export_kw=0.",
+          "title": "Allow Export",
+          "type": "boolean"
+        },
+        "max_export_kw": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum grid export power [kW]. If set, excess PV is curtailed. None = no limit (unconstrained export).",
+          "title": "Max Export Kw"
+        },
+        "max_import_kw": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Maximum grid import power [kW]. If set, load exceeding this + PV + battery results in unserved load. None = no limit (unconstrained import).",
+          "title": "Max Import Kw"
+        },
+        "unserved_load_penalty_pln_kwh": {
+          "default": 0.0,
+          "description": "Penalty cost per kWh of unserved load [PLN/kWh]. Used for economic impact calculation when import cap causes unserved load.",
+          "minimum": 0,
+          "title": "Unserved Load Penalty Pln Kwh",
+          "type": "number"
+        }
+      },
+      "title": "GridConstraints",
+      "type": "object"
+    },
+    "OptimizationConfig": {
+      "description": "Configuration for multi-objective optimization.\n\nAllows users to specify:\n- Primary objective to optimize\n- Hard/soft constraints to satisfy",
+      "properties": {
+        "constraint_penalty_weight": {
+          "default": 0.3,
+          "description": "Weight for soft constraint penalties (0-1)",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Constraint Penalty Weight",
+          "type": "number"
+        },
+        "constraints": {
+          "description": "List of sizing constraints",
+          "items": {
+            "$ref": "#/$defs/SizingConstraint"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "objective": {
+          "$ref": "#/$defs/OptimizationObjective",
+          "default": "npv",
+          "description": "Primary optimization objective"
+        }
+      },
+      "title": "OptimizationConfig",
+      "type": "object"
+    },
+    "OptimizationObjective": {
+      "description": "Optimization objectives for BESS sizing.\n\nDetermines which metric is maximized/minimized during grid search.",
+      "enum": [
+        "npv",
+        "payback",
+        "self_consumption",
+        "peak_reduction",
+        "efc_utilization"
+      ],
+      "title": "OptimizationObjective",
+      "type": "string"
+    },
+    "PriceConfig": {
+      "description": "Energy price configuration.\n\nSupports two pricing modes:\n1. Flat pricing (legacy): Single import/export rate\n2. ToU pricing (Opcja B): OSD tariff + OTHER fees + capacity fee separately\n\nWhen tariff_id is set, ToU pricing is used with:\n- OSD rates = energia czynna + dystrybucja (combined from preset)\n- other_fees = OZE + kog + jakość + akcyza (added on top)\n- capacity_fee = calculated separately via capacity_fee_pl module",
+      "properties": {
+        "analysis_year": {
+          "default": 2025,
+          "description": "Year for calendar calculations (holidays, weekends)",
+          "maximum": 2035,
+          "minimum": 2020,
+          "title": "Analysis Year",
+          "type": "integer"
+        },
+        "capacity_fee_fixed_pln_mwh": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fixed capacity fee rate [PLN/MWh] - only for 'fixed' method",
+          "title": "Capacity Fee Fixed Pln Mwh"
+        },
+        "capacity_fee_method": {
+          "default": "dynamic",
+          "description": "'dynamic' (A×SOM×ZS) or 'fixed' (simple per-MWh)",
+          "title": "Capacity Fee Method",
+          "type": "string"
+        },
+        "capacity_fee_som_pln_kwh": {
+          "default": 0.2194,
+          "description": "SOM rate for dynamic capacity fee [PLN/kWh]",
+          "minimum": 0,
+          "title": "Capacity Fee Som Pln Kwh",
+          "type": "number"
+        },
+        "demand_charge_pln_kw_month": {
+          "default": 0.0,
+          "description": "Monthly demand charge [PLN/kW/month] based on peak import",
+          "minimum": 0,
+          "title": "Demand Charge Pln Kw Month",
+          "type": "number"
+        },
+        "demand_charge_pln_kw_year": {
+          "default": 0.0,
+          "description": "Annual demand charge [PLN/kW/year] based on peak import",
+          "minimum": 0,
+          "title": "Demand Charge Pln Kw Year",
+          "type": "number"
+        },
+        "export_price_pln_mwh": {
+          "default": 0.0,
+          "description": "Export price [PLN/MWh] (0 for 0-export)",
+          "minimum": 0,
+          "title": "Export Price Pln Mwh",
+          "type": "number"
+        },
+        "import_price_pln_mwh": {
+          "default": 800.0,
+          "description": "Import price [PLN/MWh]",
+          "minimum": 0,
+          "title": "Import Price Pln Mwh",
+          "type": "number"
+        },
+        "other_fees_pln_mwh": {
+          "default": 451.0,
+          "description": "Suma opłat stałych [PLN/MWh]",
+          "minimum": 0,
+          "title": "Other Fees Pln Mwh",
+          "type": "number"
+        },
+        "tariff_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OSD tariff preset ID. If set, uses ToU pricing instead of flat.",
+          "title": "Tariff Id"
+        }
+      },
+      "title": "PriceConfig",
+      "type": "object"
+    },
+    "PriceTimeseriesPlnPerMwh": {
+      "description": "Per-step price timeseries in PLN/MWh (v2.0.0 SSoT).\n\nThis is the SINGLE SOURCE OF TRUTH for what prices were used in calculations.\nAll values are arrays of length 'steps' (matching period_info.steps).\n\nUsed for:\n- Debugging: verify which prices were applied at each timestep\n- Transparency: user can see exact ToU zone mapping\n- Reproducibility: export prices + use as override for deterministic replay\n- Validation: sum(price * energy) should match MoneyLedger totals",
+      "properties": {
+        "export_price_pln_per_mwh": {
+          "description": "Grid export price at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Export Price Pln Per Mwh",
+          "type": "array"
+        },
+        "import_price_pln_per_mwh": {
+          "description": "Grid import price at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Import Price Pln Per Mwh",
+          "type": "array"
+        },
+        "other_fees_pln_per_mwh": {
+          "description": "Other fees (OZE, kogeneracja, etc.) at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Other Fees Pln Per Mwh",
+          "type": "array"
+        },
+        "period_end": {
+          "description": "Period end (ISO 8601)",
+          "title": "Period End",
+          "type": "string"
+        },
+        "period_start": {
+          "description": "Period start (ISO 8601)",
+          "title": "Period Start",
+          "type": "string"
+        },
+        "step_minutes": {
+          "description": "Time resolution in minutes (15 or 60)",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Step Minutes",
+          "type": "integer"
+        },
+        "steps": {
+          "description": "Number of timesteps",
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+        },
+        "timezone": {
+          "default": "Europe/Warsaw",
+          "description": "Timezone used for ToU zone mapping",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "unserved_penalty_pln_per_kwh": {
+          "description": "Unserved load penalty at each timestep [PLN/kWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Unserved Penalty Pln Per Kwh",
+          "type": "array"
+        }
+      },
+      "required": [
+        "import_price_pln_per_mwh",
+        "export_price_pln_per_mwh",
+        "step_minutes",
+        "steps",
+        "period_start",
+        "period_end"
+      ],
+      "title": "PriceTimeseriesPlnPerMwh",
+      "type": "object"
+    },
+    "ProfileUnit": {
+      "description": "Units for input power profiles.\n\nAll profiles should be in kW_avg (average power over interval).\nThis enum enables explicit declaration and validation.",
+      "enum": [
+        "kW_avg",
+        "kW_peak",
+        "kWh"
+      ],
+      "title": "ProfileUnit",
+      "type": "string"
+    },
+    "SizingConstraint": {
+      "description": "Single constraint for BESS sizing optimization",
+      "properties": {
+        "constraint_type": {
+          "$ref": "#/$defs/ConstraintType"
+        },
+        "hard": {
+          "default": true,
+          "description": "Hard constraint (reject) vs soft (penalty)",
+          "title": "Hard",
+          "type": "boolean"
+        },
+        "value": {
+          "description": "Constraint value",
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "constraint_type",
+        "value"
+      ],
+      "title": "SizingConstraint",
+      "type": "object"
+    },
+    "StackedModeParams": {
+      "description": "Parameters for STACKED (PV+Peak) mode",
+      "properties": {
+        "allow_reserve_breach": {
+          "default": false,
+          "description": "Allow using reserve in emergency (with warning)",
+          "title": "Allow Reserve Breach",
+          "type": "boolean"
+        },
+        "peak_limit_kw": {
+          "description": "Grid import limit [kW]",
+          "exclusiveMinimum": 0,
+          "title": "Peak Limit Kw",
+          "type": "number"
+        },
+        "reserve_fraction": {
+          "default": 0.3,
+          "description": "SOC fraction reserved for peak shaving [0-1]",
+          "maximum": 0.8,
+          "minimum": 0.0,
+          "title": "Reserve Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "peak_limit_kw"
+      ],
+      "title": "StackedModeParams",
+      "type": "object"
+    }
+  },
+  "description": "Request for BESS sizing optimization",
+  "properties": {
+    "analysis_years": {
+      "default": 15,
+      "maximum": 30,
+      "minimum": 1,
+      "title": "Analysis Years",
+      "type": "integer"
+    },
+    "analytical_period": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticalPeriodConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Time axis configuration. If provided, is the single source of truth for time calculations."
+    },
+    "annual_degradation_pct": {
+      "default": 2.0,
+      "description": "Annual capacity degradation [%/year]. Used to calculate EOL capacity.",
+      "maximum": 10.0,
+      "minimum": 0.0,
+      "title": "Annual Degradation Pct",
+      "type": "number"
+    },
+    "arbitrage_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArbitrageConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ToU arbitrage configuration. If enabled, sizing includes arbitrage savings in NPV."
+    },
+    "battery_trace_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Mode for battery trace output: 'none', 'preview' (first N rows), or 'full'. If set, overrides include_battery_trace flag.",
+      "title": "Battery Trace Mode"
+    },
+    "capex_per_kw": {
+      "default": 300.0,
+      "description": "CAPEX [PLN/kW]",
+      "minimum": 0,
+      "title": "Capex Per Kw",
+      "type": "number"
+    },
+    "capex_per_kwh": {
+      "default": 1500.0,
+      "description": "CAPEX [PLN/kWh]",
+      "minimum": 0,
+      "title": "Capex Per Kwh",
+      "type": "number"
+    },
+    "constraints_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConstraintsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "User-defined constraints for variant selection (max_capex, max_payback, min_npv). Variants violating constraints are marked as not feasible but still returned."
+    },
+    "degradation_budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DegradationBudget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "degradation_cost_pln_mwh": {
+      "default": 50.0,
+      "description": "Degradation cost per MWh throughput [PLN/MWh]. Used for savings_breakdown.",
+      "minimum": 0,
+      "title": "Degradation Cost Pln Mwh",
+      "type": "number"
+    },
+    "discount_rate": {
+      "default": 0.07,
+      "maximum": 0.3,
+      "minimum": 0,
+      "title": "Discount Rate",
+      "type": "number"
+    },
+    "durations_h": {
+      "default": [
+        1.0,
+        2.0,
+        4.0
+      ],
+      "description": "Duration variants [h]",
+      "items": {
+        "type": "number"
+      },
+      "title": "Durations H",
+      "type": "array"
+    },
+    "eol_capacity_factor": {
+      "default": 0.0,
+      "description": "Target EOL capacity as fraction of BOL. 0.70 = size for 70% capacity at end of life.",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Eol Capacity Factor",
+      "type": "number"
+    },
+    "finance_config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FinanceConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Financial parameters for NPV/cashflow calculation. If not provided, uses default values from analysis_years/discount_rate."
+    },
+    "grid_constraints": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GridConstraints"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Grid connection constraints (max_export_kw, max_import_kw, allow_export). Applied to both baseline and project scenarios."
+    },
+    "include_battery_trace": {
+      "default": false,
+      "description": "Include BatteryTraceTimeseries (per-step SOC and power flows) in response. Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging.",
+      "title": "Include Battery Trace",
+      "type": "boolean"
+    },
+    "include_economics_timeseries": {
+      "default": false,
+      "description": "Include per-timestep economics breakdown in response. False = only totals_pln (small). True = also timeseries_pln (large).",
+      "title": "Include Economics Timeseries",
+      "type": "boolean"
+    },
+    "include_energy_flows_timeseries": {
+      "default": false,
+      "description": "Include per-timestep energy flows in response. False = only totals_mwh (small). True = also timeseries_kwh (large).",
+      "title": "Include Energy Flows Timeseries",
+      "type": "boolean"
+    },
+    "include_ledger_timeseries": {
+      "default": false,
+      "description": "Include LedgerTimeseries (per-step costs) in response. Shows import_cost/export_revenue/fees/penalty at each timestep for charts.",
+      "title": "Include Ledger Timeseries",
+      "type": "boolean"
+    },
+    "include_money_ledger": {
+      "default": false,
+      "description": "Include MoneyLedger (baseline/project cost breakdown) in response. Shows all cost categories for transparency and reconciliation.",
+      "title": "Include Money Ledger",
+      "type": "boolean"
+    },
+    "include_price_timeseries": {
+      "default": false,
+      "description": "Include PriceTimeseries (per-step prices) in response. Shows import/export/fees prices at each timestep for debugging and replay.",
+      "title": "Include Price Timeseries",
+      "type": "boolean"
+    },
+    "interval_minutes": {
+      "default": 60,
+      "title": "Interval Minutes",
+      "type": "integer"
+    },
+    "ledger_timeseries_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Mode for ledger timeseries output: 'none', 'preview', or 'full'. If set, overrides include_ledger_timeseries flag.",
+      "title": "Ledger Timeseries Mode"
+    },
+    "load_kw": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Load Kw",
+      "type": "array"
+    },
+    "max_power_kw": {
+      "default": 10000.0,
+      "minimum": 0,
+      "title": "Max Power Kw",
+      "type": "number"
+    },
+    "min_power_kw": {
+      "default": 10.0,
+      "minimum": 0,
+      "title": "Min Power Kw",
+      "type": "number"
+    },
+    "mode": {
+      "$ref": "#/$defs/DispatchMode",
+      "default": "pv_surplus"
+    },
+    "opex_pct_per_year": {
+      "default": 0.015,
+      "description": "OPEX as % of CAPEX",
+      "maximum": 0.1,
+      "minimum": 0,
+      "title": "Opex Pct Per Year",
+      "type": "number"
+    },
+    "optimization": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OptimizationConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optimization objective and constraints configuration"
+    },
+    "peak_limit_kw": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Peak Limit Kw"
+    },
+    "period_end": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Analysis period end (ISO 8601, e.g., '2025-12-31T23:00:00')",
+      "title": "Period End"
+    },
+    "period_start": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Analysis period start (ISO 8601, e.g., '2025-01-01T00:00:00')",
+      "title": "Period Start"
+    },
+    "power_steps": {
+      "default": 10,
+      "description": "Number of power levels to test",
+      "maximum": 50,
+      "minimum": 5,
+      "title": "Power Steps",
+      "type": "integer"
+    },
+    "price_timeseries_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Mode for price timeseries output: 'none', 'preview', or 'full'. If set, overrides include_price_timeseries flag.",
+      "title": "Price Timeseries Mode"
+    },
+    "price_timeseries_override": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PriceTimeseriesPlnPerMwh"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Explicit price timeseries to use instead of generated ToU prices. If provided, bypasses ToU mapping and uses these prices directly. Must match input data length (steps = len(load_kw))."
+    },
+    "prices": {
+      "$ref": "#/$defs/PriceConfig"
+    },
+    "profile_unit": {
+      "$ref": "#/$defs/ProfileUnit",
+      "default": "kW_avg",
+      "description": "Unit of input profiles (must be kW_avg for sizing)"
+    },
+    "pv_generation_kw": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Pv Generation Kw",
+      "type": "array"
+    },
+    "roundtrip_efficiency": {
+      "default": 0.9,
+      "maximum": 1.0,
+      "minimum": 0.7,
+      "title": "Roundtrip Efficiency",
+      "type": "number"
+    },
+    "soc_max": {
+      "default": 0.9,
+      "maximum": 1.0,
+      "minimum": 0.5,
+      "title": "Soc Max",
+      "type": "number"
+    },
+    "soc_min": {
+      "default": 0.1,
+      "maximum": 0.5,
+      "minimum": 0.0,
+      "title": "Soc Min",
+      "type": "number"
+    },
+    "stacked_params": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StackedModeParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "start_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Start date (YYYY-MM-DD) for tariff price lookup. Required if arbitrage enabled.",
+      "title": "Start Date"
+    },
+    "timeseries_preview_rows": {
+      "anyOf": [
+        {
+          "maximum": 240,
+          "minimum": 12,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Number of rows for 'preview' mode (default 48, min 12, max 240). Applies to all timeseries in preview mode.",
+      "title": "Timeseries Preview Rows"
+    },
+    "timezone": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Timezone (e.g., 'Europe/Warsaw'). Used for period_info in response.",
+      "title": "Timezone"
+    }
+  },
+  "required": [
+    "pv_generation_kw",
+    "load_kw"
+  ],
+  "title": "SizingRequest",
+  "type": "object"
+}

@@ -1,0 +1,89 @@
+{
+  "$defs": {
+    "PortfolioVariantRanking": {
+      "description": "Ranking entry for a variant across the portfolio.\n\nUsed to compare variants across multiple items/scenarios in the batch.",
+      "properties": {
+        "avg_npv_pln": {
+          "description": "Average NPV for this variant [PLN]",
+          "title": "Avg Npv Pln",
+          "type": "number"
+        },
+        "avg_payback_years": {
+          "description": "Average payback period for this variant [years]",
+          "title": "Avg Payback Years",
+          "type": "number"
+        },
+        "feasible_count": {
+          "description": "Number of items where this variant is feasible",
+          "title": "Feasible Count",
+          "type": "integer"
+        },
+        "recommended_count": {
+          "description": "Number of items where this variant is recommended",
+          "title": "Recommended Count",
+          "type": "integer"
+        },
+        "total_npv_pln": {
+          "description": "Sum of NPV across all items for this variant [PLN]",
+          "title": "Total Npv Pln",
+          "type": "number"
+        },
+        "variant": {
+          "description": "Variant name (small, medium, large)",
+          "title": "Variant",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variant",
+        "total_npv_pln",
+        "avg_npv_pln",
+        "avg_payback_years",
+        "feasible_count",
+        "recommended_count"
+      ],
+      "title": "PortfolioVariantRanking",
+      "type": "object"
+    }
+  },
+  "description": "Portfolio-level summary for batch sizing.\n\nProvides aggregated metrics across all items to help identify\nthe best overall variant for a portfolio of scenarios.",
+  "properties": {
+    "avg_npv_pln": {
+      "description": "Average recommended variant NPV [PLN]",
+      "title": "Avg Npv Pln",
+      "type": "number"
+    },
+    "avg_payback_years": {
+      "description": "Average recommended variant payback [years]",
+      "title": "Avg Payback Years",
+      "type": "number"
+    },
+    "portfolio_optimal_variant": {
+      "description": "Variant with highest total NPV across portfolio",
+      "title": "Portfolio Optimal Variant",
+      "type": "string"
+    },
+    "total_npv_pln": {
+      "description": "Sum of recommended variant NPVs across all items [PLN]",
+      "title": "Total Npv Pln",
+      "type": "number"
+    },
+    "variant_rankings": {
+      "description": "Rankings for each variant, sorted by total_npv_pln descending",
+      "items": {
+        "$ref": "#/$defs/PortfolioVariantRanking"
+      },
+      "title": "Variant Rankings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "total_npv_pln",
+    "avg_npv_pln",
+    "avg_payback_years",
+    "portfolio_optimal_variant",
+    "variant_rankings"
+  ],
+  "title": "PortfolioSummary",
+  "type": "object"
+}

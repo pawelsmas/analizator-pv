@@ -1,0 +1,2758 @@
+{
+  "$defs": {
+    "AppliedParameters": {
+      "description": "Applied parameters used in sizing calculation.\n\nThis shows what default values were actually used, useful for:\n- Debugging: verify which defaults took effect\n- Transparency: user can see exact values used\n- Reproducibility: re-run with explicit values\n\nNote: Only includes parameters with defaults that affect results.",
+      "properties": {
+        "analysis_years": {
+          "description": "Analysis period in years",
+          "title": "Analysis Years",
+          "type": "integer"
+        },
+        "degradation_cost_pln_mwh": {
+          "description": "Degradation cost rate used [PLN/MWh]. Default: 50. Set to 0 to disable degradation cost.",
+          "title": "Degradation Cost Pln Mwh",
+          "type": "number"
+        },
+        "degradation_cost_source": {
+          "default": "default",
+          "description": "Source of degradation cost: 'default', 'request', or 'arbitrage_config'",
+          "title": "Degradation Cost Source",
+          "type": "string"
+        },
+        "discount_rate": {
+          "description": "Discount rate used for NPV calculation",
+          "title": "Discount Rate",
+          "type": "number"
+        },
+        "export_price_pln_mwh": {
+          "default": 0.0,
+          "description": "Grid export price [PLN/MWh]",
+          "title": "Export Price Pln Mwh",
+          "type": "number"
+        },
+        "import_price_pln_mwh": {
+          "description": "Grid import price [PLN/MWh]",
+          "title": "Import Price Pln Mwh",
+          "type": "number"
+        },
+        "opex_pct_per_year": {
+          "description": "OPEX as % of CAPEX per year",
+          "title": "Opex Pct Per Year",
+          "type": "number"
+        }
+      },
+      "required": [
+        "degradation_cost_pln_mwh",
+        "discount_rate",
+        "analysis_years",
+        "opex_pct_per_year",
+        "import_price_pln_mwh"
+      ],
+      "title": "AppliedParameters",
+      "type": "object"
+    },
+    "BatteryTraceTimeseries": {
+      "description": "Per-step battery trace timeseries (v2.2.0 SSoT).\n\nThis is the SINGLE SOURCE OF TRUTH for battery state and power flows\nat each timestep during dispatch simulation.\n\nReturned only when include_battery_trace=true to avoid payload bloat.\n\nUsed for:\n- Debugging: verify SOC evolution and charge/discharge decisions\n- Transparency: user can see exact power flows at each timestep\n- Validation: SOC bounds and power limits invariants\n- Visualization: chart SOC and power over time",
+      "properties": {
+        "battery_energy_kwh": {
+          "description": "Battery energy capacity [kWh] for SOC bounds validation",
+          "title": "Battery Energy Kwh",
+          "type": "number"
+        },
+        "battery_power_kw": {
+          "description": "Battery power capacity [kW] for power limits validation",
+          "title": "Battery Power Kw",
+          "type": "number"
+        },
+        "charge_from_grid_kw": {
+          "description": "Charge from grid at each timestep [kW]. All values >= 0. Only with allow_grid_charging. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Charge From Grid Kw",
+          "type": "array"
+        },
+        "charge_from_pv_kw": {
+          "description": "Charge from PV surplus at each timestep [kW]. All values >= 0. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Charge From Pv Kw",
+          "type": "array"
+        },
+        "charge_kw": {
+          "description": "Battery charge power at each timestep [kW]. All values >= 0. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Charge Kw",
+          "type": "array"
+        },
+        "discharge_kw": {
+          "description": "Battery discharge power at each timestep [kW]. All values >= 0. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Discharge Kw",
+          "type": "array"
+        },
+        "discharge_to_grid_kw": {
+          "description": "Discharge to grid (export) at each timestep [kW]. All values >= 0. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Discharge To Grid Kw",
+          "type": "array"
+        },
+        "discharge_to_load_kw": {
+          "description": "Discharge to load at each timestep [kW]. All values >= 0. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Discharge To Load Kw",
+          "type": "array"
+        },
+        "soc_kwh": {
+          "description": "Battery SOC at end of each timestep [kWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Soc Kwh",
+          "type": "array"
+        },
+        "step_minutes": {
+          "description": "Time resolution in minutes (15 or 60)",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Step Minutes",
+          "type": "integer"
+        },
+        "steps": {
+          "description": "Number of timesteps",
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "soc_kwh",
+        "charge_kw",
+        "discharge_kw",
+        "charge_from_pv_kw",
+        "discharge_to_load_kw",
+        "steps",
+        "step_minutes",
+        "battery_energy_kwh",
+        "battery_power_kw"
+      ],
+      "title": "BatteryTraceTimeseries",
+      "type": "object"
+    },
+    "CacheInfo": {
+      "description": "Cache metadata for a sizing result.\n\nEnables deterministic result retrieval and debugging.",
+      "properties": {
+        "cache_status": {
+          "$ref": "#/$defs/CacheStatus",
+          "default": "miss",
+          "description": "Whether result was from cache (hit) or freshly computed (miss)"
+        },
+        "cached_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "ISO 8601 timestamp when result was cached. None for cache misses.",
+          "title": "Cached At"
+        },
+        "request_hash": {
+          "description": "SHA-256 hash of canonical request JSON. Same inputs always produce same hash.",
+          "title": "Request Hash",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Unique identifier for this computation run (UUID). Different for each new computation, same for cache hits.",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "ttl_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cache time-to-live in seconds. None if caching disabled.",
+          "title": "Ttl Seconds"
+        }
+      },
+      "required": [
+        "request_hash",
+        "run_id"
+      ],
+      "title": "CacheInfo",
+      "type": "object"
+    },
+    "CacheStatus": {
+      "description": "Cache lookup result status",
+      "enum": [
+        "hit",
+        "miss",
+        "disabled"
+      ],
+      "title": "CacheStatus",
+      "type": "string"
+    },
+    "CashflowYear": {
+      "description": "Annual cashflow data for a single year.\n\nUsed for building cashflow tables and charts in UI.\nYear 0 represents the initial investment (negative CAPEX).",
+      "properties": {
+        "cumulative_cashflow_pln": {
+          "description": "Cumulative undiscounted cashflow up to this year",
+          "title": "Cumulative Cashflow Pln",
+          "type": "number"
+        },
+        "discounted_cashflow_pln": {
+          "description": "Net cashflow discounted to year 0",
+          "title": "Discounted Cashflow Pln",
+          "type": "number"
+        },
+        "net_cashflow_pln": {
+          "description": "Net cashflow = savings - opex (year > 0), or -capex (year 0)",
+          "title": "Net Cashflow Pln",
+          "type": "number"
+        },
+        "nominal_cashflow_pln": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Undiscounted net cashflow = net_cashflow_pln (for IRR calculation convenience)",
+          "title": "Nominal Cashflow Pln"
+        },
+        "opex_pln": {
+          "description": "Annual OPEX [PLN]. 0 for year 0.",
+          "title": "Opex Pln",
+          "type": "number"
+        },
+        "savings_pln": {
+          "description": "Annual savings [PLN]. 0 for year 0.",
+          "title": "Savings Pln",
+          "type": "number"
+        },
+        "year": {
+          "description": "Year number (0 = investment, 1-N = operating years)",
+          "title": "Year",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "year",
+        "savings_pln",
+        "opex_pln",
+        "net_cashflow_pln",
+        "cumulative_cashflow_pln",
+        "discounted_cashflow_pln"
+      ],
+      "title": "CashflowYear",
+      "type": "object"
+    },
+    "ConstraintSummary": {
+      "description": "Summary of grid constraint impacts (v0.7.0).\n\nTracks how often and how much constraints were hit during dispatch.",
+      "properties": {
+        "export_cap_curtailed_kwh": {
+          "default": 0.0,
+          "description": "Total energy curtailed due to export cap [kWh]",
+          "title": "Export Cap Curtailed Kwh",
+          "type": "number"
+        },
+        "export_cap_hit_steps": {
+          "default": 0,
+          "description": "Number of timesteps where export was capped by max_export_kw",
+          "title": "Export Cap Hit Steps",
+          "type": "integer"
+        },
+        "import_cap_hit_steps": {
+          "default": 0,
+          "description": "Number of timesteps where import was capped by max_import_kw",
+          "title": "Import Cap Hit Steps",
+          "type": "integer"
+        },
+        "unserved_load_kwh": {
+          "default": 0.0,
+          "description": "Total energy unserved due to import cap [kWh]",
+          "title": "Unserved Load Kwh",
+          "type": "number"
+        }
+      },
+      "title": "ConstraintSummary",
+      "type": "object"
+    },
+    "ConstraintViolation": {
+      "description": "Details of a single constraint violation (v0.8.0).\n\nUsed to explain why a variant is not feasible.",
+      "properties": {
+        "actual": {
+          "description": "The actual value that violated the constraint",
+          "title": "Actual",
+          "type": "number"
+        },
+        "code": {
+          "description": "Constraint code: MAX_CAPEX, MAX_PAYBACK, MIN_NPV, MIN_NET_SAVINGS, NO_UNSERVED_LOAD, MAX_UNSERVED_LOAD",
+          "title": "Code",
+          "type": "string"
+        },
+        "limit": {
+          "description": "The constraint limit value",
+          "title": "Limit",
+          "type": "number"
+        },
+        "message": {
+          "description": "Human-readable violation message",
+          "title": "Message",
+          "type": "string"
+        },
+        "unit": {
+          "description": "Unit of measurement (PLN, years, kWh)",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "limit",
+        "actual",
+        "unit",
+        "message"
+      ],
+      "title": "ConstraintViolation",
+      "type": "object"
+    },
+    "ConstraintsReport": {
+      "description": "Summary of constraint evaluation results (v0.8.0).\n\nProvides overview of how many variants are feasible and which ones.",
+      "properties": {
+        "applied": {
+          "default": false,
+          "description": "True if constraints_config was provided in request",
+          "title": "Applied",
+          "type": "boolean"
+        },
+        "feasible_count": {
+          "default": 0,
+          "description": "Number of feasible variants",
+          "title": "Feasible Count",
+          "type": "integer"
+        },
+        "feasible_variants": {
+          "description": "List of feasible variant names (e.g., ['small', 'medium'])",
+          "items": {
+            "type": "string"
+          },
+          "title": "Feasible Variants",
+          "type": "array"
+        },
+        "none_feasible": {
+          "default": false,
+          "description": "True if no variants are feasible (recommended is fallback)",
+          "title": "None Feasible",
+          "type": "boolean"
+        }
+      },
+      "title": "ConstraintsReport",
+      "type": "object"
+    },
+    "DebugEvents": {
+      "description": "Debug events summary (v1.8.0).\n\nAggregates key debugging information from constraint_summary and energy_flows\ninto a single, easy-to-read block for debugging and repro analysis.",
+      "properties": {
+        "export_limited_mwh": {
+          "default": 0.0,
+          "description": "Total export energy limited [MWh]",
+          "title": "Export Limited Mwh",
+          "type": "number"
+        },
+        "export_limited_steps": {
+          "default": 0,
+          "description": "Steps where export was limited by max_export_kw",
+          "title": "Export Limited Steps",
+          "type": "integer"
+        },
+        "import_limited_mwh": {
+          "default": 0.0,
+          "description": "Total import energy limited (unserved load) [MWh]",
+          "title": "Import Limited Mwh",
+          "type": "number"
+        },
+        "import_limited_steps": {
+          "default": 0,
+          "description": "Steps where import was limited by max_import_kw",
+          "title": "Import Limited Steps",
+          "type": "integer"
+        },
+        "pv_curtail_mwh": {
+          "default": 0.0,
+          "description": "Total PV energy curtailed [MWh]",
+          "title": "Pv Curtail Mwh",
+          "type": "number"
+        },
+        "pv_curtail_steps": {
+          "default": 0,
+          "description": "Steps where PV was curtailed",
+          "title": "Pv Curtail Steps",
+          "type": "integer"
+        },
+        "steps": {
+          "default": 0,
+          "description": "Total number of timesteps in simulation",
+          "title": "Steps",
+          "type": "integer"
+        },
+        "unserved_load_kwh": {
+          "default": 0.0,
+          "description": "Total unserved load [kWh]",
+          "title": "Unserved Load Kwh",
+          "type": "number"
+        },
+        "unserved_load_steps": {
+          "default": 0,
+          "description": "Steps with unserved load",
+          "title": "Unserved Load Steps",
+          "type": "integer"
+        }
+      },
+      "title": "DebugEvents",
+      "type": "object"
+    },
+    "DegradationMetrics": {
+      "description": "Degradation and cycling metrics",
+      "properties": {
+        "arb_charge_from_grid_kwh": {
+          "default": 0.0,
+          "description": "Energy charged from grid for arbitrage [kWh]",
+          "title": "Arb Charge From Grid Kwh",
+          "type": "number"
+        },
+        "arb_cycles_count": {
+          "default": 0,
+          "description": "Number of arbitrage charge/discharge cycles",
+          "title": "Arb Cycles Count",
+          "type": "integer"
+        },
+        "arb_discharge_kwh": {
+          "default": 0.0,
+          "description": "Energy discharged for arbitrage [kWh]",
+          "title": "Arb Discharge Kwh",
+          "type": "number"
+        },
+        "avg_daily_efc": {
+          "default": 0.0,
+          "description": "Average EFC per day",
+          "title": "Avg Daily Efc",
+          "type": "number"
+        },
+        "avg_daily_throughput_mwh": {
+          "default": 0.0,
+          "description": "Average throughput per day [MWh]",
+          "title": "Avg Daily Throughput Mwh",
+          "type": "number"
+        },
+        "budget_status": {
+          "$ref": "#/$defs/DegradationStatus",
+          "default": "ok"
+        },
+        "budget_utilization_pct": {
+          "default": 0.0,
+          "description": "Budget utilization [%]",
+          "title": "Budget Utilization Pct",
+          "type": "number"
+        },
+        "budget_warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Budget Warnings",
+          "type": "array"
+        },
+        "charge_from_grid_kwh": {
+          "default": 0.0,
+          "description": "Energy charged from grid [kWh]",
+          "title": "Charge From Grid Kwh",
+          "type": "number"
+        },
+        "charge_from_pv_kwh": {
+          "default": 0.0,
+          "description": "Energy charged from PV surplus [kWh]",
+          "title": "Charge From Pv Kwh",
+          "type": "number"
+        },
+        "charge_pv_pct": {
+          "default": 0.0,
+          "description": "Percentage of charge from PV [%]",
+          "title": "Charge Pv Pct",
+          "type": "number"
+        },
+        "days_exceeding_cycle_limit": {
+          "default": 0,
+          "description": "Days where daily cycle limit was exceeded",
+          "title": "Days Exceeding Cycle Limit",
+          "type": "integer"
+        },
+        "days_exceeding_throughput_limit": {
+          "default": 0,
+          "description": "Days where daily throughput limit was exceeded",
+          "title": "Days Exceeding Throughput Limit",
+          "type": "integer"
+        },
+        "efc_arb": {
+          "default": 0.0,
+          "description": "EFC for arbitrage",
+          "title": "Efc Arb",
+          "type": "number"
+        },
+        "efc_peak": {
+          "default": 0.0,
+          "description": "EFC for peak shaving",
+          "title": "Efc Peak",
+          "type": "number"
+        },
+        "efc_pv": {
+          "default": 0.0,
+          "description": "EFC for PV shifting",
+          "title": "Efc Pv",
+          "type": "number"
+        },
+        "efc_total": {
+          "default": 0.0,
+          "description": "Total equivalent full cycles",
+          "title": "Efc Total",
+          "type": "number"
+        },
+        "max_daily_efc": {
+          "default": 0.0,
+          "description": "Max EFC in any single day",
+          "title": "Max Daily Efc",
+          "type": "number"
+        },
+        "max_daily_throughput_mwh": {
+          "default": 0.0,
+          "description": "Max throughput in any single day [MWh]",
+          "title": "Max Daily Throughput Mwh",
+          "type": "number"
+        },
+        "n_days": {
+          "default": 0,
+          "description": "Number of days in analysis period",
+          "title": "N Days",
+          "type": "integer"
+        },
+        "peak_events_count": {
+          "default": 0,
+          "description": "Number of hours with peak shaving discharge",
+          "title": "Peak Events Count",
+          "type": "integer"
+        },
+        "peak_events_energy_kwh": {
+          "default": 0.0,
+          "description": "Total energy discharged for peak shaving [kWh]",
+          "title": "Peak Events Energy Kwh",
+          "type": "number"
+        },
+        "peak_max_discharge_kw": {
+          "default": 0.0,
+          "description": "Maximum discharge power for peak shaving [kW]",
+          "title": "Peak Max Discharge Kw",
+          "type": "number"
+        },
+        "throughput_arb_mwh": {
+          "default": 0.0,
+          "description": "Throughput for arbitrage [MWh]",
+          "title": "Throughput Arb Mwh",
+          "type": "number"
+        },
+        "throughput_charge_kwh": {
+          "default": 0.0,
+          "description": "Total energy charged [kWh]",
+          "title": "Throughput Charge Kwh",
+          "type": "number"
+        },
+        "throughput_discharge_kwh": {
+          "default": 0.0,
+          "description": "Total energy discharged [kWh]",
+          "title": "Throughput Discharge Kwh",
+          "type": "number"
+        },
+        "throughput_peak_mwh": {
+          "default": 0.0,
+          "description": "Throughput for peak shaving [MWh]",
+          "title": "Throughput Peak Mwh",
+          "type": "number"
+        },
+        "throughput_pv_mwh": {
+          "default": 0.0,
+          "description": "Throughput for PV shifting [MWh]",
+          "title": "Throughput Pv Mwh",
+          "type": "number"
+        },
+        "throughput_total_mwh": {
+          "default": 0.0,
+          "description": "Total throughput [MWh]",
+          "title": "Throughput Total Mwh",
+          "type": "number"
+        }
+      },
+      "title": "DegradationMetrics",
+      "type": "object"
+    },
+    "DegradationStatus": {
+      "description": "Degradation budget status",
+      "enum": [
+        "ok",
+        "warning",
+        "exceeded"
+      ],
+      "title": "DegradationStatus",
+      "type": "string"
+    },
+    "DiscountRateSensitivityPoint": {
+      "description": "NPV at a specific discount rate.\n\nUsed for discount rate sensitivity charts showing how NPV varies\nwith different discount rate assumptions.",
+      "properties": {
+        "discount_rate": {
+          "description": "Discount rate (0.05 = 5%)",
+          "title": "Discount Rate",
+          "type": "number"
+        },
+        "discount_rate_pct": {
+          "description": "Discount rate as percentage (5.0 = 5%)",
+          "title": "Discount Rate Pct",
+          "type": "number"
+        },
+        "npv_pln": {
+          "description": "NPV at this discount rate [PLN]",
+          "title": "Npv Pln",
+          "type": "number"
+        }
+      },
+      "required": [
+        "discount_rate",
+        "discount_rate_pct",
+        "npv_pln"
+      ],
+      "title": "DiscountRateSensitivityPoint",
+      "type": "object"
+    },
+    "DispatchMode": {
+      "description": "BESS dispatch modes",
+      "enum": [
+        "pv_surplus",
+        "peak_shaving",
+        "stacked",
+        "arbitrage",
+        "load_only"
+      ],
+      "title": "DispatchMode",
+      "type": "string"
+    },
+    "DispatchResult": {
+      "description": "Result of BESS dispatch simulation",
+      "properties": {
+        "annual_savings_pln": {
+          "default": 0.0,
+          "title": "Annual Savings Pln",
+          "type": "number"
+        },
+        "baseline_cost_pln": {
+          "default": 0.0,
+          "title": "Baseline Cost Pln",
+          "type": "number"
+        },
+        "battery_energy_kwh": {
+          "title": "Battery Energy Kwh",
+          "type": "number"
+        },
+        "battery_power_kw": {
+          "title": "Battery Power Kw",
+          "type": "number"
+        },
+        "battery_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatteryTraceTimeseries"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-step battery trace if include_battery_trace=True. Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
+        },
+        "constraint_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConstraintSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Summary of grid constraint impacts (export_cap_hit_steps, curtailed_kwh, etc.)"
+        },
+        "debug_events": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DebugEvents"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Summary of debug events (caps/curtail/unserved) for debugging and repro analysis"
+        },
+        "degradation": {
+          "$ref": "#/$defs/DegradationMetrics"
+        },
+        "economics_breakdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EconomicsBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Detailed economics breakdown. totals_pln always present, timeseries_pln only on request."
+        },
+        "energy_flows": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnergyFlows"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Detailed energy flows. totals_mwh always present, timeseries_kwh only on request."
+        },
+        "grid_independence_pct": {
+          "title": "Grid Independence Pct",
+          "type": "number"
+        },
+        "hourly_charge_kw": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Charge Kw"
+        },
+        "hourly_discharge_kw": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Discharge Kw"
+        },
+        "hourly_dispatch": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/HourlyDispatch"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Dispatch"
+        },
+        "hourly_grid_export_kw": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Grid Export Kw"
+        },
+        "hourly_grid_import_kw": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Grid Import Kw"
+        },
+        "hourly_soc_pct": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hourly Soc Pct"
+        },
+        "info": {
+          "additionalProperties": true,
+          "title": "Info",
+          "type": "object"
+        },
+        "interval_minutes": {
+          "title": "Interval Minutes",
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/DispatchMode"
+        },
+        "n_timesteps": {
+          "title": "N Timesteps",
+          "type": "integer"
+        },
+        "new_peak_kw": {
+          "default": 0.0,
+          "title": "New Peak Kw",
+          "type": "number"
+        },
+        "original_peak_kw": {
+          "default": 0.0,
+          "title": "Original Peak Kw",
+          "type": "number"
+        },
+        "peak_reduction_kw": {
+          "default": 0.0,
+          "title": "Peak Reduction Kw",
+          "type": "number"
+        },
+        "peak_reduction_pct": {
+          "default": 0.0,
+          "title": "Peak Reduction Pct",
+          "type": "number"
+        },
+        "prices_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PricesSummary"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Summary of prices used in simulation (or ToU cost breakdown)",
+          "title": "Prices Summary"
+        },
+        "project_cost_pln": {
+          "default": 0.0,
+          "title": "Project Cost Pln",
+          "type": "number"
+        },
+        "savings_breakdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavingsBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Detailed breakdown of savings by source (energy, arbitrage, capacity fee, etc.)"
+        },
+        "self_consumption_kwh": {
+          "title": "Self Consumption Kwh",
+          "type": "number"
+        },
+        "self_consumption_pct": {
+          "title": "Self Consumption Pct",
+          "type": "number"
+        },
+        "total_charge_kwh": {
+          "title": "Total Charge Kwh",
+          "type": "number"
+        },
+        "total_curtailment_kwh": {
+          "title": "Total Curtailment Kwh",
+          "type": "number"
+        },
+        "total_direct_pv_kwh": {
+          "title": "Total Direct Pv Kwh",
+          "type": "number"
+        },
+        "total_discharge_kwh": {
+          "title": "Total Discharge Kwh",
+          "type": "number"
+        },
+        "total_grid_export_kwh": {
+          "title": "Total Grid Export Kwh",
+          "type": "number"
+        },
+        "total_grid_import_kwh": {
+          "title": "Total Grid Import Kwh",
+          "type": "number"
+        },
+        "total_load_kwh": {
+          "title": "Total Load Kwh",
+          "type": "number"
+        },
+        "total_pv_kwh": {
+          "title": "Total Pv Kwh",
+          "type": "number"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mode",
+        "battery_power_kw",
+        "battery_energy_kwh",
+        "interval_minutes",
+        "n_timesteps",
+        "total_pv_kwh",
+        "total_load_kwh",
+        "total_direct_pv_kwh",
+        "total_charge_kwh",
+        "total_discharge_kwh",
+        "total_grid_import_kwh",
+        "total_grid_export_kwh",
+        "total_curtailment_kwh",
+        "self_consumption_kwh",
+        "self_consumption_pct",
+        "grid_independence_pct",
+        "degradation"
+      ],
+      "title": "DispatchResult",
+      "type": "object"
+    },
+    "EconomicsBreakdown": {
+      "description": "Complete economics breakdown structure (v1.5.0).\n\nContains:\n- totals_pln: Always present (aggregate values matching savings_breakdown)\n- timeseries_pln: Only when requested via include_economics_timeseries flag\n\nUsage invariants:\n- sum(timeseries_pln.energy_cost_baseline_pln) ≈ totals_pln.energy_cost_baseline_pln\n- totals_pln.energy_savings_pln ≈ savings_breakdown.energy_savings_pln",
+      "properties": {
+        "timeseries_pln": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EconomicsTimeseriesPln"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-timestep values in PLN (only if include_economics_timeseries=True)"
+        },
+        "totals_pln": {
+          "$ref": "#/$defs/EconomicsTotalsPln",
+          "description": "Aggregate totals in PLN (always present)"
+        }
+      },
+      "title": "EconomicsBreakdown",
+      "type": "object"
+    },
+    "EconomicsTimeseriesPln": {
+      "description": "Per-timestep economics in PLN.\n\nOnly included when include_economics_timeseries=True.\nUseful for debugging and detailed economic analysis.\n\nInvariants:\n- sum(energy_cost_baseline_pln) = totals.energy_cost_baseline_pln\n- sum(energy_cost_project_pln) = totals.energy_cost_project_pln\n- sum(capacity_fee_pln) = totals.capacity_fee_project_pln (if applicable)",
+      "properties": {
+        "energy_cost_baseline_pln": {
+          "description": "Per-step energy cost without battery [PLN]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Energy Cost Baseline Pln",
+          "type": "array"
+        },
+        "energy_cost_project_pln": {
+          "description": "Per-step energy cost with battery [PLN]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Energy Cost Project Pln",
+          "type": "array"
+        },
+        "export_revenue_pln": {
+          "description": "Per-step export revenue [PLN]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Export Revenue Pln",
+          "type": "array"
+        }
+      },
+      "title": "EconomicsTimeseriesPln",
+      "type": "object"
+    },
+    "EconomicsTotalsPln": {
+      "description": "Aggregate economics totals in PLN for the analysis period.\n\nAlways present in EconomicsBreakdown (small payload).\nThese are per-period totals that sum up to the same values as savings_breakdown.",
+      "properties": {
+        "capacity_fee_baseline_pln": {
+          "default": 0.0,
+          "description": "Capacity fee without battery [PLN]",
+          "title": "Capacity Fee Baseline Pln",
+          "type": "number"
+        },
+        "capacity_fee_project_pln": {
+          "default": 0.0,
+          "description": "Capacity fee with battery [PLN]",
+          "title": "Capacity Fee Project Pln",
+          "type": "number"
+        },
+        "capacity_fee_savings_pln": {
+          "default": 0.0,
+          "description": "Capacity fee savings = baseline - project [PLN]",
+          "title": "Capacity Fee Savings Pln",
+          "type": "number"
+        },
+        "degradation_cost_pln": {
+          "default": 0.0,
+          "description": "Battery degradation cost [PLN]",
+          "title": "Degradation Cost Pln",
+          "type": "number"
+        },
+        "demand_charge_baseline_pln": {
+          "default": 0.0,
+          "description": "Demand charge without battery [PLN]",
+          "title": "Demand Charge Baseline Pln",
+          "type": "number"
+        },
+        "demand_charge_project_pln": {
+          "default": 0.0,
+          "description": "Demand charge with battery [PLN]",
+          "title": "Demand Charge Project Pln",
+          "type": "number"
+        },
+        "demand_charge_savings_pln": {
+          "default": 0.0,
+          "description": "Demand charge savings = baseline - project [PLN]",
+          "title": "Demand Charge Savings Pln",
+          "type": "number"
+        },
+        "energy_cost_baseline_pln": {
+          "default": 0.0,
+          "description": "Total energy cost without battery [PLN]",
+          "title": "Energy Cost Baseline Pln",
+          "type": "number"
+        },
+        "energy_cost_project_pln": {
+          "default": 0.0,
+          "description": "Total energy cost with battery [PLN]",
+          "title": "Energy Cost Project Pln",
+          "type": "number"
+        },
+        "energy_savings_pln": {
+          "default": 0.0,
+          "description": "Energy cost savings = baseline - project [PLN]",
+          "title": "Energy Savings Pln",
+          "type": "number"
+        },
+        "export_revenue_pln": {
+          "default": 0.0,
+          "description": "Revenue from grid export [PLN]",
+          "title": "Export Revenue Pln",
+          "type": "number"
+        }
+      },
+      "title": "EconomicsTotalsPln",
+      "type": "object"
+    },
+    "EnergyFlows": {
+      "description": "Complete energy flows structure.\n\nContains:\n- totals_mwh: Always present (small, for UI and golden tests)\n- timeseries_kwh: Only when requested via include_energy_flows_timeseries flag\n\nUsage invariants:\n- sum(timeseries_kwh) / 1000 ≈ totals_mwh (within floating point tolerance)\n- Load balance: load_kwh[t] ≈ pv_to_load[t] + batt_to_load[t] + grid_import[t]",
+      "properties": {
+        "timeseries_kwh": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnergyFlowsTimeseriesKwh"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-timestep values in kWh (only if include_energy_flows_timeseries=True)"
+        },
+        "totals_mwh": {
+          "$ref": "#/$defs/EnergyFlowsTotalsMwh",
+          "description": "Aggregate totals in MWh (always present)"
+        }
+      },
+      "title": "EnergyFlows",
+      "type": "object"
+    },
+    "EnergyFlowsTimeseriesKwh": {
+      "description": "Per-timestep energy flows in kWh.\n\nOnly included in response when include_energy_flows_timeseries=True.\nUseful for debugging and detailed analysis.",
+      "properties": {
+        "batt_charge_from_grid_kwh": {
+          "description": "Battery charge from grid per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Batt Charge From Grid Kwh",
+          "type": "array"
+        },
+        "batt_losses_kwh": {
+          "description": "Battery losses per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Batt Losses Kwh",
+          "type": "array"
+        },
+        "batt_to_load_kwh": {
+          "description": "Battery to load per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Batt To Load Kwh",
+          "type": "array"
+        },
+        "grid_export_kwh": {
+          "description": "Grid export per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Grid Export Kwh",
+          "type": "array"
+        },
+        "grid_import_kwh": {
+          "description": "Grid import per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Grid Import Kwh",
+          "type": "array"
+        },
+        "pv_curtail_kwh": {
+          "description": "PV curtailed per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Pv Curtail Kwh",
+          "type": "array"
+        },
+        "pv_to_batt_kwh": {
+          "description": "PV to battery per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Pv To Batt Kwh",
+          "type": "array"
+        },
+        "pv_to_load_kwh": {
+          "description": "PV to load per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Pv To Load Kwh",
+          "type": "array"
+        },
+        "soc_kwh": {
+          "description": "State of charge per step [kWh]",
+          "items": {
+            "type": "number"
+          },
+          "title": "Soc Kwh",
+          "type": "array"
+        }
+      },
+      "title": "EnergyFlowsTimeseriesKwh",
+      "type": "object"
+    },
+    "EnergyFlowsTotalsMwh": {
+      "description": "Total energy flows in MWh for the analysis period.\n\nThis is the SINGLE SOURCE OF TRUTH for energy accounting.\nAll values are in MWh and represent totals over the period.",
+      "properties": {
+        "batt_charge_from_grid_mwh": {
+          "default": 0.0,
+          "description": "Battery charge from grid [MWh]",
+          "title": "Batt Charge From Grid Mwh",
+          "type": "number"
+        },
+        "batt_losses_mwh": {
+          "default": 0.0,
+          "description": "Battery round-trip losses [MWh]",
+          "title": "Batt Losses Mwh",
+          "type": "number"
+        },
+        "batt_to_load_mwh": {
+          "default": 0.0,
+          "description": "Battery discharge to load [MWh]",
+          "title": "Batt To Load Mwh",
+          "type": "number"
+        },
+        "grid_export_mwh": {
+          "default": 0.0,
+          "description": "Total grid export [MWh]",
+          "title": "Grid Export Mwh",
+          "type": "number"
+        },
+        "grid_import_mwh": {
+          "default": 0.0,
+          "description": "Total grid import [MWh]",
+          "title": "Grid Import Mwh",
+          "type": "number"
+        },
+        "pv_curtail_mwh": {
+          "default": 0.0,
+          "description": "PV energy curtailed [MWh]",
+          "title": "Pv Curtail Mwh",
+          "type": "number"
+        },
+        "pv_to_batt_mwh": {
+          "default": 0.0,
+          "description": "PV energy charged to battery [MWh]",
+          "title": "Pv To Batt Mwh",
+          "type": "number"
+        },
+        "pv_to_load_mwh": {
+          "default": 0.0,
+          "description": "PV energy directly consumed by load [MWh]",
+          "title": "Pv To Load Mwh",
+          "type": "number"
+        }
+      },
+      "title": "EnergyFlowsTotalsMwh",
+      "type": "object"
+    },
+    "Feasibility": {
+      "description": "Per-variant feasibility status (v0.8.0).\n\nIndicates whether a variant satisfies all user-defined constraints.",
+      "properties": {
+        "is_feasible": {
+          "default": true,
+          "description": "True if variant satisfies all constraints",
+          "title": "Is Feasible",
+          "type": "boolean"
+        },
+        "violations": {
+          "description": "List of constraint violations (empty if feasible)",
+          "items": {
+            "$ref": "#/$defs/ConstraintViolation"
+          },
+          "title": "Violations",
+          "type": "array"
+        }
+      },
+      "title": "Feasibility",
+      "type": "object"
+    },
+    "FinanceAssumptions": {
+      "description": "Echo of finance parameters applied in calculation.\n\nReturned in response so user can verify what values were used,\nespecially when using defaults.",
+      "properties": {
+        "bess_degradation_pct_per_year": {
+          "default": 0.0,
+          "description": "BESS capacity degradation [%/year]",
+          "title": "Bess Degradation Pct Per Year",
+          "type": "number"
+        },
+        "capex_override_pln": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "CAPEX override if provided, None if using calculated CAPEX",
+          "title": "Capex Override Pln"
+        },
+        "discount_rate": {
+          "description": "Discount rate used",
+          "title": "Discount Rate",
+          "type": "number"
+        },
+        "horizon_years": {
+          "description": "Analysis horizon used",
+          "title": "Horizon Years",
+          "type": "integer"
+        },
+        "opex_escalation_rate": {
+          "description": "OPEX escalation rate used",
+          "title": "Opex Escalation Rate",
+          "type": "number"
+        },
+        "opex_pln_per_year": {
+          "description": "Fixed OPEX per year used",
+          "title": "Opex Pln Per Year",
+          "type": "number"
+        },
+        "pv_degradation_pct_per_year": {
+          "default": 0.0,
+          "description": "PV output degradation [%/year]",
+          "title": "Pv Degradation Pct Per Year",
+          "type": "number"
+        },
+        "replacement_capex_pln": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Replacement cost used, None if no replacement",
+          "title": "Replacement Capex Pln"
+        },
+        "replacement_year": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Year for battery replacement, None if no replacement",
+          "title": "Replacement Year"
+        },
+        "savings_escalation_rate": {
+          "description": "Savings escalation rate used",
+          "title": "Savings Escalation Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "horizon_years",
+        "discount_rate",
+        "savings_escalation_rate",
+        "opex_pln_per_year",
+        "opex_escalation_rate"
+      ],
+      "title": "FinanceAssumptions",
+      "type": "object"
+    },
+    "FinanceSummary": {
+      "description": "Financial summary per variant.\n\nProvides key financial metrics in one place for easy UI display.\nNPV here is the same value used for scoring (when objective=npv)\nand displayed in top_variants_details.",
+      "properties": {
+        "capex_pln": {
+          "description": "Total CAPEX for this variant [PLN]",
+          "title": "Capex Pln",
+          "type": "number"
+        },
+        "capex_sensitivity": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/MultiplierSensitivityPoint"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "NPV at different CAPEX multipliers. Only present when capex_multiplier_sweep provided.",
+          "title": "Capex Sensitivity"
+        },
+        "cashflow_timeseries": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CashflowYear"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Year-by-year cashflow breakdown. Only present when include_cashflow_timeseries=True.",
+          "title": "Cashflow Timeseries"
+        },
+        "discount_rate": {
+          "description": "Discount rate used",
+          "title": "Discount Rate",
+          "type": "number"
+        },
+        "discount_rate_sensitivity": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/DiscountRateSensitivityPoint"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "NPV at different discount rates. Only present when discount_rate_sweep provided.",
+          "title": "Discount Rate Sensitivity"
+        },
+        "energy_price_sensitivity": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/MultiplierSensitivityPoint"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "NPV at different energy price multipliers. Only present when energy_price_multiplier_sweep provided.",
+          "title": "Energy Price Sensitivity"
+        },
+        "horizon_years": {
+          "description": "Analysis horizon [years]",
+          "title": "Horizon Years",
+          "type": "integer"
+        },
+        "irr_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Internal Rate of Return [%]. Null if IRR not calculated.",
+          "title": "Irr Pct"
+        },
+        "npv_pln": {
+          "description": "Net Present Value [PLN]",
+          "title": "Npv Pln",
+          "type": "number"
+        },
+        "opex_pln_per_year": {
+          "description": "Annual OPEX [PLN/year]",
+          "title": "Opex Pln Per Year",
+          "type": "number"
+        },
+        "payback_years": {
+          "description": "Simple payback period [years]",
+          "title": "Payback Years",
+          "type": "number"
+        }
+      },
+      "required": [
+        "capex_pln",
+        "opex_pln_per_year",
+        "horizon_years",
+        "discount_rate",
+        "npv_pln",
+        "payback_years"
+      ],
+      "title": "FinanceSummary",
+      "type": "object"
+    },
+    "GridConstraintsApplied": {
+      "description": "Echo of grid constraints applied in calculation (v0.7.0).\n\nReturned in response so user can verify what constraints were used,\nincluding computed effective values (e.g., max_export_kw=0 when allow_export=False).",
+      "properties": {
+        "allow_export": {
+          "default": true,
+          "description": "Whether export was allowed.",
+          "title": "Allow Export",
+          "type": "boolean"
+        },
+        "max_export_kw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Effective max export [kW]. 0 if allow_export=False.",
+          "title": "Max Export Kw"
+        },
+        "max_import_kw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Effective max import [kW]. None = unlimited.",
+          "title": "Max Import Kw"
+        },
+        "unserved_load_penalty_pln_kwh": {
+          "default": 0.0,
+          "description": "Penalty rate for unserved load [PLN/kWh].",
+          "title": "Unserved Load Penalty Pln Kwh",
+          "type": "number"
+        }
+      },
+      "title": "GridConstraintsApplied",
+      "type": "object"
+    },
+    "HourlyDispatch": {
+      "description": "Hourly dispatch data (for detailed analysis)",
+      "properties": {
+        "charge_kw": {
+          "title": "Charge Kw",
+          "type": "number"
+        },
+        "curtailment_kw": {
+          "title": "Curtailment Kw",
+          "type": "number"
+        },
+        "direct_pv_kw": {
+          "title": "Direct Pv Kw",
+          "type": "number"
+        },
+        "discharge_arb_kw": {
+          "default": 0.0,
+          "title": "Discharge Arb Kw",
+          "type": "number"
+        },
+        "discharge_kw": {
+          "title": "Discharge Kw",
+          "type": "number"
+        },
+        "discharge_peak_kw": {
+          "default": 0.0,
+          "title": "Discharge Peak Kw",
+          "type": "number"
+        },
+        "discharge_pv_kw": {
+          "default": 0.0,
+          "title": "Discharge Pv Kw",
+          "type": "number"
+        },
+        "grid_export_kw": {
+          "title": "Grid Export Kw",
+          "type": "number"
+        },
+        "grid_import_kw": {
+          "title": "Grid Import Kw",
+          "type": "number"
+        },
+        "load_kw": {
+          "title": "Load Kw",
+          "type": "number"
+        },
+        "pv_kw": {
+          "title": "Pv Kw",
+          "type": "number"
+        },
+        "soc_kwh": {
+          "title": "Soc Kwh",
+          "type": "number"
+        },
+        "soc_pct": {
+          "title": "Soc Pct",
+          "type": "number"
+        },
+        "timestep": {
+          "title": "Timestep",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timestep",
+        "pv_kw",
+        "load_kw",
+        "direct_pv_kw",
+        "charge_kw",
+        "discharge_kw",
+        "grid_import_kw",
+        "grid_export_kw",
+        "curtailment_kw",
+        "soc_kwh",
+        "soc_pct"
+      ],
+      "title": "HourlyDispatch",
+      "type": "object"
+    },
+    "LedgerTimeseriesPlnPerStep": {
+      "description": "Per-step cost timeseries in PLN for each timestep (v2.0.0 SSoT).\n\nThis is the SINGLE SOURCE OF TRUTH for per-step economics.\nAll values are arrays of length 'steps' (matching period_info.steps).\n\nUsed for:\n- Debugging: see cost contributions at each timestep\n- Transparency: user can trace costs back to energy flows\n- Validation: sum of arrays should match MoneyLedger totals (invariant)\n- Visualization: chart stacked costs over time",
+      "properties": {
+        "export_revenue_pln": {
+          "description": "Export revenue at each timestep [PLN]. Positive = revenue. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Export Revenue Pln",
+          "type": "array"
+        },
+        "import_cost_pln": {
+          "description": "Grid import cost at each timestep [PLN]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Import Cost Pln",
+          "type": "array"
+        },
+        "net_cost_pln": {
+          "description": "Net cost at each timestep [PLN] = import + fees + penalty - export. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Net Cost Pln",
+          "type": "array"
+        },
+        "other_fees_pln": {
+          "description": "Other fees at each timestep [PLN]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Other Fees Pln",
+          "type": "array"
+        },
+        "step_minutes": {
+          "description": "Time resolution in minutes (15 or 60)",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Step Minutes",
+          "type": "integer"
+        },
+        "steps": {
+          "description": "Number of timesteps",
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+        },
+        "sum_export_revenue_pln": {
+          "default": 0.0,
+          "description": "Sum of export_revenue_pln array [PLN]. Should match MoneyLedger.",
+          "title": "Sum Export Revenue Pln",
+          "type": "number"
+        },
+        "sum_import_cost_pln": {
+          "default": 0.0,
+          "description": "Sum of import_cost_pln array [PLN]. Should match MoneyLedger.",
+          "title": "Sum Import Cost Pln",
+          "type": "number"
+        },
+        "sum_net_cost_pln": {
+          "default": 0.0,
+          "description": "Sum of net_cost_pln array [PLN]. Should match MoneyLedger.total_cost_pln.",
+          "title": "Sum Net Cost Pln",
+          "type": "number"
+        },
+        "sum_other_fees_pln": {
+          "default": 0.0,
+          "description": "Sum of other_fees_pln array [PLN]. Should match MoneyLedger.",
+          "title": "Sum Other Fees Pln",
+          "type": "number"
+        },
+        "sum_unserved_penalty_pln": {
+          "default": 0.0,
+          "description": "Sum of unserved_penalty_pln array [PLN]. Should match MoneyLedger.",
+          "title": "Sum Unserved Penalty Pln",
+          "type": "number"
+        },
+        "unserved_penalty_pln": {
+          "description": "Unserved load penalty at each timestep [PLN]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Unserved Penalty Pln",
+          "type": "array"
+        }
+      },
+      "required": [
+        "import_cost_pln",
+        "export_revenue_pln",
+        "step_minutes",
+        "steps"
+      ],
+      "title": "LedgerTimeseriesPlnPerStep",
+      "type": "object"
+    },
+    "MoneyLedger": {
+      "description": "Complete money ledger comparing baseline vs project costs (v1.9.0 SSoT).\n\nProvides full cost breakdown for:\n- baseline_period: Costs for the analysis period WITHOUT battery\n- project_period: Costs for the analysis period WITH battery\n- delta_period_pln: Difference (baseline - project) for period\n- baseline_annual: Annualized costs WITHOUT battery\n- project_annual: Annualized costs WITH battery\n- delta_annual_pln: Annualized difference (baseline - project)\n\nThe delta values represent SAVINGS (positive = money saved).\ndelta.total_cost_pln should match net_savings_pln (SSoT reconciliation).",
+      "properties": {
+        "baseline_annual": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Baseline costs annualized"
+        },
+        "baseline_period": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Baseline costs for the analysis period (no battery)"
+        },
+        "delta_annual_pln": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Delta (baseline - project) annualized = annual savings per category"
+        },
+        "delta_period_pln": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Delta (baseline - project) for period = savings per category"
+        },
+        "is_full_year": {
+          "default": false,
+          "description": "True if analysis period is exactly 8760 hours (1 year)",
+          "title": "Is Full Year",
+          "type": "boolean"
+        },
+        "period_hours": {
+          "default": 0,
+          "description": "Number of hours in analysis period",
+          "title": "Period Hours",
+          "type": "integer"
+        },
+        "project_annual": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Project costs annualized"
+        },
+        "project_period": {
+          "$ref": "#/$defs/MoneyLedgerTotalsPln",
+          "description": "Project costs for the analysis period (with battery)"
+        }
+      },
+      "title": "MoneyLedger",
+      "type": "object"
+    },
+    "MoneyLedgerTotalsPln": {
+      "description": "Cost breakdown totals for a scenario (baseline or project).\n\nAll values in PLN. Costs are positive, revenue is positive but subtracted\nfrom total_cost (so higher revenue = lower total_cost).\n\nThis is the SINGLE SOURCE OF TRUTH for cost accounting.",
+      "properties": {
+        "capacity_fee_pln": {
+          "default": 0.0,
+          "description": "Capacity fee (opłata mocowa PL) [PLN]",
+          "title": "Capacity Fee Pln",
+          "type": "number"
+        },
+        "degradation_cost_pln": {
+          "default": 0.0,
+          "description": "Battery degradation cost (throughput-based) [PLN]",
+          "title": "Degradation Cost Pln",
+          "type": "number"
+        },
+        "demand_charge_pln": {
+          "default": 0.0,
+          "description": "Demand charge / peak shaving fee (opłata za moc umowną) [PLN]",
+          "title": "Demand Charge Pln",
+          "type": "number"
+        },
+        "export_revenue_pln": {
+          "default": 0.0,
+          "description": "Revenue from exporting energy to grid [PLN] - positive value",
+          "title": "Export Revenue Pln",
+          "type": "number"
+        },
+        "import_energy_cost_pln": {
+          "default": 0.0,
+          "description": "Cost of importing energy from grid [PLN] - includes ToU rate",
+          "title": "Import Energy Cost Pln",
+          "type": "number"
+        },
+        "other_fees_pln": {
+          "default": 0.0,
+          "description": "Other fees [PLN]: OZE, kogeneracja, jakość, akcyza",
+          "title": "Other Fees Pln",
+          "type": "number"
+        },
+        "total_cost_pln": {
+          "default": 0.0,
+          "description": "Total net cost [PLN] = import + fees + penalties - export_revenue",
+          "title": "Total Cost Pln",
+          "type": "number"
+        },
+        "unserved_penalty_pln": {
+          "default": 0.0,
+          "description": "Penalty for unserved load due to import constraints [PLN]",
+          "title": "Unserved Penalty Pln",
+          "type": "number"
+        }
+      },
+      "title": "MoneyLedgerTotalsPln",
+      "type": "object"
+    },
+    "MultiplierSensitivityPoint": {
+      "description": "NPV at a specific multiplier value (v0.6.0 PR4).\n\nUsed for energy price and CAPEX sensitivity charts showing how NPV varies\nwith different price/cost assumptions.",
+      "properties": {
+        "multiplier": {
+          "description": "Multiplier value (1.0 = 100%, 0.8 = 80%, 1.2 = 120%)",
+          "title": "Multiplier",
+          "type": "number"
+        },
+        "multiplier_pct": {
+          "description": "Multiplier as percentage (100.0 = 100%)",
+          "title": "Multiplier Pct",
+          "type": "number"
+        },
+        "npv_pln": {
+          "description": "NPV at this multiplier [PLN]",
+          "title": "Npv Pln",
+          "type": "number"
+        }
+      },
+      "required": [
+        "multiplier",
+        "multiplier_pct",
+        "npv_pln"
+      ],
+      "title": "MultiplierSensitivityPoint",
+      "type": "object"
+    },
+    "ParetoPoint": {
+      "description": "A point on the Pareto frontier for NPV vs Payback trade-off (v0.8.0).\n\nA variant is Pareto-optimal (non-dominated) if no other variant has:\n- Higher NPV AND lower payback simultaneously\n\nVariants on the frontier represent optimal trade-offs.",
+      "properties": {
+        "is_dominated": {
+          "default": false,
+          "description": "True if this variant is dominated by another (not on Pareto frontier)",
+          "title": "Is Dominated",
+          "type": "boolean"
+        },
+        "npv_pln": {
+          "description": "Net Present Value [PLN]",
+          "title": "Npv Pln",
+          "type": "number"
+        },
+        "payback_years": {
+          "description": "Simple payback period [years]",
+          "title": "Payback Years",
+          "type": "number"
+        },
+        "variant": {
+          "description": "Variant name (e.g., 'small', 'medium', 'large')",
+          "title": "Variant",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variant",
+        "npv_pln",
+        "payback_years"
+      ],
+      "title": "ParetoPoint",
+      "type": "object"
+    },
+    "PeriodInfo": {
+      "description": "Period information included in responses.\n\nHelps UI understand whether results are for a full year or partial period,\nand whether annualization was applied.\n\nNew fields (v0.3.3):\n- steps: number of time steps in analysis\n- step_minutes: time resolution (15 or 60)\n- timezone: timezone string (e.g., \"Europe/Warsaw\")",
+      "properties": {
+        "annualization_factor": {
+          "description": "8760 / period_hours. Use to scale to annual if needed.",
+          "title": "Annualization Factor",
+          "type": "number"
+        },
+        "end_datetime": {
+          "description": "Analysis end (ISO 8601)",
+          "title": "End Datetime",
+          "type": "string"
+        },
+        "is_full_year": {
+          "description": "True if period >= 8760 hours",
+          "title": "Is Full Year",
+          "type": "boolean"
+        },
+        "period_days": {
+          "description": "Total days in analysis period",
+          "title": "Period Days",
+          "type": "number"
+        },
+        "period_hours": {
+          "description": "Total hours in analysis period",
+          "title": "Period Hours",
+          "type": "number"
+        },
+        "start_datetime": {
+          "description": "Analysis start (ISO 8601)",
+          "title": "Start Datetime",
+          "type": "string"
+        },
+        "step_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Time resolution in minutes (15 or 60)",
+          "title": "Step Minutes"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Number of time steps",
+          "title": "Steps"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Timezone (e.g., 'Europe/Warsaw')",
+          "title": "Timezone"
+        }
+      },
+      "required": [
+        "period_hours",
+        "period_days",
+        "is_full_year",
+        "annualization_factor",
+        "start_datetime",
+        "end_datetime"
+      ],
+      "title": "PeriodInfo",
+      "type": "object"
+    },
+    "PriceTimeseriesPlnPerMwh": {
+      "description": "Per-step price timeseries in PLN/MWh (v2.0.0 SSoT).\n\nThis is the SINGLE SOURCE OF TRUTH for what prices were used in calculations.\nAll values are arrays of length 'steps' (matching period_info.steps).\n\nUsed for:\n- Debugging: verify which prices were applied at each timestep\n- Transparency: user can see exact ToU zone mapping\n- Reproducibility: export prices + use as override for deterministic replay\n- Validation: sum(price * energy) should match MoneyLedger totals",
+      "properties": {
+        "export_price_pln_per_mwh": {
+          "description": "Grid export price at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Export Price Pln Per Mwh",
+          "type": "array"
+        },
+        "import_price_pln_per_mwh": {
+          "description": "Grid import price at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Import Price Pln Per Mwh",
+          "type": "array"
+        },
+        "other_fees_pln_per_mwh": {
+          "description": "Other fees (OZE, kogeneracja, etc.) at each timestep [PLN/MWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Other Fees Pln Per Mwh",
+          "type": "array"
+        },
+        "period_end": {
+          "description": "Period end (ISO 8601)",
+          "title": "Period End",
+          "type": "string"
+        },
+        "period_start": {
+          "description": "Period start (ISO 8601)",
+          "title": "Period Start",
+          "type": "string"
+        },
+        "step_minutes": {
+          "description": "Time resolution in minutes (15 or 60)",
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Step Minutes",
+          "type": "integer"
+        },
+        "steps": {
+          "description": "Number of timesteps",
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+        },
+        "timezone": {
+          "default": "Europe/Warsaw",
+          "description": "Timezone used for ToU zone mapping",
+          "title": "Timezone",
+          "type": "string"
+        },
+        "unserved_penalty_pln_per_kwh": {
+          "description": "Unserved load penalty at each timestep [PLN/kWh]. Length = steps.",
+          "items": {
+            "type": "number"
+          },
+          "title": "Unserved Penalty Pln Per Kwh",
+          "type": "array"
+        }
+      },
+      "required": [
+        "import_price_pln_per_mwh",
+        "export_price_pln_per_mwh",
+        "step_minutes",
+        "steps",
+        "period_start",
+        "period_end"
+      ],
+      "title": "PriceTimeseriesPlnPerMwh",
+      "type": "object"
+    },
+    "PricesSummary": {
+      "description": "Summary of prices used in simulation.\n\nFor transparency - user can verify what assumptions were used.",
+      "properties": {
+        "demand_charge_pln_kw_month": {
+          "description": "Monthly demand charge [PLN/kW/month]",
+          "title": "Demand Charge Pln Kw Month",
+          "type": "number"
+        },
+        "demand_charge_pln_kw_year": {
+          "default": 0.0,
+          "description": "Annual demand charge [PLN/kW/year]",
+          "title": "Demand Charge Pln Kw Year",
+          "type": "number"
+        },
+        "export_price_pln_mwh": {
+          "description": "Export price [PLN/MWh]",
+          "title": "Export Price Pln Mwh",
+          "type": "number"
+        },
+        "import_price_pln_mwh": {
+          "description": "Import price [PLN/MWh]",
+          "title": "Import Price Pln Mwh",
+          "type": "number"
+        },
+        "tariff_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OSD tariff preset ID if used",
+          "title": "Tariff Id"
+        },
+        "tariff_type": {
+          "default": "flat",
+          "description": "Tariff type: flat, two_zone, three_zone",
+          "title": "Tariff Type",
+          "type": "string"
+        },
+        "zone_rates": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zone rates if ToU tariff [PLN/MWh], e.g. {'peak': 950, 'partial': 700, 'off_peak': 450}",
+          "title": "Zone Rates"
+        }
+      },
+      "required": [
+        "import_price_pln_mwh",
+        "export_price_pln_mwh",
+        "demand_charge_pln_kw_month"
+      ],
+      "title": "PricesSummary",
+      "type": "object"
+    },
+    "SavingsBreakdown": {
+      "description": "Detailed breakdown of annual savings by source.\n\nUsed for transparent NPV calculation and frontend display.\nSum of all components equals net_savings_pln.\n\nNOTE on terminology:\n- demand_charge_savings_pln = peak shaving (opłata za moc umowną / demand charge)\n- capacity_fee_savings_pln = opłata mocowa PL (rynek mocy) - osobny moduł\n- export_revenue_pln = revenue from grid export (sprzedaż nadwyżek do sieci)",
+      "properties": {
+        "arbitrage_savings_pln": {
+          "default": 0.0,
+          "description": "ADDITIONAL savings from ToU price spread (tou_total - flat_savings)",
+          "title": "Arbitrage Savings Pln",
+          "type": "number"
+        },
+        "baseline_export_revenue_pln": {
+          "default": 0.0,
+          "description": "Export revenue WITHOUT battery (PV surplus only)",
+          "title": "Baseline Export Revenue Pln",
+          "type": "number"
+        },
+        "battery_throughput_mwh": {
+          "default": 0.0,
+          "description": "Total battery throughput [MWh] (discharge only)",
+          "title": "Battery Throughput Mwh",
+          "type": "number"
+        },
+        "capacity_fee_savings_pln": {
+          "default": 0.0,
+          "description": "Savings from reduced capacity fee (opłata mocowa PL)",
+          "title": "Capacity Fee Savings Pln",
+          "type": "number"
+        },
+        "degradation_cost_pln": {
+          "default": 0.0,
+          "description": "Cost of battery degradation (throughput-based)",
+          "title": "Degradation Cost Pln",
+          "type": "number"
+        },
+        "demand_charge_savings_pln": {
+          "default": 0.0,
+          "description": "Savings from peak shaving (opłata za moc / demand charge)",
+          "title": "Demand Charge Savings Pln",
+          "type": "number"
+        },
+        "energy_savings_pln": {
+          "default": 0.0,
+          "description": "Savings from reduced grid import at flat price (volume × flat_rate)",
+          "title": "Energy Savings Pln",
+          "type": "number"
+        },
+        "export_revenue_pln": {
+          "default": 0.0,
+          "description": "[DEPRECATED] Use project_export_revenue_pln instead. This field equals project_export_revenue_pln for backward compatibility.",
+          "title": "Export Revenue Pln",
+          "type": "number"
+        },
+        "export_revenue_savings_pln": {
+          "default": 0.0,
+          "description": "Change in export revenue = project - baseline (typically negative)",
+          "title": "Export Revenue Savings Pln",
+          "type": "number"
+        },
+        "net_savings_pln": {
+          "default": 0.0,
+          "description": "Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta - degradation - unserved_penalty",
+          "title": "Net Savings Pln",
+          "type": "number"
+        },
+        "project_export_revenue_pln": {
+          "default": 0.0,
+          "description": "Export revenue WITH battery (reduced due to self-consumption)",
+          "title": "Project Export Revenue Pln",
+          "type": "number"
+        },
+        "unserved_load_penalty_pln": {
+          "default": 0.0,
+          "description": "Penalty for unserved load due to import cap [PLN]",
+          "title": "Unserved Load Penalty Pln",
+          "type": "number"
+        }
+      },
+      "title": "SavingsBreakdown",
+      "type": "object"
+    },
+    "SizingVariant": {
+      "description": "Pre-defined sizing variants",
+      "enum": [
+        "small",
+        "medium",
+        "large",
+        "custom"
+      ],
+      "title": "SizingVariant",
+      "type": "string"
+    },
+    "SizingVariantResult": {
+      "description": "Result for a single sizing variant",
+      "properties": {
+        "annual_opex_pln": {
+          "title": "Annual Opex Pln",
+          "type": "number"
+        },
+        "annual_savings_pln": {
+          "title": "Annual Savings Pln",
+          "type": "number"
+        },
+        "battery_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatteryTraceTimeseries"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-step battery trace if include_battery_trace=True. Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
+        },
+        "c_rate": {
+          "title": "C Rate",
+          "type": "number"
+        },
+        "capex_pln": {
+          "title": "Capex Pln",
+          "type": "number"
+        },
+        "degradation": {
+          "$ref": "#/$defs/DegradationMetrics"
+        },
+        "degradation_status": {
+          "$ref": "#/$defs/DegradationStatus"
+        },
+        "dispatch_summary": {
+          "$ref": "#/$defs/DispatchResult"
+        },
+        "duration_h": {
+          "title": "Duration H",
+          "type": "number"
+        },
+        "energy_kwh": {
+          "title": "Energy Kwh",
+          "type": "number"
+        },
+        "feasibility": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Feasibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Feasibility status based on constraints_config. is_feasible=True if variant satisfies all constraints, with violations list."
+        },
+        "finance_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FinanceSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Financial summary with CAPEX, OPEX, NPV, payback. NPV here matches npv_pln used for scoring and top_variants_details."
+        },
+        "invariants": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Invariant check results if include_invariants=True. Contains energy_balance_ok, non_negative_ok, cost_sums_ok, annualization_ok.",
+          "title": "Invariants"
+        },
+        "irr_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Irr Pct"
+        },
+        "is_recommended": {
+          "default": false,
+          "title": "Is Recommended",
+          "type": "boolean"
+        },
+        "ledger_timeseries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LedgerTimeseriesPlnPerStep"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-step cost timeseries if include_ledger_timeseries=True. Shows import_cost/export_revenue/fees/penalty at each timestep for charts."
+        },
+        "money_ledger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MoneyLedger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Money ledger with baseline/project cost breakdown if include_money_ledger=True. Provides full transparency into cost categories and reconciliation."
+        },
+        "npv_pln": {
+          "title": "Npv Pln",
+          "type": "number"
+        },
+        "power_kw": {
+          "title": "Power Kw",
+          "type": "number"
+        },
+        "price_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SHA256 hash of canonical price_timeseries JSON. Stable identifier for price set - same prices = same hash.",
+          "title": "Price Hash"
+        },
+        "price_timeseries": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriceTimeseriesPlnPerMwh"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-step price timeseries if include_price_timeseries=True. Shows import/export/fees prices at each timestep for debugging and replay."
+        },
+        "prices_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PricesSummary"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Alias - populated from dispatch_summary.prices_summary (ToU breakdown)",
+          "title": "Prices Summary"
+        },
+        "pricing_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source of prices: 'generated' (from ToU/PriceConfig) or 'override' (from price_timeseries_override). Set when include_price_timeseries=True.",
+          "title": "Pricing Mode"
+        },
+        "savings_breakdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavingsBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Alias - populated from dispatch_summary.savings_breakdown"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "simple_payback_years": {
+          "title": "Simple Payback Years",
+          "type": "number"
+        },
+        "variant": {
+          "$ref": "#/$defs/SizingVariant"
+        },
+        "variant_label": {
+          "title": "Variant Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variant",
+        "variant_label",
+        "duration_h",
+        "power_kw",
+        "energy_kwh",
+        "c_rate",
+        "capex_pln",
+        "annual_opex_pln",
+        "annual_savings_pln",
+        "npv_pln",
+        "simple_payback_years",
+        "dispatch_summary",
+        "degradation",
+        "degradation_status"
+      ],
+      "title": "SizingVariantResult",
+      "type": "object"
+    },
+    "TopVariantDetail": {
+      "description": "Detailed information about a top variant for UI display.\n\nContains key metrics for easy comparison in a table/list view.",
+      "properties": {
+        "net_savings_pln": {
+          "description": "Net annual savings from savings_breakdown [PLN]",
+          "title": "Net Savings Pln",
+          "type": "number"
+        },
+        "npv_pln": {
+          "description": "Net Present Value [PLN]",
+          "title": "Npv Pln",
+          "type": "number"
+        },
+        "payback_years": {
+          "description": "Simple payback period [years]",
+          "title": "Payback Years",
+          "type": "number"
+        },
+        "score": {
+          "description": "Optimization score (higher is better)",
+          "title": "Score",
+          "type": "number"
+        },
+        "variant": {
+          "$ref": "#/$defs/SizingVariant",
+          "description": "Variant name (small/medium/large)"
+        }
+      },
+      "required": [
+        "variant",
+        "score",
+        "npv_pln",
+        "payback_years",
+        "net_savings_pln"
+      ],
+      "title": "TopVariantDetail",
+      "type": "object"
+    }
+  },
+  "description": "Complete sizing result with all variants",
+  "properties": {
+    "annual_surplus_mwh": {
+      "title": "Annual Surplus Mwh",
+      "type": "number"
+    },
+    "applied_parameters": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AppliedParameters"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Parameters actually used in calculation. Shows effective defaults and sources for transparency."
+    },
+    "assumptions_version": {
+      "default": "v1.0-unknown",
+      "description": "Assumptions version (hash of docs/assumptions.yaml).",
+      "title": "Assumptions Version",
+      "type": "string"
+    },
+    "cache_info": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CacheInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Cache metadata including request_hash, run_id, and cache_status. Enables deterministic result retrieval and debugging."
+    },
+    "constraints_report": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConstraintsReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Summary of constraint evaluation: how many variants are feasible, which ones, and whether recommended is fallback due to none_feasible."
+    },
+    "finance_assumptions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FinanceAssumptions"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Echo of finance parameters applied in calculation. Shows what values were used (explicit or defaults)."
+    },
+    "grid_constraints_applied": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GridConstraintsApplied"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Echo of grid constraints applied in calculation. Shows effective values (e.g., max_export_kw=0 when allow_export=False)."
+    },
+    "mode": {
+      "$ref": "#/$defs/DispatchMode"
+    },
+    "objective_used": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optimization objective that was used. Default is 'npv'. Values: npv, payback, self_consumption, peak_reduction, efc_utilization",
+      "title": "Objective Used"
+    },
+    "pareto_frontier": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ParetoPoint"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Pareto frontier for NPV vs Payback trade-off. Variants with is_dominated=False are on the frontier.",
+      "title": "Pareto Frontier"
+    },
+    "period_info": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PeriodInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Time axis metadata. period_hours replaces hardcoded 8760."
+    },
+    "recommended_energy_kwh": {
+      "default": 0.0,
+      "title": "Recommended Energy Kwh",
+      "type": "number"
+    },
+    "recommended_power_kw": {
+      "default": 0.0,
+      "title": "Recommended Power Kw",
+      "type": "number"
+    },
+    "recommended_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Human-readable explanation of why this variant was recommended. Example: 'Highest NPV (45,230 PLN) among variants with payback < 8 years'",
+      "title": "Recommended Reason"
+    },
+    "recommended_reason_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Machine-readable code for recommendation reason. Values: npv_max, payback_min, self_consumption_max, peak_reduction_max, efc_utilization_max, constrained_fallback",
+      "title": "Recommended Reason Code"
+    },
+    "recommended_reason_metric": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Metric name used for recommendation. Values: npv_pln, payback_years, self_consumption_pct, peak_reduction_pct, efc_total",
+      "title": "Recommended Reason Metric"
+    },
+    "recommended_reason_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Unit for the recommendation metric value. Values: PLN, years, %, cycles",
+      "title": "Recommended Reason Unit"
+    },
+    "recommended_reason_value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Numeric value of the recommendation metric. Example: 45230.0 for NPV",
+      "title": "Recommended Reason Value"
+    },
+    "recommended_variant": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SizingVariant"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "description": "API schema version. Bump when response structure changes.",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "timeseries_info": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Timeseries throttling metadata. Shows mode, included_steps, total_steps, and truncated flag for each timeseries type (battery_trace, ledger, price).",
+      "title": "Timeseries Info"
+    },
+    "top_variants": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/SizingVariant"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Top 3 variants ranked by score (highest first). Useful for UI to show alternatives. Example: ['medium', 'large', 'small']",
+      "title": "Top Variants"
+    },
+    "top_variants_details": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TopVariantDetail"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Top 3 variants with key metrics for easy comparison. First element is always the recommended variant.",
+      "title": "Top Variants Details"
+    },
+    "total_load_mwh": {
+      "title": "Total Load Mwh",
+      "type": "number"
+    },
+    "total_pv_mwh": {
+      "title": "Total Pv Mwh",
+      "type": "number"
+    },
+    "variants": {
+      "items": {
+        "$ref": "#/$defs/SizingVariantResult"
+      },
+      "title": "Variants",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "mode",
+    "total_pv_mwh",
+    "total_load_mwh",
+    "annual_surplus_mwh",
+    "variants"
+  ],
+  "title": "SizingResult",
+  "type": "object"
+}

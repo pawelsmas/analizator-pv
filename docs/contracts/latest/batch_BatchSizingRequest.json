@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "BatchSizingItem": {
+      "description": "Single item in a batch sizing request",
+      "properties": {
+        "item_id": {
+          "description": "Unique identifier for this item within the batch. Used to correlate request items with response results.",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "request": {
+          "additionalProperties": true,
+          "description": "Sizing request payload (same schema as POST /sizing)",
+          "title": "Request",
+          "type": "object"
+        }
+      },
+      "required": [
+        "item_id",
+        "request"
+      ],
+      "title": "BatchSizingItem",
+      "type": "object"
+    }
+  },
+  "description": "Request for batch sizing - multiple sizing requests in one API call.\n\nEach item is processed independently. If fail_fast=True, processing stops\non first error. Otherwise, all items are processed and errors are collected.",
+  "properties": {
+    "batch_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional batch identifier. If None, server generates UUID.",
+      "title": "Batch Id"
+    },
+    "fail_fast": {
+      "default": false,
+      "description": "If True, stop processing on first error. If False (default), process all items and collect errors.",
+      "title": "Fail Fast",
+      "type": "boolean"
+    },
+    "items": {
+      "description": "List of sizing items to process. Max 100 items per batch.",
+      "items": {
+        "$ref": "#/$defs/BatchSizingItem"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "BatchSizingRequest",
+  "type": "object"
+}

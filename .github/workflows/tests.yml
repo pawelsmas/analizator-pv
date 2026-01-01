@@ -7,6 +7,28 @@ on:
     branches: [main]
 
 jobs:
+  # Contract schema drift check (v2.6.0 PR1)
+  contract-drift-check:
+    name: Contract Drift Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pydantic
+
+      - name: Check for contract schema drift
+        run: |
+          python scripts/contracts/export_contracts.py --check
+
   contract-tests:
     name: Contract Tests
     runs-on: ubuntu-latest
