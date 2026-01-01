@@ -164,6 +164,15 @@ from observability.validation_pack_metrics import (
     record_scenario_validation,
     record_pack_validation_duration,
 )
+from observability.pricing_metrics import (
+    record_tariff_presets_list,
+    record_pricing_preview,
+    record_tariff_preset_usage,
+    record_tariff_schedule_usage,
+    record_pricing_preview_steps,
+    record_pricing_preview_duration,
+    check_price_anomalies,
+)
 from run_store import (
     save_run,
     get_run,
@@ -4470,6 +4479,9 @@ async def get_tariffs():
 
     Returns list of preset IDs and labels for UI dropdown.
     """
+    # Record metrics
+    record_tariff_presets_list()
+
     presets = list_presets()
     return TariffPresetsResponse(
         presets=[TariffPresetInfo(id=p["id"], label=p["label"]) for p in presets]
@@ -4557,10 +4569,13 @@ async def pricing_preview(request: PricingPreviewRequest):
     - Verifying ToU zone mapping
     - Exporting prices for offline analysis
     """
+    import time
     from datetime import datetime, timedelta
 
     from models import TariffScheduleConfig
     from tariff_schedule_helper import generate_price_timeseries_from_schedule
+
+    start_time = time.time()
 
     try:
         # Validate that at least one pricing source is provided
@@ -4600,6 +4615,9 @@ async def pricing_preview(request: PricingPreviewRequest):
                 timezone=request.timezone,
             )
             pricing_mode = "schedule"
+            # Record schedule metrics
+            has_holidays = bool(request.tariff_schedule.get("holiday_dates"))
+            record_tariff_schedule_usage(has_holidays)
         elif request.tariff_preset:
             # Use tariff preset
             price_timeseries = generate_price_timeseries_from_preset(
@@ -4612,6 +4630,8 @@ async def pricing_preview(request: PricingPreviewRequest):
             if not price_timeseries:
                 raise HTTPException(404, f"Tariff preset not found: {request.tariff_preset}")
             pricing_mode = "preset"
+            # Record preset metrics
+            record_tariff_preset_usage(request.tariff_preset)
         else:
             # Use pricing_config (generated mode)
             price_timeseries = generate_price_timeseries(
@@ -4637,6 +4657,14 @@ async def pricing_preview(request: PricingPreviewRequest):
             period_hours=period_hours,
             period_days=period_hours / 24,
         )
+
+        # Record metrics
+        record_pricing_preview(pricing_mode)
+        record_pricing_preview_steps(n_steps)
+        record_pricing_preview_duration(time.time() - start_time)
+
+        # Check for price anomalies
+        check_price_anomalies(price_timeseries.import_price_pln_per_mwh)
 
         return PricingPreviewResponse(
             pricing_mode=pricing_mode,
