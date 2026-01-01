@@ -2063,6 +2063,31 @@ class SizingRequest(BaseModel):
                     "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
     )
 
+    # Timeseries mode controls (new in v2.5.0 PR2)
+    # These take precedence over legacy boolean flags when set.
+    # Backward compatibility: include_X=True with no mode → FULL (original behavior)
+    battery_trace_mode: Optional[str] = Field(
+        None,
+        description="Mode for battery trace output: 'none', 'preview' (first N rows), or 'full'. "
+                    "If set, overrides include_battery_trace flag."
+    )
+    ledger_timeseries_mode: Optional[str] = Field(
+        None,
+        description="Mode for ledger timeseries output: 'none', 'preview', or 'full'. "
+                    "If set, overrides include_ledger_timeseries flag."
+    )
+    price_timeseries_mode: Optional[str] = Field(
+        None,
+        description="Mode for price timeseries output: 'none', 'preview', or 'full'. "
+                    "If set, overrides include_price_timeseries flag."
+    )
+    timeseries_preview_rows: Optional[int] = Field(
+        None,
+        ge=12, le=240,
+        description="Number of rows for 'preview' mode (default 48, min 12, max 240). "
+                    "Applies to all timeseries in preview mode."
+    )
+
     # Price timeseries override (new in v2.0.0 PR2)
     price_timeseries_override: Optional["PriceTimeseriesPlnPerMwh"] = Field(
         None,
@@ -2616,6 +2641,13 @@ class SizingResult(BaseModel):
         None,
         description="Cache metadata including request_hash, run_id, and cache_status. "
                     "Enables deterministic result retrieval and debugging."
+    )
+
+    # Timeseries info (v2.5.0 PR2) - metadata about truncation
+    timeseries_info: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Timeseries throttling metadata. Shows mode, included_steps, total_steps, "
+                    "and truncated flag for each timeseries type (battery_trace, ledger, price)."
     )
 
     # Warnings
