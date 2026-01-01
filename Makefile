@@ -225,3 +225,10 @@ rc-skip-backend: ## Run RC check without backend tests
 	@echo "${BLUE}Running Release Candidate checks (no backend)...${RESET}"
 	@python scripts/rc/rc_check.py --skip-backend
 	@echo ""
+
+# ===== GUARDS (v2.8.0) =====
+
+guard-no-legacy: ## Check for legacy references in codebase
+	@echo "${BLUE}Checking for legacy references...${RESET}"
+	@python scripts/guards/check_no_legacy.py
+	@echo "${GREEN}✓ No legacy references found${RESET}"
