@@ -1,5 +1,5 @@
 """
-Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users API).
+Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites API).
 
 Endpoints:
 - GET /admin/api-keys - List API keys for tenant
@@ -11,6 +11,11 @@ User Management (v3.1.0):
 - POST /admin/users - Create new user
 - PATCH /admin/users/{user_id} - Update user (role, disabled)
 - POST /admin/users/{user_id}/reset-password - Set new password
+
+Invites (v3.1.0):
+- GET /admin/invites - List invites for tenant
+- POST /admin/invites - Create new invite
+- DELETE /admin/invites/{invite_id} - Revoke invite
 
 Requires admin role for all operations.
 """
@@ -380,6 +385,168 @@ def reset_user_password(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error_code": "USER_NOT_FOUND", "message": "User not found"},
+        )
+
+    return None
+
+
+# -------------------------------------------------------------------------
+# Invites (v3.1.0)
+# -------------------------------------------------------------------------
+
+class InviteResponse(BaseModel):
+    """Invite response (excludes token)."""
+    id: str
+    tenant_id: str
+    email: str
+    role: str
+    created_at: str
+    expires_at: str
+    accepted_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    created_by: str
+
+
+class InviteListResponse(BaseModel):
+    """Response for listing invites."""
+    items: List[InviteResponse]
+    total: int
+
+
+class InviteCreateRequest(BaseModel):
+    """Request to create a new invite."""
+    email: str
+    role: str = "editor"
+    expires_hours: int = 72  # Default 72 hours expiry
+
+
+class InviteCreateResponse(BaseModel):
+    """Response after creating invite (includes plaintext token once)."""
+    id: str
+    tenant_id: str
+    email: str
+    role: str
+    created_at: str
+    expires_at: str
+    created_by: str
+    token: str  # Plaintext token - shown only once!
+
+
+@router.get("/invites", response_model=InviteListResponse)
+def list_invites(auth: AuthContext = Depends(require_role(Role.ADMIN))):
+    """
+    List invites for the current tenant.
+
+    Shows all invites including accepted and revoked ones.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+    invites = auth_store.list_invites(auth.tenant_id)
+
+    items = [
+        InviteResponse(
+            id=invite["id"],
+            tenant_id=invite["tenant_id"],
+            email=invite["email"],
+            role=invite["role"],
+            created_at=invite["created_at"],
+            expires_at=invite["expires_at"],
+            accepted_at=invite["accepted_at"],
+            revoked_at=invite["revoked_at"],
+            created_by=invite["created_by"],
+        )
+        for invite in invites
+    ]
+
+    return InviteListResponse(items=items, total=len(items))
+
+
+@router.post("/invites", response_model=InviteCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_invite(
+    request: InviteCreateRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Create a new invite for a user to join the tenant.
+
+    IMPORTANT: The invite token is returned ONLY in this response.
+    Share it securely with the invitee - it cannot be retrieved later.
+
+    Requires admin role.
+    """
+    # Validate role
+    try:
+        role = Role(request.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_ROLE", "message": f"Invalid role: {request.role}"},
+        )
+
+    auth_store = get_auth_store()
+
+    # Check if user already exists in tenant
+    if auth_store.email_exists_in_tenant(request.email, auth.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "USER_ALREADY_EXISTS", "message": f"User with email already exists: {request.email}"},
+        )
+
+    # Check if pending invite already exists
+    if auth_store.pending_invite_exists(request.email, auth.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "INVITE_ALREADY_EXISTS", "message": f"Pending invite already exists for: {request.email}"},
+        )
+
+    # Validate expires_hours
+    if request.expires_hours < 1 or request.expires_hours > 168:  # 1 hour to 1 week
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_EXPIRY", "message": "expires_hours must be between 1 and 168"},
+        )
+
+    invite = auth_store.create_invite(
+        tenant_id=auth.tenant_id,
+        email=request.email,
+        role=role,
+        created_by=auth.user_id,
+        expires_hours=request.expires_hours,
+    )
+
+    return InviteCreateResponse(
+        id=invite["id"],
+        tenant_id=invite["tenant_id"],
+        email=invite["email"],
+        role=invite["role"],
+        created_at=invite["created_at"],
+        expires_at=invite["expires_at"],
+        created_by=invite["created_by"],
+        token=invite["token"],
+    )
+
+
+@router.delete("/invites/{invite_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_invite(
+    invite_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke an invite.
+
+    The invite must belong to the authenticated user's tenant.
+    Revoked invites cannot be used to create an account.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+    revoked = auth_store.revoke_invite(invite_id, auth.tenant_id)
+
+    if not revoked:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "INVITE_NOT_FOUND", "message": "Invite not found or already used/revoked"},
         )
 
     return None
