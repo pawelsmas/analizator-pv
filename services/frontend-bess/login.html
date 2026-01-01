@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Logowanie - BESS</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Login Page Specific Styles */
+    body.login-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+
+    .login-container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      width: 100%;
+      max-width: 420px;
+      padding: 48px 40px;
+      margin: 20px;
+    }
+
+    .login-header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .login-logo {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .login-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: #2c3e50;
+      margin-bottom: 8px;
+    }
+
+    .login-subtitle {
+      font-size: 14px;
+      color: #7f8c8d;
+    }
+
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .form-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+    }
+
+    .form-input {
+      padding: 14px 16px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 16px;
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    .form-input:focus {
+      border-color: #9c27b0;
+      box-shadow: 0 0 0 3px rgba(156, 39, 176, 0.1);
+    }
+
+    .form-input.error {
+      border-color: #e74c3c;
+    }
+
+    .login-btn {
+      padding: 16px;
+      background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 8px;
+    }
+
+    .login-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(156, 39, 176, 0.4);
+    }
+
+    .login-btn:active {
+      transform: translateY(0);
+    }
+
+    .login-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .login-btn.loading {
+      position: relative;
+      color: transparent;
+    }
+
+    .login-btn.loading::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 20px;
+      height: 20px;
+      margin: -10px 0 0 -10px;
+      border: 2px solid white;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .login-error {
+      background: #fdecea;
+      border: 1px solid #f5c6cb;
+      color: #c0392b;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+
+    .login-error.visible {
+      display: block;
+    }
+
+    .login-info {
+      text-align: center;
+      margin-top: 24px;
+      padding-top: 24px;
+      border-top: 1px solid #eee;
+    }
+
+    .login-info-text {
+      font-size: 12px;
+      color: #95a5a6;
+    }
+
+    .auth-disabled-notice {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      color: #2e7d32;
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .auth-disabled-notice h3 {
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    .auth-disabled-notice p {
+      font-size: 13px;
+      margin: 0;
+    }
+
+    .continue-btn {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 10px 24px;
+      background: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .continue-btn:hover {
+      background: #43a047;
+    }
+  </style>
+</head>
+<body class="login-page">
+  <div class="login-container">
+    <div class="login-header">
+      <div class="login-logo">🔋</div>
+      <h1 class="login-title">BESS PRO</h1>
+      <p class="login-subtitle">Battery Energy Storage System</p>
+    </div>
+
+    <!-- Auth Disabled Notice (shown when auth is disabled) -->
+    <div id="authDisabledNotice" class="auth-disabled-notice" style="display: none;">
+      <h3>Autoryzacja wylaczona</h3>
+      <p>System dziala w trybie deweloperskim bez wymaganego logowania.</p>
+      <a href="index.html" class="continue-btn">Kontynuuj bez logowania</a>
+    </div>
+
+    <!-- Login Form (shown when auth is enabled) -->
+    <form id="loginForm" class="login-form" style="display: none;">
+      <div id="loginError" class="login-error"></div>
+
+      <div class="form-group">
+        <label class="form-label" for="email">Email</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          class="form-input"
+          placeholder="email@example.com"
+          required
+          autocomplete="email"
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="password">Haslo</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          class="form-input"
+          placeholder="Wprowadz haslo"
+          required
+          autocomplete="current-password"
+        />
+      </div>
+
+      <button type="submit" id="loginBtn" class="login-btn">
+        Zaloguj sie
+      </button>
+    </form>
+
+    <div class="login-info">
+      <p class="login-info-text">
+        BESS PRO v3.0.0 - Enterprise Battery Sizing
+      </p>
+    </div>
+  </div>
+
+  <script src="auth.js"></script>
+  <script>
+    console.log('[LOGIN] Login page loaded');
+
+    const loginForm = document.getElementById('loginForm');
+    const loginError = document.getElementById('loginError');
+    const loginBtn = document.getElementById('loginBtn');
+    const authDisabledNotice = document.getElementById('authDisabledNotice');
+    const emailInput = document.getElementById('email');
+    const passwordInput = document.getElementById('password');
+
+    /**
+     * Show error message
+     * @param {string} message - Error message to show
+     */
+    function showError(message) {
+      loginError.textContent = message;
+      loginError.classList.add('visible');
+      emailInput.classList.add('error');
+      passwordInput.classList.add('error');
+    }
+
+    /**
+     * Hide error message
+     */
+    function hideError() {
+      loginError.classList.remove('visible');
+      emailInput.classList.remove('error');
+      passwordInput.classList.remove('error');
+    }
+
+    /**
+     * Set loading state
+     * @param {boolean} loading - Loading state
+     */
+    function setLoading(loading) {
+      loginBtn.disabled = loading;
+      loginBtn.classList.toggle('loading', loading);
+    }
+
+    /**
+     * Handle login form submission
+     * @param {Event} event - Form submit event
+     */
+    async function handleLogin(event) {
+      event.preventDefault();
+      hideError();
+
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!email || !password) {
+        showError('Wprowadz email i haslo');
+        return;
+      }
+
+      setLoading(true);
+
+      try {
+        const result = await login(email, password);
+
+        if (result.success) {
+          console.log('[LOGIN] Login successful, redirecting...');
+          window.location.href = 'index.html';
+        } else {
+          showError(result.error || 'Logowanie nie powiodlo sie');
+        }
+      } catch (error) {
+        console.error('[LOGIN] Login error:', error);
+        showError('Blad polaczenia z serwerem');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    /**
+     * Initialize login page
+     */
+    async function initLoginPage() {
+      console.log('[LOGIN] Initializing login page...');
+
+      // Check if already authenticated
+      if (isAuthenticated()) {
+        console.log('[LOGIN] Already authenticated, checking token...');
+        const user = await fetchCurrentUser();
+
+        if (user) {
+          console.log('[LOGIN] Valid session, redirecting to main page');
+          window.location.href = 'index.html';
+          return;
+        }
+        // Token is invalid, continue to login form
+        clearAuth();
+      }
+
+      // Check auth mode
+      try {
+        const response = await fetch('/api/bess-dispatch/auth/me');
+
+        if (response.ok) {
+          const data = await response.json();
+
+          if (data.auth_method === 'disabled') {
+            // Auth is disabled - show notice
+            console.log('[LOGIN] Auth is disabled, showing notice');
+            authDisabledNotice.style.display = 'block';
+            loginForm.style.display = 'none';
+            return;
+          }
+        }
+
+        // Auth is enabled - show login form
+        loginForm.style.display = 'flex';
+        authDisabledNotice.style.display = 'none';
+
+      } catch (error) {
+        console.error('[LOGIN] Error checking auth mode:', error);
+        // Show login form on error
+        loginForm.style.display = 'flex';
+      }
+    }
+
+    // Setup event listeners
+    loginForm.addEventListener('submit', handleLogin);
+
+    // Clear error on input
+    emailInput.addEventListener('input', hideError);
+    passwordInput.addEventListener('input', hideError);
+
+    // Initialize
+    initLoginPage();
+  </script>
+</body>
+</html>

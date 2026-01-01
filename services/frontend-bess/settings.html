@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Ustawienia - BESS</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="bess-container">
+  <div class="page-header">
+    <h1>USTAWIENIA</h1>
+    <div class="header-info">
+      <!-- v3.0.0 WhoAmI Badge -->
+      <div id="whoamiBadge" class="whoami-badge" style="display:none;">
+        <div class="whoami-info">
+          <span class="whoami-email"></span>
+          <span class="whoami-role"></span>
+        </div>
+        <div class="whoami-meta">
+          <span class="whoami-tenant"></span>
+        </div>
+        <a href="index.html" class="settings-nav-link" title="Powrot do BESS">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+          </svg>
+        </a>
+        <button class="whoami-logout" onclick="logout()" title="Wyloguj">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Tabs -->
+  <div class="settings-tabs">
+    <button class="settings-tab active" data-tab="api-keys" onclick="switchSettingsTab('api-keys')">
+      Klucze API
+    </button>
+    <button class="settings-tab" data-tab="audit-log" onclick="switchSettingsTab('audit-log')">
+      Dziennik zdarzen
+    </button>
+  </div>
+
+  <!-- API Keys Section -->
+  <div id="apiKeysSection" class="settings-section">
+    <div class="api-keys-container">
+      <div class="api-keys-header">
+        <h2 class="api-keys-title">Klucze API</h2>
+        <button class="btn-create-key" onclick="showCreateKeyModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Utworz klucz
+        </button>
+      </div>
+
+      <div class="api-keys-table" id="apiKeysTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">🔑</div>
+          <p>Ladowanie kluczy API...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Log Section -->
+  <div id="auditLogSection" class="settings-section" style="display:none;">
+    <div class="audit-log-container">
+      <div class="audit-log-header">
+        <h2 class="api-keys-title">Dziennik zdarzen</h2>
+        <button class="btn-create-key" onclick="exportAuditLog()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Eksportuj ZIP
+        </button>
+      </div>
+
+      <div class="audit-log-filters">
+        <select id="auditActionFilter" onchange="loadAuditLog()">
+          <option value="">Wszystkie akcje</option>
+          <option value="login_success">Logowanie udane</option>
+          <option value="login_failure">Logowanie nieudane</option>
+          <option value="api_key_created">Klucz utworzony</option>
+          <option value="api_key_revoked">Klucz uniewazniony</option>
+          <option value="sizing_run">Sizing run</option>
+        </select>
+        <input type="text" id="auditActorFilter" placeholder="Filtruj po aktorze..." onchange="loadAuditLog()">
+      </div>
+
+      <div class="audit-log-table" id="auditLogTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">📋</div>
+          <p>Ladowanie dziennika...</p>
+        </div>
+      </div>
+
+      <div class="audit-log-pagination" id="auditPagination"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Create API Key Modal -->
+<div id="createKeyModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">Utworz nowy klucz API</h3>
+      <button class="modal-close" onclick="hideCreateKeyModal()">&times;</button>
+    </div>
+
+    <form id="createKeyForm" class="modal-form" onsubmit="handleCreateKey(event)">
+      <div class="form-group">
+        <label class="form-label" for="keyLabel">Etykieta</label>
+        <input type="text" id="keyLabel" class="form-input" placeholder="np. CI/CD Pipeline" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="keyRole">Rola</label>
+        <select id="keyRole" class="form-input" required>
+          <option value="viewer">Viewer - tylko odczyt</option>
+          <option value="editor">Editor - odczyt i zapis</option>
+          <option value="service" selected>Service - integracje</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="keyExpires">Wygasa za (dni)</label>
+        <select id="keyExpires" class="form-input">
+          <option value="">Nigdy</option>
+          <option value="30">30 dni</option>
+          <option value="90">90 dni</option>
+          <option value="365">1 rok</option>
+        </select>
+      </div>
+
+      <div id="newKeyDisplay" class="new-key-display" style="display:none;">
+        <div class="new-key-label">Twoj nowy klucz API:</div>
+        <div class="new-key-value">
+          <input type="text" id="newKeyValue" readonly>
+          <button type="button" class="btn-copy" onclick="copyNewKey()">Kopiuj</button>
+        </div>
+        <div class="new-key-warning">
+          Zapisz ten klucz teraz! Nie bedzie mozna go ponownie wyswietlic.
+        </div>
+      </div>
+
+      <div class="modal-actions" id="createKeyActions">
+        <button type="button" class="btn-cancel" onclick="hideCreateKeyModal()">Anuluj</button>
+        <button type="submit" class="btn-submit" id="createKeyBtn">Utworz klucz</button>
+      </div>
+
+      <div class="modal-actions" id="closeKeyActions" style="display:none;">
+        <button type="button" class="btn-submit" onclick="hideCreateKeyModal()">Zamknij</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="auth.js?v=3.0.0"></script>
+<script>
+console.log('[SETTINGS] Settings page loaded');
+
+// ============================================
+// TAB NAVIGATION
+// ============================================
+
+function switchSettingsTab(tab) {
+  // Update tab buttons
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  // Show/hide sections
+  document.getElementById('apiKeysSection').style.display = tab === 'api-keys' ? 'block' : 'none';
+  document.getElementById('auditLogSection').style.display = tab === 'audit-log' ? 'block' : 'none';
+
+  // Load data
+  if (tab === 'api-keys') {
+    loadApiKeys();
+  } else if (tab === 'audit-log') {
+    loadAuditLog();
+  }
+}
+
+// ============================================
+// API KEYS
+// ============================================
+
+async function loadApiKeys() {
+  const tableEl = document.getElementById('apiKeysTable');
+
+  try {
+    const data = await listApiKeys();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">🔑</div>
+          <p>Brak kluczy API</p>
+          <p style="font-size:12px;margin-top:8px;">Kliknij "Utworz klucz" aby dodac nowy klucz.</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Etykieta</th>
+            <th>Rola</th>
+            <th>Utworzono</th>
+            <th>Wygasa</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(key => `
+            <tr>
+              <td class="api-key-id">${key.key_id.slice(0, 8)}...</td>
+              <td class="api-key-label">${escapeHtml(key.label)}</td>
+              <td><span class="api-key-role role-${key.role}">${key.role}</span></td>
+              <td class="api-key-created">${formatDate(key.created_at)}</td>
+              <td class="api-key-expires ${getExpiryClass(key.expires_at)}">${formatExpiry(key.expires_at)}</td>
+              <td>
+                <button class="btn-revoke" onclick="handleRevokeKey('${key.key_id}', '${escapeHtml(key.label)}')">
+                  Uniewaznij
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading API keys:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania kluczy API</p>
+        <p style="font-size:12px;margin-top:8px;">${escapeHtml(error.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function showCreateKeyModal() {
+  document.getElementById('createKeyModal').classList.add('visible');
+  document.getElementById('newKeyDisplay').style.display = 'none';
+  document.getElementById('createKeyActions').style.display = 'flex';
+  document.getElementById('closeKeyActions').style.display = 'none';
+  document.getElementById('createKeyForm').reset();
+  document.getElementById('keyLabel').focus();
+}
+
+function hideCreateKeyModal() {
+  document.getElementById('createKeyModal').classList.remove('visible');
+  // Reload keys if a new one was created
+  if (document.getElementById('newKeyDisplay').style.display !== 'none') {
+    loadApiKeys();
+  }
+}
+
+async function handleCreateKey(event) {
+  event.preventDefault();
+
+  const label = document.getElementById('keyLabel').value.trim();
+  const role = document.getElementById('keyRole').value;
+  const expiresDays = document.getElementById('keyExpires').value;
+
+  const createBtn = document.getElementById('createKeyBtn');
+  createBtn.disabled = true;
+  createBtn.textContent = 'Tworzenie...';
+
+  try {
+    const result = await createApiKey({
+      label,
+      role,
+      expires_days: expiresDays ? parseInt(expiresDays) : undefined,
+    });
+
+    // Show the new key
+    document.getElementById('newKeyValue').value = result.key;
+    document.getElementById('newKeyDisplay').style.display = 'block';
+    document.getElementById('createKeyActions').style.display = 'none';
+    document.getElementById('closeKeyActions').style.display = 'flex';
+
+    console.log('[SETTINGS] API key created:', result.key_id);
+
+  } catch (error) {
+    console.error('[SETTINGS] Error creating API key:', error);
+    alert('Blad tworzenia klucza: ' + error.message);
+  } finally {
+    createBtn.disabled = false;
+    createBtn.textContent = 'Utworz klucz';
+  }
+}
+
+function copyNewKey() {
+  const input = document.getElementById('newKeyValue');
+  input.select();
+  document.execCommand('copy');
+
+  const copyBtn = event.target;
+  copyBtn.textContent = 'Skopiowano!';
+  setTimeout(() => {
+    copyBtn.textContent = 'Kopiuj';
+  }, 2000);
+}
+
+async function handleRevokeKey(keyId, label) {
+  if (!confirm(`Czy na pewno chcesz uniewaznić klucz "${label}"?\n\nTa operacja jest nieodwracalna.`)) {
+    return;
+  }
+
+  try {
+    await revokeApiKey(keyId);
+    console.log('[SETTINGS] API key revoked:', keyId);
+    loadApiKeys();
+  } catch (error) {
+    console.error('[SETTINGS] Error revoking API key:', error);
+    alert('Blad uniewazniana klucza: ' + error.message);
+  }
+}
+
+// ============================================
+// AUDIT LOG
+// ============================================
+
+let auditOffset = 0;
+const auditLimit = 20;
+
+async function loadAuditLog() {
+  const tableEl = document.getElementById('auditLogTable');
+  const action = document.getElementById('auditActionFilter').value;
+  const actorId = document.getElementById('auditActorFilter').value.trim();
+
+  try {
+    const data = await queryAuditLog({
+      action: action || undefined,
+      actor_id: actorId || undefined,
+      limit: auditLimit,
+      offset: auditOffset,
+    });
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">📋</div>
+          <p>Brak zdarzen w dzienniku</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Akcja</th>
+            <th>Aktor</th>
+            <th>Zasob</th>
+            <th>IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(entry => `
+            <tr>
+              <td class="audit-timestamp">${formatDateTime(entry.created_at)}</td>
+              <td><span class="audit-action ${entry.action}">${entry.action}</span></td>
+              <td>${escapeHtml(entry.actor_email || entry.actor_id || '-')}</td>
+              <td>${entry.resource_type ? `${entry.resource_type}/${entry.resource_id?.slice(0, 8) || ''}` : '-'}</td>
+              <td style="font-size:11px;color:#888;">${entry.ip_address || '-'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+    // Update pagination
+    updateAuditPagination(data.total);
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading audit log:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania dziennika</p>
+        <p style="font-size:12px;margin-top:8px;">${escapeHtml(error.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function updateAuditPagination(total) {
+  const paginationEl = document.getElementById('auditPagination');
+  const totalPages = Math.ceil(total / auditLimit);
+  const currentPage = Math.floor(auditOffset / auditLimit) + 1;
+
+  if (totalPages <= 1) {
+    paginationEl.innerHTML = '';
+    return;
+  }
+
+  paginationEl.innerHTML = `
+    <div style="display:flex;justify-content:center;gap:8px;margin-top:16px;">
+      <button onclick="auditPrev()" ${currentPage === 1 ? 'disabled' : ''} class="btn-cancel">Poprzednia</button>
+      <span style="padding:8px 16px;">Strona ${currentPage} z ${totalPages}</span>
+      <button onclick="auditNext()" ${currentPage === totalPages ? 'disabled' : ''} class="btn-cancel">Nastepna</button>
+    </div>
+  `;
+}
+
+function auditPrev() {
+  if (auditOffset >= auditLimit) {
+    auditOffset -= auditLimit;
+    loadAuditLog();
+  }
+}
+
+function auditNext() {
+  auditOffset += auditLimit;
+  loadAuditLog();
+}
+
+async function exportAuditLog() {
+  try {
+    const blob = await exportAuditZip();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `audit_log_${new Date().toISOString().slice(0, 10)}.zip`;
+    link.click();
+    URL.revokeObjectURL(url);
+    console.log('[SETTINGS] Audit log exported');
+  } catch (error) {
+    console.error('[SETTINGS] Error exporting audit log:', error);
+    alert('Blad eksportu dziennika: ' + error.message);
+  }
+}
+
+// ============================================
+// UTILITIES
+// ============================================
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '-';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('pl-PL');
+}
+
+function formatDateTime(dateStr) {
+  if (!dateStr) return '-';
+  const date = new Date(dateStr);
+  return date.toLocaleString('pl-PL');
+}
+
+function formatExpiry(dateStr) {
+  if (!dateStr) return 'Nigdy';
+  const date = new Date(dateStr);
+  const now = new Date();
+  if (date < now) return 'Wygasl';
+  return date.toLocaleDateString('pl-PL');
+}
+
+function getExpiryClass(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  const now = new Date();
+  const daysUntil = (date - now) / (1000 * 60 * 60 * 24);
+  if (daysUntil < 0) return 'expired';
+  if (daysUntil < 30) return 'soon';
+  return '';
+}
+
+// ============================================
+// INITIALIZATION
+// ============================================
+
+async function initSettingsPage() {
+  console.log('[SETTINGS] Initializing settings page...');
+
+  // Initialize auth
+  await initAuth();
+
+  // Check if user is admin (required for this page)
+  const user = authState.user;
+  if (user && user.role !== 'admin') {
+    alert('Dostep tylko dla administratorow');
+    window.location.href = 'index.html';
+    return;
+  }
+
+  // Load initial data
+  loadApiKeys();
+}
+
+// Initialize
+initSettingsPage();
+</script>
+
+<style>
+/* Settings page specific styles */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  background: white;
+  padding: 8px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.settings-tab {
+  flex: 1;
+  padding: 12px 24px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-tab:hover {
+  background: #f5f5f5;
+}
+
+.settings-tab.active {
+  background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%);
+  color: white;
+}
+
+.settings-section {
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Override page header for settings */
+.page-header h1::before {
+  content: '⚙️';
+}
+</style>
+</body>
+</html>
