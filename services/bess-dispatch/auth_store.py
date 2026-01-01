@@ -1,11 +1,12 @@
 """
-Auth store - SQLite-backed storage for users, tenants, API keys, and invites (v3.1.0).
+Auth store - SQLite-backed storage for users, tenants, API keys, invites, and shares (v3.1.0).
 
 Tables:
 - tenants(id, name, created_at)
 - users(id, tenant_id, email, password_hash, role, created_at, disabled)
 - api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at)
 - invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
+- shares(id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label)
 """
 
 import hashlib
@@ -70,6 +71,21 @@ def hash_invite_token(token: str) -> str:
 
 def generate_invite_token() -> str:
     """Generate a new invite token (plaintext, shown once)."""
+    return secrets.token_urlsafe(32)
+
+
+# Share token pepper (separate from invite and API key for isolation)
+SHARE_TOKEN_PEPPER = "bess_share_v1"
+
+
+def hash_share_token(token: str) -> str:
+    """Hash a share token using SHA-256 with pepper."""
+    salted = f"{SHARE_TOKEN_PEPPER}:{token}"
+    return hashlib.sha256(salted.encode()).hexdigest()
+
+
+def generate_share_token() -> str:
+    """Generate a new share token (plaintext, shown once)."""
     return secrets.token_urlsafe(32)
 
 
@@ -166,6 +182,33 @@ class AuthStore:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email)
+            """)
+
+            # Shares table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shares (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    revoked_at TEXT,
+                    created_by TEXT NOT NULL,
+                    label TEXT,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                    FOREIGN KEY (created_by) REFERENCES users(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_shares_token_hash ON shares(token_hash)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_shares_tenant ON shares(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_shares_resource ON shares(resource_type, resource_id)
             """)
 
             conn.commit()
@@ -723,6 +766,179 @@ class AuthStore:
             return False
         finally:
             conn.close()
+
+    # -------------------------------------------------------------------------
+    # Share operations
+    # -------------------------------------------------------------------------
+
+    def create_share(
+        self,
+        tenant_id: str,
+        resource_type: str,
+        resource_id: str,
+        created_by: str,
+        label: Optional[str] = None,
+        expires_hours: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a new share link. Returns dict with plaintext token (shown once)."""
+        share_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc)
+        expires_at = None
+        if expires_hours:
+            expires_at = created_at + timedelta(hours=expires_hours)
+        plaintext_token = generate_share_token()
+        token_hash = hash_share_token(plaintext_token)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO shares (id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, created_by, label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                share_id,
+                tenant_id,
+                resource_type,
+                resource_id,
+                token_hash,
+                created_at.isoformat(),
+                expires_at.isoformat() if expires_at else None,
+                created_by,
+                label,
+            ))
+            conn.commit()
+            return {
+                "id": share_id,
+                "tenant_id": tenant_id,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "created_by": created_by,
+                "label": label,
+                "token": plaintext_token,  # Shown once!
+            }
+        finally:
+            conn.close()
+
+    def list_shares(self, tenant_id: str, resource_type: Optional[str] = None, resource_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List shares for a tenant, optionally filtered by resource."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                FROM shares WHERE tenant_id = ?
+            """
+            params = [tenant_id]
+            if resource_type:
+                query += " AND resource_type = ?"
+                params.append(resource_type)
+            if resource_id:
+                query += " AND resource_id = ?"
+                params.append(resource_id)
+            query += " ORDER BY created_at DESC"
+
+            cursor.execute(query, params)
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "resource_type": row[2],
+                    "resource_id": row[3],
+                    "created_at": row[4],
+                    "expires_at": row[5],
+                    "revoked_at": row[6],
+                    "created_by": row[7],
+                    "label": row[8],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_share_by_id(self, share_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get share by ID within tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                FROM shares WHERE id = ? AND tenant_id = ?
+            """, (share_id, tenant_id))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "resource_type": row[2],
+                "resource_id": row[3],
+                "created_at": row[4],
+                "expires_at": row[5],
+                "revoked_at": row[6],
+                "created_by": row[7],
+                "label": row[8],
+            }
+        finally:
+            conn.close()
+
+    def get_share_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Get share by plaintext token. Returns share if valid (not revoked)."""
+        token_hash = hash_share_token(token)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                FROM shares WHERE token_hash = ? AND revoked_at IS NULL
+            """, (token_hash,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "resource_type": row[2],
+                "resource_id": row[3],
+                "created_at": row[4],
+                "expires_at": row[5],
+                "revoked_at": row[6],
+                "created_by": row[7],
+                "label": row[8],
+            }
+        finally:
+            conn.close()
+
+    def revoke_share(self, share_id: str, tenant_id: str) -> bool:
+        """Revoke a share link. Returns True if found and revoked."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE shares SET revoked_at = ?
+                WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), share_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def is_share_expired(self, share: Dict[str, Any]) -> bool:
+        """Check if a share is expired."""
+        if share["expires_at"] is None:
+            return False  # No expiry = never expires
+        expires_at = datetime.fromisoformat(share["expires_at"].replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) > expires_at
+
+    def validate_share_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Validate a share token. Returns share if valid (not revoked, not expired)."""
+        share = self.get_share_by_token(token)
+        if share is None:
+            return None
+        if self.is_share_expired(share):
+            return None
+        return share
 
 
 # Global instance (lazy initialization)

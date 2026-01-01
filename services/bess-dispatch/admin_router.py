@@ -1,5 +1,5 @@
 """
-Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites API).
+Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites/shares API).
 
 Endpoints:
 - GET /admin/api-keys - List API keys for tenant
@@ -16,6 +16,11 @@ Invites (v3.1.0):
 - GET /admin/invites - List invites for tenant
 - POST /admin/invites - Create new invite
 - DELETE /admin/invites/{invite_id} - Revoke invite
+
+Shares (v3.1.0):
+- GET /admin/shares - List shares for tenant
+- POST /admin/shares - Create new share link
+- DELETE /admin/shares/{share_id} - Revoke share link
 
 Requires admin role for all operations.
 """
@@ -547,6 +552,161 @@ def revoke_invite(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error_code": "INVITE_NOT_FOUND", "message": "Invite not found or already used/revoked"},
+        )
+
+    return None
+
+
+# -------------------------------------------------------------------------
+# Shares (v3.1.0)
+# -------------------------------------------------------------------------
+
+class ShareResponse(BaseModel):
+    """Share response (excludes token)."""
+    id: str
+    tenant_id: str
+    resource_type: str
+    resource_id: str
+    created_at: str
+    expires_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+    created_by: str
+    label: Optional[str] = None
+
+
+class ShareListResponse(BaseModel):
+    """Response for listing shares."""
+    items: List[ShareResponse]
+    total: int
+
+
+class ShareCreateRequest(BaseModel):
+    """Request to create a new share link."""
+    resource_type: str  # "run" or "report"
+    resource_id: str
+    label: Optional[str] = None
+    expires_hours: Optional[int] = None  # None = never expires
+
+
+class ShareCreateResponse(BaseModel):
+    """Response after creating share (includes plaintext token once)."""
+    id: str
+    tenant_id: str
+    resource_type: str
+    resource_id: str
+    created_at: str
+    expires_at: Optional[str] = None
+    created_by: str
+    label: Optional[str] = None
+    token: str  # Plaintext token - shown only once!
+
+
+@router.get("/shares", response_model=ShareListResponse)
+def list_shares(
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    List shares for the current tenant.
+
+    Can optionally filter by resource_type and resource_id.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+    shares = auth_store.list_shares(auth.tenant_id, resource_type, resource_id)
+
+    items = [
+        ShareResponse(
+            id=share["id"],
+            tenant_id=share["tenant_id"],
+            resource_type=share["resource_type"],
+            resource_id=share["resource_id"],
+            created_at=share["created_at"],
+            expires_at=share["expires_at"],
+            revoked_at=share["revoked_at"],
+            created_by=share["created_by"],
+            label=share["label"],
+        )
+        for share in shares
+    ]
+
+    return ShareListResponse(items=items, total=len(items))
+
+
+@router.post("/shares", response_model=ShareCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_share(
+    request: ShareCreateRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Create a new share link for a resource.
+
+    IMPORTANT: The share token is returned ONLY in this response.
+    Store it securely - it cannot be retrieved later.
+
+    Requires admin role.
+    """
+    # Validate resource_type
+    if request.resource_type not in ("run", "report"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_RESOURCE_TYPE", "message": "resource_type must be 'run' or 'report'"},
+        )
+
+    # Validate expires_hours if provided
+    if request.expires_hours is not None:
+        if request.expires_hours < 1 or request.expires_hours > 8760:  # 1 hour to 1 year
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "INVALID_EXPIRY", "message": "expires_hours must be between 1 and 8760"},
+            )
+
+    auth_store = get_auth_store()
+
+    share = auth_store.create_share(
+        tenant_id=auth.tenant_id,
+        resource_type=request.resource_type,
+        resource_id=request.resource_id,
+        created_by=auth.user_id,
+        label=request.label,
+        expires_hours=request.expires_hours,
+    )
+
+    return ShareCreateResponse(
+        id=share["id"],
+        tenant_id=share["tenant_id"],
+        resource_type=share["resource_type"],
+        resource_id=share["resource_id"],
+        created_at=share["created_at"],
+        expires_at=share["expires_at"],
+        created_by=share["created_by"],
+        label=share["label"],
+        token=share["token"],
+    )
+
+
+@router.delete("/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_share(
+    share_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke a share link.
+
+    The share must belong to the authenticated user's tenant.
+    Revoked shares cannot be used to access resources.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+    revoked = auth_store.revoke_share(share_id, auth.tenant_id)
+
+    if not revoked:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found or already revoked"},
         )
 
     return None
