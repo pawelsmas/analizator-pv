@@ -923,3 +923,220 @@ Tracks audit log write volume.
     summary: "High audit log volume"
     description: "{{ $value | humanize }} audit entries in the last hour"
 ```
+
+## Database Persistence Alerts (v3.3.0)
+
+Alerting rules for database operations, migrations, backups, and connection pooling.
+
+### Critical: Database Connection Failed
+
+Fires when the database health check fails.
+
+```yaml
+- alert: BESSDatabaseConnectionFailed
+  expr: increase(bess_db_health_check_total{result="error"}[5m]) > 0
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Database connection failed"
+    description: "Database health check is failing. Check DATABASE_URL configuration and database availability."
+    runbook: "Check PostgreSQL container status, verify DATABASE_URL, check network connectivity"
+```
+
+### Critical: Pending Migrations
+
+Fires when migrations are pending and blocking requests.
+
+```yaml
+- alert: BESSPendingMigrations
+  expr: bess_db_migrations_pending == 1
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Database migrations pending"
+    description: "There are pending database migrations. Service is returning 503. Run alembic upgrade head."
+    runbook: "Run `alembic upgrade head` in the bess-dispatch container"
+```
+
+### Warning: High Database Latency
+
+Fires when database query latency is high.
+
+```yaml
+- alert: BESSHighDatabaseLatency
+  expr: histogram_quantile(0.99, rate(bess_db_query_duration_seconds_bucket[5m])) > 0.5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High database query latency"
+    description: "99th percentile database query latency is {{ $value | humanizeDuration }} for {{ $labels.repo }}.{{ $labels.op }}"
+```
+
+### Warning: Database Errors
+
+Fires when database errors are occurring.
+
+```yaml
+- alert: BESSDatabaseErrors
+  expr: increase(bess_db_errors_total[15m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Database errors detected"
+    description: "{{ $value | humanize }} database errors with code={{ $labels.code }} in last 15 minutes"
+```
+
+### Warning: Connection Pool Exhausted
+
+Fires when connection pool is near capacity.
+
+```yaml
+- alert: BESSConnectionPoolExhausted
+  expr: bess_db_pool_checkedout / bess_db_pool_size > 0.9
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Database connection pool near exhaustion"
+    description: "{{ $value | humanizePercentage }} of connection pool in use"
+```
+
+### Warning: Backup Failures
+
+Fires when database backups are failing.
+
+```yaml
+- alert: BESSBackupFailure
+  expr: increase(bess_db_backup_operations_total{result="failure"}[1h]) > 0
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Database backup failed"
+    description: "Database backup failed for format={{ $labels.format }}"
+    runbook: "Check backup script logs, verify DATABASE_URL, ensure pg_dump is available"
+```
+
+### Warning: Restore Failures
+
+Fires when database restores are failing.
+
+```yaml
+- alert: BESSRestoreFailure
+  expr: increase(bess_db_restore_operations_total{result="failure"}[1h]) > 0
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Database restore failed"
+    description: "Database restore failed for format={{ $labels.format }}"
+    runbook: "Check restore script logs, verify backup file exists and is valid"
+```
+
+### Warning: Retention Cleanup Failures
+
+Fires when retention cleanup operations are failing.
+
+```yaml
+- alert: BESSRetentionCleanupFailure
+  expr: increase(bess_db_retention_cleanup_total{result="failure"}[1d]) > 0
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Retention cleanup failed"
+    description: "Retention cleanup failed for store={{ $labels.store }}"
+```
+
+### Info: Backfill Progress
+
+Tracks backfill migration progress.
+
+```yaml
+- alert: BESSBackfillComplete
+  expr: sum(increase(bess_db_backfill_records_total{result="inserted"}[1h])) > 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Backfill migration in progress"
+    description: "{{ $value | humanize }} records backfilled in the last hour"
+```
+
+### Info: Backup Completed
+
+Tracks successful backups for monitoring.
+
+```yaml
+- alert: BESSBackupCompleted
+  expr: increase(bess_db_backup_operations_total{result="success"}[1d]) > 0
+  labels:
+    severity: info
+  annotations:
+    summary: "Database backup completed"
+    description: "{{ $value | humanize }} successful backups in the last 24 hours"
+```
+
+### Warning: No Recent Backups
+
+Fires when no successful backup in last 24 hours (for production monitoring).
+
+```yaml
+- alert: BESSNoRecentBackup
+  expr: increase(bess_db_backup_operations_total{result="success"}[1d]) == 0
+  for: 1d
+  labels:
+    severity: warning
+  annotations:
+    summary: "No recent database backup"
+    description: "No successful database backup in the last 24 hours"
+    runbook: "Check backup cron job, verify disk space, check backup script logs"
+```
+
+### Warning: Large Backup Size
+
+Fires when backup size is growing unusually large.
+
+```yaml
+- alert: BESSLargeBackupSize
+  expr: histogram_quantile(0.99, rate(bess_db_backup_size_bytes_bucket[7d])) > 1e9
+  for: 1h
+  labels:
+    severity: warning
+  annotations:
+    summary: "Large database backup size"
+    description: "99th percentile backup size is {{ $value | humanize1024 }}B"
+```
+
+### Info: High Transaction Rollbacks
+
+Tracks transaction rollback rate.
+
+```yaml
+- alert: BESSHighTransactionRollbacks
+  expr: |
+    sum(rate(bess_db_transaction_total{result="rollback"}[15m])) /
+    sum(rate(bess_db_transaction_total[15m])) > 0.1
+  for: 10m
+  labels:
+    severity: info
+  annotations:
+    summary: "High transaction rollback rate"
+    description: "{{ $value | humanizePercentage }} of transactions are being rolled back"
+```
+
+### Dashboard Panels for Database (v3.3.0)
+
+Recommended Grafana panels for database monitoring:
+
+1. **Database Health** - Gauge showing health check pass rate
+2. **Query Duration by Operation** - Heatmap of query latency by repo/op
+3. **Connection Pool** - Gauge showing pool utilization (checkedout/size)
+4. **Database Errors** - Time series of errors by code
+5. **Backup/Restore Operations** - Bar chart of success/failure by format
+6. **Retention Cleanup** - Counter of records deleted per store
+7. **Row Operations** - Time series of insert/update/delete by table
+8. **Migration Status** - Single stat showing pending migrations gauge
