@@ -5894,3 +5894,56 @@ body {
 .btn-small.btn-success:hover {
   background: #219a52;
 }
+
+/* =============================================================================
+   v2.7.0: DEPRECATION BANNER STYLES
+   ============================================================================= */
+
+.deprecation-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, #fff3cd 0%, #ffeeba 100%);
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  color: #856404;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(255, 193, 7, 0.2);
+}
+
+.deprecation-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.deprecation-text {
+  flex: 1;
+}
+
+.deprecation-text a {
+  color: #856404;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.deprecation-text a:hover {
+  color: #5a4303;
+}
+
+.deprecation-close {
+  background: transparent;
+  border: none;
+  color: #856404;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.deprecation-close:hover {
+  opacity: 1;
+}
