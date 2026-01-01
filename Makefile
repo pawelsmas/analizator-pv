@@ -176,3 +176,58 @@ test-frontend: ## Run frontend JavaScript syntax checks
 	@echo "${BLUE}Checking frontend JavaScript syntax...${RESET}"
 	@node --check services/frontend-bess/bess.js
 	@echo "${GREEN}✓ Frontend syntax OK${RESET}"
+
+# ===== ONE-COMMAND LOCAL DEV (v2.6.0) =====
+
+dev-up: ## Start local development environment (docker compose + wait)
+	@echo "${BLUE}Starting local development environment...${RESET}"
+	@docker compose up -d --build bess-dispatch
+	@echo "${YELLOW}Waiting for backend...${RESET}"
+	@python scripts/dev/wait_http.py http://localhost:8031/version --timeout 120
+	@echo "${GREEN}✓ Backend ready at http://localhost:8031${RESET}"
+	@docker compose up -d --build frontend-bess || true
+	@python scripts/dev/wait_http.py http://localhost:3000 --timeout 60 || echo "${YELLOW}Frontend not available (optional)${RESET}"
+	@echo ""
+	@echo "${GREEN}Local development environment ready!${RESET}"
+	@echo "  Backend:  http://localhost:8031"
+	@echo "  API docs: http://localhost:8031/docs"
+	@echo "  Metrics:  http://localhost:8031/metrics"
+	@echo "  Frontend: http://localhost:3000 (if available)"
+
+dev-down: ## Stop local development environment
+	@echo "${BLUE}Stopping local development environment...${RESET}"
+	@docker compose down
+	@echo "${GREEN}✓ Environment stopped${RESET}"
+
+demo: ## Run a sample sizing request and show results
+	@echo "${BLUE}Running demo sizing request...${RESET}"
+	@curl -sS http://localhost:8031/sizing \
+		-H "Content-Type: application/json" \
+		--data-binary @scripts/smoke/sizing_stacked_no_arbitrage.json \
+		-o /tmp/demo_sizing.json
+	@python -c "\
+import json; \
+d=json.load(open('/tmp/demo_sizing.json')); \
+run_id=d.get('meta',{}).get('run_id') or d.get('cache_info',{}).get('run_id','unknown'); \
+v=d['variants'][0]; \
+print(); \
+print('Demo Sizing Complete!'); \
+print('====================='); \
+print('Run ID:', run_id); \
+print('Recommended:', v['label']); \
+print('Annual Savings:', '{:,.0f} PLN'.format(v['annual_savings_pln'])); \
+print('Payback:', '{:.1f} years'.format(v['payback_years'])); \
+print('NPV:', '{:,.0f} PLN'.format(v['npv_pln'])); \
+print(); \
+print('Links:'); \
+print('  Run Explorer: http://localhost:3000/#/runs/' + run_id); \
+print('  Report ZIP:   http://localhost:8031/api/bess-dispatch/runs/' + run_id + '/report.zip'); \
+print('  Report PDF:   http://localhost:8031/api/bess-dispatch/runs/' + run_id + '/report.pdf'); \
+"
+
+# ===== RC AUTOMATION (v2.6.0) =====
+
+rc: ## Run full RC check (tests + smoke + validation + contracts)
+	@echo "${BLUE}Running RC check...${RESET}"
+	@python scripts/rc/rc_check.py
+	@echo "${GREEN}✓ RC check complete${RESET}"
