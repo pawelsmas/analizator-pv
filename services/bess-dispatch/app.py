@@ -333,6 +333,37 @@ async def prometheus_http_middleware(request: Request, call_next):
         track_request_duration(endpoint, method, duration)
 
 
+# Deprecation tracking middleware (v2.7.0)
+from deprecations_usage import (
+    clear_request_deprecations,
+    get_deprecation_headers,
+    has_deprecations_used,
+)
+
+
+@app.middleware("http")
+async def deprecation_tracking_middleware(request: Request, call_next):
+    """
+    Track deprecated field usage and add deprecation headers (v2.7.0).
+
+    Clears deprecation tracking at start of request.
+    Adds Deprecation/Link/Sunset headers if deprecated fields were used.
+    """
+    # Clear any previous request's deprecations
+    clear_request_deprecations()
+
+    # Process the request
+    response = await call_next(request)
+
+    # Add deprecation headers if any deprecated fields were used
+    if has_deprecations_used():
+        headers = get_deprecation_headers()
+        for name, value in headers.items():
+            response.headers[name] = value
+
+    return response
+
+
 # Include arbitrage router
 from api_arbitrage import router as arbitrage_router
 app.include_router(arbitrage_router)
@@ -1994,17 +2025,21 @@ async def run_sizing_optimization(request: SizingRequestAPI):
 
         # Resolve timeseries modes (v2.5.0 PR2)
         # Mode params override include_* flags for backward compatibility
+        # v2.7.0: Track deprecated include_* flag usage
         battery_trace_mode = resolve_timeseries_mode(
             include_flag=request.include_battery_trace,
             mode_param=getattr(request, 'battery_trace_mode', None),
+            deprecated_field_name="include_battery_trace",
         )
         ledger_timeseries_mode = resolve_timeseries_mode(
             include_flag=request.include_ledger_timeseries,
             mode_param=getattr(request, 'ledger_timeseries_mode', None),
+            deprecated_field_name="include_ledger_timeseries",
         )
         price_timeseries_mode = resolve_timeseries_mode(
             include_flag=request.include_price_timeseries,
             mode_param=getattr(request, 'price_timeseries_mode', None),
+            deprecated_field_name="include_price_timeseries",
         )
         preview_rows = validate_preview_rows(
             getattr(request, 'timeseries_preview_rows', None)

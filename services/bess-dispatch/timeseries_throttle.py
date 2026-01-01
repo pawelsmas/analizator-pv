@@ -24,6 +24,7 @@ from limits_config import (
 def resolve_timeseries_mode(
     include_flag: bool = False,
     mode_param: Optional[str] = None,
+    deprecated_field_name: Optional[str] = None,
 ) -> TimeseriesMode:
     """
     Resolve the effective timeseries mode from request parameters.
@@ -36,6 +37,7 @@ def resolve_timeseries_mode(
     Args:
         include_flag: Legacy boolean flag (e.g., include_battery_trace)
         mode_param: New mode parameter (e.g., battery_trace_mode)
+        deprecated_field_name: Name of deprecated field to track (v2.7.0)
 
     Returns:
         TimeseriesMode enum value
@@ -48,6 +50,14 @@ def resolve_timeseries_mode(
             pass
 
     # Legacy behavior: bool flag maps to FULL or NONE
+    # Track deprecated usage if legacy flag is used (v2.7.0)
+    if include_flag and deprecated_field_name:
+        try:
+            from deprecations_usage import mark_used
+            mark_used(deprecated_field_name)
+        except ImportError:
+            pass
+
     return TimeseriesMode.FULL if include_flag else TimeseriesMode.NONE
 
 
