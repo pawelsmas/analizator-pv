@@ -923,3 +923,157 @@ Tracks audit log write volume.
     summary: "High audit log volume"
     description: "{{ $value | humanize }} audit entries in the last hour"
 ```
+
+## Worker Alerts (v3.4.0)
+
+Alerting rules for the distributed job worker.
+
+### Critical: Worker Down
+
+Fires when no worker heartbeat is received.
+
+```yaml
+- alert: BESSWorkerDown
+  expr: time() - bess_worker_heartbeat_timestamp_seconds > 60
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "BESS worker is down"
+    description: "No worker heartbeat received in the last 60 seconds"
+    runbook: "Check worker container logs, verify DATABASE_URL connectivity"
+```
+
+### Warning: Job Queue Backlog
+
+Fires when queued jobs are accumulating.
+
+```yaml
+- alert: BESSJobQueueBacklog
+  expr: bess_queue_depth{status="queued"} > 10
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Job queue backlog detected"
+    description: "{{ $value | humanize }} jobs queued for more than 5 minutes. Consider scaling workers."
+```
+
+### Warning: Old Jobs in Queue
+
+Fires when jobs are waiting too long in queue.
+
+```yaml
+- alert: BESSJobQueueStale
+  expr: bess_queue_oldest_job_age_seconds > 300
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Jobs waiting too long in queue"
+    description: "Oldest queued job is {{ $value | humanizeDuration }} old"
+```
+
+### Warning: High Job Failure Rate
+
+Fires when job execution failures are high.
+
+```yaml
+- alert: BESSWorkerJobFailures
+  expr: |
+    sum(rate(bess_worker_job_executions_total{result="failure"}[15m])) /
+    sum(rate(bess_worker_job_executions_total[15m])) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High job failure rate"
+    description: "More than 10% of job executions are failing"
+```
+
+### Warning: High Job Retry Rate
+
+Fires when jobs are frequently retrying.
+
+```yaml
+- alert: BESSWorkerJobRetries
+  expr: rate(bess_worker_job_retries_total[15m]) > 1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High job retry rate"
+    description: "{{ $value | humanize }} jobs/min being retried for {{ $labels.job_kind }}"
+```
+
+### Warning: Slow Job Execution
+
+Fires when job execution time is too long.
+
+```yaml
+- alert: BESSSlowJobExecution
+  expr: histogram_quantile(0.95, rate(bess_worker_job_execution_duration_seconds_bucket[15m])) > 60
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow job execution detected"
+    description: "95th percentile execution time is {{ $value | humanizeDuration }} for {{ $labels.job_kind }}"
+```
+
+### Warning: Job Lock Timeouts
+
+Fires when job locks are timing out (workers dying mid-execution).
+
+```yaml
+- alert: BESSJobLockTimeouts
+  expr: increase(bess_worker_lock_timeout_total[15m]) > 3
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Job lock timeouts detected"
+    description: "{{ $value | humanize }} job locks timed out in last 15 minutes. Workers may be crashing."
+```
+
+### Info: Worker Activity
+
+Tracks worker job processing activity.
+
+```yaml
+- alert: BESSWorkerActivity
+  expr: sum(increase(bess_worker_job_claims_total[1h])) > 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Worker job activity"
+    description: "{{ $value | humanize }} jobs claimed in last hour"
+```
+
+### Info: Artifact Creation
+
+Tracks artifact generation by workers.
+
+```yaml
+- alert: BESSArtifactCreation
+  expr: sum by (artifact_type) (increase(bess_worker_artifacts_created_total[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Artifact creation activity"
+    description: "{{ $value | humanize }} {{ $labels.artifact_type }} artifacts created in last 24 hours"
+```
+
+### Info: Large Artifacts
+
+Tracks when large artifacts are generated.
+
+```yaml
+- alert: BESSLargeArtifacts
+  expr: histogram_quantile(0.95, rate(bess_worker_artifact_size_bytes_bucket[1h])) > 10000000
+  labels:
+    severity: info
+  annotations:
+    summary: "Large artifacts being generated"
+    description: "95th percentile artifact size is {{ $value | humanize1024 }}B for {{ $labels.artifact_type }}"
+```
