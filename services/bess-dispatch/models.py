@@ -17,7 +17,7 @@ Version: 1.3.0
 """
 
 from enum import Enum
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from pydantic import BaseModel, Field, validator, model_validator
 
 # Engine version for audit trail
@@ -1038,6 +1038,137 @@ class PriceTimeseriesPlnPerMwh(BaseModel):
 
 
 # =============================================================================
+# Ledger Timeseries SSoT (v2.0.0)
+# =============================================================================
+
+class LedgerTimeseriesPlnPerStep(BaseModel):
+    """
+    Per-step cost timeseries in PLN for each timestep (v2.0.0 SSoT).
+
+    This is the SINGLE SOURCE OF TRUTH for per-step economics.
+    All values are arrays of length 'steps' (matching period_info.steps).
+
+    Used for:
+    - Debugging: see cost contributions at each timestep
+    - Transparency: user can trace costs back to energy flows
+    - Validation: sum of arrays should match MoneyLedger totals (invariant)
+    - Visualization: chart stacked costs over time
+    """
+    # Cost buckets per step (PLN)
+    import_cost_pln: List[float] = Field(
+        ...,
+        description="Grid import cost at each timestep [PLN]. Length = steps."
+    )
+    export_revenue_pln: List[float] = Field(
+        ...,
+        description="Export revenue at each timestep [PLN]. Positive = revenue. Length = steps."
+    )
+    other_fees_pln: List[float] = Field(
+        default_factory=list,
+        description="Other fees at each timestep [PLN]. Length = steps."
+    )
+    unserved_penalty_pln: List[float] = Field(
+        default_factory=list,
+        description="Unserved load penalty at each timestep [PLN]. Length = steps."
+    )
+
+    # Aggregated net cost per step
+    net_cost_pln: List[float] = Field(
+        default_factory=list,
+        description="Net cost at each timestep [PLN] = import + fees + penalty - export. Length = steps."
+    )
+
+    # Period metadata
+    step_minutes: int = Field(
+        ...,
+        ge=15, le=60,
+        description="Time resolution in minutes (15 or 60)"
+    )
+    steps: int = Field(
+        ...,
+        ge=1,
+        description="Number of timesteps"
+    )
+
+    # Sum totals (for invariant checking)
+    sum_import_cost_pln: float = Field(
+        0.0,
+        description="Sum of import_cost_pln array [PLN]. Should match MoneyLedger."
+    )
+    sum_export_revenue_pln: float = Field(
+        0.0,
+        description="Sum of export_revenue_pln array [PLN]. Should match MoneyLedger."
+    )
+    sum_other_fees_pln: float = Field(
+        0.0,
+        description="Sum of other_fees_pln array [PLN]. Should match MoneyLedger."
+    )
+    sum_unserved_penalty_pln: float = Field(
+        0.0,
+        description="Sum of unserved_penalty_pln array [PLN]. Should match MoneyLedger."
+    )
+    sum_net_cost_pln: float = Field(
+        0.0,
+        description="Sum of net_cost_pln array [PLN]. Should match MoneyLedger.total_cost_pln."
+    )
+
+    def validate_lengths(self) -> bool:
+        """Validate that all arrays have correct length."""
+        if len(self.import_cost_pln) != self.steps:
+            return False
+        if len(self.export_revenue_pln) != self.steps:
+            return False
+        if self.other_fees_pln and len(self.other_fees_pln) != self.steps:
+            return False
+        if self.unserved_penalty_pln and len(self.unserved_penalty_pln) != self.steps:
+            return False
+        if self.net_cost_pln and len(self.net_cost_pln) != self.steps:
+            return False
+        return True
+
+    def validate_sums(self, tolerance: float = 0.01) -> Tuple[bool, List[str]]:
+        """
+        Validate that sum fields match actual array sums.
+
+        Returns:
+            Tuple of (is_valid, list of error messages)
+        """
+        errors = []
+        actual_import = sum(self.import_cost_pln)
+        if abs(actual_import - self.sum_import_cost_pln) > tolerance:
+            errors.append(f"import_cost sum mismatch: {actual_import:.2f} != {self.sum_import_cost_pln:.2f}")
+
+        actual_export = sum(self.export_revenue_pln)
+        if abs(actual_export - self.sum_export_revenue_pln) > tolerance:
+            errors.append(f"export_revenue sum mismatch: {actual_export:.2f} != {self.sum_export_revenue_pln:.2f}")
+
+        if self.other_fees_pln:
+            actual_fees = sum(self.other_fees_pln)
+            if abs(actual_fees - self.sum_other_fees_pln) > tolerance:
+                errors.append(f"other_fees sum mismatch: {actual_fees:.2f} != {self.sum_other_fees_pln:.2f}")
+
+        if self.unserved_penalty_pln:
+            actual_penalty = sum(self.unserved_penalty_pln)
+            if abs(actual_penalty - self.sum_unserved_penalty_pln) > tolerance:
+                errors.append(f"unserved_penalty sum mismatch: {actual_penalty:.2f} != {self.sum_unserved_penalty_pln:.2f}")
+
+        if self.net_cost_pln:
+            actual_net = sum(self.net_cost_pln)
+            if abs(actual_net - self.sum_net_cost_pln) > tolerance:
+                errors.append(f"net_cost sum mismatch: {actual_net:.2f} != {self.sum_net_cost_pln:.2f}")
+
+        return len(errors) == 0, errors
+
+    def calculate_sums(self) -> None:
+        """Recalculate sum fields from arrays (mutates self)."""
+        self.sum_import_cost_pln = sum(self.import_cost_pln)
+        self.sum_export_revenue_pln = sum(self.export_revenue_pln)
+        self.sum_other_fees_pln = sum(self.other_fees_pln) if self.other_fees_pln else 0.0
+        self.sum_unserved_penalty_pln = sum(self.unserved_penalty_pln) if self.unserved_penalty_pln else 0.0
+        self.sum_net_cost_pln = sum(self.net_cost_pln) if self.net_cost_pln else 0.0
+
+
+# =============================================================================
 # Energy Flows SSoT
 # =============================================================================
 
@@ -1719,6 +1850,13 @@ class SizingRequest(BaseModel):
                     "Shows import/export/fees prices at each timestep for debugging and replay."
     )
 
+    # Ledger timeseries control (new in v2.0.0 PR3)
+    include_ledger_timeseries: bool = Field(
+        False,
+        description="Include LedgerTimeseries (per-step costs) in response. "
+                    "Shows import_cost/export_revenue/fees/penalty at each timestep for charts."
+    )
+
     # Price timeseries override (new in v2.0.0 PR2)
     price_timeseries_override: Optional["PriceTimeseriesPlnPerMwh"] = Field(
         None,
@@ -1842,6 +1980,13 @@ class SizingVariantResult(BaseModel):
         None,
         description="Source of prices: 'generated' (from ToU/PriceConfig) or 'override' "
                     "(from price_timeseries_override). Set when include_price_timeseries=True."
+    )
+
+    # Ledger timeseries (v2.0.0 PR3) - per-step costs SSoT
+    ledger_timeseries: Optional["LedgerTimeseriesPlnPerStep"] = Field(
+        None,
+        description="Per-step cost timeseries if include_ledger_timeseries=True. "
+                    "Shows import_cost/export_revenue/fees/penalty at each timestep for charts."
     )
 
     def model_post_init(self, __context):
