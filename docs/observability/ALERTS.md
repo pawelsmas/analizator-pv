@@ -831,3 +831,95 @@ Tracks cache utilization.
     summary: "Report cache near capacity"
     description: "{{ $value | humanize }} entries in cache (max 100)"
 ```
+
+## Auth Alerts (v3.0.0)
+
+### Warning: High Login Failure Rate
+
+Fires when login failures exceed a threshold, indicating possible brute-force attack.
+
+```yaml
+- alert: BESSHighLoginFailureRate
+  expr: |
+    sum(rate(bess_auth_login_total{result="failure"}[15m])) /
+    sum(rate(bess_auth_login_total[15m])) > 0.5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High login failure rate"
+    description: "More than 50% of login attempts are failing in the last 15 minutes"
+```
+
+### Warning: Login Failures Spike
+
+Fires when absolute number of login failures spikes.
+
+```yaml
+- alert: BESSLoginFailuresSpike
+  expr: increase(bess_auth_login_total{result="failure"}[5m]) > 10
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Login failures spike detected"
+    description: "{{ $value | humanize }} failed login attempts in the last 5 minutes"
+```
+
+### Warning: API Key Validation Failures
+
+Fires when API key validations fail repeatedly.
+
+```yaml
+- alert: BESSApiKeyValidationFailures
+  expr: increase(bess_auth_api_key_validations_total{result="failure"}[15m]) > 20
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "API key validation failures"
+    description: "{{ $value | humanize }} API key validation failures in the last 15 minutes"
+```
+
+### Info: Expired API Keys Used
+
+Tracks usage of expired API keys (may indicate forgotten rotations).
+
+```yaml
+- alert: BESSExpiredApiKeysUsed
+  expr: increase(bess_auth_api_key_validations_total{result="expired"}[1h]) > 0
+  labels:
+    severity: info
+  annotations:
+    summary: "Expired API keys being used"
+    description: "{{ $value | humanize }} requests with expired API keys in the last hour"
+```
+
+### Critical: RBAC Denials
+
+Fires when permission denials increase (may indicate misconfigured clients).
+
+```yaml
+- alert: BESSRbacDenials
+  expr: increase(bess_rbac_checks_total{result="denied"}[15m]) > 10
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "RBAC permission denials"
+    description: "{{ $value | humanize }} permission denials in the last 15 minutes"
+```
+
+### Info: Audit Log Volume
+
+Tracks audit log write volume.
+
+```yaml
+- alert: BESSAuditLogHighVolume
+  expr: increase(bess_audit_log_writes_total[1h]) > 1000
+  labels:
+    severity: info
+  annotations:
+    summary: "High audit log volume"
+    description: "{{ $value | humanize }} audit entries in the last hour"
+```
