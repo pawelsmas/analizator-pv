@@ -1,0 +1,27 @@
+{
+  "scenario_id": "pricing_preset_flat",
+  "description": "Pricing preview with flat preset (pl_flat_2026)",
+  "endpoint": "/api/bess-dispatch/pricing/preview",
+  "method": "POST",
+  "request": {
+    "interval_minutes": 60,
+    "timezone": "Europe/Warsaw",
+    "period_start": "2025-01-06T00:00:00",
+    "period_end": "2025-01-06T23:00:00",
+    "tariff_preset": "pl_flat_2026"
+  },
+  "expected": {
+    "pricing_mode": "preset",
+    "period_info": {
+      "steps": 24,
+      "interval_minutes": 60
+    },
+    "price_timeseries": {
+      "import_price_pln_per_mwh_avg": 510.0,
+      "export_price_pln_per_mwh_avg": 0.0
+    }
+  },
+  "tolerances": {
+    "default_rel": 0.001
+  }
+}

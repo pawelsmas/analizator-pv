@@ -1,0 +1,12 @@
+# Pricing scenario pack for v2.1.0 tariff features validation
+# Tests: presets, schedules, DST handling, holiday overrides
+name: pricing
+description: Pricing Engine v2.1.0 regression scenarios
+scenarios:
+  - pricing_preset_flat
+  - pricing_preset_tou
+  - pricing_schedule_weekday
+  - pricing_schedule_weekend
+  - pricing_schedule_holiday
+  - pricing_dst_spring_forward
+  - pricing_dst_fall_back
