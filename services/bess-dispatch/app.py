@@ -2458,21 +2458,14 @@ async def run_sizing_optimization(
         )
         record_runstore_save(endpoint="sizing", cache_hit=False)
 
-        # Apply compat mode (v2.7.0)
+        # Apply compat mode (v2.7.0, v2.8.0: default=clean)
         compat_mode = parse_compat_mode(compat)
-        if compat_mode == CompatMode.LEGACY:
-            # For legacy mode, convert to dict and add deprecated aliases
-            result_dict = result.model_dump(mode="json")
-            result_dict = apply_compat_mode(result_dict, compat_mode)
-            # Add deprecation warnings if any deprecated fields were used (v2.7.0 PR3)
-            result_dict = add_warnings_to_response(result_dict)
-            return result_dict
-        else:
-            # Clean mode: return as-is (deprecated fields already omitted)
-            # Add deprecation warnings if any deprecated fields were used (v2.7.0 PR3)
-            result_dict = result.model_dump(mode="json")
-            result_dict = add_warnings_to_response(result_dict)
-            return result_dict
+        result_dict = result.model_dump(mode="json")
+        # Always apply compat mode to ensure clean/legacy is enforced
+        result_dict = apply_compat_mode(result_dict, compat_mode)
+        # Add deprecation warnings if any deprecated fields were used (v2.7.0 PR3)
+        result_dict = add_warnings_to_response(result_dict)
+        return result_dict
 
     except ValueError as e:
         raise HTTPException(400, str(e))
