@@ -5808,3 +5808,89 @@ body {
   display: flex;
   gap: 8px;
 }
+
+/* ============================================
+   v2.4.0: Run Report Downloads Section
+   ============================================ */
+
+.run-report-downloads {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.run-report-downloads h5 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.report-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.report-buttons .btn {
+  flex: 1;
+  min-width: 60px;
+}
+
+.report-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-option-row label {
+  min-width: 50px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #6c757d;
+}
+
+.report-option-row select,
+.report-option-row input[type="text"] {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.report-option-row select:focus,
+.report-option-row input[type="text"]:focus {
+  outline: none;
+  border-color: #2196F3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.1);
+}
+
+/* Button success variant for XLSX */
+.btn.btn-success {
+  background: #27ae60;
+  color: #fff;
+  border: none;
+}
+
+.btn.btn-success:hover {
+  background: #219a52;
+}
+
+.btn-small.btn-success {
+  background: #27ae60;
+  color: #fff;
+}
+
+.btn-small.btn-success:hover {
+  background: #219a52;
+}

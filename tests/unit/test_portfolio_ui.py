@@ -152,8 +152,8 @@ class TestPortfolioJavaScriptFunctions:
         assert "window.exportPortfolioZIP" in js_content
 
     def test_portfolio_version_log(self, js_content):
-        """Version log should mention v2.3.0 Portfolio."""
-        assert "v2.3.0 Portfolio" in js_content
+        """Version log should mention v2.4.0 Report Downloads."""
+        assert "v2.4.0 Report Downloads" in js_content
 
 
 class TestPortfolioApiEndpoints:

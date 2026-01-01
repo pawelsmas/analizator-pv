@@ -8633,4 +8633,155 @@ window.runPortfolioSummary = runPortfolioSummary;
 window.exportPortfolioCSV = exportPortfolioCSV;
 window.exportPortfolioZIP = exportPortfolioZIP;
 
-console.log('[BESS] bess.js v3.33 - v2.3.0 Portfolio Summary');
+// ============================================
+// v2.4.0: REPORT DOWNLOADS
+// ============================================
+
+/**
+ * Build report URL with query params
+ * @param {string} runId - Run ID
+ * @param {string} format - Format (pdf, xlsx, zip)
+ * @param {object} options - Report options
+ * @returns {string} Full URL with query params
+ */
+function buildReportUrl(runId, format, options = {}) {
+  const baseUrl = `/api/bess-dispatch/runs/${runId}/report.${format}`;
+  const params = new URLSearchParams();
+
+  if (options.profile && options.profile !== 'client') {
+    params.append('profile', options.profile);
+  }
+  if (options.client_name) {
+    params.append('client_name', options.client_name);
+  }
+  if (options.site_name) {
+    params.append('site_name', options.site_name);
+  }
+
+  const queryString = params.toString();
+  return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+}
+
+/**
+ * Get current report options from UI form
+ * @returns {object} Report options
+ */
+function getReportOptionsFromUI() {
+  return {
+    profile: document.getElementById('reportProfile')?.value || 'client',
+    client_name: document.getElementById('reportClientName')?.value?.trim() || '',
+    site_name: document.getElementById('reportSiteName')?.value?.trim() || '',
+  };
+}
+
+/**
+ * Trigger file download via link click
+ * @param {string} url - Download URL
+ * @param {string} filename - Suggested filename
+ */
+function triggerDownload(url, filename) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/**
+ * Download run report as PDF
+ */
+function downloadRunReportPDF() {
+  const runId = runExplorerState.selectedRunId;
+  if (!runId) {
+    alert('Wybierz uruchomienie aby pobrać raport');
+    return;
+  }
+
+  const options = getReportOptionsFromUI();
+  const url = buildReportUrl(runId, 'pdf', options);
+  const filename = `bess_report_${runId.slice(0, 8)}.pdf`;
+
+  console.log('[BESS] Downloading PDF report:', url);
+  triggerDownload(url, filename);
+}
+
+/**
+ * Download run report as XLSX
+ */
+function downloadRunReportXLSX() {
+  const runId = runExplorerState.selectedRunId;
+  if (!runId) {
+    alert('Wybierz uruchomienie aby pobrać raport');
+    return;
+  }
+
+  const options = getReportOptionsFromUI();
+  const url = buildReportUrl(runId, 'xlsx', options);
+  const filename = `bess_report_${runId.slice(0, 8)}.xlsx`;
+
+  console.log('[BESS] Downloading XLSX report:', url);
+  triggerDownload(url, filename);
+}
+
+/**
+ * Download run report as ZIP
+ */
+function downloadRunReportZIP() {
+  const runId = runExplorerState.selectedRunId;
+  if (!runId) {
+    alert('Wybierz uruchomienie aby pobrać raport');
+    return;
+  }
+
+  const options = getReportOptionsFromUI();
+  const url = buildReportUrl(runId, 'zip', options);
+  const filename = `bess_report_${runId.slice(0, 8)}.zip`;
+
+  console.log('[BESS] Downloading ZIP report:', url);
+  triggerDownload(url, filename);
+}
+
+/**
+ * Export portfolio report as ZIP
+ */
+async function exportPortfolioReportZIP() {
+  if (!portfolioSelectedRunIds.length) {
+    alert('Wybierz uruchomienia do portfolio');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/bess-dispatch/portfolio/report.zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_ids: portfolioSelectedRunIds }),
+    });
+
+    if (!response.ok) throw new Error('Export failed');
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `portfolio_report_${portfolioSelectedRunIds.length}items.zip`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    console.log('[BESS] Portfolio report ZIP downloaded');
+
+  } catch (error) {
+    console.error('[Portfolio] Report ZIP export error:', error);
+    alert('Export raportu portfolio nie powiodl sie');
+  }
+}
+
+// Export v2.4.0 report functions
+window.buildReportUrl = buildReportUrl;
+window.getReportOptionsFromUI = getReportOptionsFromUI;
+window.downloadRunReportPDF = downloadRunReportPDF;
+window.downloadRunReportXLSX = downloadRunReportXLSX;
+window.downloadRunReportZIP = downloadRunReportZIP;
+window.exportPortfolioReportZIP = exportPortfolioReportZIP;
+
+console.log('[BESS] bess.js v3.34 - v2.4.0 Report Downloads');

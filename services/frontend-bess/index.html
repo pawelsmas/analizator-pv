@@ -1291,6 +1291,39 @@
                 </div>
               </div>
 
+              <!-- Report Downloads (v2.4.0) -->
+              <div class="run-report-downloads">
+                <h5>Raporty</h5>
+                <div class="report-buttons">
+                  <button class="btn btn-small btn-primary" onclick="downloadRunReportPDF()">
+                    PDF
+                  </button>
+                  <button class="btn btn-small btn-success" onclick="downloadRunReportXLSX()">
+                    XLSX
+                  </button>
+                  <button class="btn btn-small btn-secondary" onclick="downloadRunReportZIP()">
+                    ZIP
+                  </button>
+                </div>
+                <div class="report-options">
+                  <div class="report-option-row">
+                    <label for="reportProfile">Profil:</label>
+                    <select id="reportProfile">
+                      <option value="client">Klient</option>
+                      <option value="engineering">Engineering</option>
+                    </select>
+                  </div>
+                  <div class="report-option-row">
+                    <label for="reportClientName">Klient:</label>
+                    <input type="text" id="reportClientName" placeholder="Nazwa klienta" maxlength="120">
+                  </div>
+                  <div class="report-option-row">
+                    <label for="reportSiteName">Site:</label>
+                    <input type="text" id="reportSiteName" placeholder="Nazwa obiektu" maxlength="120">
+                  </div>
+                </div>
+              </div>
+
               <!-- Metadata Edit Form -->
               <div class="run-metadata-edit">
                 <h5>Metadane</h5>
@@ -1653,6 +1686,7 @@
             <div class="portfolio-actions" id="portfolioActions" style="display: none;">
               <button class="btn btn-tiny btn-secondary" onclick="exportPortfolioCSV()">📥 Export CSV</button>
               <button class="btn btn-tiny btn-secondary" onclick="exportPortfolioZIP()">📦 Export ZIP</button>
+              <button class="btn btn-tiny btn-primary" onclick="exportPortfolioReportZIP()">📑 Raport ZIP</button>
             </div>
           </div>
         </div>
