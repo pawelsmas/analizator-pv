@@ -340,6 +340,9 @@ from deprecations_usage import (
     has_deprecations_used,
 )
 
+# Compat mode for response shaping (v2.7.0)
+from compat_mode import parse_compat_mode, apply_compat_mode, CompatMode
+
 
 @app.middleware("http")
 async def deprecation_tracking_middleware(request: Request, call_next):
@@ -1988,8 +1991,14 @@ class SizingRequestAPI(BaseModel):
         return self
 
 
-@app.post("/sizing", response_model=SizingResult)
-async def run_sizing_optimization(request: SizingRequestAPI):
+@app.post("/sizing")
+async def run_sizing_optimization(
+    request: SizingRequestAPI,
+    compat: Optional[str] = Query(
+        None,
+        description="Compatibility mode: 'clean' (default) omits deprecated fields, 'legacy' includes them"
+    ),
+):
     """
     Run BESS sizing optimization.
 
@@ -2000,6 +2009,9 @@ async def run_sizing_optimization(request: SizingRequestAPI):
     - Enable with arbitrage_config + start_date
     - Sizing includes arbitrage savings in NPV calculation
     - Capacity fee savings calculated post-dispatch
+
+    Query params:
+    - compat: 'clean' (default) or 'legacy' for deprecated fields
 
     Returns:
     - S/M/L variant results with economics (including arbitrage savings breakdown)
@@ -2445,7 +2457,16 @@ async def run_sizing_optimization(request: SizingRequestAPI):
         )
         record_runstore_save(endpoint="sizing", cache_hit=False)
 
-        return result
+        # Apply compat mode (v2.7.0)
+        compat_mode = parse_compat_mode(compat)
+        if compat_mode == CompatMode.LEGACY:
+            # For legacy mode, convert to dict and add deprecated aliases
+            result_dict = result.model_dump(mode="json")
+            result_dict = apply_compat_mode(result_dict, compat_mode)
+            return result_dict
+        else:
+            # Clean mode: return as-is (deprecated fields already omitted)
+            return result
 
     except ValueError as e:
         raise HTTPException(400, str(e))
