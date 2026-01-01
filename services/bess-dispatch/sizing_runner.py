@@ -2046,32 +2046,50 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
         # Compute PriceTimeseries if requested (v2.0.0)
         include_prices = getattr(request, 'include_price_timeseries', False)
-        if include_prices:
-            # Determine period start datetime
-            if request.analytical_period:
-                period_start = request.analytical_period.start_datetime
-                tz = request.analytical_period.timezone
-            elif request.period_start:
-                period_start = request.period_start
-                tz = request.timezone or "Europe/Warsaw"
-            else:
-                # Default: use start_date or fallback to "2025-01-01T00:00:00"
-                start_date = request.start_date or "2025-01-01"
-                period_start = f"{start_date}T00:00:00"
-                tz = request.timezone or "Europe/Warsaw"
+        price_override = getattr(request, 'price_timeseries_override', None)
 
-            price_timeseries = generate_price_timeseries(
-                prices=request.prices,
-                n_steps=n,
-                step_minutes=interval_minutes,
-                start_datetime=period_start,
-                timezone=tz,
-                unserved_penalty_pln_kwh=getattr(request.prices, 'unserved_penalty_pln_kwh', 10.0),
-            )
+        if include_prices or price_override:
+            # Check for price_timeseries_override (v2.0.0 PR2)
+            if price_override is not None:
+                # Validate override length matches input data
+                if price_override.steps != n:
+                    logger.warning(
+                        f"price_timeseries_override steps ({price_override.steps}) != input steps ({n})"
+                    )
+                # Use override directly
+                price_timeseries = price_override
+                pricing_mode = "override"
+            else:
+                # Generate from ToU/PriceConfig
+                # Determine period start datetime
+                if request.analytical_period:
+                    period_start = request.analytical_period.start_datetime
+                    tz = request.analytical_period.timezone
+                elif request.period_start:
+                    period_start = request.period_start
+                    tz = request.timezone or "Europe/Warsaw"
+                else:
+                    # Default: use start_date or fallback to "2025-01-01T00:00:00"
+                    start_date = request.start_date or "2025-01-01"
+                    period_start = f"{start_date}T00:00:00"
+                    tz = request.timezone or "Europe/Warsaw"
+
+                price_timeseries = generate_price_timeseries(
+                    prices=request.prices,
+                    n_steps=n,
+                    step_minutes=interval_minutes,
+                    start_datetime=period_start,
+                    timezone=tz,
+                    unserved_penalty_pln_kwh=getattr(request.prices, 'unserved_penalty_pln_kwh', 10.0),
+                )
+                pricing_mode = "generated"
+
             price_hash = compute_price_hash(price_timeseries)
 
-            object.__setattr__(variant_result, 'price_timeseries', price_timeseries)
+            if include_prices:
+                object.__setattr__(variant_result, 'price_timeseries', price_timeseries)
             object.__setattr__(variant_result, 'price_hash', price_hash)
+            object.__setattr__(variant_result, 'pricing_mode', pricing_mode)
 
         variants.append(variant_result)
 
