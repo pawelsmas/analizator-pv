@@ -1,0 +1,19 @@
+apiVersion: v2
+name: pv-portal
+description: BESS/PV Portal - Dispatch sizing and analysis platform
+type: application
+version: 3.6.0
+appVersion: "3.6.0"
+keywords:
+  - bess
+  - pv
+  - solar
+  - battery
+  - dispatch
+  - sizing
+maintainers:
+  - name: PV Portal Team
+    email: team@pvportal.io
+home: https://github.com/pawelsmas/analizator-pv
+sources:
+  - https://github.com/pawelsmas/analizator-pv

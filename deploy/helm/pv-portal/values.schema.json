@@ -1,0 +1,701 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PV Portal Helm Chart Values",
+  "description": "Schema for validating pv-portal Helm chart values",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "storageClass": {
+          "type": "string"
+        }
+      }
+    },
+    "ha": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable HA mode with guardrail validation"
+        },
+        "strict": {
+          "type": "boolean",
+          "description": "Fail deployment if HA requirements not met"
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "required": ["replicaCount"],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of API replicas. If > 1, HA mode must be properly configured"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/podSecurityContext"
+        },
+        "securityContext": {
+          "$ref": "#/definitions/containerSecurityContext"
+        },
+        "startupProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "livenessProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "readinessProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/envVar"
+          }
+        },
+        "extraEnvFrom": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/envFromSource"
+          }
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/autoscaling"
+        },
+        "pdb": {
+          "$ref": "#/definitions/pdb"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/topologySpreadConstraint"
+          }
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "required": ["replicaCount"],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "description": "Number of concurrent worker tasks"
+        },
+        "queues": {
+          "type": "string",
+          "description": "Comma-separated list of queues to process"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/podSecurityContext"
+        },
+        "securityContext": {
+          "$ref": "#/definitions/containerSecurityContext"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600,
+          "description": "Graceful shutdown timeout in seconds"
+        },
+        "autoscaling": {
+          "$ref": "#/definitions/autoscaling"
+        },
+        "pdb": {
+          "$ref": "#/definitions/pdb"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/topologySpreadConstraint"
+          }
+        },
+        "knobs": {
+          "$ref": "#/definitions/workerKnobs"
+        }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "runstore": {
+      "type": "object",
+      "required": ["backend"],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["filesystem", "db"],
+          "description": "Storage backend. Use 'db' for HA mode"
+        },
+        "databaseUrl": {
+          "type": "string",
+          "description": "Database URL for db backend"
+        },
+        "compress": {
+          "type": "boolean",
+          "description": "Enable payload compression"
+        },
+        "existingSecret": {
+          "type": "string",
+          "description": "Name of existing secret containing DATABASE_URL"
+        },
+        "existingSecretKey": {
+          "type": "string",
+          "description": "Key in existing secret"
+        }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable bundled PostgreSQL"
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "database": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable bundled Redis"
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "minio": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            },
+            "bucket": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "useSSL": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "externalSecrets": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable External Secrets Operator integration"
+        },
+        "secretStoreRef": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["SecretStore", "ClusterSecretStore"]
+            }
+          }
+        },
+        "refreshInterval": {
+          "type": "string",
+          "pattern": "^[0-9]+(s|m|h)$"
+        },
+        "secrets": {
+          "type": "object",
+          "properties": {
+            "database": {
+              "$ref": "#/definitions/externalSecretRef"
+            },
+            "redis": {
+              "$ref": "#/definitions/externalSecretRef"
+            },
+            "s3": {
+              "$ref": "#/definitions/externalSecretRef"
+            }
+          }
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string"
+            },
+            "scrapeTimeout": {
+              "type": "string"
+            }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
+          }
+        },
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "envVar": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "valueFrom": {
+          "type": "object"
+        }
+      },
+      "required": ["name"]
+    },
+    "envFromSource": {
+      "type": "object",
+      "properties": {
+        "configMapRef": {
+          "type": "object"
+        },
+        "secretRef": {
+          "type": "object"
+        }
+      }
+    },
+    "externalSecretRef": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "remoteRef": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "property": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "description": "Pod-level security context",
+      "properties": {
+        "runAsNonRoot": {
+          "type": "boolean",
+          "description": "Require container to run as non-root user"
+        },
+        "runAsUser": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "UID to run container as"
+        },
+        "runAsGroup": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "GID to run container as"
+        },
+        "fsGroup": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "GID for volume mounts"
+        }
+      }
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "description": "Container-level security context",
+      "properties": {
+        "allowPrivilegeEscalation": {
+          "type": "boolean",
+          "description": "Prevent privilege escalation"
+        },
+        "readOnlyRootFilesystem": {
+          "type": "boolean",
+          "description": "Mount root filesystem as read-only"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "drop": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Linux capabilities to drop"
+            },
+            "add": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Linux capabilities to add"
+            }
+          }
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "description": "Kubernetes probe configuration",
+      "properties": {
+        "httpGet": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "port": {
+              "type": ["string", "integer"]
+            }
+          }
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "successThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "description": "Horizontal Pod Autoscaler configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable HPA"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum number of replicas"
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of replicas"
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Target CPU utilization percentage"
+        },
+        "targetMemoryUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Target memory utilization percentage"
+        }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "description": "Pod Disruption Budget configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable PDB"
+        },
+        "minAvailable": {
+          "type": ["integer", "string"],
+          "description": "Minimum number/percentage of pods that must be available"
+        },
+        "maxUnavailable": {
+          "type": ["integer", "string"],
+          "description": "Maximum number/percentage of pods that can be unavailable"
+        }
+      }
+    },
+    "topologySpreadConstraint": {
+      "type": "object",
+      "description": "Pod topology spread constraint",
+      "properties": {
+        "maxSkew": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum difference in pod count between topology domains"
+        },
+        "topologyKey": {
+          "type": "string",
+          "description": "Node label key for topology domain"
+        },
+        "whenUnsatisfiable": {
+          "type": "string",
+          "enum": ["DoNotSchedule", "ScheduleAnyway"],
+          "description": "Action when constraint cannot be satisfied"
+        },
+        "labelSelector": {
+          "type": "object",
+          "description": "Label selector for pods"
+        }
+      }
+    },
+    "workerKnobs": {
+      "type": "object",
+      "description": "Worker tuning parameters",
+      "properties": {
+        "maxTasksPerWorker": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum tasks before worker restarts"
+        },
+        "memoryThresholdMb": {
+          "type": "integer",
+          "minimum": 256,
+          "description": "Memory threshold in MB before worker restarts"
+        },
+        "prefetchMultiplier": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Number of tasks to prefetch per worker"
+        }
+      }
+    }
+  }
+}
