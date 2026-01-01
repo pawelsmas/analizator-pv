@@ -1,10 +1,11 @@
 """
-Unit tests for auth observability metrics (v3.0.0 PR6).
+Unit tests for auth observability metrics (v3.1.0).
 
 Tests verify:
 - Auth metrics are defined correctly
 - Helper functions record metrics
 - Labels are correct
+- v3.1.0: Invite, share, and user admin metrics
 """
 
 import pytest
@@ -235,3 +236,165 @@ class TestAuditLogMetrics:
         record_audit_log_export("zip")
 
         assert AUDIT_LOG_EXPORTS_TOTAL.labels(format="zip")._value.get() == initial + 1
+
+
+class TestInviteMetrics:
+    """Tests for invite metrics (v3.1.0 PR6)."""
+
+    def test_invite_operations_counter_exists(self):
+        """INVITE_OPERATIONS_TOTAL should be defined."""
+        from observability.auth_metrics import INVITE_OPERATIONS_TOTAL
+
+        assert INVITE_OPERATIONS_TOTAL is not None
+        assert "operation" in INVITE_OPERATIONS_TOTAL._labelnames
+        assert "result" in INVITE_OPERATIONS_TOTAL._labelnames
+
+    def test_invite_accept_counter_exists(self):
+        """INVITE_ACCEPT_TOTAL should be defined."""
+        from observability.auth_metrics import INVITE_ACCEPT_TOTAL
+
+        assert INVITE_ACCEPT_TOTAL is not None
+        assert "result" in INVITE_ACCEPT_TOTAL._labelnames
+
+    def test_record_invite_operation(self):
+        """record_invite_operation should increment correctly."""
+        from observability.auth_metrics import record_invite_operation, INVITE_OPERATIONS_TOTAL
+
+        initial = INVITE_OPERATIONS_TOTAL.labels(operation="create", result="success")._value.get()
+
+        record_invite_operation("create", success=True)
+
+        assert INVITE_OPERATIONS_TOTAL.labels(operation="create", result="success")._value.get() == initial + 1
+
+    def test_record_invite_operation_failure(self):
+        """record_invite_operation should handle failure."""
+        from observability.auth_metrics import record_invite_operation, INVITE_OPERATIONS_TOTAL
+
+        initial = INVITE_OPERATIONS_TOTAL.labels(operation="revoke", result="failure")._value.get()
+
+        record_invite_operation("revoke", success=False)
+
+        assert INVITE_OPERATIONS_TOTAL.labels(operation="revoke", result="failure")._value.get() == initial + 1
+
+    def test_record_invite_accept_success(self):
+        """record_invite_accept should increment success."""
+        from observability.auth_metrics import record_invite_accept, INVITE_ACCEPT_TOTAL
+
+        initial = INVITE_ACCEPT_TOTAL.labels(result="success")._value.get()
+
+        record_invite_accept("success")
+
+        assert INVITE_ACCEPT_TOTAL.labels(result="success")._value.get() == initial + 1
+
+    def test_record_invite_accept_expired(self):
+        """record_invite_accept should handle expired."""
+        from observability.auth_metrics import record_invite_accept, INVITE_ACCEPT_TOTAL
+
+        initial = INVITE_ACCEPT_TOTAL.labels(result="expired")._value.get()
+
+        record_invite_accept("expired")
+
+        assert INVITE_ACCEPT_TOTAL.labels(result="expired")._value.get() == initial + 1
+
+
+class TestShareMetrics:
+    """Tests for share link metrics (v3.1.0 PR6)."""
+
+    def test_share_operations_counter_exists(self):
+        """SHARE_OPERATIONS_TOTAL should be defined."""
+        from observability.auth_metrics import SHARE_OPERATIONS_TOTAL
+
+        assert SHARE_OPERATIONS_TOTAL is not None
+        assert "operation" in SHARE_OPERATIONS_TOTAL._labelnames
+        assert "resource_type" in SHARE_OPERATIONS_TOTAL._labelnames
+        assert "result" in SHARE_OPERATIONS_TOTAL._labelnames
+
+    def test_share_access_counter_exists(self):
+        """SHARE_ACCESS_TOTAL should be defined."""
+        from observability.auth_metrics import SHARE_ACCESS_TOTAL
+
+        assert SHARE_ACCESS_TOTAL is not None
+        assert "resource_type" in SHARE_ACCESS_TOTAL._labelnames
+        assert "result" in SHARE_ACCESS_TOTAL._labelnames
+
+    def test_record_share_operation(self):
+        """record_share_operation should increment correctly."""
+        from observability.auth_metrics import record_share_operation, SHARE_OPERATIONS_TOTAL
+
+        initial = SHARE_OPERATIONS_TOTAL.labels(operation="create", resource_type="run", result="success")._value.get()
+
+        record_share_operation("create", "run", success=True)
+
+        assert SHARE_OPERATIONS_TOTAL.labels(operation="create", resource_type="run", result="success")._value.get() == initial + 1
+
+    def test_record_share_operation_report(self):
+        """record_share_operation should handle report type."""
+        from observability.auth_metrics import record_share_operation, SHARE_OPERATIONS_TOTAL
+
+        initial = SHARE_OPERATIONS_TOTAL.labels(operation="revoke", resource_type="report", result="success")._value.get()
+
+        record_share_operation("revoke", "report", success=True)
+
+        assert SHARE_OPERATIONS_TOTAL.labels(operation="revoke", resource_type="report", result="success")._value.get() == initial + 1
+
+    def test_record_share_access_success(self):
+        """record_share_access should increment success."""
+        from observability.auth_metrics import record_share_access, SHARE_ACCESS_TOTAL
+
+        initial = SHARE_ACCESS_TOTAL.labels(resource_type="run", result="success")._value.get()
+
+        record_share_access("run", "success")
+
+        assert SHARE_ACCESS_TOTAL.labels(resource_type="run", result="success")._value.get() == initial + 1
+
+    def test_record_share_access_expired(self):
+        """record_share_access should handle expired."""
+        from observability.auth_metrics import record_share_access, SHARE_ACCESS_TOTAL
+
+        initial = SHARE_ACCESS_TOTAL.labels(resource_type="report", result="expired")._value.get()
+
+        record_share_access("report", "expired")
+
+        assert SHARE_ACCESS_TOTAL.labels(resource_type="report", result="expired")._value.get() == initial + 1
+
+
+class TestUserAdminMetrics:
+    """Tests for user admin metrics (v3.1.0 PR6)."""
+
+    def test_user_operations_counter_exists(self):
+        """USER_OPERATIONS_TOTAL should be defined."""
+        from observability.auth_metrics import USER_OPERATIONS_TOTAL
+
+        assert USER_OPERATIONS_TOTAL is not None
+        assert "operation" in USER_OPERATIONS_TOTAL._labelnames
+        assert "result" in USER_OPERATIONS_TOTAL._labelnames
+
+    def test_record_user_operation_create(self):
+        """record_user_operation should increment create success."""
+        from observability.auth_metrics import record_user_operation, USER_OPERATIONS_TOTAL
+
+        initial = USER_OPERATIONS_TOTAL.labels(operation="create", result="success")._value.get()
+
+        record_user_operation("create", success=True)
+
+        assert USER_OPERATIONS_TOTAL.labels(operation="create", result="success")._value.get() == initial + 1
+
+    def test_record_user_operation_update(self):
+        """record_user_operation should handle update."""
+        from observability.auth_metrics import record_user_operation, USER_OPERATIONS_TOTAL
+
+        initial = USER_OPERATIONS_TOTAL.labels(operation="update", result="success")._value.get()
+
+        record_user_operation("update", success=True)
+
+        assert USER_OPERATIONS_TOTAL.labels(operation="update", result="success")._value.get() == initial + 1
+
+    def test_record_user_operation_failure(self):
+        """record_user_operation should handle failure."""
+        from observability.auth_metrics import record_user_operation, USER_OPERATIONS_TOTAL
+
+        initial = USER_OPERATIONS_TOTAL.labels(operation="reset_password", result="failure")._value.get()
+
+        record_user_operation("reset_password", success=False)
+
+        assert USER_OPERATIONS_TOTAL.labels(operation="reset_password", result="failure")._value.get() == initial + 1

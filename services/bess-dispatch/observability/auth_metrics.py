@@ -1,5 +1,5 @@
 """
-Auth metrics for Prometheus instrumentation (v3.0.0).
+Auth metrics for Prometheus instrumentation (v3.1.0).
 
 Provides:
 - bess_auth_login_total: Counter for login attempts (success/failure)
@@ -8,6 +8,11 @@ Provides:
 - bess_auth_api_key_operations_total: Counter for API key operations (create/revoke)
 - bess_audit_log_writes_total: Counter for audit log entries
 - bess_auth_requests_total: Counter for authenticated requests by auth_method
+- bess_invite_operations_total: Counter for invite operations (v3.1.0)
+- bess_invite_accept_total: Counter for invite accepts (v3.1.0)
+- bess_share_operations_total: Counter for share link operations (v3.1.0)
+- bess_share_access_total: Counter for share link accesses (v3.1.0)
+- bess_user_operations_total: Counter for user admin operations (v3.1.0)
 
 Label cardinality rules:
 - result: "success" or "failure"
@@ -79,6 +84,40 @@ RBAC_CHECKS_TOTAL = Counter(
     "bess_rbac_checks_total",
     "Total RBAC permission checks",
     ["required_role", "result"],  # required_role: admin, editor, viewer, service; result: allowed, denied
+)
+
+
+# v3.1.0: Invite metrics
+INVITE_OPERATIONS_TOTAL = Counter(
+    "bess_invite_operations_total",
+    "Total invite operations",
+    ["operation", "result"],  # operation: create, revoke, list; result: success, failure
+)
+
+INVITE_ACCEPT_TOTAL = Counter(
+    "bess_invite_accept_total",
+    "Total invite accept attempts",
+    ["result"],  # success, failure, expired, revoked
+)
+
+# v3.1.0: Share link metrics
+SHARE_OPERATIONS_TOTAL = Counter(
+    "bess_share_operations_total",
+    "Total share link operations",
+    ["operation", "resource_type", "result"],  # operation: create, revoke, list; resource_type: run, report; result: success, failure
+)
+
+SHARE_ACCESS_TOTAL = Counter(
+    "bess_share_access_total",
+    "Total share link access attempts",
+    ["resource_type", "result"],  # resource_type: run, report; result: success, expired, revoked, not_found
+)
+
+# v3.1.0: User admin metrics
+USER_OPERATIONS_TOTAL = Counter(
+    "bess_user_operations_total",
+    "Total user admin operations",
+    ["operation", "result"],  # operation: create, update, list, reset_password; result: success, failure
 )
 
 
@@ -166,4 +205,67 @@ def record_rbac_check(required_role: str, allowed: bool):
     RBAC_CHECKS_TOTAL.labels(
         required_role=required_role,
         result="allowed" if allowed else "denied",
+    ).inc()
+
+
+# v3.1.0: Invite helper functions
+def record_invite_operation(operation: str, success: bool):
+    """Record an invite operation.
+
+    Args:
+        operation: "create", "revoke", or "list"
+        success: Whether the operation succeeded
+    """
+    INVITE_OPERATIONS_TOTAL.labels(
+        operation=operation,
+        result="success" if success else "failure",
+    ).inc()
+
+
+def record_invite_accept(result: str):
+    """Record an invite accept attempt.
+
+    Args:
+        result: "success", "failure", "expired", or "revoked"
+    """
+    INVITE_ACCEPT_TOTAL.labels(result=result).inc()
+
+
+# v3.1.0: Share helper functions
+def record_share_operation(operation: str, resource_type: str, success: bool):
+    """Record a share link operation.
+
+    Args:
+        operation: "create", "revoke", or "list"
+        resource_type: "run" or "report"
+        success: Whether the operation succeeded
+    """
+    SHARE_OPERATIONS_TOTAL.labels(
+        operation=operation,
+        resource_type=resource_type,
+        result="success" if success else "failure",
+    ).inc()
+
+
+def record_share_access(resource_type: str, result: str):
+    """Record a share link access attempt.
+
+    Args:
+        resource_type: "run" or "report"
+        result: "success", "expired", "revoked", or "not_found"
+    """
+    SHARE_ACCESS_TOTAL.labels(resource_type=resource_type, result=result).inc()
+
+
+# v3.1.0: User admin helper functions
+def record_user_operation(operation: str, success: bool):
+    """Record a user admin operation.
+
+    Args:
+        operation: "create", "update", "list", or "reset_password"
+        success: Whether the operation succeeded
+    """
+    USER_OPERATIONS_TOTAL.labels(
+        operation=operation,
+        result="success" if success else "failure",
     ).inc()
