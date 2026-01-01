@@ -544,12 +544,21 @@ services:
       - JOB_STORE_RETENTION_DAYS=14
       - JOBS_MAX_ITEMS=100
       - JOBS_INLINE_WAIT_MAX_SECONDS=60
+      # Database config (v3.3.0)
+      - DB_BACKEND=${BESS_DB_BACKEND:-sqlite}
+      - DATABASE_URL=${BESS_DATABASE_URL:-}
+      - SQLITE_DB_PATH=/data/bess.sqlite
+      - DB_MIGRATIONS_REQUIRED=${BESS_DB_MIGRATIONS_REQUIRED:-false}
     volumes:
       - bess-dispatch-data:/data
       - ./docs/scenarios:/app/docs/scenarios:ro
     networks:
       - pv-network
     restart: unless-stopped
+    depends_on:
+      bess-postgres:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8031/health"]
       interval: 30s
@@ -557,26 +566,69 @@ services:
       retries: 3
       start_period: 20s
 
-  # Optional: BESS Dispatch Worker for async job processing
-  # Uncomment to enable background job processing
-  # bess-dispatch-worker:
-  #   build:
-  #     context: ./services/bess-dispatch
-  #     dockerfile: Dockerfile
-  #   container_name: pv-bess-dispatch-worker
-  #   command: ["python", "worker.py"]
-  #   environment:
-  #     - PYTHONUNBUFFERED=1
-  #     - JOB_STORE_PATH=/data/jobs.sqlite
-  #     - JOB_STORE_ENABLED=true
-  #     - WORKER_POLL_INTERVAL=5.0
-  #   volumes:
-  #     - bess-dispatch-data:/data
-  #   networks:
-  #     - pv-network
-  #   restart: unless-stopped
-  #   depends_on:
-  #     - bess-dispatch
+  # BESS Dispatch PostgreSQL (v3.3.0 - optional, enable with BESS_DB_BACKEND=postgres)
+  bess-postgres:
+    image: postgres:16-alpine
+    container_name: pv-bess-postgres
+    profiles:
+      - postgres
+    environment:
+      - POSTGRES_USER=pvoptimizer
+      - POSTGRES_PASSWORD=pvoptimizer
+      - POSTGRES_DB=bess_dispatch
+    volumes:
+      - bess-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pvoptimizer -d bess_dispatch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # BESS Dispatch Worker for async job processing (v3.4.0)
+  # Enable with: docker-compose --profile worker up
+  bess-dispatch-worker:
+    build:
+      context: ./services/bess-dispatch
+      dockerfile: Dockerfile
+    container_name: pv-bess-dispatch-worker
+    profiles:
+      - worker
+    command: ["python", "-m", "worker.worker"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Job queue config
+      - WORKER_POLL_SECONDS=1
+      - WORKER_ID=worker-1
+      - WORKER_CONCURRENCY=1
+      - WORKER_LOCK_TIMEOUT_SECONDS=300
+      - JOB_RETRY_BACKOFF_SECONDS=5
+      # Database config (v3.3.0)
+      - DB_BACKEND=${BESS_DB_BACKEND:-sqlite}
+      - DATABASE_URL=${BESS_DATABASE_URL:-}
+      - SQLITE_DB_PATH=/data/bess.sqlite
+      # Run store config
+      - RUN_STORE_PATH=/data/runs.sqlite
+      - RUN_STORE_ENABLED=true
+      - JOB_STORE_PATH=/data/jobs.sqlite
+      - JOB_STORE_ENABLED=true
+    volumes:
+      - bess-dispatch-data:/data
+      - ./docs/scenarios:/app/docs/scenarios:ro
+    networks:
+      - pv-network
+    restart: unless-stopped
+    depends_on:
+      bess-dispatch:
+        condition: service_healthy
+      bess-postgres:
+        condition: service_healthy
+        required: false
 
   # Profile Analysis Frontend Module
   frontend-profile:
@@ -785,6 +837,9 @@ volumes:
   # BESS dispatch run store volume (v1.0.0)
   bess-dispatch-data:
     name: pv-bess-dispatch-data
+  # BESS dispatch PostgreSQL volume (v3.3.0)
+  bess-postgres-data:
+    name: pv-bess-postgres-data
   # Monitoring volumes
   prometheus-data:
     name: pv-prometheus-data
