@@ -1,0 +1,116 @@
+# Development mode values for pv-portal Helm chart (v3.5.0 PR5)
+# Enables all optional dependencies for local development
+
+# API settings for dev
+api:
+  replicaCount: 1
+  image:
+    repository: pv-portal-api
+    tag: "dev"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Worker settings for dev
+worker:
+  replicaCount: 1
+  image:
+    repository: pv-portal-worker
+    tag: "dev"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Enable Redis for rate limiting
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  persistence:
+    enabled: false  # No persistence in dev mode
+
+# Enable MinIO for S3-compatible artifact storage
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  accessKey: "minioadmin"
+  secretKey: "minioadmin"
+  bucket: "bess-artifacts"
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  persistence:
+    enabled: false  # No persistence in dev mode
+
+# Enable PostgreSQL for job store (future use)
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  database: "bess"
+  username: "bess"
+  password: "bess-dev-password"
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  persistence:
+    enabled: false  # No persistence in dev mode
+
+# Rate limiting with Redis backend
+rateLimit:
+  enabled: true
+  backend: redis
+  requestsPerMinute: 120  # Higher limit for dev
+  burst: 20
+
+# Artifact store with MinIO backend
+artifactStore:
+  backend: s3
+  bucket: "bess-artifacts"
+
+# Ingress for local access
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: pv-portal.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Auth disabled in dev mode
+auth:
+  enabled: false

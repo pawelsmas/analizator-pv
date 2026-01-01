@@ -1,0 +1,65 @@
+# Optional dependencies configuration (v3.5.0 PR5)
+# Merge with main values.yaml for production or use values-dev.yaml for development
+
+# Redis (optional) - for rate limiting HA backend
+redis:
+  enabled: false  # Set to true to enable Redis
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""  # Use default storage class
+
+# MinIO (optional) - for S3-compatible artifact storage
+minio:
+  enabled: false  # Set to true to enable MinIO
+  image:
+    repository: minio/minio
+    tag: "RELEASE.2024-01-01T00-00-00Z"
+    pullPolicy: IfNotPresent
+  accessKey: ""  # Set via --set or external secret
+  secretKey: ""  # Set via --set or external secret
+  bucket: "bess-artifacts"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+# PostgreSQL (optional) - for job store (future)
+postgres:
+  enabled: false  # Set to true to enable PostgreSQL
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  database: "bess"
+  username: "bess"
+  password: ""  # Set via --set or external secret
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
