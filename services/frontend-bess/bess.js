@@ -8861,4 +8861,288 @@ window.downloadRunReportXLSX = downloadRunReportXLSX;
 window.downloadRunReportZIP = downloadRunReportZIP;
 window.exportPortfolioReportZIP = exportPortfolioReportZIP;
 
-console.log('[BESS] bess.js v3.34 - v2.4.0 Report Downloads');
+// ============================================
+// v3.4.0 ASYNC REPORT JOBS
+// ============================================
+
+/**
+ * Async report job state
+ */
+const asyncReportState = {
+  currentJobId: null,
+  pollingInterval: null,
+  pollingIntervalMs: 1000,
+};
+
+/**
+ * Submit async report job
+ * @param {string} runId - Run ID to generate report for
+ * @param {object} options - Report options (profile, formats)
+ */
+async function submitAsyncReportJob(runId, options = {}) {
+  const profile = options.profile || 'executive';
+  const formats = options.formats || ['pdf'];
+
+  console.log('[BESS] Submitting async report job:', { runId, profile, formats });
+
+  try {
+    const response = await fetch('/api/bess-dispatch/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'report_run',
+        payload: {
+          run_id: runId,
+          profile: profile,
+          formats: formats,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to submit job');
+    }
+
+    const data = await response.json();
+    console.log('[BESS] Job submitted:', data);
+
+    asyncReportState.currentJobId = data.job_id;
+    showAsyncReportProgress(data.job_id, 'queued', null);
+    startJobPolling(data.job_id);
+
+    return data;
+
+  } catch (error) {
+    console.error('[BESS] Submit job error:', error);
+    alert('Failed to submit report job: ' + error.message);
+    throw error;
+  }
+}
+
+/**
+ * Start polling for job status
+ * @param {string} jobId - Job ID to poll
+ */
+function startJobPolling(jobId) {
+  // Clear any existing interval
+  stopJobPolling();
+
+  asyncReportState.pollingInterval = setInterval(async () => {
+    try {
+      const response = await fetch(`/api/bess-dispatch/jobs/${jobId}`);
+      if (!response.ok) throw new Error('Failed to get job status');
+
+      const job = await response.json();
+      console.log('[BESS] Job status:', job.status, job.progress);
+
+      // Update UI
+      showAsyncReportProgress(jobId, job.status, job.progress);
+
+      // Check for terminal states
+      if (['succeeded', 'failed', 'cancelled'].includes(job.status)) {
+        stopJobPolling();
+
+        if (job.status === 'succeeded') {
+          showJobArtifacts(jobId);
+        } else if (job.status === 'failed') {
+          alert('Report generation failed: ' + (job.error?.detail || 'Unknown error'));
+        }
+      }
+
+    } catch (error) {
+      console.error('[BESS] Poll error:', error);
+    }
+  }, asyncReportState.pollingIntervalMs);
+}
+
+/**
+ * Stop polling for job status
+ */
+function stopJobPolling() {
+  if (asyncReportState.pollingInterval) {
+    clearInterval(asyncReportState.pollingInterval);
+    asyncReportState.pollingInterval = null;
+  }
+}
+
+/**
+ * Cancel a running job
+ * @param {string} jobId - Job ID to cancel
+ */
+async function cancelAsyncJob(jobId) {
+  console.log('[BESS] Cancelling job:', jobId);
+
+  try {
+    const response = await fetch(`/api/bess-dispatch/jobs/${jobId}/cancel`, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to cancel job');
+    }
+
+    stopJobPolling();
+    hideAsyncReportProgress();
+
+    console.log('[BESS] Job cancelled');
+
+  } catch (error) {
+    console.error('[BESS] Cancel error:', error);
+    alert('Failed to cancel job: ' + error.message);
+  }
+}
+
+/**
+ * Show async report progress UI
+ * @param {string} jobId - Job ID
+ * @param {string} status - Job status
+ * @param {object} progress - Progress info (current, total, percent, message)
+ */
+function showAsyncReportProgress(jobId, status, progress) {
+  let container = document.getElementById('asyncReportProgress');
+
+  if (!container) {
+    // Create container if it doesn't exist
+    container = document.createElement('div');
+    container.id = 'asyncReportProgress';
+    container.className = 'async-job-progress';
+
+    // Insert after report options
+    const reportSection = document.querySelector('.report-options') ||
+                          document.querySelector('.run-explorer-section');
+    if (reportSection) {
+      reportSection.appendChild(container);
+    } else {
+      document.body.appendChild(container);
+    }
+  }
+
+  const percent = progress?.percent || 0;
+  const message = progress?.message || getStatusMessage(status);
+  const canCancel = ['queued', 'running'].includes(status);
+
+  container.innerHTML = `
+    <div class="async-job-header">
+      <span class="async-job-title">Async Report Generation</span>
+      <span class="async-job-status status-${status}">${status}</span>
+    </div>
+    <div class="async-job-progress-bar">
+      <div class="async-job-progress-fill" style="width: ${percent}%"></div>
+    </div>
+    <div class="async-job-footer">
+      <span class="async-job-message">${message}</span>
+      ${canCancel ? `<button class="btn-cancel" onclick="cancelAsyncJob('${jobId}')">Cancel</button>` : ''}
+    </div>
+  `;
+
+  container.style.display = 'block';
+}
+
+/**
+ * Hide async report progress UI
+ */
+function hideAsyncReportProgress() {
+  const container = document.getElementById('asyncReportProgress');
+  if (container) {
+    container.style.display = 'none';
+  }
+}
+
+/**
+ * Get human-readable status message
+ * @param {string} status - Job status
+ * @returns {string} Message
+ */
+function getStatusMessage(status) {
+  const messages = {
+    queued: 'Waiting in queue...',
+    running: 'Generating report...',
+    succeeded: 'Report ready!',
+    failed: 'Generation failed',
+    cancelled: 'Cancelled',
+  };
+  return messages[status] || status;
+}
+
+/**
+ * Show job artifacts for download
+ * @param {string} jobId - Job ID
+ */
+async function showJobArtifacts(jobId) {
+  try {
+    const response = await fetch(`/api/bess-dispatch/jobs/${jobId}/artifacts`);
+    if (!response.ok) throw new Error('Failed to get artifacts');
+
+    const data = await response.json();
+    console.log('[BESS] Job artifacts:', data.artifacts);
+
+    // Update progress container with download links
+    const container = document.getElementById('asyncReportProgress');
+    if (container && data.artifacts.length > 0) {
+      const artifactLinks = data.artifacts.map(a =>
+        `<a href="/api/bess-dispatch/jobs/${jobId}/artifacts/${a.name}"
+            class="btn-download" download="${a.name}">
+          ${a.name} (${formatBytes(a.size_bytes)})
+        </a>`
+      ).join(' ');
+
+      container.innerHTML = `
+        <div class="async-job-header">
+          <span class="async-job-title">Report Ready</span>
+          <span class="async-job-status status-succeeded">succeeded</span>
+        </div>
+        <div class="async-job-artifacts">
+          ${artifactLinks}
+        </div>
+        <div class="async-job-footer">
+          <button class="btn-close" onclick="hideAsyncReportProgress()">Close</button>
+        </div>
+      `;
+    }
+
+  } catch (error) {
+    console.error('[BESS] Get artifacts error:', error);
+  }
+}
+
+/**
+ * Format bytes to human-readable string
+ * @param {number} bytes - Size in bytes
+ * @returns {string} Formatted size
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Generate report via async job (v3.4.0)
+ * This is the new recommended way for large reports
+ */
+async function generateReportAsync() {
+  const runId = runExplorerState.selectedRunId;
+  if (!runId) {
+    alert('Wybierz uruchomienie aby wygenerować raport');
+    return;
+  }
+
+  const options = getReportOptionsFromUI();
+  await submitAsyncReportJob(runId, {
+    profile: options.profile,
+    formats: ['pdf', 'xlsx'],
+  });
+}
+
+// Export v3.4.0 async job functions
+window.submitAsyncReportJob = submitAsyncReportJob;
+window.cancelAsyncJob = cancelAsyncJob;
+window.generateReportAsync = generateReportAsync;
+window.showAsyncReportProgress = showAsyncReportProgress;
+window.hideAsyncReportProgress = hideAsyncReportProgress;
+
+console.log('[BESS] bess.js v3.35 - v3.4.0 Async Report Jobs');

@@ -384,6 +384,10 @@ app.include_router(admin_router, prefix="/api/bess-dispatch")
 from audit_router import router as audit_router
 app.include_router(audit_router, prefix="/api/bess-dispatch")
 
+# Include jobs router (v3.4.0 PR2)
+from jobs_router import router as jobs_router
+app.include_router(jobs_router, prefix="/api/bess-dispatch")
+
 
 # =============================================================================
 # Health and Info Endpoints
@@ -413,6 +417,25 @@ async def health_check():
         service="bess-dispatch",
         version="1.0.0"
     )
+
+
+# Database health (v3.3.0)
+from db_config import check_db_connection
+
+
+class DBHealthResponse(BaseModel):
+    """Database health check response."""
+    ok: bool
+    db_backend: str
+    latency_ms: int
+    error: Optional[str] = None
+
+
+@app.get("/health/db", response_model=DBHealthResponse)
+async def health_db():
+    """Database connectivity health check (v3.3.0)."""
+    result = check_db_connection()
+    return DBHealthResponse(**result)
 
 
 @app.get("/metrics")
