@@ -1,20 +1,20 @@
 """
-Compatibility mode helper for response shaping (v2.7.0 PR2).
+Compatibility mode helper for response shaping (v2.7.0 PR2, v2.8.0 PR2).
 
 Provides:
 - compat=clean: Omit deprecated fields from response (default)
-- compat=legacy: Include deprecated fields as aliases
+- compat=legacy: Include deprecated fields as aliases (via legacy_adapter)
 
 This allows API consumers to migrate gradually while we remove
 deprecated fields in future versions.
+
+v2.8.0: Legacy mode now uses central legacy_adapter module for consistency.
 """
 
 import json
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
-
-from deprecations_usage import mark_used, track_compat_legacy
 
 
 class CompatMode(str, Enum):
@@ -26,13 +26,6 @@ class CompatMode(str, Enum):
 # Deprecated fields that should be omitted in clean mode
 # Loaded from deprecations.json
 _DEPRECATED_RESPONSE_FIELDS: Set[str] = set()
-
-# Field mappings: deprecated_name -> source_name
-# Used to populate deprecated fields in legacy mode
-_FIELD_ALIASES: Dict[str, str] = {
-    "export_revenue_pln": "export_savings_pln",
-    "savings_pln": "total_savings_pln",
-}
 
 
 def _load_deprecated_fields() -> None:
@@ -88,7 +81,7 @@ def apply_compat_mode(
     Apply compatibility mode to response dict.
 
     In CLEAN mode: Removes deprecated fields
-    In LEGACY mode: Adds deprecated field aliases and marks them as used
+    In LEGACY mode: Adds deprecated field aliases via central legacy_adapter
 
     Args:
         response: Response dict to modify
@@ -99,8 +92,9 @@ def apply_compat_mode(
         Modified response dict
     """
     if mode == CompatMode.LEGACY:
-        track_compat_legacy()
-        return _add_legacy_fields(response)
+        # v2.8.0: Use central legacy adapter for consistency
+        from legacy_adapter import apply_legacy_compat
+        return apply_legacy_compat(response)
     else:
         return _remove_deprecated_fields(response)
 
@@ -124,35 +118,6 @@ def _remove_deprecated_fields(obj: Any, path: str = "") -> Any:
         }
     elif isinstance(obj, list):
         return [_remove_deprecated_fields(item, f"{path}[]") for item in obj]
-    else:
-        return obj
-
-
-def _add_legacy_fields(obj: Any, path: str = "") -> Any:
-    """
-    Recursively add deprecated field aliases to response.
-
-    Args:
-        obj: Object to process
-        path: Current path for tracking
-
-    Returns:
-        Object with legacy aliases added
-    """
-    if isinstance(obj, dict):
-        result = {}
-        for k, v in obj.items():
-            result[k] = _add_legacy_fields(v, f"{path}.{k}")
-
-        # Add aliases for deprecated fields
-        for deprecated_name, source_name in _FIELD_ALIASES.items():
-            if source_name in result and deprecated_name not in result:
-                result[deprecated_name] = result[source_name]
-                mark_used(deprecated_name)
-
-        return result
-    elif isinstance(obj, list):
-        return [_add_legacy_fields(item, f"{path}[]") for item in obj]
     else:
         return obj
 
