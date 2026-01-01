@@ -4682,6 +4682,55 @@ async def pricing_preview(request: PricingPreviewRequest):
 
 
 # =============================================================================
+# Portfolio Aggregation (v2.3.0)
+# =============================================================================
+
+from models import (
+    PortfolioRequest,
+    PortfolioResponse,
+    PortfolioRunsSummary,
+    PortfolioItemSummary,
+    PortfolioItemError,
+)
+from portfolio_api import compute_portfolio_summary
+
+
+@app.post("/api/bess-dispatch/portfolio/summary", response_model=PortfolioResponse)
+async def portfolio_summary(request: PortfolioRequest):
+    """
+    Aggregate multiple runs into a portfolio summary.
+
+    Takes a list of run_ids and returns aggregated KPIs:
+    - Total NPV, savings, CAPEX across all runs
+    - CAPEX-weighted average payback
+    - Mixed assumptions warning
+    - Top 5 items by NPV
+
+    Args:
+        request: PortfolioRequest with run_ids, optional labels/tags
+
+    Returns:
+        PortfolioResponse with summary, items, and errors
+    """
+    try:
+        response = compute_portfolio_summary(
+            run_ids=request.run_ids,
+            labels=request.labels,
+            tags=request.tags,
+            get_run_fn=get_run,
+        )
+
+        # TODO: Add v2.3.0 portfolio metrics in PR 6/6
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio summary error: {str(e)}")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 

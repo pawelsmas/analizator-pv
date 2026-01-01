@@ -18,10 +18,10 @@ Usage:
 """
 
 from typing import List, Optional
-from models import PortfolioItemSummary, PortfolioSummary
+from models import PortfolioItemSummary, PortfolioRunsSummary
 
 
-def summarize_items(items: List[PortfolioItemSummary]) -> PortfolioSummary:
+def summarize_items(items: List[PortfolioItemSummary]) -> PortfolioRunsSummary:
     """
     Aggregate a list of portfolio item summaries into a portfolio summary.
 
@@ -29,7 +29,7 @@ def summarize_items(items: List[PortfolioItemSummary]) -> PortfolioSummary:
         items: List of PortfolioItemSummary objects
 
     Returns:
-        PortfolioSummary with aggregated KPIs and metadata
+        PortfolioRunsSummary with aggregated KPIs and metadata
 
     Determinism:
         - Items are processed in order provided
@@ -37,7 +37,7 @@ def summarize_items(items: List[PortfolioItemSummary]) -> PortfolioSummary:
         - Versions/modes lists are sorted alphabetically for consistency
     """
     if not items:
-        return PortfolioSummary(
+        return PortfolioRunsSummary(
             items_total=0,
             items_ok=0,
             items_error=0,
@@ -88,7 +88,7 @@ def summarize_items(items: List[PortfolioItemSummary]) -> PortfolioSummary:
     # Top 5 items by NPV (sorted by NPV desc, then run_id asc for tie-breaking)
     top_items_by_npv = _get_top_items_by_npv(ok_items, limit=5)
 
-    return PortfolioSummary(
+    return PortfolioRunsSummary(
         items_total=len(items),
         items_ok=len(ok_items),
         items_error=len(error_items),
