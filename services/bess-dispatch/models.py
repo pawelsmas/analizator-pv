@@ -3335,11 +3335,12 @@ class PortfolioItemSummary(BaseModel):
     )
 
 
-class PortfolioSummary(BaseModel):
+class PortfolioRunsSummary(BaseModel):
     """
-    Aggregated summary of a portfolio of runs.
+    Aggregated summary of a portfolio of runs (v2.3.0).
 
     Provides total KPIs, weighted averages, and compatibility warnings.
+    Different from PortfolioSummary which is for batch sizing.
     """
     # Counts
     items_total: int = Field(
@@ -3431,9 +3432,9 @@ class PortfolioRequest(BaseModel):
 
 class PortfolioResponse(BaseModel):
     """
-    Response from portfolio aggregation.
+    Response from portfolio aggregation (v2.3.0).
     """
-    summary: PortfolioSummary = Field(
+    summary: PortfolioRunsSummary = Field(
         ...,
         description="Aggregated portfolio summary"
     )
