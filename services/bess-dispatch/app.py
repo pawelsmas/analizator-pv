@@ -4730,6 +4730,183 @@ async def portfolio_summary(request: PortfolioRequest):
         raise HTTPException(500, f"Portfolio summary error: {str(e)}")
 
 
+# -----------------------------------------------------------------------------
+# Portfolio Exports (v2.3.0 PR4)
+# -----------------------------------------------------------------------------
+
+from portfolio_export_helper import (
+    export_portfolio_to_csv,
+    export_portfolio_to_zip,
+    export_portfolio_summary_to_json,
+)
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/portfolio/export/csv")
+async def export_job_portfolio_csv(job_id: str):
+    """
+    Export job portfolio items to CSV format.
+
+    Returns a CSV with one row per portfolio item showing KPIs.
+
+    Args:
+        job_id: Job identifier
+
+    Returns:
+        CSV file with portfolio items
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    result = job.get("result")
+    if not result:
+        raise HTTPException(404, f"Job {job_id} has no result")
+
+    portfolio_summary = result.get("portfolio_summary")
+    portfolio_items = result.get("portfolio_items")
+
+    if not portfolio_summary or portfolio_items is None:
+        raise HTTPException(404, f"Job {job_id} has no portfolio data")
+
+    csv_content = export_portfolio_to_csv(
+        portfolio_summary=portfolio_summary,
+        portfolio_items=portfolio_items,
+    )
+
+    batch_id = job.get("batch_id", "batch")
+    filename = f"{batch_id}_{job_id[:8]}_portfolio.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/bess-dispatch/jobs/{job_id}/portfolio/export/zip")
+async def export_job_portfolio_zip(job_id: str):
+    """
+    Export job portfolio to ZIP archive containing JSON and CSV.
+
+    Args:
+        job_id: Job identifier
+
+    Returns:
+        ZIP file with portfolio.json, items.csv, summary.csv
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    result = job.get("result")
+    if not result:
+        raise HTTPException(404, f"Job {job_id} has no result")
+
+    portfolio_summary = result.get("portfolio_summary")
+    portfolio_items = result.get("portfolio_items")
+
+    if not portfolio_summary or portfolio_items is None:
+        raise HTTPException(404, f"Job {job_id} has no portfolio data")
+
+    zip_content = export_portfolio_to_zip(
+        portfolio_summary=portfolio_summary,
+        portfolio_items=portfolio_items,
+        source_id=job_id,
+        source_type="job",
+    )
+
+    batch_id = job.get("batch_id", "batch")
+    filename = f"{batch_id}_{job_id[:8]}_portfolio.zip"
+
+    return Response(
+        content=zip_content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/bess-dispatch/portfolio/summary/export/csv")
+async def export_portfolio_summary_csv(request: PortfolioRequest):
+    """
+    Compute portfolio summary and export to CSV.
+
+    Aggregates run_ids and returns CSV with portfolio items.
+
+    Args:
+        request: PortfolioRequest with run_ids
+
+    Returns:
+        CSV file with portfolio items
+    """
+    try:
+        response = compute_portfolio_summary(
+            run_ids=request.run_ids,
+            labels=request.labels,
+            tags=request.tags,
+            get_run_fn=get_run,
+        )
+
+        csv_content = export_portfolio_to_csv(
+            portfolio_summary=response.summary.model_dump(),
+            portfolio_items=[item.model_dump() for item in response.items],
+        )
+
+        filename = f"portfolio_{len(request.run_ids)}items.csv"
+
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio export error: {str(e)}")
+
+
+@app.post("/api/bess-dispatch/portfolio/summary/export/zip")
+async def export_portfolio_summary_zip(request: PortfolioRequest):
+    """
+    Compute portfolio summary and export to ZIP.
+
+    Aggregates run_ids and returns ZIP with portfolio.json, items.csv, summary.csv.
+
+    Args:
+        request: PortfolioRequest with run_ids
+
+    Returns:
+        ZIP file with portfolio data
+    """
+    try:
+        response = compute_portfolio_summary(
+            run_ids=request.run_ids,
+            labels=request.labels,
+            tags=request.tags,
+            get_run_fn=get_run,
+        )
+
+        zip_content = export_portfolio_to_zip(
+            portfolio_summary=response.summary.model_dump(),
+            portfolio_items=[item.model_dump() for item in response.items],
+            source_id=None,
+            source_type="portfolio",
+        )
+
+        filename = f"portfolio_{len(request.run_ids)}items.zip"
+
+        return Response(
+            content=zip_content,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Portfolio export error: {str(e)}")
+
+
 # =============================================================================
 # Main
 # =============================================================================
