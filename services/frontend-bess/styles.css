@@ -5633,3 +5633,178 @@ body {
 .ledger-table .total-delta {
   font-size: 12px;
 }
+
+/* ================================================
+   v2.3.0: Portfolio Summary Card Styles
+   ================================================ */
+
+.portfolio-card {
+  border-left: 4px solid #9c27b0;
+}
+
+.portfolio-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.portfolio-inputs .run-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.portfolio-inputs .run-selector label {
+  font-size: 12px;
+  color: #555;
+  font-weight: 500;
+}
+
+.portfolio-inputs .run-selector select {
+  width: 100%;
+  min-width: 200px;
+  font-size: 12px;
+  padding: 4px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.portfolio-selection-info {
+  font-size: 11px;
+  color: #666;
+  font-style: italic;
+}
+
+.portfolio-results-container {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.portfolio-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.portfolio-status .status-icon {
+  font-size: 16px;
+}
+
+.portfolio-status .status-text {
+  font-size: 12px;
+  color: #555;
+}
+
+.portfolio-summary .summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.portfolio-summary .summary-row.kpi-row {
+  padding: 12px;
+  background: #e8f5e9;
+  border-radius: 6px;
+}
+
+.portfolio-summary .summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 80px;
+}
+
+.portfolio-summary .summary-item .label {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.portfolio-summary .summary-item .value {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.portfolio-summary .summary-item .value.passed {
+  color: #27ae60;
+}
+
+.portfolio-summary .summary-item .value.failed {
+  color: #e74c3c;
+}
+
+.portfolio-summary .summary-item .value.npv {
+  font-size: 16px;
+}
+
+.portfolio-summary .summary-item .value.positive {
+  color: #27ae60;
+}
+
+.portfolio-summary .summary-item .value.negative {
+  color: #e74c3c;
+}
+
+.portfolio-summary .summary-item .value.warning {
+  color: #f39c12;
+}
+
+.portfolio-items {
+  margin-top: 12px;
+}
+
+.portfolio-items h5 {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.portfolio-items .items-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.portfolio-items .items-table th,
+.portfolio-items .items-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.portfolio-items .items-table th {
+  background: #f1f3f5;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.portfolio-items .items-table td.positive {
+  color: #27ae60;
+  font-weight: 500;
+}
+
+.portfolio-items .items-table td.negative {
+  color: #e74c3c;
+  font-weight: 500;
+}
+
+.portfolio-items .items-table td.monospace {
+  font-family: monospace;
+  font-size: 10px;
+}
+
+.portfolio-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
