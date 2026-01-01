@@ -119,6 +119,10 @@ from price_timeseries_helper import (
     generate_price_timeseries,
     compute_price_hash,
 )
+from ledger_timeseries_helper import (
+    # v2.0.0 PR3 ledger timeseries SSoT
+    generate_ledger_timeseries,
+)
 from determinism_helper import select_best_variant_deterministic
 
 logger = logging.getLogger(__name__)
@@ -2090,6 +2094,57 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 object.__setattr__(variant_result, 'price_timeseries', price_timeseries)
             object.__setattr__(variant_result, 'price_hash', price_hash)
             object.__setattr__(variant_result, 'pricing_mode', pricing_mode)
+
+        # Compute LedgerTimeseries if requested (v2.0.0 PR3)
+        include_ledger_ts = getattr(request, 'include_ledger_timeseries', False)
+        if include_ledger_ts:
+            # Need price_timeseries to compute ledger
+            if 'price_timeseries' not in dir() or price_timeseries is None:
+                # Generate price_timeseries if not already done
+                if request.analytical_period:
+                    period_start = request.analytical_period.start_datetime
+                    tz = request.analytical_period.timezone
+                elif request.period_start:
+                    period_start = request.period_start
+                    tz = request.timezone or "Europe/Warsaw"
+                else:
+                    start_date = request.start_date or "2025-01-01"
+                    period_start = f"{start_date}T00:00:00"
+                    tz = request.timezone or "Europe/Warsaw"
+
+                price_timeseries = generate_price_timeseries(
+                    prices=request.prices,
+                    n_steps=n,
+                    step_minutes=interval_minutes,
+                    start_datetime=period_start,
+                    timezone=tz,
+                    unserved_penalty_pln_kwh=getattr(request.prices, 'unserved_penalty_pln_kwh', 10.0),
+                )
+
+            # Extract grid import/export from dispatch_result (convert kW to kWh)
+            if dispatch_result.hourly_grid_import_kw:
+                grid_import_kwh = [kw * dt_hours for kw in dispatch_result.hourly_grid_import_kw]
+            else:
+                grid_import_kwh = [0.0] * n
+
+            if dispatch_result.hourly_grid_export_kw:
+                grid_export_kwh = [kw * dt_hours for kw in dispatch_result.hourly_grid_export_kw]
+            else:
+                grid_export_kwh = [0.0] * n
+
+            # Get unserved load if available
+            unserved_kwh = None
+            if dispatch_result.constraint_summary and dispatch_result.constraint_summary.unserved_load_kwh > 0:
+                # Distribute unserved load based on constraint hits (simplified: uniform for now)
+                unserved_kwh = [dispatch_result.constraint_summary.unserved_load_kwh / n] * n
+
+            ledger_timeseries = generate_ledger_timeseries(
+                grid_import_kwh=grid_import_kwh,
+                grid_export_kwh=grid_export_kwh,
+                price_timeseries=price_timeseries,
+                unserved_load_kwh=unserved_kwh,
+            )
+            object.__setattr__(variant_result, 'ledger_timeseries', ledger_timeseries)
 
         variants.append(variant_result)
 
