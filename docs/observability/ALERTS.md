@@ -554,3 +554,64 @@ Tracks adoption of battery trace feature.
     summary: "Battery trace adoption: {{ $value | humanize }}%"
     description: "{{ $value | humanize }}% of sizing requests include battery_trace"
 ```
+
+## Portfolio Alerts (v2.3.0)
+
+### Warning: Portfolio Summary Errors
+
+Fires when portfolio summary requests are failing.
+
+```yaml
+- alert: BESSPortfolioSummaryErrors
+  expr: increase(bess_portfolio_summary_errors_total[15m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Portfolio summary errors increasing"
+    description: "More than 5 portfolio summary errors in last 15 minutes"
+```
+
+### Warning: Mixed Assumptions Detected
+
+Fires when portfolio requests aggregate runs with different assumptions versions.
+
+```yaml
+- alert: BESSPortfolioMixedAssumptions
+  expr: rate(bess_portfolio_mixed_assumptions_total[1h]) > 1
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Portfolio requests with mixed assumptions"
+    description: "Portfolio summary requests are aggregating runs with different assumption versions. Results may not be comparable."
+```
+
+### Info: Large Portfolio Requests
+
+Tracks when users are aggregating large numbers of runs.
+
+```yaml
+- alert: BESSLargePortfolioRequests
+  expr: histogram_quantile(0.95, rate(bess_portfolio_items_per_request_bucket[1h])) > 20
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "Large portfolio requests detected"
+    description: "95th percentile portfolio request size is {{ $value | humanize }} items"
+```
+
+### Info: Portfolio Usage
+
+Tracks adoption of portfolio feature.
+
+```yaml
+- alert: BESSPortfolioAdoption
+  expr: sum(increase(bess_portfolio_summary_requests_total[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Portfolio feature adoption"
+    description: "{{ $value | humanize }} portfolio summary requests in last 24 hours"
+```

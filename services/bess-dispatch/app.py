@@ -4712,6 +4712,15 @@ async def portfolio_summary(request: PortfolioRequest):
     Returns:
         PortfolioResponse with summary, items, and errors
     """
+    # v2.3.0: Record portfolio metrics
+    from observability.portfolio_metrics import (
+        record_portfolio_summary_request,
+        record_portfolio_summary_result,
+        record_portfolio_summary_error,
+    )
+
+    record_portfolio_summary_request(source="api")
+
     try:
         response = compute_portfolio_summary(
             run_ids=request.run_ids,
@@ -4720,13 +4729,24 @@ async def portfolio_summary(request: PortfolioRequest):
             get_run_fn=get_run,
         )
 
-        # TODO: Add v2.3.0 portfolio metrics in PR 6/6
+        # Record result metrics
+        record_portfolio_summary_result(
+            source="api",
+            items_total=response.summary.items_total,
+            items_ok=response.summary.items_ok,
+            items_error=response.summary.items_error,
+            total_npv_pln=response.summary.total_npv_pln,
+            total_capex_pln=response.summary.total_capex_pln,
+            mixed_assumptions=response.summary.mixed_assumptions,
+        )
 
         return response
 
     except HTTPException:
+        record_portfolio_summary_error(source="api", error_type="validation")
         raise
     except Exception as e:
+        record_portfolio_summary_error(source="api", error_type="processing")
         raise HTTPException(500, f"Portfolio summary error: {str(e)}")
 
 
@@ -4838,6 +4858,9 @@ async def export_portfolio_summary_csv(request: PortfolioRequest):
     Returns:
         CSV file with portfolio items
     """
+    from observability.portfolio_metrics import record_portfolio_export_request
+    record_portfolio_export_request(source="api", format="csv")
+
     try:
         response = compute_portfolio_summary(
             run_ids=request.run_ids,
@@ -4878,6 +4901,9 @@ async def export_portfolio_summary_zip(request: PortfolioRequest):
     Returns:
         ZIP file with portfolio data
     """
+    from observability.portfolio_metrics import record_portfolio_export_request
+    record_portfolio_export_request(source="api", format="zip")
+
     try:
         response = compute_portfolio_summary(
             run_ids=request.run_ids,
