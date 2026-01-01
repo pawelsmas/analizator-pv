@@ -156,6 +156,35 @@ def check_deprecations_registry(project_root: Path) -> Tuple[bool, str]:
         return False, str(e)
 
 
+def run_no_legacy_guard(project_root: Path) -> Tuple[bool, str]:
+    """Run no-legacy guard to check for legacy references (v2.8.0)."""
+    script = project_root / "scripts" / "guards" / "check_no_legacy.py"
+    if not script.exists():
+        return True, "Skipped (guard not found)"
+
+    cmd = [sys.executable, str(script)]
+    return run_command(cmd, cwd=str(project_root), timeout=60)
+
+
+def check_clean_contract_pack(project_root: Path) -> Tuple[bool, str]:
+    """Verify clean contract pack exists (v2.8.0)."""
+    pack_file = project_root / "docs" / "scenarios" / "packs" / "clean_contract.yml"
+    if not pack_file.exists():
+        return False, "clean_contract.yml not found"
+
+    try:
+        import yaml
+        with open(pack_file, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if "name" not in data or data["name"] != "clean_contract":
+            return False, "Invalid pack: missing 'name' or wrong name"
+        if "validation" not in data:
+            return False, "Invalid pack: missing 'validation'"
+        return True, f"Pack v{data.get('version', 'unknown')} with {len(data.get('scenarios', []))} scenarios"
+    except Exception as e:
+        return False, str(e)
+
+
 def main() -> int:
     """Run all RC checks."""
     parser = argparse.ArgumentParser(description="RC check script")
@@ -226,6 +255,21 @@ def main() -> int:
     passed, output = check_deprecations_registry(project_root)
     results.append(("Deprecations registry", passed))
     print_result("Deprecations registry", passed, output if not passed else output)
+
+    # 7. No-legacy guard (v2.8.0)
+    print_header("7. No-Legacy Guard")
+    passed, output = run_no_legacy_guard(project_root)
+    results.append(("No-legacy guard", passed))
+    if "Skipped" in output:
+        print_result("No-legacy guard", True, output)
+    else:
+        print_result("No-legacy guard", passed, output if not passed else "No legacy references in critical paths")
+
+    # 8. Clean contract pack (v2.8.0)
+    print_header("8. Clean Contract Pack")
+    passed, output = check_clean_contract_pack(project_root)
+    results.append(("Clean contract pack", passed))
+    print_result("Clean contract pack", passed, output if not passed else output)
 
     # Summary
     print_header("Summary")

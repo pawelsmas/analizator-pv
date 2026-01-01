@@ -1,0 +1,50 @@
+# Clean Contract scenario pack (v2.8.0)
+# Validates that all API responses use clean contract (no deprecated fields)
+# Used in RC gating to ensure clean API compliance
+name: clean_contract
+description: Validates API responses use clean contract format
+version: "2.8.0"
+
+# These scenarios verify clean contract compliance
+# Each scenario request uses compat=clean (default) and response is checked
+# for absence of deprecated fields
+scenarios:
+  # Basic sizing should return clean response
+  - baseline_stacked_no_arb:
+      assert_no_deprecated: true
+      deprecated_fields:
+        - export_revenue_pln
+        - savings_pln
+        - interval_minutes
+        - payback_years
+
+  # Sizing with arbitrage should return clean response
+  - baseline_stacked_with_arb:
+      assert_no_deprecated: true
+      deprecated_fields:
+        - export_revenue_pln
+        - savings_pln
+        - interval_minutes
+        - payback_years
+
+# Validation rules
+validation:
+  # Response must not contain these deprecated field names at any nesting level
+  deprecated_response_fields:
+    - export_revenue_pln
+    - savings_pln
+    - payback_years
+
+  # Response must contain these clean field names
+  required_clean_fields:
+    - export_savings_pln
+    - total_savings_pln
+    - finance_summary
+    - economics_breakdown
+
+  # Headers that should NOT be present in clean mode
+  forbidden_headers:
+    - Deprecation
+
+  # Headers that MUST be present
+  required_headers: []
