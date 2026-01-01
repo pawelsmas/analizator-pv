@@ -1719,6 +1719,14 @@ class SizingRequest(BaseModel):
                     "Shows import/export/fees prices at each timestep for debugging and replay."
     )
 
+    # Price timeseries override (new in v2.0.0 PR2)
+    price_timeseries_override: Optional["PriceTimeseriesPlnPerMwh"] = Field(
+        None,
+        description="Explicit price timeseries to use instead of generated ToU prices. "
+                    "If provided, bypasses ToU mapping and uses these prices directly. "
+                    "Must match input data length (steps = len(load_kw))."
+    )
+
     # Finance configuration (v0.5.0)
     finance_config: Optional["FinanceConfig"] = Field(
         None,
@@ -1829,6 +1837,11 @@ class SizingVariantResult(BaseModel):
         None,
         description="SHA256 hash of canonical price_timeseries JSON. "
                     "Stable identifier for price set - same prices = same hash."
+    )
+    pricing_mode: Optional[str] = Field(
+        None,
+        description="Source of prices: 'generated' (from ToU/PriceConfig) or 'override' "
+                    "(from price_timeseries_override). Set when include_price_timeseries=True."
     )
 
     def model_post_init(self, __context):
