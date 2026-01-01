@@ -661,6 +661,13 @@ class DispatchRequest(BaseModel):
                     "False = only totals_pln (small). True = also timeseries_pln (large)."
     )
 
+    # Battery trace control (new in v2.2.0)
+    include_battery_trace: bool = Field(
+        False,
+        description="Include per-timestep battery trace in response. "
+                    "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
+    )
+
     # Grid constraints (v0.7.0)
     grid_constraints: Optional["GridConstraints"] = Field(
         None,
@@ -1105,6 +1112,124 @@ class PriceTimeseriesPlnPerMwh(BaseModel):
 
 
 # =============================================================================
+# Battery Trace Timeseries SSoT (v2.2.0)
+# =============================================================================
+
+class BatteryTraceTimeseries(BaseModel):
+    """
+    Per-step battery trace timeseries (v2.2.0 SSoT).
+
+    This is the SINGLE SOURCE OF TRUTH for battery state and power flows
+    at each timestep during dispatch simulation.
+
+    Returned only when include_battery_trace=true to avoid payload bloat.
+
+    Used for:
+    - Debugging: verify SOC evolution and charge/discharge decisions
+    - Transparency: user can see exact power flows at each timestep
+    - Validation: SOC bounds and power limits invariants
+    - Visualization: chart SOC and power over time
+    """
+    # SOC at each timestep (kWh) - length = steps
+    # Convention: soc_kwh[i] = SOC at the END of timestep i
+    soc_kwh: List[float] = Field(
+        ...,
+        description="Battery SOC at end of each timestep [kWh]. Length = steps."
+    )
+
+    # Charge/discharge power at each timestep (kW) - all >= 0
+    charge_kw: List[float] = Field(
+        ...,
+        description="Battery charge power at each timestep [kW]. All values >= 0. Length = steps."
+    )
+    discharge_kw: List[float] = Field(
+        ...,
+        description="Battery discharge power at each timestep [kW]. All values >= 0. Length = steps."
+    )
+
+    # Source of charge power breakdown
+    charge_from_pv_kw: List[float] = Field(
+        ...,
+        description="Charge from PV surplus at each timestep [kW]. All values >= 0. Length = steps."
+    )
+    charge_from_grid_kw: List[float] = Field(
+        default_factory=list,
+        description="Charge from grid at each timestep [kW]. All values >= 0. Only with allow_grid_charging. Length = steps."
+    )
+
+    # Destination of discharge power breakdown
+    discharge_to_load_kw: List[float] = Field(
+        ...,
+        description="Discharge to load at each timestep [kW]. All values >= 0. Length = steps."
+    )
+    discharge_to_grid_kw: List[float] = Field(
+        default_factory=list,
+        description="Discharge to grid (export) at each timestep [kW]. All values >= 0. Length = steps."
+    )
+
+    # Metadata
+    steps: int = Field(
+        ...,
+        ge=1,
+        description="Number of timesteps"
+    )
+    step_minutes: int = Field(
+        ...,
+        ge=15, le=60,
+        description="Time resolution in minutes (15 or 60)"
+    )
+
+    # Battery parameters for validation
+    battery_energy_kwh: float = Field(
+        ...,
+        description="Battery energy capacity [kWh] for SOC bounds validation"
+    )
+    battery_power_kw: float = Field(
+        ...,
+        description="Battery power capacity [kW] for power limits validation"
+    )
+
+    def validate_lengths(self) -> bool:
+        """Check all arrays have correct length."""
+        if len(self.soc_kwh) != self.steps:
+            return False
+        if len(self.charge_kw) != self.steps:
+            return False
+        if len(self.discharge_kw) != self.steps:
+            return False
+        if len(self.charge_from_pv_kw) != self.steps:
+            return False
+        if len(self.discharge_to_load_kw) != self.steps:
+            return False
+        # Optional arrays (may be empty if feature not enabled)
+        if self.charge_from_grid_kw and len(self.charge_from_grid_kw) != self.steps:
+            return False
+        if self.discharge_to_grid_kw and len(self.discharge_to_grid_kw) != self.steps:
+            return False
+        return True
+
+    def validate_soc_bounds(self, tolerance: float = 1e-6) -> bool:
+        """Check SOC stays within [0, battery_energy_kwh]."""
+        for soc in self.soc_kwh:
+            if soc < -tolerance:
+                return False
+            if soc > self.battery_energy_kwh + tolerance:
+                return False
+        return True
+
+    def validate_power_non_negative(self) -> bool:
+        """Check all power values are non-negative."""
+        for arr in [self.charge_kw, self.discharge_kw, self.charge_from_pv_kw, self.discharge_to_load_kw]:
+            if any(v < 0 for v in arr):
+                return False
+        if self.charge_from_grid_kw and any(v < 0 for v in self.charge_from_grid_kw):
+            return False
+        if self.discharge_to_grid_kw and any(v < 0 for v in self.discharge_to_grid_kw):
+            return False
+        return True
+
+
+# =============================================================================
 # Ledger Timeseries SSoT (v2.0.0)
 # =============================================================================
 
@@ -1498,6 +1623,13 @@ class DispatchResult(BaseModel):
     debug_events: Optional["DebugEvents"] = Field(
         None,
         description="Summary of debug events (caps/curtail/unserved) for debugging and repro analysis"
+    )
+
+    # Battery trace (v2.2.0) - per-step SOC and power flows
+    battery_trace: Optional["BatteryTraceTimeseries"] = Field(
+        None,
+        description="Per-step battery trace if include_battery_trace=True. "
+                    "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
     )
 
 
@@ -1924,6 +2056,13 @@ class SizingRequest(BaseModel):
                     "Shows import_cost/export_revenue/fees/penalty at each timestep for charts."
     )
 
+    # Battery trace control (new in v2.2.0 PR1)
+    include_battery_trace: bool = Field(
+        False,
+        description="Include BatteryTraceTimeseries (per-step SOC and power flows) in response. "
+                    "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
+    )
+
     # Price timeseries override (new in v2.0.0 PR2)
     price_timeseries_override: Optional["PriceTimeseriesPlnPerMwh"] = Field(
         None,
@@ -2054,6 +2193,13 @@ class SizingVariantResult(BaseModel):
         None,
         description="Per-step cost timeseries if include_ledger_timeseries=True. "
                     "Shows import_cost/export_revenue/fees/penalty at each timestep for charts."
+    )
+
+    # Battery trace (v2.2.0 PR1) - per-step SOC and power flows
+    battery_trace: Optional["BatteryTraceTimeseries"] = Field(
+        None,
+        description="Per-step battery trace if include_battery_trace=True. "
+                    "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
     )
 
     def model_post_init(self, __context):
