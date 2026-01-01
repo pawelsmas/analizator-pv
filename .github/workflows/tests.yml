@@ -29,6 +29,25 @@ jobs:
         run: |
           python scripts/contracts/export_contracts.py --check
 
+  # Scenario configuration freeze check (v2.6.0 PR2)
+  scenario-freeze-check:
+    name: Scenario Freeze Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check for scenario configuration changes
+        run: |
+          python scripts/check_scenario_updates.py
+
   contract-tests:
     name: Contract Tests
     runs-on: ubuntu-latest
