@@ -4497,11 +4497,15 @@ class PricingPreviewRequest(BaseModel):
     )
     pricing_config: Optional[PriceConfig] = Field(
         None,
-        description="Pricing configuration (required if tariff_preset not provided)"
+        description="Pricing configuration (required if tariff_preset/tariff_schedule not provided)"
     )
     tariff_preset: Optional[str] = Field(
         None,
         description="Tariff preset ID (e.g., 'pl_flat_2026'). If provided, pricing_mode='preset'"
+    )
+    tariff_schedule: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Custom tariff schedule with weekday/weekend 24h arrays. If provided, pricing_mode='schedule'"
     )
 
 
@@ -4555,10 +4559,13 @@ async def pricing_preview(request: PricingPreviewRequest):
     """
     from datetime import datetime, timedelta
 
+    from models import TariffScheduleConfig
+    from tariff_schedule_helper import generate_price_timeseries_from_schedule
+
     try:
         # Validate that at least one pricing source is provided
-        if not request.tariff_preset and not request.pricing_config:
-            raise HTTPException(400, "Either tariff_preset or pricing_config must be provided")
+        if not request.tariff_preset and not request.pricing_config and not request.tariff_schedule:
+            raise HTTPException(400, "Either tariff_preset, tariff_schedule, or pricing_config must be provided")
 
         # Parse period dates
         try:
@@ -4581,7 +4588,19 @@ async def pricing_preview(request: PricingPreviewRequest):
             raise HTTPException(400, f"Too many steps: {n_steps} (max 35136)")
 
         # Determine pricing mode and generate timeseries
-        if request.tariff_preset:
+        # Priority: tariff_schedule > tariff_preset > pricing_config
+        if request.tariff_schedule:
+            # Use custom tariff schedule
+            schedule = TariffScheduleConfig(**request.tariff_schedule)
+            price_timeseries = generate_price_timeseries_from_schedule(
+                schedule=schedule,
+                n_steps=n_steps,
+                step_minutes=request.interval_minutes,
+                start_datetime=request.period_start,
+                timezone=request.timezone,
+            )
+            pricing_mode = "schedule"
+        elif request.tariff_preset:
             # Use tariff preset
             price_timeseries = generate_price_timeseries_from_preset(
                 preset_id=request.tariff_preset,
