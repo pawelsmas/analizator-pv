@@ -34,6 +34,16 @@ from observability.http_metrics import (
     SERVICE_NAME,
 )
 
+from limits_config import (
+    MAX_STEPS,
+    MAX_REQUEST_BYTES,
+    MAX_VARIANTS,
+    MAX_DURATIONS,
+    ErrorCode,
+    get_limits_info,
+)
+from middleware.request_size_limit import RequestSizeLimitMiddleware
+
 from observability.batch_metrics import (
     record_batch_request,
     record_portfolio_summary,
@@ -252,6 +262,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request size limit middleware (v2.5.0)
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+
 
 # Prometheus HTTP metrics middleware
 @app.middleware("http")
@@ -416,6 +429,21 @@ async def cache_clear():
     """
     count = clear_cache()
     return {"cleared": count}
+
+
+# =============================================================================
+# Limits Endpoint (v2.5.0)
+# =============================================================================
+
+@app.get("/api/bess-dispatch/limits")
+async def get_limits():
+    """
+    Get current request limits configuration.
+
+    Returns MAX_REQUEST_BYTES, MAX_STEPS, and other configured limits.
+    Useful for clients to check limits before sending large requests.
+    """
+    return get_limits_info()
 
 
 # =============================================================================
@@ -1757,6 +1785,20 @@ async def run_sizing_optimization(request: SizingRequestAPI):
     start_time = time.time()
 
     try:
+        # Validate step limits (v2.5.0)
+        n_steps = len(request.load_kw)
+        if n_steps > MAX_STEPS:
+            return Response(
+                content=json.dumps({
+                    "error_code": ErrorCode.STEPS_LIMIT_EXCEEDED,
+                    "detail": f"Number of steps ({n_steps}) exceeds maximum allowed ({MAX_STEPS})",
+                    "max_steps": MAX_STEPS,
+                    "steps": n_steps,
+                }),
+                status_code=422,
+                media_type="application/json",
+            )
+
         # Validate arbitrage requirements
         if request.arbitrage_config and request.arbitrage_config.enabled:
             if not request.start_date:
