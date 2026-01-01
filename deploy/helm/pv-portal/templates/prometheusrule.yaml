@@ -1,0 +1,238 @@
+{{- if and .Values.monitoring.prometheusRule.enabled .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "pv-portal.fullname" . }}
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    # HA Health Alerts
+    - name: pv-portal-ha-health
+      rules:
+        # Critical: API pods below minimum
+        - alert: PVPortalAPIPodsBelowMinimum
+          expr: |
+            sum(up{job="{{ include "pv-portal.fullname" . }}-api"}) < {{ .Values.api.replicaCount }}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PV Portal API pods below minimum"
+            description: "Only {{ "{{ $value }}" }} API pods are running, expected {{ .Values.api.replicaCount }}"
+            runbook_url: "https://docs.example.com/runbooks/pv-portal-pods-below-minimum"
+
+        # Critical: Worker pods below minimum
+        - alert: PVPortalWorkerPodsBelowMinimum
+          expr: |
+            sum(up{job="{{ include "pv-portal.fullname" . }}-worker"}) < {{ .Values.worker.replicaCount }}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PV Portal Worker pods below minimum"
+            description: "Only {{ "{{ $value }}" }} Worker pods are running, expected {{ .Values.worker.replicaCount }}"
+            runbook_url: "https://docs.example.com/runbooks/pv-portal-pods-below-minimum"
+
+        # Warning: Pod restarts
+        - alert: PVPortalPodRestarting
+          expr: |
+            increase(kube_pod_container_status_restarts_total{
+              namespace="{{ .Release.Namespace }}",
+              pod=~"{{ include "pv-portal.fullname" . }}.*"
+            }[1h]) > 3
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PV Portal pod restarting frequently"
+            description: "Pod {{ "{{ $labels.pod }}" }} has restarted {{ "{{ $value }}" }} times in the last hour"
+
+    # Database Health Alerts
+    - name: pv-portal-database
+      rules:
+        # Warning: High DB connection pool usage
+        - alert: PVPortalDBPoolHighUsage
+          expr: |
+            (bess_db_pool_checked_out / bess_db_pool_size) > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Database connection pool usage high"
+            description: "Pool {{ "{{ $labels.pool_name }}" }} is {{ "{{ printf \"%.1f\" (multiply $value 100) }}" }}% utilized"
+
+        # Critical: DB pool timeouts
+        - alert: PVPortalDBPoolTimeouts
+          expr: |
+            increase(bess_db_pool_timeout_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Database connection pool timeouts"
+            description: "Pool {{ "{{ $labels.pool_name }}" }} had {{ "{{ $value }}" }} timeouts in last 5 minutes"
+
+        # Warning: Slow queries
+        - alert: PVPortalDBSlowQueries
+          expr: |
+            histogram_quantile(0.99, rate(bess_db_query_duration_seconds_bucket[5m])) > 1.0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Slow database queries detected"
+            description: "99th percentile query duration is {{ "{{ printf \"%.2f\" $value }}" }}s for {{ "{{ $labels.query_type }}" }}"
+
+    # Redis Health Alerts
+    - name: pv-portal-redis
+      rules:
+        # Critical: Redis connection errors
+        - alert: PVPortalRedisConnectionErrors
+          expr: |
+            increase(bess_redis_connection_errors_total[5m]) > 5
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis connection errors"
+            description: "{{ "{{ $value }}" }} connection errors in last 5 minutes"
+
+        # Warning: Redis commands slow
+        - alert: PVPortalRedisSlowCommands
+          expr: |
+            histogram_quantile(0.99, rate(bess_redis_command_duration_seconds_bucket[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Slow Redis commands"
+            description: "99th percentile Redis command duration is {{ "{{ printf \"%.3f\" $value }}" }}s"
+
+    # Job Processing Alerts
+    - name: pv-portal-jobs
+      rules:
+        # Warning: Job queue growing
+        - alert: PVPortalJobQueueGrowing
+          expr: |
+            increase(bess_worker_queue_length[10m]) > 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Job queue is growing"
+            description: "Queue {{ "{{ $labels.queue_name }}" }} has grown by {{ "{{ $value }}" }} jobs in 10 minutes"
+
+        # Critical: Jobs stuck in queue
+        - alert: PVPortalJobsStuckInQueue
+          expr: |
+            bess_worker_queue_oldest_seconds > 600
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Jobs stuck in queue"
+            description: "Oldest job in {{ "{{ $labels.queue_name }}" }} is {{ "{{ printf \"%.0f\" $value }}" }}s old"
+
+        # Warning: High job failure rate
+        - alert: PVPortalJobFailureRateHigh
+          expr: |
+            sum(rate(bess_ha_jobs_completed_total{status="failed"}[5m])) /
+            sum(rate(bess_ha_jobs_completed_total[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High job failure rate"
+            description: "{{ "{{ printf \"%.1f\" (multiply $value 100) }}" }}% of jobs are failing"
+
+        # Warning: Job processing slow
+        - alert: PVPortalJobProcessingSlow
+          expr: |
+            histogram_quantile(0.95, rate(bess_ha_job_processing_duration_seconds_bucket[15m])) > 300
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Job processing is slow"
+            description: "95th percentile job duration is {{ "{{ printf \"%.0f\" $value }}" }}s for {{ "{{ $labels.job_type }}" }}"
+
+    # Health Check Alerts
+    - name: pv-portal-health
+      rules:
+        # Critical: Component unhealthy
+        - alert: PVPortalComponentUnhealthy
+          expr: |
+            bess_component_healthy == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Component unhealthy"
+            description: "Component {{ "{{ $labels.component }}" }} is unhealthy"
+
+        # Warning: Health checks slow
+        - alert: PVPortalHealthChecksSlow
+          expr: |
+            histogram_quantile(0.99, rate(bess_health_check_duration_seconds_bucket[5m])) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Health checks are slow"
+            description: "{{ "{{ $labels.check_type }}" }} health checks taking {{ "{{ printf \"%.2f\" $value }}" }}s"
+
+    # Graceful Shutdown Alerts
+    - name: pv-portal-shutdown
+      rules:
+        # Warning: Shutdown taking too long
+        - alert: PVPortalShutdownSlow
+          expr: |
+            bess_shutdown_initiated == 1 and bess_shutdown_jobs_remaining > 0
+          for: 60s
+          labels:
+            severity: warning
+          annotations:
+            summary: "Graceful shutdown taking too long"
+            description: "{{ "{{ $value }}" }} jobs remaining after 60s of shutdown"
+
+    # API Performance Alerts
+    - name: pv-portal-api-performance
+      rules:
+        # Warning: High API latency
+        - alert: PVPortalAPIHighLatency
+          expr: |
+            histogram_quantile(0.95, rate(bess_http_request_duration_seconds_bucket{handler!="/health/live", handler!="/health/ready", handler!="/metrics"}[5m])) > 2.0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API latency is high"
+            description: "95th percentile API latency is {{ "{{ printf \"%.2f\" $value }}" }}s for {{ "{{ $labels.handler }}" }}"
+
+        # Warning: High error rate
+        - alert: PVPortalAPIHighErrorRate
+          expr: |
+            sum(rate(bess_http_requests_total{status=~"5.."}[5m])) /
+            sum(rate(bess_http_requests_total[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API error rate is high"
+            description: "{{ "{{ printf \"%.1f\" (multiply $value 100) }}" }}% of requests are failing"
+
+        # Critical: API down
+        - alert: PVPortalAPIDown
+          expr: |
+            sum(rate(bess_http_requests_total[1m])) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API is not receiving requests"
+            description: "No requests received in the last 5 minutes"
+{{- end }}
