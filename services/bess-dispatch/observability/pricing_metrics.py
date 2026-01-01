@@ -1,11 +1,12 @@
 """
-Prometheus metrics for Pricing Engine (v2.0.0).
+Prometheus metrics for Pricing Engine (v2.0.0 + v2.1.0).
 
 Tracks:
 - Price timeseries requests (with/without flag)
-- Pricing mode distribution (generated vs override)
+- Pricing mode distribution (generated vs override vs preset vs schedule)
 - Ledger timeseries requests
 - Cost bucket distributions
+- v2.1.0: Tariff presets usage, pricing preview requests, schedule usage
 """
 
 from prometheus_client import Counter, Histogram
@@ -137,3 +138,176 @@ def record_ledger_costs(
     LEDGER_IMPORT_COST_PLN.observe(import_cost_pln)
     LEDGER_EXPORT_REVENUE_PLN.observe(export_revenue_pln)
     LEDGER_NET_COST_PLN.observe(net_cost_pln)
+
+
+# =============================================================================
+# v2.1.0: Tariff Presets + Pricing Preview Metrics
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Counters - Tariff & Preview Requests
+# -----------------------------------------------------------------------------
+
+TARIFF_PRESETS_LIST_TOTAL = Counter(
+    "bess_tariff_presets_list_total",
+    "Total GET /tariffs requests",
+)
+
+PRICING_PREVIEW_REQUESTS_TOTAL = Counter(
+    "bess_pricing_preview_requests_total",
+    "Total POST /pricing/preview requests",
+    ["pricing_mode"],  # "generated", "preset", "schedule", "override"
+)
+
+TARIFF_PRESET_USAGE_TOTAL = Counter(
+    "bess_tariff_preset_usage_total",
+    "Tariff preset usage by preset ID",
+    ["preset_id"],  # e.g., "pl_flat_2026", "pl_tou_simple_2026"
+)
+
+TARIFF_SCHEDULE_USAGE_TOTAL = Counter(
+    "bess_tariff_schedule_usage_total",
+    "Custom tariff schedule usage",
+    ["has_holidays"],  # "true" or "false"
+)
+
+
+# -----------------------------------------------------------------------------
+# Histograms - Preview Response Metrics
+# -----------------------------------------------------------------------------
+
+PRICING_PREVIEW_STEPS = Histogram(
+    "bess_pricing_preview_steps",
+    "Number of steps in pricing preview response",
+    buckets=[24, 48, 96, 168, 336, 672, 744, 1440, 2880, 8760],
+)
+
+PRICING_PREVIEW_DURATION_SECONDS = Histogram(
+    "bess_pricing_preview_duration_seconds",
+    "Pricing preview request duration [seconds]",
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+)
+
+
+# -----------------------------------------------------------------------------
+# Gauges - Price Anomaly Detection
+# -----------------------------------------------------------------------------
+
+PRICE_ANOMALY_DETECTED = Counter(
+    "bess_price_anomaly_detected_total",
+    "Price anomaly detections",
+    ["anomaly_type"],  # "zero_import", "negative_price", "extreme_variance"
+)
+
+
+# -----------------------------------------------------------------------------
+# Helper Functions - v2.1.0
+# -----------------------------------------------------------------------------
+
+def record_tariff_presets_list() -> None:
+    """Record a GET /tariffs request."""
+    TARIFF_PRESETS_LIST_TOTAL.inc()
+
+
+def record_pricing_preview(pricing_mode: str) -> None:
+    """
+    Record a POST /pricing/preview request.
+
+    Args:
+        pricing_mode: "generated", "preset", "schedule", or "override"
+    """
+    PRICING_PREVIEW_REQUESTS_TOTAL.labels(pricing_mode=pricing_mode).inc()
+
+
+def record_tariff_preset_usage(preset_id: str) -> None:
+    """
+    Record usage of a specific tariff preset.
+
+    Args:
+        preset_id: The preset ID (e.g., "pl_flat_2026")
+    """
+    TARIFF_PRESET_USAGE_TOTAL.labels(preset_id=preset_id).inc()
+
+
+def record_tariff_schedule_usage(has_holidays: bool) -> None:
+    """
+    Record usage of a custom tariff schedule.
+
+    Args:
+        has_holidays: Whether the schedule includes holiday dates
+    """
+    TARIFF_SCHEDULE_USAGE_TOTAL.labels(
+        has_holidays="true" if has_holidays else "false"
+    ).inc()
+
+
+def record_pricing_preview_steps(n_steps: int) -> None:
+    """
+    Record the number of steps in a pricing preview response.
+
+    Args:
+        n_steps: Number of timesteps in the response
+    """
+    PRICING_PREVIEW_STEPS.observe(n_steps)
+
+
+def record_pricing_preview_duration(duration_seconds: float) -> None:
+    """
+    Record the duration of a pricing preview request.
+
+    Args:
+        duration_seconds: Request duration in seconds
+    """
+    PRICING_PREVIEW_DURATION_SECONDS.observe(duration_seconds)
+
+
+def record_price_anomaly(anomaly_type: str) -> None:
+    """
+    Record a detected price anomaly.
+
+    Args:
+        anomaly_type: Type of anomaly detected:
+            - "zero_import": All import prices are zero
+            - "negative_price": Negative prices detected
+            - "extreme_variance": Price variance exceeds threshold
+    """
+    PRICE_ANOMALY_DETECTED.labels(anomaly_type=anomaly_type).inc()
+
+
+def check_price_anomalies(import_prices: list) -> list:
+    """
+    Check for price anomalies and record any found.
+
+    Args:
+        import_prices: List of import prices
+
+    Returns:
+        List of detected anomaly types
+    """
+    anomalies = []
+
+    if not import_prices:
+        return anomalies
+
+    # Check for all-zero prices
+    if all(p == 0 for p in import_prices):
+        record_price_anomaly("zero_import")
+        anomalies.append("zero_import")
+
+    # Check for negative prices
+    if any(p < 0 for p in import_prices):
+        record_price_anomaly("negative_price")
+        anomalies.append("negative_price")
+
+    # Check for extreme variance (coefficient of variation > 100%)
+    if len(import_prices) > 1:
+        avg = sum(import_prices) / len(import_prices)
+        if avg > 0:
+            variance = sum((p - avg) ** 2 for p in import_prices) / len(import_prices)
+            std_dev = variance ** 0.5
+            cv = std_dev / avg
+            if cv > 1.0:  # CV > 100%
+                record_price_anomaly("extreme_variance")
+                anomalies.append("extreme_variance")
+
+    return anomalies
