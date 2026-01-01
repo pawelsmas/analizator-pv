@@ -425,3 +425,132 @@ When alerts fire, operators should:
 11. **LedgerReconciliationErrorHigh**: Review rounding policies in money_ledger_helper.py and savings_breakdown calculation
 12. **HighPriceOverrideUsage**: Review if price_timeseries_override is being used as intended (testing/replay)
 13. **UnusualImportPrice**: Verify price configuration, check for typos in import_price_pln_mwh
+14. **DispatchInvariantViolation**: Check battery trace for SOC/power limit violations, review dispatch algorithm
+15. **CycleLimitExceeded**: Review max_cycles_per_day setting, may need to reduce or adjust dispatch strategy
+16. **HighDailyEFC**: Battery cycling rate is high, may reduce battery lifetime
+
+## Dispatch Trace Alerts (v2.2.0)
+
+### Critical: Dispatch Invariant Violation
+
+Fires when dispatch invariants (SOC bounds, power limits, no-simultaneous) are violated.
+
+```yaml
+- alert: BESSDispatchInvariantViolation
+  expr: increase(bess_dispatch_invariant_violations_total[5m]) > 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Dispatch invariant violation detected"
+    description: "{{ $labels.invariant_type }} invariant violated. This indicates a dispatch algorithm error."
+    runbook: "Check battery_trace for affected run, verify SOC/power calculations"
+```
+
+### Warning: SOC Bounds Violation
+
+Fires when SOC goes outside valid range.
+
+```yaml
+- alert: BESSSOCBoundsViolation
+  expr: increase(bess_dispatch_invariant_failed_total{check_type="soc_bounds"}[15m]) > 0
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "SOC bounds check failed"
+    description: "SOC exceeded valid range (0 to capacity). Check dispatch algorithm."
+```
+
+### Warning: Power Limits Violation
+
+Fires when charge/discharge power exceeds rated power.
+
+```yaml
+- alert: BESSPowerLimitsViolation
+  expr: increase(bess_dispatch_invariant_failed_total{check_type="power_limits"}[15m]) > 0
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Power limits check failed"
+    description: "Charge or discharge power exceeded rated power. Check dispatch algorithm."
+```
+
+### Warning: Simultaneous Charge/Discharge
+
+Fires when battery is simultaneously charging and discharging.
+
+```yaml
+- alert: BESSSimultaneousChargeDischarge
+  expr: increase(bess_dispatch_invariant_failed_total{check_type="no_simultaneous"}[15m]) > 0
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Simultaneous charge/discharge detected"
+    description: "Battery is charging and discharging at the same time. This should never happen."
+```
+
+## Cycle Accounting Alerts (v2.2.0)
+
+### Warning: Cycle Limit Exceeded
+
+Fires when cycle limit enforcement is active and days are exceeding the limit.
+
+```yaml
+- alert: BESSCycleLimitExceeded
+  expr: increase(bess_cycle_limit_days_exceeded_total[1d]) > 0
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Daily cycle limit exceeded"
+    description: "{{ $value }} days exceeded max_cycles_per_day limit"
+```
+
+### Warning: High Daily EFC
+
+Fires when daily cycling rate is high, which may reduce battery lifetime.
+
+```yaml
+- alert: BESSHighDailyEFC
+  expr: bess_cycle_daily_max_efc > 2.0
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High daily cycling rate"
+    description: "Max daily EFC is {{ $value }}, which exceeds 2.0 cycles/day threshold"
+```
+
+### Info: Cycle Limit Clamping Active
+
+Fires when cycle limit enforcement is actively clamping discharge.
+
+```yaml
+- alert: BESSCycleLimitClampingActive
+  expr: rate(bess_cycle_limit_clamp_events_total[1h]) > 10
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "Cycle limit clamping is active"
+    description: "More than 10 clamp events per hour. Battery discharge is being limited to meet cycle budget."
+```
+
+### Info: Battery Trace Requests
+
+Tracks adoption of battery trace feature.
+
+```yaml
+- alert: BESSBatteryTraceAdoption
+  expr: |
+    sum(rate(bess_battery_trace_requests_total[1d])) /
+    sum(rate(bess_http_requests_total{path="/sizing"}[1d])) * 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Battery trace adoption: {{ $value | humanize }}%"
+    description: "{{ $value | humanize }}% of sizing requests include battery_trace"
+```
