@@ -1,6 +1,6 @@
 """
-RunStore - SQLite-backed persistence for sizing runs (v1.3.0, v2.8.0, v3.0.0)
-=============================================================================
+RunStore - SQLite-backed persistence for sizing runs (v1.3.0, v2.8.0, v3.0.0, v3.7.0)
+=====================================================================================
 
 Provides audit trail and run registry for sizing operations:
 - Auto-save sizing runs with request/response blobs (zlib-compressed)
@@ -11,6 +11,7 @@ Provides audit trail and run registry for sizing operations:
 - v2.8.0: Responses are normalized to clean format before storage
   (deprecated fields are removed, legacy is only applied on read if requested)
 - v3.0.0: Tenant isolation - runs are scoped by tenant_id
+- v3.7.0: Project isolation - runs are scoped by project_id
 
 Environment Variables:
 - RUN_STORE_PATH: Path to SQLite database (default: /data/runs.sqlite)
@@ -145,6 +146,7 @@ class RunStore:
     Table schema:
     - run_id: TEXT PRIMARY KEY
     - tenant_id: TEXT (indexed, v3.0.0)
+    - project_id: TEXT (indexed, v3.7.0)
     - request_hash: TEXT (indexed)
     - created_at: TEXT ISO 8601 (indexed)
     - endpoint: TEXT (e.g., "sizing", "dispatch", "batch.sizing")
@@ -172,6 +174,7 @@ class RunStore:
         self._ensure_db()
         self._migrate_add_metadata_columns()
         self._migrate_add_tenant_column()
+        self._migrate_add_project_column()
 
     def _ensure_db(self):
         """Create database and tables if they don't exist."""
@@ -254,6 +257,21 @@ class RunStore:
         finally:
             conn.close()
 
+    def _migrate_add_project_column(self):
+        """Add v3.7.0 project_id column if it doesn't exist."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(runs)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            if "project_id" not in existing_columns:
+                cursor.execute("ALTER TABLE runs ADD COLUMN project_id TEXT")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_runs_project_id ON runs(project_id)")
+            conn.commit()
+        finally:
+            conn.close()
+
     def save(
         self,
         run_id: str,
@@ -268,6 +286,7 @@ class RunStore:
         response: Dict[str, Any],
         created_at: Optional[str] = None,
         tenant_id: str = "default",
+        project_id: Optional[str] = None,
     ) -> None:
         """
         Save a run to the store.
@@ -285,6 +304,7 @@ class RunStore:
             response: Response payload dict
             created_at: ISO 8601 timestamp (defaults to now)
             tenant_id: Tenant identifier (v3.0.0, defaults to "default")
+            project_id: Project identifier (v3.7.0, optional)
 
         Note (v2.8.0): Response is normalized to clean format before storage.
         """
@@ -302,12 +322,12 @@ class RunStore:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO runs (
-                    run_id, tenant_id, request_hash, created_at, endpoint, status,
+                    run_id, tenant_id, project_id, request_hash, created_at, endpoint, status,
                     cache_hit, schema_version, assumptions_version,
                     compute_time_ms, request_blob, response_blob
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                run_id, tenant_id, request_hash, created_at, endpoint, status,
+                run_id, tenant_id, project_id, request_hash, created_at, endpoint, status,
                 1 if cache_hit else 0, schema_version, assumptions_version,
                 compute_time_ms, request_blob, response_blob,
             ))
@@ -315,67 +335,73 @@ class RunStore:
         finally:
             conn.close()
 
-    def get(self, run_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get(self, run_id: str, tenant_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get a run by run_id, optionally scoped to tenant.
+        Get a run by run_id, optionally scoped to tenant and/or project.
 
         Args:
             run_id: Run identifier
             tenant_id: Tenant identifier (v3.0.0). If provided, returns None
                       if run exists but belongs to different tenant (isolation).
+            project_id: Project identifier (v3.7.0). If provided, returns None
+                       if run exists but belongs to different project (isolation).
 
         Returns:
             Dict with run details including decompressed request/response,
-            or None if not found (or not accessible by tenant)
+            or None if not found (or not accessible by tenant/project)
         """
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
+
+            # Build query with optional tenant/project filtering
+            query = """
+                SELECT run_id, tenant_id, project_id, request_hash, created_at, endpoint, status,
+                       cache_hit, schema_version, assumptions_version,
+                       compute_time_ms, request_blob, response_blob,
+                       label, tags_json, notes, updated_at
+                FROM runs WHERE run_id = ?
+            """
+            params: List[Any] = [run_id]
+
             if tenant_id is not None:
-                cursor.execute("""
-                    SELECT run_id, tenant_id, request_hash, created_at, endpoint, status,
-                           cache_hit, schema_version, assumptions_version,
-                           compute_time_ms, request_blob, response_blob,
-                           label, tags_json, notes, updated_at
-                    FROM runs WHERE run_id = ? AND tenant_id = ?
-                """, (run_id, tenant_id))
-            else:
-                cursor.execute("""
-                    SELECT run_id, tenant_id, request_hash, created_at, endpoint, status,
-                           cache_hit, schema_version, assumptions_version,
-                           compute_time_ms, request_blob, response_blob,
-                           label, tags_json, notes, updated_at
-                    FROM runs WHERE run_id = ?
-                """, (run_id,))
+                query += " AND tenant_id = ?"
+                params.append(tenant_id)
+            if project_id is not None:
+                query += " AND project_id = ?"
+                params.append(project_id)
+
+            cursor.execute(query, params)
             row = cursor.fetchone()
             if row is None:
                 return None
 
             # Parse tags from JSON
             tags = None
-            if row[13]:
+            if row[14]:
                 try:
-                    tags = json.loads(row[13])
+                    tags = json.loads(row[14])
                 except json.JSONDecodeError:
                     tags = None
 
             return {
                 "run_id": row[0],
                 "tenant_id": row[1],
-                "request_hash": row[2],
-                "created_at": row[3],
-                "endpoint": row[4],
-                "status": row[5],
-                "cache_hit": bool(row[6]),
-                "schema_version": row[7],
-                "assumptions_version": row[8],
-                "compute_time_ms": row[9],
-                "request": _decompress_json(row[10]),
-                "response": _decompress_json(row[11]),
-                "label": row[12],
+                "project_id": row[2],
+                "request_hash": row[3],
+                "created_at": row[4],
+                "endpoint": row[5],
+                "status": row[6],
+                "cache_hit": bool(row[7]),
+                "schema_version": row[8],
+                "assumptions_version": row[9],
+                "compute_time_ms": row[10],
+                "request": _decompress_json(row[11]),
+                "response": _decompress_json(row[12]),
+                "label": row[13],
                 "tags": tags,
-                "notes": row[14],
-                "updated_at": row[15],
+                "notes": row[15],
+                "updated_at": row[16],
             }
         finally:
             conn.close()
@@ -390,9 +416,10 @@ class RunStore:
         q: Optional[str] = None,
         sort: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        List runs with optional filtering and sorting (v1.3.0, v3.0.0).
+        List runs with optional filtering and sorting (v1.3.0, v3.0.0, v3.7.0).
 
         Args:
             limit: Max results to return (default 20)
@@ -403,6 +430,7 @@ class RunStore:
             q: Free-text search in label and notes
             sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
             tenant_id: Filter by tenant (v3.0.0). Required for tenant isolation.
+            project_id: Filter by project (v3.7.0). Required for project isolation.
 
         Returns:
             Dict with items list and pagination info
@@ -419,6 +447,11 @@ class RunStore:
             if tenant_id is not None:
                 conditions.append("tenant_id = ?")
                 params.append(tenant_id)
+
+            # v3.7.0: Project isolation
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
 
             if request_hash:
                 conditions.append("request_hash = ?")
@@ -459,7 +492,7 @@ class RunStore:
 
             # Get items (without blobs for efficiency, include metadata)
             query = f"""
-                SELECT run_id, tenant_id, request_hash, created_at, endpoint, status, cache_hit,
+                SELECT run_id, tenant_id, project_id, request_hash, created_at, endpoint, status, cache_hit,
                        label, tags_json, notes, updated_at
                 FROM runs {where_clause}
                 ORDER BY {order_by}
@@ -471,24 +504,25 @@ class RunStore:
             for row in cursor.fetchall():
                 # Parse tags from JSON
                 tags = None
-                if row[8]:
+                if row[9]:
                     try:
-                        tags = json.loads(row[8])
+                        tags = json.loads(row[9])
                     except json.JSONDecodeError:
                         tags = None
 
                 items.append({
                     "run_id": row[0],
                     "tenant_id": row[1],
-                    "request_hash": row[2],
-                    "created_at": row[3],
-                    "endpoint": row[4],
-                    "status": row[5],
-                    "cache_hit": bool(row[6]),
-                    "label": row[7],
+                    "project_id": row[2],
+                    "request_hash": row[3],
+                    "created_at": row[4],
+                    "endpoint": row[5],
+                    "status": row[6],
+                    "cache_hit": bool(row[7]),
+                    "label": row[8],
                     "tags": tags,
-                    "notes": row[9],
-                    "updated_at": row[10],
+                    "notes": row[10],
+                    "updated_at": row[11],
                 })
 
             return {
@@ -672,9 +706,10 @@ def save_run(
     request: Dict[str, Any],
     response: Dict[str, Any],
     tenant_id: str = "default",
+    project_id: Optional[str] = None,
 ) -> None:
     """
-    Save a run using the global store.
+    Save a run using the global store (v3.7.0: project scoped).
 
     No-op if RUN_STORE_ENABLED is False.
     """
@@ -692,14 +727,15 @@ def save_run(
         request=request,
         response=response,
         tenant_id=tenant_id,
+        project_id=project_id,
     )
 
 
-def get_run(run_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Get a run by run_id using the global store (v3.0.0: tenant scoped)."""
+def get_run(run_id: str, tenant_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get a run by run_id using the global store (v3.0.0: tenant scoped, v3.7.0: project scoped)."""
     if not RUN_STORE_ENABLED:
         return None
-    return get_run_store().get(run_id, tenant_id=tenant_id)
+    return get_run_store().get(run_id, tenant_id=tenant_id, project_id=project_id)
 
 
 def list_runs(
@@ -711,8 +747,9 @@ def list_runs(
     q: Optional[str] = None,
     sort: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List runs using the global store (v1.3.0, v3.0.0: tenant scoped).
+    """List runs using the global store (v1.3.0, v3.0.0: tenant scoped, v3.7.0: project scoped).
 
     Args:
         limit: Max results to return (default 20)
@@ -723,6 +760,7 @@ def list_runs(
         q: Free-text search in label and notes
         sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
         tenant_id: Filter by tenant (v3.0.0)
+        project_id: Filter by project (v3.7.0)
     """
     if not RUN_STORE_ENABLED:
         return {"items": [], "limit": limit, "offset": offset, "total": 0}
@@ -735,6 +773,7 @@ def list_runs(
         q=q,
         sort=sort,
         tenant_id=tenant_id,
+        project_id=project_id,
     )
 
 
