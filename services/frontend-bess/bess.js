@@ -1,4 +1,68 @@
-console.log('[BESS] bess.js LOADED v=3.24 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.25 - timestamp:', new Date().toISOString());
+
+// ============================================
+// v2.7.0 COMPAT MODE + DEPRECATION TRACKING
+// ============================================
+
+/**
+ * BESS API configuration with compat mode support
+ * All sizing requests use compat=clean to get the new clean contract
+ */
+const BESS_API_CONFIG = {
+  compatMode: 'clean',  // Always use clean mode for new responses
+  baseUrl: '/api/bess-dispatch',
+};
+
+/**
+ * Build sizing URL with compat mode parameter
+ * @param {string} endpoint - API endpoint (e.g., '/sizing')
+ * @returns {string} Full URL with compat parameter
+ */
+function buildBessApiUrl(endpoint) {
+  const url = `${BESS_API_CONFIG.baseUrl}${endpoint}`;
+  return `${url}?compat=${BESS_API_CONFIG.compatMode}`;
+}
+
+/**
+ * Show deprecation warning banner if API returns Deprecation header
+ * @param {Response} response - Fetch response object
+ */
+function checkAndShowDeprecationWarning(response) {
+  const deprecation = response.headers.get('Deprecation');
+  const sunset = response.headers.get('Sunset');
+
+  if (deprecation === 'true') {
+    showDeprecationBanner(sunset);
+  }
+}
+
+/**
+ * Show deprecation banner in UI
+ * @param {string} sunset - Sunset date from header
+ */
+function showDeprecationBanner(sunset) {
+  // Remove existing banner if any
+  const existing = document.getElementById('deprecationBanner');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'deprecationBanner';
+  banner.className = 'deprecation-banner';
+  banner.innerHTML = `
+    <span class="deprecation-icon">⚠️</span>
+    <span class="deprecation-text">
+      Some API features you're using are deprecated and will be removed${sunset ? ` after ${sunset}` : ''}.
+      <a href="/api/bess-dispatch/deprecations" target="_blank">View details</a>
+    </span>
+    <button class="deprecation-close" onclick="this.parentElement.remove()">×</button>
+  `;
+
+  // Insert at top of main content
+  const mainContent = document.querySelector('.container') || document.body;
+  mainContent.insertBefore(banner, mainContent.firstChild);
+
+  console.log('[BESS] Deprecation warning shown - sunset:', sunset);
+}
 
 // ============================================
 // CROSS-MODULE NAVIGATION
@@ -2806,11 +2870,15 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
     };
     console.log('[BESS] Finance config with lifecycle features:', requestBody.finance_config);
 
-    const response = await fetch(`${bessDispatchUrl}/sizing`, {
+    // v2.7.0: Use compat=clean for new API contract
+    const response = await fetch(buildBessApiUrl('/sizing'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
     });
+
+    // v2.7.0: Check for deprecation warnings
+    checkAndShowDeprecationWarning(response);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -3636,12 +3704,15 @@ async function applyAdvancedConfig() {
       throw new Error('Nie można zbudować żądania - brak danych');
     }
 
-    // Call bess-dispatch service via nginx proxy
-    const response = await fetch('/api/bess-dispatch/sizing', {
+    // Call bess-dispatch service via nginx proxy (v2.7.0: use compat=clean)
+    const response = await fetch(buildBessApiUrl('/sizing'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request)
     });
+
+    // v2.7.0: Check for deprecation warnings
+    checkAndShowDeprecationWarning(response);
 
     if (!response.ok) {
       const err = await response.text();
@@ -5362,12 +5433,15 @@ async function runBatchSizing() {
   resultsContainer.innerHTML = '<div class="batch-loading"><div class="spinner"></div>Processing batch...</div>';
 
   try {
-    const bessDispatchUrl = '/api/bess-dispatch';
-    const response = await fetch(`${bessDispatchUrl}/jobs/sizing:batch?wait=${waitParam}`, {
+    // v2.7.0: Use compat=clean for new API contract
+    const response = await fetch(`${BESS_API_CONFIG.baseUrl}/jobs/sizing:batch?wait=${waitParam}&compat=${BESS_API_CONFIG.compatMode}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(batchRequest)
     });
+
+    // v2.7.0: Check for deprecation warnings
+    checkAndShowDeprecationWarning(response);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -6833,13 +6907,16 @@ async function runScenarioValidation() {
       scenario_id: scenario.id
     };
 
-    // Call validation endpoint
+    // Call validation endpoint (v2.7.0: use compat=clean)
     const apiUrl = BESS_CONFIG?.apiBaseUrl || 'http://localhost:8031';
-    const response = await fetch(`${apiUrl}/validate/sizing`, {
+    const response = await fetch(`${apiUrl}/validate/sizing?compat=${BESS_API_CONFIG.compatMode}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(validateRequest)
     });
+
+    // v2.7.0: Check for deprecation warnings
+    checkAndShowDeprecationWarning(response);
 
     if (!response.ok) {
       const errorData = await response.json();
