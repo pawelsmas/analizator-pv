@@ -376,6 +376,10 @@ app.include_router(arbitrage_router)
 from auth_router import router as auth_router
 app.include_router(auth_router, prefix="/api/bess-dispatch")
 
+# Include admin router (v3.0.0 PR3)
+from admin_router import router as admin_router
+app.include_router(admin_router, prefix="/api/bess-dispatch")
+
 
 # =============================================================================
 # Health and Info Endpoints
