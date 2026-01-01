@@ -1,23 +1,25 @@
 """
-Auth store - SQLite-backed storage for users, tenants, API keys, invites, and shares (v3.1.0).
+Auth store - SQLite-backed storage for users, tenants, API keys, invites, and shares (v3.1.0, v3.2.0 rotation).
 
 Tables:
 - tenants(id, name, created_at)
 - users(id, tenant_id, email, password_hash, role, created_at, disabled)
-- api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at)
+- api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at, last_used_at, rotated_from)
 - invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
 - shares(id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label)
 """
 
 import hashlib
+import hmac
 import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import bcrypt
+from prometheus_client import Counter, Gauge
 
 from auth_config import (
     API_KEY_HASH_SECRET,
@@ -49,9 +51,27 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def hash_api_key(api_key: str) -> str:
-    """Hash an API key using SHA-256 with salt."""
-    salted = f"{API_KEY_HASH_SECRET}:{api_key}"
-    return hashlib.sha256(salted.encode()).hexdigest()
+    """Hash an API key using HMAC-SHA256 for stricter security (v3.2.0)."""
+    return hmac.new(
+        API_KEY_HASH_SECRET.encode(),
+        api_key.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+
+# Prometheus metrics for API keys (v3.2.0)
+API_KEY_USES_TOTAL = Counter(
+    "bess_api_key_uses_total",
+    "Total API key authentication uses"
+)
+API_KEY_ROTATIONS_TOTAL = Counter(
+    "bess_api_key_rotations_total",
+    "Total API key rotations"
+)
+API_KEYS_ACTIVE = Gauge(
+    "bess_api_keys_active",
+    "Number of active (non-revoked) API keys"
+)
 
 
 def generate_api_key() -> str:
@@ -137,7 +157,7 @@ class AuthStore:
                 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)
             """)
 
-            # API keys table
+            # API keys table (v3.2.0: added last_used_at, rotated_from)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id TEXT PRIMARY KEY,
@@ -147,6 +167,8 @@ class AuthStore:
                     role TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     revoked_at TEXT,
+                    last_used_at TEXT,
+                    rotated_from TEXT,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
                 )
             """)
@@ -156,6 +178,16 @@ class AuthStore:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)
             """)
+
+            # Migration: add new columns if they don't exist (v3.2.0)
+            try:
+                cursor.execute("ALTER TABLE api_keys ADD COLUMN last_used_at TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE api_keys ADD COLUMN rotated_from TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             # Invites table
             cursor.execute("""
@@ -496,7 +528,7 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, label, key_hash, role, created_at, revoked_at
+                SELECT id, tenant_id, label, key_hash, role, created_at, revoked_at, last_used_at, rotated_from
                 FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL
             """, (key_hash,))
             row = cursor.fetchone()
@@ -510,6 +542,34 @@ class AuthStore:
                 "role": row[4],
                 "created_at": row[5],
                 "revoked_at": row[6],
+                "last_used_at": row[7],
+                "rotated_from": row[8],
+            }
+        finally:
+            conn.close()
+
+    def get_api_key_by_id(self, key_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get API key by ID within tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, label, key_hash, role, created_at, revoked_at, last_used_at, rotated_from
+                FROM api_keys WHERE id = ? AND tenant_id = ?
+            """, (key_id, tenant_id))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "label": row[2],
+                "key_hash": row[3],
+                "role": row[4],
+                "created_at": row[5],
+                "revoked_at": row[6],
+                "last_used_at": row[7],
+                "rotated_from": row[8],
             }
         finally:
             conn.close()
@@ -519,6 +579,7 @@ class AuthStore:
         tenant_id: str,
         label: str,
         role: Role = Role.SERVICE,
+        rotated_from: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new API key. Returns dict with plaintext key (shown once)."""
         key_id = str(uuid.uuid4())
@@ -530,16 +591,18 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO api_keys (id, tenant_id, label, key_hash, role, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (key_id, tenant_id, label, key_hash, role.value, created_at))
+                INSERT INTO api_keys (id, tenant_id, label, key_hash, role, created_at, rotated_from)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (key_id, tenant_id, label, key_hash, role.value, created_at, rotated_from))
             conn.commit()
+            API_KEYS_ACTIVE.inc()
             return {
                 "id": key_id,
                 "tenant_id": tenant_id,
                 "label": label,
                 "role": role.value,
                 "created_at": created_at,
+                "rotated_from": rotated_from,
                 "api_key": plaintext_key,  # Shown once!
             }
         finally:
@@ -551,7 +614,7 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, label, role, created_at, revoked_at
+                SELECT id, tenant_id, label, role, created_at, revoked_at, last_used_at, rotated_from
                 FROM api_keys WHERE tenant_id = ?
                 ORDER BY created_at DESC
             """, (tenant_id,))
@@ -563,6 +626,8 @@ class AuthStore:
                     "role": row[3],
                     "created_at": row[4],
                     "revoked_at": row[5],
+                    "last_used_at": row[6],
+                    "rotated_from": row[7],
                 }
                 for row in cursor.fetchall()
             ]
@@ -579,14 +644,59 @@ class AuthStore:
                 WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL
             """, (datetime.now(timezone.utc).isoformat(), key_id, tenant_id))
             conn.commit()
-            return cursor.rowcount > 0
+            if cursor.rowcount > 0:
+                API_KEYS_ACTIVE.dec()
+                return True
+            return False
+        finally:
+            conn.close()
+
+    def update_api_key_last_used(self, key_id: str) -> None:
+        """Update last_used_at timestamp for an API key."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE api_keys SET last_used_at = ?
+                WHERE id = ?
+            """, (datetime.now(timezone.utc).isoformat(), key_id))
+            conn.commit()
         finally:
             conn.close()
 
     def authenticate_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
-        """Authenticate by API key. Returns key info if valid."""
+        """Authenticate by API key. Returns key info if valid and updates last_used_at."""
         key_hash = hash_api_key(api_key)
-        return self.get_api_key_by_hash(key_hash)
+        key_info = self.get_api_key_by_hash(key_hash)
+        if key_info:
+            self.update_api_key_last_used(key_info["id"])
+            API_KEY_USES_TOTAL.inc()
+        return key_info
+
+    def rotate_api_key(self, key_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Rotate an API key - revoke old key and create new one with same label/role.
+
+        Returns new key info with plaintext, or None if original key not found.
+        """
+        # Get the old key
+        old_key = self.get_api_key_by_id(key_id, tenant_id)
+        if old_key is None or old_key.get("revoked_at") is not None:
+            return None
+
+        # Revoke the old key
+        self.revoke_api_key(key_id, tenant_id)
+
+        # Create new key with same label and role, linked to old key
+        new_key = self.create_api_key(
+            tenant_id=tenant_id,
+            label=old_key["label"],
+            role=Role(old_key["role"]),
+            rotated_from=key_id,
+        )
+
+        API_KEY_ROTATIONS_TOTAL.inc()
+        return new_key
 
     # -------------------------------------------------------------------------
     # Invite operations
