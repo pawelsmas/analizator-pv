@@ -176,3 +176,52 @@ test-frontend: ## Run frontend JavaScript syntax checks
 	@echo "${BLUE}Checking frontend JavaScript syntax...${RESET}"
 	@node --check services/frontend-bess/bess.js
 	@echo "${GREEN}✓ Frontend syntax OK${RESET}"
+
+# ===== LOCAL DEVELOPMENT (v2.6.0) =====
+
+dev-up: ## Start local development environment (docker compose + wait)
+	@echo "${BLUE}Starting local development environment...${RESET}"
+	@docker compose up -d --build bess-dispatch
+	@echo "${YELLOW}Waiting for backend to be ready...${RESET}"
+	@python scripts/dev/wait_http.py http://localhost:8031/version --timeout 120 || true
+	@echo ""
+	@echo "${GREEN}Development environment ready!${RESET}"
+	@echo ""
+	@echo "  Backend:  http://localhost:8031"
+	@echo "  API Docs: http://localhost:8031/docs"
+	@echo "  Metrics:  http://localhost:8031/metrics"
+	@echo ""
+
+dev-down: ## Stop local development environment
+	@echo "${BLUE}Stopping local development environment...${RESET}"
+	@docker compose down
+	@echo "${GREEN}✓ Environment stopped${RESET}"
+
+demo: ## Run a sample sizing request and show results
+	@echo "${BLUE}Running demo sizing request...${RESET}"
+	@python -c "\
+import json, urllib.request as u; \
+req = {'load_kw': [100]*24, 'pv_generation_kw': [0,0,0,0,0,0,50,200,500,800,1000,1100,1100,1000,800,500,200,50,0,0,0,0,0,0], \
+'mode': 'pv_surplus', 'durations_h': [1.0, 2.0], 'interval_minutes': 60, 'discount_rate': 0.08, 'analysis_years': 15, \
+'capex_pln_per_kwh': 1800.0, 'import_price_pln_mwh': 800.0}; \
+r = u.urlopen(u.Request('http://localhost:8031/sizing', json.dumps(req).encode(), {'Content-Type': 'application/json'})); \
+d = json.loads(r.read()); run_id = d.get('meta', {}).get('run_id', 'N/A'); \
+rec = d.get('recommended', {}); \
+print(f'Run ID: {run_id}'); \
+print(f'Recommended: {rec.get(\"energy_kwh\", \"N/A\")} kWh / {rec.get(\"power_kw\", \"N/A\")} kW'); \
+print(f'NPV: {rec.get(\"npv_pln\", \"N/A\")} PLN'); \
+print(f''); \
+print(f'Run Explorer: http://localhost:8031/api/bess-dispatch/runs/{run_id}'); \
+print(f'PDF Report:   http://localhost:8031/api/bess-dispatch/runs/{run_id}/report.pdf')"
+
+# ===== RELEASE CANDIDATE (v2.6.0) =====
+
+rc: ## Run full RC check (tests + smoke + validation + contracts)
+	@echo "${BLUE}Running Release Candidate checks...${RESET}"
+	@python scripts/rc/rc_check.py
+	@echo ""
+
+rc-skip-backend: ## Run RC check without backend tests
+	@echo "${BLUE}Running Release Candidate checks (no backend)...${RESET}"
+	@python scripts/rc/rc_check.py --skip-backend
+	@echo ""
