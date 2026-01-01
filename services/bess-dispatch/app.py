@@ -395,6 +395,28 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class LiveResponse(BaseModel):
+    """Liveness check response (v3.5.0)."""
+    status: str = Field(..., description="Always 'ok' if process is alive")
+    service: str = Field(..., description="Service name")
+
+
+class DependencyCheck(BaseModel):
+    """Individual dependency check result (v3.5.0)."""
+    status: str = Field(..., description="Dependency status: ok, disabled, error, not_initialized")
+    latency_ms: float = Field(..., description="Check latency in milliseconds")
+    error: Optional[str] = Field(None, description="Error message if status is error")
+    note: Optional[str] = Field(None, description="Additional note")
+
+
+class ReadyResponse(BaseModel):
+    """Readiness check response (v3.5.0)."""
+    status: str = Field(..., description="'ok' if all dependencies healthy, 'degraded' otherwise")
+    service: str = Field(..., description="Service name")
+    checks: Dict[str, DependencyCheck] = Field(..., description="Individual dependency check results")
+    message: Optional[str] = Field(None, description="Status message")
+
+
 class ServiceInfo(BaseModel):
     name: str
     version: str
@@ -413,6 +435,65 @@ async def health_check():
         service="bess-dispatch",
         version="1.0.0"
     )
+
+
+# =============================================================================
+# Kubernetes Health Probes (v3.5.0)
+# =============================================================================
+
+@app.get("/api/bess-dispatch/health/live", response_model=LiveResponse)
+async def health_live():
+    """
+    Liveness probe endpoint (v3.5.0).
+
+    Always returns 200 if the process is alive.
+    Used by Kubernetes livenessProbe to detect stuck/dead processes.
+    """
+    from health_helper import check_liveness
+    status = check_liveness()
+    return LiveResponse(
+        status="ok",
+        service=status.service,
+    )
+
+
+@app.get("/api/bess-dispatch/health/ready", response_model=ReadyResponse)
+async def health_ready():
+    """
+    Readiness probe endpoint (v3.5.0).
+
+    Returns 200 only if all enabled dependencies are healthy:
+    - DB (SQLite) if JOB_STORE_ENABLED=true
+    - Redis if REDIS_ENABLED=true
+    - S3/MinIO if S3_ENABLED=true
+
+    Used by Kubernetes readinessProbe to determine if pod should receive traffic.
+    """
+    from health_helper import check_readiness, DependencyCheck as DepCheck
+
+    result = check_readiness()
+
+    # Convert checks to response model
+    checks = {}
+    for name, check in result.checks.items():
+        checks[name] = DependencyCheck(
+            status=check.get("status", "unknown"),
+            latency_ms=check.get("latency_ms", 0),
+            error=check.get("error"),
+            note=check.get("note"),
+        )
+
+    response = ReadyResponse(
+        status="ok" if result.healthy else "degraded",
+        service=result.service,
+        checks=checks,
+        message=result.message,
+    )
+
+    if not result.healthy:
+        raise HTTPException(status_code=503, detail=response.model_dump())
+
+    return response
 
 
 @app.get("/metrics")
