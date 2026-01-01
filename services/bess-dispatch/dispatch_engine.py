@@ -48,8 +48,11 @@ from models import (
     ConstraintSummary,
     # v1.8.0 Debug Events
     DebugEvents,
+    # v2.2.0 Battery Trace
+    BatteryTraceTimeseries,
 )
 from debug_events_helper import compute_debug_events
+from battery_trace_helper import create_battery_trace_from_dispatch_result
 
 
 @dataclass
@@ -350,6 +353,7 @@ def dispatch_pv_surplus(
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
     include_energy_flows_timeseries: bool = False,
+    include_battery_trace: bool = False,
 ) -> DispatchResult:
     """
     PV-Surplus (Autokonsumpcja) Dispatch Algorithm
@@ -622,6 +626,27 @@ def dispatch_pv_surplus(
         include_timeseries=include_energy_flows_timeseries,
     )
 
+    # === BATTERY TRACE (v2.2.0) ===
+    if include_battery_trace:
+        # In PV_SURPLUS: all charge is from PV, all discharge is to load
+        charge_from_pv_arr = charge.copy()
+        charge_from_grid_arr = np.zeros(n)
+        discharge_to_load_arr = discharge.copy()
+        discharge_to_grid_arr = np.zeros(n)
+
+        result.battery_trace = create_battery_trace_from_dispatch_result(
+            soc_array=soc,
+            charge_array=charge,
+            discharge_array=discharge,
+            charge_from_pv_array=charge_from_pv_arr,
+            charge_from_grid_array=charge_from_grid_arr,
+            discharge_to_load_array=discharge_to_load_arr,
+            discharge_to_grid_array=discharge_to_grid_arr,
+            interval_minutes=int(dt_hours * 60),
+            battery_energy_kwh=battery.energy_kwh,
+            battery_power_kw=battery.power_kw,
+        )
+
     return result
 
 
@@ -635,6 +660,7 @@ def dispatch_peak_shaving(
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
     include_energy_flows_timeseries: bool = False,
+    include_battery_trace: bool = False,
 ) -> DispatchResult:
     """
     Peak Shaving Dispatch Algorithm
@@ -853,6 +879,27 @@ def dispatch_peak_shaving(
         include_timeseries=include_energy_flows_timeseries,
     )
 
+    # === BATTERY TRACE (v2.2.0) ===
+    if include_battery_trace:
+        # In PEAK_SHAVING: all charge is from grid, all discharge is to load
+        charge_from_pv_arr = np.zeros(n)
+        charge_from_grid_arr = charge.copy()
+        discharge_to_load_arr = discharge.copy()
+        discharge_to_grid_arr = np.zeros(n)
+
+        result.battery_trace = create_battery_trace_from_dispatch_result(
+            soc_array=soc,
+            charge_array=charge,
+            discharge_array=discharge,
+            charge_from_pv_array=charge_from_pv_arr,
+            charge_from_grid_array=charge_from_grid_arr,
+            discharge_to_load_array=discharge_to_load_arr,
+            discharge_to_grid_array=discharge_to_grid_arr,
+            interval_minutes=int(dt_hours * 60),
+            battery_energy_kwh=battery.energy_kwh,
+            battery_power_kw=battery.power_kw,
+        )
+
     return result
 
 
@@ -869,6 +916,7 @@ def dispatch_stacked(
     import_prices: Optional[np.ndarray] = None,
     arb_config: Optional[ArbitrageConfig] = None,
     include_energy_flows_timeseries: bool = False,
+    include_battery_trace: bool = False,
 ) -> DispatchResult:
     """
     STACKED Dispatch Algorithm (PV Shifting + Peak Shaving + Optional Arbitrage)
@@ -1359,6 +1407,26 @@ def dispatch_stacked(
         include_timeseries=include_energy_flows_timeseries,
     )
 
+    # === BATTERY TRACE (v2.2.0) ===
+    if include_battery_trace:
+        # discharge_to_load = peak_shaving + pv_shifting
+        # discharge_to_grid = arbitrage_discharge
+        discharge_to_load_arr = discharge_peak + discharge_pv
+        discharge_to_grid_arr = discharge_arb
+
+        result.battery_trace = create_battery_trace_from_dispatch_result(
+            soc_array=soc,
+            charge_array=charge,
+            discharge_array=discharge,
+            charge_from_pv_array=charge_from_pv,
+            charge_from_grid_array=charge_from_grid,
+            discharge_to_load_array=discharge_to_load_arr,
+            discharge_to_grid_array=discharge_to_grid_arr,
+            interval_minutes=int(dt_hours * 60),
+            battery_energy_kwh=battery.energy_kwh,
+            battery_power_kw=battery.power_kw,
+        )
+
     return result
 
 
@@ -1641,6 +1709,7 @@ def dispatch_load_only(
     return_hourly: bool = True,
     audit_metadata: Optional[AuditMetadata] = None,
     include_energy_flows_timeseries: bool = False,
+    include_battery_trace: bool = False,
 ) -> DispatchResult:
     """
     Load-Only (Stand-alone BESS) Dispatch Algorithm
@@ -1908,6 +1977,27 @@ def dispatch_load_only(
         include_timeseries=include_energy_flows_timeseries,
     )
 
+    # === BATTERY TRACE (v2.2.0) ===
+    if include_battery_trace:
+        # In LOAD_ONLY: all charge is from grid, all discharge is to load
+        charge_from_pv_arr = np.zeros(n)
+        charge_from_grid_arr = charge.copy()
+        discharge_to_load_arr = discharge.copy()
+        discharge_to_grid_arr = np.zeros(n)
+
+        result.battery_trace = create_battery_trace_from_dispatch_result(
+            soc_array=soc,
+            charge_array=charge,
+            discharge_array=discharge,
+            charge_from_pv_array=charge_from_pv_arr,
+            charge_from_grid_array=charge_from_grid_arr,
+            discharge_to_load_array=discharge_to_load_arr,
+            discharge_to_grid_array=discharge_to_grid_arr,
+            interval_minutes=int(dt_hours * 60),
+            battery_energy_kwh=battery.energy_kwh,
+            battery_power_kw=battery.power_kw,
+        )
+
     return result
 
 
@@ -1955,6 +2045,7 @@ def run_dispatch(
         result = dispatch_pv_surplus(
             pv, load, request.battery, dt_hours, request.prices,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            include_battery_trace=request.include_battery_trace,
         )
 
     elif request.mode == DispatchMode.PEAK_SHAVING:
@@ -1964,6 +2055,7 @@ def run_dispatch(
             pv, load, request.battery, dt_hours,
             request.peak_limit_kw, request.prices,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            include_battery_trace=request.include_battery_trace,
         )
 
     elif request.mode == DispatchMode.STACKED:
@@ -1975,6 +2067,7 @@ def run_dispatch(
             import_prices=import_prices,
             arb_config=arb_config,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            include_battery_trace=request.include_battery_trace,
         )
 
     elif request.mode == DispatchMode.LOAD_ONLY:
@@ -1984,6 +2077,7 @@ def run_dispatch(
             load, request.battery, dt_hours,
             request.peak_limit_kw, request.prices,
             include_energy_flows_timeseries=request.include_energy_flows_timeseries,
+            include_battery_trace=request.include_battery_trace,
         )
 
     else:
