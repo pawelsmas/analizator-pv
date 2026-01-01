@@ -473,6 +473,68 @@ async def get_limits():
 
 
 # =============================================================================
+# Deprecations Endpoint (v2.6.0)
+# =============================================================================
+
+class DeprecationItem(BaseModel):
+    """A deprecated field or feature."""
+    field: str = Field(..., description="Name of the deprecated field")
+    location: str = Field(..., description="Location of the field in the API")
+    status: str = Field(..., description="Deprecation status (deprecated, removed)")
+    since: str = Field(..., description="Version when deprecation was announced")
+    remove_in: str = Field(..., description="Version when field will be removed")
+    replacement: str = Field(..., description="Replacement field or approach")
+    notes: str = Field(..., description="Additional notes about the deprecation")
+
+
+class DeprecationsResponse(BaseModel):
+    """Response for deprecations endpoint."""
+    version: str = Field(..., description="Deprecations registry version")
+    last_updated: str = Field(..., description="Date of last update")
+    items: List[DeprecationItem] = Field(..., description="List of deprecations")
+
+
+def _load_deprecations() -> dict:
+    """Load deprecations from SSoT file."""
+    import json
+    from pathlib import Path
+
+    # Try multiple paths for the deprecations file
+    possible_paths = [
+        Path(__file__).parent.parent.parent / "docs" / "api" / "deprecations.json",
+        Path("docs/api/deprecations.json"),
+        Path("/app/docs/api/deprecations.json"),
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+    # Return empty registry if file not found
+    return {
+        "version": "1.0.0",
+        "last_updated": "unknown",
+        "items": []
+    }
+
+
+@app.get("/api/bess-dispatch/deprecations", response_model=DeprecationsResponse)
+async def get_deprecations():
+    """
+    Get list of deprecated API fields and features.
+
+    Returns a registry of deprecated fields with information about:
+    - When deprecation was announced (since)
+    - When the field will be removed (remove_in)
+    - What to use instead (replacement)
+
+    This helps API consumers plan migrations before breaking changes.
+    """
+    return _load_deprecations()
+
+
+# =============================================================================
 # Run Store Endpoints (v1.0.0)
 # =============================================================================
 

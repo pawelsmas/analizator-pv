@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-01-01",
+  "items": [
+    {
+      "field": "export_revenue_pln",
+      "location": "SizingResult.economics_breakdown",
+      "status": "deprecated",
+      "since": "v0.3.2",
+      "remove_in": "v2.7.0",
+      "replacement": "export_savings_pln",
+      "notes": "Field renamed for clarity. export_revenue_pln will be removed in v2.7.0."
+    },
+    {
+      "field": "savings_pln",
+      "location": "SizingResult.recommended",
+      "status": "deprecated",
+      "since": "v1.2.0",
+      "remove_in": "v2.7.0",
+      "replacement": "economics_breakdown.total_savings_pln",
+      "notes": "Use economics_breakdown for detailed savings. Legacy field kept for backwards compatibility."
+    },
+    {
+      "field": "payback_years",
+      "location": "SizingResult.recommended",
+      "status": "deprecated",
+      "since": "v2.0.0",
+      "remove_in": "v3.0.0",
+      "replacement": "economics_breakdown.simple_payback_years",
+      "notes": "Moved to economics_breakdown for consistency with other financial metrics."
+    },
+    {
+      "field": "interval_minutes",
+      "location": "SizingRequest",
+      "status": "deprecated",
+      "since": "v2.2.0",
+      "remove_in": "v3.0.0",
+      "replacement": "dt_minutes",
+      "notes": "Renamed for consistency with dispatch API. Both fields accepted during transition."
+    }
+  ]
+}
