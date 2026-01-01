@@ -114,6 +114,11 @@ from observability.ledger_metrics import (
     record_ledger_reconciliation,
     record_ledger_request,
 )
+from price_timeseries_helper import (
+    # v2.0.0 price timeseries SSoT
+    generate_price_timeseries,
+    compute_price_hash,
+)
 from determinism_helper import select_best_variant_deterministic
 
 logger = logging.getLogger(__name__)
@@ -2038,6 +2043,35 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 reconciliation_error = abs(net_savings - ledger_delta)
                 reconciliation_passed = reconciliation_error <= 1.0  # 1 PLN tolerance
                 record_ledger_reconciliation(reconciliation_passed, reconciliation_error)
+
+        # Compute PriceTimeseries if requested (v2.0.0)
+        include_prices = getattr(request, 'include_price_timeseries', False)
+        if include_prices:
+            # Determine period start datetime
+            if request.analytical_period:
+                period_start = request.analytical_period.start_datetime
+                tz = request.analytical_period.timezone
+            elif request.period_start:
+                period_start = request.period_start
+                tz = request.timezone or "Europe/Warsaw"
+            else:
+                # Default: use start_date or fallback to "2025-01-01T00:00:00"
+                start_date = request.start_date or "2025-01-01"
+                period_start = f"{start_date}T00:00:00"
+                tz = request.timezone or "Europe/Warsaw"
+
+            price_timeseries = generate_price_timeseries(
+                prices=request.prices,
+                n_steps=n,
+                step_minutes=interval_minutes,
+                start_datetime=period_start,
+                timezone=tz,
+                unserved_penalty_pln_kwh=getattr(request.prices, 'unserved_penalty_pln_kwh', 10.0),
+            )
+            price_hash = compute_price_hash(price_timeseries)
+
+            object.__setattr__(variant_result, 'price_timeseries', price_timeseries)
+            object.__setattr__(variant_result, 'price_hash', price_hash)
 
         variants.append(variant_result)
 
