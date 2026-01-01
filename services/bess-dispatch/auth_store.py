@@ -1,17 +1,18 @@
 """
-Auth store - SQLite-backed storage for users, tenants, and API keys (v3.0.0).
+Auth store - SQLite-backed storage for users, tenants, API keys, and invites (v3.1.0).
 
 Tables:
 - tenants(id, name, created_at)
 - users(id, tenant_id, email, password_hash, role, created_at, disabled)
 - api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at)
+- invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
 """
 
 import hashlib
 import secrets
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,21 @@ def hash_api_key(api_key: str) -> str:
 def generate_api_key() -> str:
     """Generate a new API key (plaintext, shown once)."""
     return f"bess_{secrets.token_urlsafe(32)}"
+
+
+# Invite token pepper (separate from API key secret for isolation)
+INVITE_TOKEN_PEPPER = "bess_invite_v1"
+
+
+def hash_invite_token(token: str) -> str:
+    """Hash an invite token using SHA-256 with pepper."""
+    salted = f"{INVITE_TOKEN_PEPPER}:{token}"
+    return hashlib.sha256(salted.encode()).hexdigest()
+
+
+def generate_invite_token() -> str:
+    """Generate a new invite token (plaintext, shown once)."""
+    return secrets.token_urlsafe(32)
 
 
 class AuthStore:
@@ -123,6 +139,33 @@ class AuthStore:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id)
+            """)
+
+            # Invites table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS invites (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    accepted_at TEXT,
+                    revoked_at TEXT,
+                    created_by TEXT NOT NULL,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                    FOREIGN KEY (created_by) REFERENCES users(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_invites_token_hash ON invites(token_hash)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_invites_tenant ON invites(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email)
             """)
 
             conn.commit()
@@ -501,6 +544,185 @@ class AuthStore:
         """Authenticate by API key. Returns key info if valid."""
         key_hash = hash_api_key(api_key)
         return self.get_api_key_by_hash(key_hash)
+
+    # -------------------------------------------------------------------------
+    # Invite operations
+    # -------------------------------------------------------------------------
+
+    def create_invite(
+        self,
+        tenant_id: str,
+        email: str,
+        role: Role,
+        created_by: str,
+        expires_hours: int = 72,
+    ) -> Dict[str, Any]:
+        """Create a new invite. Returns dict with plaintext token (shown once)."""
+        invite_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc)
+        expires_at = created_at + timedelta(hours=expires_hours)
+        plaintext_token = generate_invite_token()
+        token_hash = hash_invite_token(plaintext_token)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO invites (id, tenant_id, email, role, token_hash, created_at, expires_at, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                invite_id,
+                tenant_id,
+                email,
+                role.value,
+                token_hash,
+                created_at.isoformat(),
+                expires_at.isoformat(),
+                created_by,
+            ))
+            conn.commit()
+            return {
+                "id": invite_id,
+                "tenant_id": tenant_id,
+                "email": email,
+                "role": role.value,
+                "created_at": created_at.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "created_by": created_by,
+                "token": plaintext_token,  # Shown once!
+            }
+        finally:
+            conn.close()
+
+    def list_invites(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """List invites for a tenant (without token)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, email, role, created_at, expires_at, accepted_at, revoked_at, created_by
+                FROM invites WHERE tenant_id = ?
+                ORDER BY created_at DESC
+            """, (tenant_id,))
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "email": row[2],
+                    "role": row[3],
+                    "created_at": row[4],
+                    "expires_at": row[5],
+                    "accepted_at": row[6],
+                    "revoked_at": row[7],
+                    "created_by": row[8],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_invite_by_id(self, invite_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get invite by ID within tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, email, role, created_at, expires_at, accepted_at, revoked_at, created_by
+                FROM invites WHERE id = ? AND tenant_id = ?
+            """, (invite_id, tenant_id))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "email": row[2],
+                "role": row[3],
+                "created_at": row[4],
+                "expires_at": row[5],
+                "accepted_at": row[6],
+                "revoked_at": row[7],
+                "created_by": row[8],
+            }
+        finally:
+            conn.close()
+
+    def get_invite_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Get invite by plaintext token. Returns invite if valid (not revoked, not accepted)."""
+        token_hash = hash_invite_token(token)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, email, role, created_at, expires_at, accepted_at, revoked_at, created_by
+                FROM invites WHERE token_hash = ? AND revoked_at IS NULL AND accepted_at IS NULL
+            """, (token_hash,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "email": row[2],
+                "role": row[3],
+                "created_at": row[4],
+                "expires_at": row[5],
+                "accepted_at": row[6],
+                "revoked_at": row[7],
+                "created_by": row[8],
+            }
+        finally:
+            conn.close()
+
+    def revoke_invite(self, invite_id: str, tenant_id: str) -> bool:
+        """Revoke an invite. Returns True if found and revoked."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE invites SET revoked_at = ?
+                WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL AND accepted_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), invite_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def accept_invite(self, invite_id: str) -> bool:
+        """Mark an invite as accepted. Returns True if updated."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE invites SET accepted_at = ?
+                WHERE id = ? AND accepted_at IS NULL AND revoked_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), invite_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def is_invite_expired(self, invite: Dict[str, Any]) -> bool:
+        """Check if an invite is expired."""
+        expires_at = datetime.fromisoformat(invite["expires_at"].replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) > expires_at
+
+    def pending_invite_exists(self, email: str, tenant_id: str) -> bool:
+        """Check if a pending (not accepted, not revoked, not expired) invite exists for email."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT expires_at FROM invites
+                WHERE email = ? AND tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL
+            """, (email, tenant_id))
+            for row in cursor.fetchall():
+                expires_at = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) < expires_at:
+                    return True
+            return False
+        finally:
+            conn.close()
 
 
 # Global instance (lazy initialization)
