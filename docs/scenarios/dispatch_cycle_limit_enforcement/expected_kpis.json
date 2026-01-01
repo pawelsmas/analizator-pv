@@ -1,0 +1,5 @@
+{
+  "cycle_limit_respected": true,
+  "max_daily_efc_under_limit": true,
+  "invariants_all_ok": true
+}

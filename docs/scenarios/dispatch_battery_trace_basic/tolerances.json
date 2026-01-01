@@ -1,0 +1,8 @@
+{
+  "default_abs": 1.0,
+  "default_rel": 0.05,
+  "per_field_abs": {
+    "soc_min_kwh": 1.0,
+    "soc_max_kwh": 1.0
+  }
+}

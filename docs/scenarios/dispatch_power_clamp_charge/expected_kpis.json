@@ -1,0 +1,5 @@
+{
+  "power_limits_ok": true,
+  "max_charge_kw_under_rated": true,
+  "invariants_all_ok": true
+}

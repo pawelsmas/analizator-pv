@@ -1,0 +1,6 @@
+{
+  "invariants_all_ok": true,
+  "soc_bounds_ok": true,
+  "power_limits_ok": true,
+  "no_simultaneous_ok": true
+}
