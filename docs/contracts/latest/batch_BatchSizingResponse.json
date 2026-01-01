@@ -1,0 +1,231 @@
+{
+  "$defs": {
+    "BatchItemResult": {
+      "description": "Result for a single batch item",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Error message when status=error. None when status=ok.",
+          "title": "Error"
+        },
+        "item_id": {
+          "description": "Item identifier (same as in request)",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SizingResult as dict when status=ok. None when status=error.",
+          "title": "Response"
+        },
+        "status": {
+          "$ref": "#/$defs/BatchItemStatus",
+          "description": "Processing status: ok or error"
+        }
+      },
+      "required": [
+        "item_id",
+        "status"
+      ],
+      "title": "BatchItemResult",
+      "type": "object"
+    },
+    "BatchItemStatus": {
+      "description": "Status of individual batch item",
+      "enum": [
+        "ok",
+        "error"
+      ],
+      "title": "BatchItemStatus",
+      "type": "string"
+    },
+    "BatchSizingSummary": {
+      "description": "Summary statistics for batch sizing result",
+      "properties": {
+        "error_count": {
+          "description": "Failed items",
+          "title": "Error Count",
+          "type": "integer"
+        },
+        "ok_count": {
+          "description": "Successfully processed items",
+          "title": "Ok Count",
+          "type": "integer"
+        },
+        "processing_time_ms": {
+          "description": "Total processing time [ms]",
+          "title": "Processing Time Ms",
+          "type": "number"
+        },
+        "total_items": {
+          "description": "Total items in batch",
+          "title": "Total Items",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total_items",
+        "ok_count",
+        "error_count",
+        "processing_time_ms"
+      ],
+      "title": "BatchSizingSummary",
+      "type": "object"
+    },
+    "PortfolioSummary": {
+      "description": "Portfolio-level summary for batch sizing.\n\nProvides aggregated metrics across all items to help identify\nthe best overall variant for a portfolio of scenarios.",
+      "properties": {
+        "avg_npv_pln": {
+          "description": "Average recommended variant NPV [PLN]",
+          "title": "Avg Npv Pln",
+          "type": "number"
+        },
+        "avg_payback_years": {
+          "description": "Average recommended variant payback [years]",
+          "title": "Avg Payback Years",
+          "type": "number"
+        },
+        "portfolio_optimal_variant": {
+          "description": "Variant with highest total NPV across portfolio",
+          "title": "Portfolio Optimal Variant",
+          "type": "string"
+        },
+        "total_npv_pln": {
+          "description": "Sum of recommended variant NPVs across all items [PLN]",
+          "title": "Total Npv Pln",
+          "type": "number"
+        },
+        "variant_rankings": {
+          "description": "Rankings for each variant, sorted by total_npv_pln descending",
+          "items": {
+            "$ref": "#/$defs/PortfolioVariantRanking"
+          },
+          "title": "Variant Rankings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "total_npv_pln",
+        "avg_npv_pln",
+        "avg_payback_years",
+        "portfolio_optimal_variant",
+        "variant_rankings"
+      ],
+      "title": "PortfolioSummary",
+      "type": "object"
+    },
+    "PortfolioVariantRanking": {
+      "description": "Ranking entry for a variant across the portfolio.\n\nUsed to compare variants across multiple items/scenarios in the batch.",
+      "properties": {
+        "avg_npv_pln": {
+          "description": "Average NPV for this variant [PLN]",
+          "title": "Avg Npv Pln",
+          "type": "number"
+        },
+        "avg_payback_years": {
+          "description": "Average payback period for this variant [years]",
+          "title": "Avg Payback Years",
+          "type": "number"
+        },
+        "feasible_count": {
+          "description": "Number of items where this variant is feasible",
+          "title": "Feasible Count",
+          "type": "integer"
+        },
+        "recommended_count": {
+          "description": "Number of items where this variant is recommended",
+          "title": "Recommended Count",
+          "type": "integer"
+        },
+        "total_npv_pln": {
+          "description": "Sum of NPV across all items for this variant [PLN]",
+          "title": "Total Npv Pln",
+          "type": "number"
+        },
+        "variant": {
+          "description": "Variant name (small, medium, large)",
+          "title": "Variant",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variant",
+        "total_npv_pln",
+        "avg_npv_pln",
+        "avg_payback_years",
+        "feasible_count",
+        "recommended_count"
+      ],
+      "title": "PortfolioVariantRanking",
+      "type": "object"
+    }
+  },
+  "description": "Response for batch sizing request.\n\nContains results for each item, summary statistics, and API versioning info.",
+  "properties": {
+    "assumptions_version": {
+      "default": "v1.0-unknown",
+      "description": "Assumptions version (hash of docs/assumptions.yaml)",
+      "title": "Assumptions Version",
+      "type": "string"
+    },
+    "batch_id": {
+      "description": "Batch identifier (from request or server-generated UUID)",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "portfolio_summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PortfolioSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Portfolio-level summary with variant rankings. None if all items failed."
+    },
+    "results": {
+      "description": "Results for each item in the same order as request",
+      "items": {
+        "$ref": "#/$defs/BatchItemResult"
+      },
+      "title": "Results",
+      "type": "array"
+    },
+    "schema_version": {
+      "default": "1.0.0",
+      "description": "API schema version",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/BatchSizingSummary",
+      "description": "Summary statistics for the batch"
+    }
+  },
+  "required": [
+    "batch_id",
+    "results",
+    "summary"
+  ],
+  "title": "BatchSizingResponse",
+  "type": "object"
+}

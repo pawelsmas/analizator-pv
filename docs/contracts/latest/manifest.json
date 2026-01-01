@@ -1,0 +1,70 @@
+{
+  "schemas": [
+    {
+      "file": "sizing_SizingRequest.json",
+      "hash": "d51f57fcff823682e682da532203f98e2c31003b038895bab0def564137d2b00",
+      "model": "SizingRequest"
+    },
+    {
+      "file": "sizing_SizingResult.json",
+      "hash": "f83e1f0e4cfe29bf0977c5ef397886c634f52a1edd183efa7ba61824e3884f3c",
+      "model": "SizingResult"
+    },
+    {
+      "file": "dispatch_DispatchRequest.json",
+      "hash": "1862de95cc02649d6c88df62ed99d176df35158d33907c8edceb977c6dd5fd4a",
+      "model": "DispatchRequest"
+    },
+    {
+      "file": "dispatch_DispatchResult.json",
+      "hash": "90a9d55e9d05c189f03df1130486c61b32decfb84f300905557d0094c1c935ec",
+      "model": "DispatchResult"
+    },
+    {
+      "file": "batch_BatchSizingRequest.json",
+      "hash": "26a78323dc11d7df051557a8e5f37a0a7194a57b103fec7441affe6b67ac6cee",
+      "model": "BatchSizingRequest"
+    },
+    {
+      "file": "batch_BatchSizingResponse.json",
+      "hash": "f459dba3de18a3648f0f6c2d0fca00e2b1f8ad397dc950bc6f05d3da3b72262f",
+      "model": "BatchSizingResponse"
+    },
+    {
+      "file": "batch_BatchItemResult.json",
+      "hash": "dd4429eece8dc4815fd3cac0e1951b119455a124e8727c7c4e4c784c8b75e71e",
+      "model": "BatchItemResult"
+    },
+    {
+      "file": "portfolio_PortfolioSummary.json",
+      "hash": "8501afdb05831ac9ec9d5cd2488c2f13a4eae9cf723762a88d2b0da5db23839c",
+      "model": "PortfolioSummary"
+    },
+    {
+      "file": "portfolio_PortfolioVariantRanking.json",
+      "hash": "b60c18b2776c0a470e74014a2e3bf953dfbdab8841a26a2678cb74cdd72f53d9",
+      "model": "PortfolioVariantRanking"
+    },
+    {
+      "file": "validation_KpiSnapshot.json",
+      "hash": "5b2d27680405ea36e18038507bc2c64e450826e4f8651ffb5a6d9e44916dd83a",
+      "model": "KpiSnapshot"
+    },
+    {
+      "file": "validation_KpiDiff.json",
+      "hash": "97f79a5a2599bfe1f661c279280313b0e6c5fb2392fb3fb27e51c1691dcc99c2",
+      "model": "KpiDiff"
+    },
+    {
+      "file": "report_ReportOptions.json",
+      "hash": "362598f0d96bc36d58dcc01fa911967852093745d72bd2222ef813663cfe11df",
+      "model": "ReportOptions"
+    },
+    {
+      "file": "jobs_JobStatus.json",
+      "hash": "bf2b7f6259719fc2121deabf8aeaeb96dfe422c37b7a667dcbcda47936264d5b",
+      "model": "JobStatus"
+    }
+  ],
+  "version": "2.6.0"
+}

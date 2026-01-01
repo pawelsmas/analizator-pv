@@ -1,0 +1,125 @@
+{
+  "description": "Key Performance Indicators extracted from sizing response.\n\nAll values are from the recommended variant.",
+  "properties": {
+    "arbitrage_savings_pln": {
+      "default": 0.0,
+      "description": "Arbitrage savings [PLN]",
+      "title": "Arbitrage Savings Pln",
+      "type": "number"
+    },
+    "battery_throughput_mwh": {
+      "default": 0.0,
+      "description": "Battery throughput [MWh]",
+      "title": "Battery Throughput Mwh",
+      "type": "number"
+    },
+    "capacity_fee_savings_pln": {
+      "default": 0.0,
+      "description": "Capacity fee savings [PLN]",
+      "title": "Capacity Fee Savings Pln",
+      "type": "number"
+    },
+    "degradation_cost_pln": {
+      "default": 0.0,
+      "description": "Degradation cost [PLN]",
+      "title": "Degradation Cost Pln",
+      "type": "number"
+    },
+    "demand_charge_savings_pln": {
+      "default": 0.0,
+      "description": "Demand charge savings [PLN]",
+      "title": "Demand Charge Savings Pln",
+      "type": "number"
+    },
+    "energy_savings_pln": {
+      "default": 0.0,
+      "description": "Energy savings [PLN]",
+      "title": "Energy Savings Pln",
+      "type": "number"
+    },
+    "export_revenue_savings_pln": {
+      "default": 0.0,
+      "description": "Export revenue delta [PLN]",
+      "title": "Export Revenue Savings Pln",
+      "type": "number"
+    },
+    "grid_export_mwh": {
+      "default": 0.0,
+      "description": "Grid export [MWh]",
+      "title": "Grid Export Mwh",
+      "type": "number"
+    },
+    "grid_import_mwh": {
+      "default": 0.0,
+      "description": "Grid import [MWh]",
+      "title": "Grid Import Mwh",
+      "type": "number"
+    },
+    "irr_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Internal Rate of Return [%]",
+      "title": "Irr Pct"
+    },
+    "net_savings_pln": {
+      "description": "Net annual savings [PLN]",
+      "title": "Net Savings Pln",
+      "type": "number"
+    },
+    "npv_pln": {
+      "description": "Net Present Value [PLN]",
+      "title": "Npv Pln",
+      "type": "number"
+    },
+    "objective_used": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optimization objective used",
+      "title": "Objective Used"
+    },
+    "payback_years": {
+      "description": "Simple payback period [years]",
+      "title": "Payback Years",
+      "type": "number"
+    },
+    "pv_curtail_mwh": {
+      "default": 0.0,
+      "description": "PV curtailment [MWh]",
+      "title": "Pv Curtail Mwh",
+      "type": "number"
+    },
+    "recommended_variant": {
+      "description": "Recommended variant name (small/medium/large)",
+      "title": "Recommended Variant",
+      "type": "string"
+    },
+    "unserved_load_kwh": {
+      "default": 0.0,
+      "description": "Unserved load [kWh]",
+      "title": "Unserved Load Kwh",
+      "type": "number"
+    }
+  },
+  "required": [
+    "recommended_variant",
+    "net_savings_pln",
+    "npv_pln",
+    "payback_years"
+  ],
+  "title": "KpiSnapshot",
+  "type": "object"
+}

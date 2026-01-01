@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "BatchItemStatus": {
+      "description": "Status of individual batch item",
+      "enum": [
+        "ok",
+        "error"
+      ],
+      "title": "BatchItemStatus",
+      "type": "string"
+    }
+  },
+  "description": "Result for a single batch item",
+  "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Error message when status=error. None when status=ok.",
+      "title": "Error"
+    },
+    "item_id": {
+      "description": "Item identifier (same as in request)",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "response": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "SizingResult as dict when status=ok. None when status=error.",
+      "title": "Response"
+    },
+    "status": {
+      "$ref": "#/$defs/BatchItemStatus",
+      "description": "Processing status: ok or error"
+    }
+  },
+  "required": [
+    "item_id",
+    "status"
+  ],
+  "title": "BatchItemResult",
+  "type": "object"
+}
