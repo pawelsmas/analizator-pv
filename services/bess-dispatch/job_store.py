@@ -1,5 +1,5 @@
 """
-SQLite-backed JobStore for async batch sizing jobs (v1.3.0).
+SQLite-backed JobStore for async batch sizing jobs (v1.3.0, v3.0.0).
 
 Provides:
 - Persistent job storage with compressed request/result blobs
@@ -9,6 +9,7 @@ Provides:
 - Multi-worker safe job leasing with heartbeat/reclaim
 - Atomic claim with lease expiration for fault tolerance
 - Metadata support: label, tags, notes (v1.3.0)
+- Tenant isolation (v3.0.0)
 """
 
 import hashlib
@@ -131,6 +132,7 @@ class JobStore:
         self.worker_id = worker_id or WORKER_ID
         self.lease_seconds = lease_seconds or JOBS_LEASE_SECONDS
         self._init_db()
+        self._migrate_add_tenant_column()
 
     def _get_conn(self) -> sqlite3.Connection:
         """Get database connection."""
@@ -147,6 +149,8 @@ class JobStore:
 
         conn = self._get_conn()
         try:
+            # v3.0.0: idempotency_key is no longer UNIQUE by itself,
+            # uniqueness is enforced per-tenant via composite index
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     job_id TEXT PRIMARY KEY,
@@ -155,7 +159,7 @@ class JobStore:
                     type TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     batch_id TEXT,
-                    idempotency_key TEXT UNIQUE,
+                    idempotency_key TEXT,
                     items_total INTEGER NOT NULL DEFAULT 0,
                     items_done INTEGER NOT NULL DEFAULT 0,
                     error_count INTEGER NOT NULL DEFAULT 0,
@@ -174,7 +178,9 @@ class JobStore:
                     -- v1.3.0 metadata columns
                     label TEXT,
                     tags_json TEXT,
-                    notes TEXT
+                    notes TEXT,
+                    -- v3.0.0 tenant column
+                    tenant_id TEXT DEFAULT 'default'
                 )
             """)
 
@@ -188,6 +194,13 @@ class JobStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_idempotency_key ON jobs(idempotency_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_lease_expires_at ON jobs(lease_expires_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_tenant_id ON jobs(tenant_id)")
+            # v3.0.0: Composite unique index for idempotency_key + tenant_id
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_tenant
+                ON jobs(idempotency_key, tenant_id)
+                WHERE idempotency_key IS NOT NULL
+            """)
 
             conn.commit()
         finally:
@@ -237,6 +250,34 @@ class JobStore:
                 except sqlite3.OperationalError:
                     pass  # Column might already exist
 
+    def _migrate_add_tenant_column(self) -> None:
+        """Add v3.0.0 tenant_id column if it doesn't exist."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("PRAGMA table_info(jobs)")
+            existing_columns = {row["name"] for row in cursor.fetchall()}
+
+            if "tenant_id" not in existing_columns:
+                # Add column with default value for existing rows
+                conn.execute("ALTER TABLE jobs ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                # Create index for tenant queries
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_tenant_id ON jobs(tenant_id)")
+
+            # v3.0.0: Create composite unique index for idempotency_key + tenant_id
+            # This allows same idempotency_key across different tenants
+            try:
+                conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_tenant
+                    ON jobs(idempotency_key, tenant_id)
+                    WHERE idempotency_key IS NOT NULL
+                """)
+            except Exception:
+                pass  # Index may already exist
+
+            conn.commit()
+        finally:
+            conn.close()
+
     def _compute_request_hash(self, request: Dict[str, Any]) -> str:
         """Compute deterministic SHA-256 hash of request."""
         canonical = json.dumps(request, sort_keys=True, separators=(",", ":"))
@@ -255,7 +296,7 @@ class JobStore:
         return datetime.now(timezone.utc).isoformat()
 
     def _row_to_dict(self, row: sqlite3.Row, include_blobs: bool = False) -> Dict[str, Any]:
-        """Convert SQLite row to dictionary."""
+        """Convert SQLite row to dictionary (v3.0.0: includes tenant_id)."""
         d = dict(row)
         if include_blobs:
             if d.get("request_blob"):
@@ -268,6 +309,9 @@ class JobStore:
         # Parse tags_json to tags list (v1.3.0)
         tags_json = d.pop("tags_json", None)
         d["tags"] = json.loads(tags_json) if tags_json else None
+        # Ensure tenant_id is present (v3.0.0)
+        if "tenant_id" not in d:
+            d["tenant_id"] = "default"
         return d
 
     # -------------------------------------------------------------------------
@@ -280,6 +324,7 @@ class JobStore:
         request: Dict[str, Any],
         batch_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        tenant_id: str = "default",
     ) -> str:
         """
         Create a new job.
@@ -289,17 +334,18 @@ class JobStore:
             request: Full request payload
             batch_id: Optional batch identifier
             idempotency_key: Optional key for duplicate detection
+            tenant_id: Tenant identifier (v3.0.0, defaults to "default")
 
         Returns:
             job_id of created or existing job (if idempotency_key matches)
         """
         conn = self._get_conn()
         try:
-            # Check for existing job with same idempotency_key
+            # Check for existing job with same idempotency_key (scoped by tenant)
             if idempotency_key:
                 cursor = conn.execute(
-                    "SELECT job_id FROM jobs WHERE idempotency_key = ?",
-                    (idempotency_key,)
+                    "SELECT job_id FROM jobs WHERE idempotency_key = ? AND tenant_id = ?",
+                    (idempotency_key, tenant_id)
                 )
                 existing = cursor.fetchone()
                 if existing:
@@ -317,13 +363,13 @@ class JobStore:
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id, created_at, updated_at, type, status,
+                    job_id, tenant_id, created_at, updated_at, type, status,
                     batch_id, idempotency_key, items_total, items_done,
                     error_count, request_hash, request_blob
-                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, 0, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, 0, ?, ?)
                 """,
                 (
-                    job_id, now, now, type, batch_id, idempotency_key,
+                    job_id, tenant_id, now, now, type, batch_id, idempotency_key,
                     items_total, request_hash, request_blob
                 )
             )
@@ -332,22 +378,30 @@ class JobStore:
         finally:
             conn.close()
 
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job(self, job_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get job by ID.
+        Get job by ID, optionally scoped to tenant.
 
         Args:
             job_id: Job identifier
+            tenant_id: Tenant identifier (v3.0.0). If provided, returns None
+                      if job exists but belongs to different tenant (isolation).
 
         Returns:
             Job dictionary with request/result if status in (done, failed, cancelled)
         """
         conn = self._get_conn()
         try:
-            cursor = conn.execute(
-                "SELECT * FROM jobs WHERE job_id = ?",
-                (job_id,)
-            )
+            if tenant_id is not None:
+                cursor = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id = ? AND tenant_id = ?",
+                    (job_id, tenant_id)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id = ?",
+                    (job_id,)
+                )
             row = cursor.fetchone()
             if not row:
                 return None
@@ -364,15 +418,17 @@ class JobStore:
         offset: int = 0,
         status: Optional[str] = None,
         type: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        List jobs with pagination and optional filtering.
+        List jobs with pagination and optional filtering (v3.0.0: tenant scoped).
 
         Args:
             limit: Max results (1-100)
             offset: Pagination offset
             status: Filter by status
             type: Filter by job type
+            tenant_id: Filter by tenant (v3.0.0). Required for tenant isolation.
 
         Returns:
             Dict with items, total, limit, offset
@@ -382,6 +438,11 @@ class JobStore:
             # Build query
             conditions = []
             params = []
+
+            # v3.0.0: Tenant isolation
+            if tenant_id is not None:
+                conditions.append("tenant_id = ?")
+                params.append(tenant_id)
 
             if status:
                 conditions.append("status = ?")
@@ -1025,14 +1086,15 @@ def create_job(
     request: Dict[str, Any],
     batch_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    tenant_id: str = "default",
 ) -> str:
-    """Create a new job."""
-    return get_job_store().create_job(type, request, batch_id, idempotency_key)
+    """Create a new job (v3.0.0: tenant scoped)."""
+    return get_job_store().create_job(type, request, batch_id, idempotency_key, tenant_id)
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get job by ID."""
-    return get_job_store().get_job(job_id)
+def get_job(job_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get job by ID (v3.0.0: tenant scoped)."""
+    return get_job_store().get_job(job_id, tenant_id=tenant_id)
 
 
 def list_jobs(
@@ -1040,9 +1102,10 @@ def list_jobs(
     offset: int = 0,
     status: Optional[str] = None,
     type: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List jobs with pagination."""
-    return get_job_store().list_jobs(limit, offset, status, type)
+    """List jobs with pagination (v3.0.0: tenant scoped)."""
+    return get_job_store().list_jobs(limit, offset, status, type, tenant_id=tenant_id)
 
 
 def mark_running(job_id: str) -> bool:

@@ -1,6 +1,6 @@
 """
-RunStore - SQLite-backed persistence for sizing runs (v1.3.0, v2.8.0)
-=====================================================================
+RunStore - SQLite-backed persistence for sizing runs (v1.3.0, v2.8.0, v3.0.0)
+=============================================================================
 
 Provides audit trail and run registry for sizing operations:
 - Auto-save sizing runs with request/response blobs (zlib-compressed)
@@ -10,6 +10,7 @@ Provides audit trail and run registry for sizing operations:
 - Metadata updates: label, tags, notes (v1.3.0)
 - v2.8.0: Responses are normalized to clean format before storage
   (deprecated fields are removed, legacy is only applied on read if requested)
+- v3.0.0: Tenant isolation - runs are scoped by tenant_id
 
 Environment Variables:
 - RUN_STORE_PATH: Path to SQLite database (default: /data/runs.sqlite)
@@ -143,6 +144,7 @@ class RunStore:
 
     Table schema:
     - run_id: TEXT PRIMARY KEY
+    - tenant_id: TEXT (indexed, v3.0.0)
     - request_hash: TEXT (indexed)
     - created_at: TEXT ISO 8601 (indexed)
     - endpoint: TEXT (e.g., "sizing", "dispatch", "batch.sizing")
@@ -169,6 +171,7 @@ class RunStore:
         self.db_path = db_path or RUN_STORE_PATH
         self._ensure_db()
         self._migrate_add_metadata_columns()
+        self._migrate_add_tenant_column()
 
     def _ensure_db(self):
         """Create database and tables if they don't exist."""
@@ -233,6 +236,24 @@ class RunStore:
         finally:
             conn.close()
 
+    def _migrate_add_tenant_column(self):
+        """Add v3.0.0 tenant_id column if it doesn't exist."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            # Check existing columns
+            cursor.execute("PRAGMA table_info(runs)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            if "tenant_id" not in existing_columns:
+                # Add column with default value for existing rows
+                cursor.execute("ALTER TABLE runs ADD COLUMN tenant_id TEXT DEFAULT 'default'")
+                # Create index for tenant queries
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_runs_tenant_id ON runs(tenant_id)")
+            conn.commit()
+        finally:
+            conn.close()
+
     def save(
         self,
         run_id: str,
@@ -246,6 +267,7 @@ class RunStore:
         request: Dict[str, Any],
         response: Dict[str, Any],
         created_at: Optional[str] = None,
+        tenant_id: str = "default",
     ) -> None:
         """
         Save a run to the store.
@@ -262,6 +284,7 @@ class RunStore:
             request: Request payload dict
             response: Response payload dict
             created_at: ISO 8601 timestamp (defaults to now)
+            tenant_id: Tenant identifier (v3.0.0, defaults to "default")
 
         Note (v2.8.0): Response is normalized to clean format before storage.
         """
@@ -279,12 +302,12 @@ class RunStore:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO runs (
-                    run_id, request_hash, created_at, endpoint, status,
+                    run_id, tenant_id, request_hash, created_at, endpoint, status,
                     cache_hit, schema_version, assumptions_version,
                     compute_time_ms, request_blob, response_blob
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                run_id, request_hash, created_at, endpoint, status,
+                run_id, tenant_id, request_hash, created_at, endpoint, status,
                 1 if cache_hit else 0, schema_version, assumptions_version,
                 compute_time_ms, request_blob, response_blob,
             ))
@@ -292,55 +315,67 @@ class RunStore:
         finally:
             conn.close()
 
-    def get(self, run_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, run_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get a run by run_id.
+        Get a run by run_id, optionally scoped to tenant.
 
         Args:
             run_id: Run identifier
+            tenant_id: Tenant identifier (v3.0.0). If provided, returns None
+                      if run exists but belongs to different tenant (isolation).
 
         Returns:
             Dict with run details including decompressed request/response,
-            or None if not found
+            or None if not found (or not accessible by tenant)
         """
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT run_id, request_hash, created_at, endpoint, status,
-                       cache_hit, schema_version, assumptions_version,
-                       compute_time_ms, request_blob, response_blob,
-                       label, tags_json, notes, updated_at
-                FROM runs WHERE run_id = ?
-            """, (run_id,))
+            if tenant_id is not None:
+                cursor.execute("""
+                    SELECT run_id, tenant_id, request_hash, created_at, endpoint, status,
+                           cache_hit, schema_version, assumptions_version,
+                           compute_time_ms, request_blob, response_blob,
+                           label, tags_json, notes, updated_at
+                    FROM runs WHERE run_id = ? AND tenant_id = ?
+                """, (run_id, tenant_id))
+            else:
+                cursor.execute("""
+                    SELECT run_id, tenant_id, request_hash, created_at, endpoint, status,
+                           cache_hit, schema_version, assumptions_version,
+                           compute_time_ms, request_blob, response_blob,
+                           label, tags_json, notes, updated_at
+                    FROM runs WHERE run_id = ?
+                """, (run_id,))
             row = cursor.fetchone()
             if row is None:
                 return None
 
             # Parse tags from JSON
             tags = None
-            if row[12]:
+            if row[13]:
                 try:
-                    tags = json.loads(row[12])
+                    tags = json.loads(row[13])
                 except json.JSONDecodeError:
                     tags = None
 
             return {
                 "run_id": row[0],
-                "request_hash": row[1],
-                "created_at": row[2],
-                "endpoint": row[3],
-                "status": row[4],
-                "cache_hit": bool(row[5]),
-                "schema_version": row[6],
-                "assumptions_version": row[7],
-                "compute_time_ms": row[8],
-                "request": _decompress_json(row[9]),
-                "response": _decompress_json(row[10]),
-                "label": row[11],
+                "tenant_id": row[1],
+                "request_hash": row[2],
+                "created_at": row[3],
+                "endpoint": row[4],
+                "status": row[5],
+                "cache_hit": bool(row[6]),
+                "schema_version": row[7],
+                "assumptions_version": row[8],
+                "compute_time_ms": row[9],
+                "request": _decompress_json(row[10]),
+                "response": _decompress_json(row[11]),
+                "label": row[12],
                 "tags": tags,
-                "notes": row[13],
-                "updated_at": row[14],
+                "notes": row[14],
+                "updated_at": row[15],
             }
         finally:
             conn.close()
@@ -354,9 +389,10 @@ class RunStore:
         tag: Optional[str] = None,
         q: Optional[str] = None,
         sort: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        List runs with optional filtering and sorting (v1.3.0).
+        List runs with optional filtering and sorting (v1.3.0, v3.0.0).
 
         Args:
             limit: Max results to return (default 20)
@@ -366,6 +402,7 @@ class RunStore:
             tag: Filter by tag (exact match in tags_json array)
             q: Free-text search in label and notes
             sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
+            tenant_id: Filter by tenant (v3.0.0). Required for tenant isolation.
 
         Returns:
             Dict with items list and pagination info
@@ -377,6 +414,12 @@ class RunStore:
             # Build WHERE clause
             conditions = []
             params: List[Any] = []
+
+            # v3.0.0: Tenant isolation
+            if tenant_id is not None:
+                conditions.append("tenant_id = ?")
+                params.append(tenant_id)
+
             if request_hash:
                 conditions.append("request_hash = ?")
                 params.append(request_hash)
@@ -416,7 +459,7 @@ class RunStore:
 
             # Get items (without blobs for efficiency, include metadata)
             query = f"""
-                SELECT run_id, request_hash, created_at, endpoint, status, cache_hit,
+                SELECT run_id, tenant_id, request_hash, created_at, endpoint, status, cache_hit,
                        label, tags_json, notes, updated_at
                 FROM runs {where_clause}
                 ORDER BY {order_by}
@@ -428,23 +471,24 @@ class RunStore:
             for row in cursor.fetchall():
                 # Parse tags from JSON
                 tags = None
-                if row[7]:
+                if row[8]:
                     try:
-                        tags = json.loads(row[7])
+                        tags = json.loads(row[8])
                     except json.JSONDecodeError:
                         tags = None
 
                 items.append({
                     "run_id": row[0],
-                    "request_hash": row[1],
-                    "created_at": row[2],
-                    "endpoint": row[3],
-                    "status": row[4],
-                    "cache_hit": bool(row[5]),
-                    "label": row[6],
+                    "tenant_id": row[1],
+                    "request_hash": row[2],
+                    "created_at": row[3],
+                    "endpoint": row[4],
+                    "status": row[5],
+                    "cache_hit": bool(row[6]),
+                    "label": row[7],
                     "tags": tags,
-                    "notes": row[8],
-                    "updated_at": row[9],
+                    "notes": row[9],
+                    "updated_at": row[10],
                 })
 
             return {
@@ -491,9 +535,10 @@ class RunStore:
         label: Optional[str] = None,
         tags: Optional[List[str]] = None,
         notes: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> bool:
         """
-        Update metadata fields for a run (v1.3.0).
+        Update metadata fields for a run (v1.3.0, v3.0.0).
 
         Args:
             run_id: Run identifier
@@ -501,6 +546,8 @@ class RunStore:
             tags: New tags list (max 20 tags, each 1-32 chars [a-zA-Z0-9_-]).
                   Pass None to not update, pass empty list to clear.
             notes: New notes (max 2000 chars). Pass None to not update.
+            tenant_id: Tenant identifier (v3.0.0). If provided, only updates
+                      if run belongs to this tenant.
 
         Returns:
             True if run was found and updated, False if run_id not found.
@@ -529,7 +576,7 @@ class RunStore:
 
         if not set_parts:
             # Nothing to update
-            return self.get(run_id) is not None
+            return self.get(run_id, tenant_id=tenant_id) is not None
 
         # Always update updated_at
         set_parts.append("updated_at = ?")
@@ -540,10 +587,18 @@ class RunStore:
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE runs SET {', '.join(set_parts)} WHERE run_id = ?",
-                params
-            )
+            # v3.0.0: Include tenant_id in WHERE clause for isolation
+            if tenant_id is not None:
+                params.append(tenant_id)
+                cursor.execute(
+                    f"UPDATE runs SET {', '.join(set_parts)} WHERE run_id = ? AND tenant_id = ?",
+                    params
+                )
+            else:
+                cursor.execute(
+                    f"UPDATE runs SET {', '.join(set_parts)} WHERE run_id = ?",
+                    params
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -616,6 +671,7 @@ def save_run(
     compute_time_ms: int,
     request: Dict[str, Any],
     response: Dict[str, Any],
+    tenant_id: str = "default",
 ) -> None:
     """
     Save a run using the global store.
@@ -635,14 +691,15 @@ def save_run(
         compute_time_ms=compute_time_ms,
         request=request,
         response=response,
+        tenant_id=tenant_id,
     )
 
 
-def get_run(run_id: str) -> Optional[Dict[str, Any]]:
-    """Get a run by run_id using the global store."""
+def get_run(run_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get a run by run_id using the global store (v3.0.0: tenant scoped)."""
     if not RUN_STORE_ENABLED:
         return None
-    return get_run_store().get(run_id)
+    return get_run_store().get(run_id, tenant_id=tenant_id)
 
 
 def list_runs(
@@ -653,8 +710,9 @@ def list_runs(
     tag: Optional[str] = None,
     q: Optional[str] = None,
     sort: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List runs using the global store (v1.3.0).
+    """List runs using the global store (v1.3.0, v3.0.0: tenant scoped).
 
     Args:
         limit: Max results to return (default 20)
@@ -664,6 +722,7 @@ def list_runs(
         tag: Filter by tag (exact match)
         q: Free-text search in label and notes
         sort: Sort order (created_at_asc, created_at_desc, updated_at_desc)
+        tenant_id: Filter by tenant (v3.0.0)
     """
     if not RUN_STORE_ENABLED:
         return {"items": [], "limit": limit, "offset": offset, "total": 0}
@@ -675,6 +734,7 @@ def list_runs(
         tag=tag,
         q=q,
         sort=sort,
+        tenant_id=tenant_id,
     )
 
 
@@ -690,15 +750,17 @@ def update_run_metadata(
     label: Optional[str] = None,
     tags: Optional[List[str]] = None,
     notes: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> bool:
     """
-    Update metadata for a run using the global store.
+    Update metadata for a run using the global store (v3.0.0: tenant scoped).
 
     Args:
         run_id: Run identifier
         label: New label (max 80 chars)
         tags: New tags list (max 20, each 1-32 chars [a-zA-Z0-9_-])
         notes: New notes (max 2000 chars)
+        tenant_id: Tenant identifier (v3.0.0)
 
     Returns:
         True if run was found and updated, False if not found
@@ -714,4 +776,5 @@ def update_run_metadata(
         label=label,
         tags=tags,
         notes=notes,
+        tenant_id=tenant_id,
     )
