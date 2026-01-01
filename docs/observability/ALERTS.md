@@ -723,3 +723,111 @@ Tracks adoption of custom branding fields.
     summary: "Report branding field usage"
     description: "{{ $value | humanize }} reports with {{ $labels.field }} in last 24 hours"
 ```
+
+## Performance Alerts (v2.5.0)
+
+### Warning: Slow Requests
+
+Fires when requests exceed the slow request threshold (default 2s).
+
+```yaml
+- alert: BESSSlowRequests
+  expr: increase(bess_slow_requests_total[5m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow requests detected"
+    description: "{{ $value | humanize }} requests exceeded {{ $labels.endpoint }} threshold in last 5 minutes"
+```
+
+### Warning: High P95 Latency
+
+Fires when P95 request latency exceeds threshold.
+
+```yaml
+- alert: BESSHighP95Latency
+  expr: histogram_quantile(0.95, rate(bess_request_duration_seconds_bucket[5m])) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High P95 latency detected"
+    description: "P95 latency is {{ $value | humanizeDuration }}"
+```
+
+### Warning: High Request Size
+
+Fires when requests approach the size limit.
+
+```yaml
+- alert: BESSHighRequestSize
+  expr: histogram_quantile(0.99, rate(bess_request_size_bytes_bucket[15m])) > 2000000
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Large requests approaching limit"
+    description: "P99 request size is {{ $value | humanize1024 }}B, limit is 2.5MB"
+```
+
+### Warning: Low Cache Hit Rate
+
+Fires when report cache hit rate is low, indicating inefficient caching.
+
+```yaml
+- alert: BESSCacheHitRateLow
+  expr: |
+    sum(rate(bess_report_cache_hits_total[1h])) /
+    (sum(rate(bess_report_cache_hits_total[1h])) + sum(rate(bess_report_cache_misses_total[1h]))) < 0.5
+  for: 30m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Report cache hit rate below 50%"
+    description: "Cache hit rate is {{ $value | humanizePercentage }}. Consider increasing cache size or TTL."
+```
+
+### Warning: Limit Rejections
+
+Fires when requests are being rejected due to limits.
+
+```yaml
+- alert: BESSLimitRejections
+  expr: increase(bess_limit_rejections_total[15m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Requests being rejected due to limits"
+    description: "{{ $value | humanize }} requests rejected for {{ $labels.limit_type }} in last 15 minutes"
+```
+
+### Info: Compression Efficiency
+
+Tracks compression savings.
+
+```yaml
+- alert: BESSCompressionSavings
+  expr: increase(bess_compression_savings_bytes_total[1d]) > 100000000
+  labels:
+    severity: info
+  annotations:
+    summary: "Compression savings"
+    description: "{{ $value | humanize1024 }}B saved by compression in last 24 hours"
+```
+
+### Info: Cache Size
+
+Tracks cache utilization.
+
+```yaml
+- alert: BESSCacheNearCapacity
+  expr: sum(bess_report_cache_size_entries) > 80
+  for: 15m
+  labels:
+    severity: info
+  annotations:
+    summary: "Report cache near capacity"
+    description: "{{ $value | humanize }} entries in cache (max 100)"
+```

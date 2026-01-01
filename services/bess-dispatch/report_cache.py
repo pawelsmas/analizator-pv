@@ -286,12 +286,25 @@ def get_cached_report(cache_key: str, format: str) -> Tuple[Optional[bytes], str
         Tuple of (content_or_none, cache_header)
         cache_header is "HIT", "MISS", or "DISABLED"
     """
+    # Import perf_metrics lazily to avoid circular imports
+    from observability.perf_metrics import (
+        track_report_cache_hit,
+        track_report_cache_miss,
+        update_report_cache_size,
+    )
+
     if not REPORT_CACHE_ENABLED:
         return None, CacheHeader.DISABLED
 
     content = _report_cache.get(cache_key, format)
     if content is not None:
+        track_report_cache_hit(format)
         return content, CacheHeader.HIT
+
+    track_report_cache_miss(format)
+    # Update cache size gauge
+    stats = _report_cache.stats()
+    update_report_cache_size(format, stats["entries"].get(format, 0))
     return None, CacheHeader.MISS
 
 
@@ -307,6 +320,11 @@ def set_cached_report(cache_key: str, format: str, content: bytes) -> None:
     if not REPORT_CACHE_ENABLED:
         return
     _report_cache.set(cache_key, format, content)
+
+    # Update cache size gauge (v2.5.0 PR6)
+    from observability.perf_metrics import update_report_cache_size
+    stats = _report_cache.stats()
+    update_report_cache_size(format, stats["entries"].get(format, 0))
 
 
 def invalidate_report_cache(cache_key: str, format: Optional[str] = None) -> None:
