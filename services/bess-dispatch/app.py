@@ -275,6 +275,11 @@ app.add_middleware(
 # Request size limit middleware (v2.5.0)
 app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 
+# GZip compression middleware (v2.5.0 PR4)
+# Compresses responses > minimum_size bytes when client accepts gzip
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
+
 
 # Prometheus HTTP metrics middleware
 @app.middleware("http")
