@@ -1,7 +1,10 @@
 """
-SQLAlchemy ORM models (v3.3.0 PR3).
+SQLAlchemy ORM models (v3.3.0 PR3, PR4).
 
 Defines all database tables used by BESS API for PostgreSQL and SQLite backends.
+
+PR3: Auth tables (tenants, users, api_keys, invites, shares, audit_log)
+PR4: Run/Job index tables (run_index, job_index) for faster listing
 """
 
 from datetime import datetime, timezone
@@ -15,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
 )
@@ -255,3 +259,193 @@ class AuditLog(Base):
             "ip_address": self.ip_address,
             "user_agent": self.user_agent,
         }
+
+
+# =============================================================================
+# Run/Job Index Models (v3.3.0 PR4)
+# =============================================================================
+
+class RunIndex(Base):
+    """
+    Run index model for fast listing (v3.3.0 PR4).
+
+    Stores metadata index for runs. The full request/response blobs
+    are stored separately (in run_store.py SQLite files for now).
+    This table enables fast Postgres-backed listing with proper indexes.
+    """
+    __tablename__ = "run_index"
+
+    run_id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), nullable=False, default="default")
+    request_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    endpoint = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    cache_hit = Column(Boolean, nullable=False, default=False)
+    schema_version = Column(String(20), nullable=True)
+    assumptions_version = Column(String(64), nullable=True)
+    compute_time_ms = Column(Integer, nullable=True)
+
+    # v1.3.0 metadata
+    label = Column(String(80), nullable=True)
+    tags_json = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Blob storage (zlib-compressed JSON)
+    request_blob = Column(LargeBinary, nullable=True)
+    response_blob = Column(LargeBinary, nullable=True)
+
+    __table_args__ = (
+        Index("idx_run_index_tenant", "tenant_id"),
+        Index("idx_run_index_created_at", "created_at"),
+        Index("idx_run_index_request_hash", "request_hash"),
+        Index("idx_run_index_endpoint", "endpoint"),
+        Index("idx_run_index_status", "status"),
+        Index("idx_run_index_tenant_created", "tenant_id", "created_at"),
+    )
+
+    def to_dict(self, include_blobs: bool = False) -> dict:
+        import zlib
+
+        tags = None
+        if self.tags_json:
+            try:
+                tags = json.loads(self.tags_json)
+            except json.JSONDecodeError:
+                tags = None
+
+        result = {
+            "run_id": self.run_id,
+            "tenant_id": self.tenant_id,
+            "request_hash": self.request_hash,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "endpoint": self.endpoint,
+            "status": self.status,
+            "cache_hit": self.cache_hit,
+            "schema_version": self.schema_version,
+            "assumptions_version": self.assumptions_version,
+            "compute_time_ms": self.compute_time_ms,
+            "label": self.label,
+            "tags": tags,
+            "notes": self.notes,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+        if include_blobs:
+            if self.request_blob:
+                try:
+                    result["request"] = json.loads(zlib.decompress(self.request_blob).decode("utf-8"))
+                except Exception:
+                    result["request"] = None
+            if self.response_blob:
+                try:
+                    result["response"] = json.loads(zlib.decompress(self.response_blob).decode("utf-8"))
+                except Exception:
+                    result["response"] = None
+
+        return result
+
+
+class JobIndex(Base):
+    """
+    Job index model for fast listing (v3.3.0 PR4).
+
+    Stores metadata index for async jobs. Enables fast Postgres-backed
+    listing with proper indexes for status, type, tenant filtering.
+    """
+    __tablename__ = "job_index"
+
+    job_id = Column(String(36), primary_key=True)
+    tenant_id = Column(String(36), nullable=False, default="default")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    batch_id = Column(String(36), nullable=True)
+    idempotency_key = Column(String(255), nullable=True)
+    items_total = Column(Integer, nullable=False, default=0)
+    items_done = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    request_hash = Column(String(64), nullable=False)
+    message = Column(Text, nullable=True)
+
+    # Leasing columns (v1.2.0)
+    lease_owner = Column(String(255), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+
+    # v1.3.0 metadata
+    label = Column(String(80), nullable=True)
+    tags_json = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    # Blob storage (zlib-compressed JSON)
+    request_blob = Column(LargeBinary, nullable=True)
+    result_blob = Column(LargeBinary, nullable=True)
+
+    __table_args__ = (
+        Index("idx_job_index_tenant", "tenant_id"),
+        Index("idx_job_index_created_at", "created_at"),
+        Index("idx_job_index_status", "status"),
+        Index("idx_job_index_type", "type"),
+        Index("idx_job_index_idempotency_key", "idempotency_key"),
+        Index("idx_job_index_lease_expires", "lease_expires_at"),
+        Index("idx_job_index_tenant_status", "tenant_id", "status"),
+        # Composite unique for idempotency per tenant
+        Index("idx_job_index_idempotency_tenant", "idempotency_key", "tenant_id", unique=True),
+    )
+
+    def to_dict(self, include_blobs: bool = False) -> dict:
+        import zlib
+
+        tags = None
+        if self.tags_json:
+            try:
+                tags = json.loads(self.tags_json)
+            except json.JSONDecodeError:
+                tags = None
+
+        result = {
+            "job_id": self.job_id,
+            "tenant_id": self.tenant_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "type": self.type,
+            "status": self.status,
+            "batch_id": self.batch_id,
+            "idempotency_key": self.idempotency_key,
+            "items_total": self.items_total,
+            "items_done": self.items_done,
+            "error_count": self.error_count,
+            "request_hash": self.request_hash,
+            "message": self.message,
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": self.lease_expires_at.isoformat() if self.lease_expires_at else None,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "last_error": self.last_error,
+            "label": self.label,
+            "tags": tags,
+            "notes": self.notes,
+        }
+
+        if include_blobs:
+            if self.request_blob:
+                try:
+                    result["request"] = json.loads(zlib.decompress(self.request_blob).decode("utf-8"))
+                except Exception:
+                    result["request"] = None
+            if self.result_blob:
+                try:
+                    result["result"] = json.loads(zlib.decompress(self.result_blob).decode("utf-8"))
+                except Exception:
+                    result["result"] = None
+
+        return result
