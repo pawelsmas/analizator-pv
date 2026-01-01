@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend worker-up worker-down worker-logs
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -232,3 +232,18 @@ guard-no-legacy: ## Check for legacy references in codebase
 	@echo "${BLUE}Checking for legacy references...${RESET}"
 	@python scripts/guards/check_no_legacy.py
 	@echo "${GREEN}✓ No legacy references found${RESET}"
+
+# ===== JOB QUEUE WORKER (v3.4.0) =====
+
+worker-up: ## Start the job queue worker (with worker profile)
+	@echo "${BLUE}Starting job queue worker...${RESET}"
+	@docker compose --profile worker up -d bess-dispatch-worker
+	@echo "${GREEN}✓ Worker started${RESET}"
+
+worker-down: ## Stop the job queue worker
+	@echo "${BLUE}Stopping job queue worker...${RESET}"
+	@docker compose --profile worker stop bess-dispatch-worker
+	@echo "${GREEN}✓ Worker stopped${RESET}"
+
+worker-logs: ## Show logs from job queue worker
+	@docker compose --profile worker logs -f bess-dispatch-worker

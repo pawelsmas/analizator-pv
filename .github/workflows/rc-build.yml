@@ -46,6 +46,106 @@ jobs:
           print(f'Deprecations: {len(data[\"items\"])} items')
           "
 
+  # v3.3.0: PostgreSQL auth integration tests
+  rc-auth-postgres:
+    name: RC Auth (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: bess
+          POSTGRES_PASSWORD: bess_test_password
+          POSTGRES_DB: bess_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_BACKEND: postgres
+      DATABASE_URL: postgresql://bess:bess_test_password@localhost:5432/bess_test
+      AUTH_ENABLED: "true"
+      JWT_SECRET: test-secret-for-ci-only
+      ADMIN_EMAIL: admin@test.local
+      ADMIN_PASSWORD: test-admin-password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pydantic requests sqlalchemy alembic psycopg bcrypt pyjwt prometheus-client
+
+      - name: Wait for PostgreSQL
+        run: |
+          until pg_isready -h localhost -p 5432 -U bess; do
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+
+      - name: Check migrations script
+        run: |
+          python scripts/db/check_migrations.py
+
+      - name: Run alembic migrations
+        run: |
+          cd services/bess-dispatch
+          alembic upgrade head
+
+      - name: Verify no pending migrations
+        run: |
+          python scripts/db/check_migrations.py
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Migrations still pending after upgrade"
+            exit 1
+          fi
+
+      - name: Run auth repo tests (PostgreSQL)
+        run: |
+          python -m pytest tests/unit/test_auth_repo.py -v --tb=short
+
+      - name: Run audit repo tests (PostgreSQL)
+        run: |
+          python -m pytest tests/unit/test_audit_repo.py -v --tb=short
+
+      - name: Run db models tests (PostgreSQL)
+        run: |
+          python -m pytest tests/unit/test_run_job_index_models.py -v --tb=short
+
+      - name: Run migration contract tests
+        run: |
+          python -m pytest tests/contract/test_run_job_index_migration.py -v --tb=short
+
+      - name: Run SQLAlchemy repos contract tests
+        run: |
+          python -m pytest tests/contract/test_sqlalchemy_repos.py -v --tb=short
+
+      - name: Test /health/db endpoint returns ok
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'services/bess-dispatch')
+          from db_config import check_db_connection
+          result = check_db_connection()
+          assert result['ok'], f'Health check failed: {result}'
+          assert result['db_backend'] == 'postgres'
+          print(f'Health check passed: latency={result[\"latency_ms\"]}ms')
+          "
+
+      - name: Test backfill script (dry-run)
+        run: |
+          python scripts/db/backfill_runs_jobs.py --dry-run --batch-size 10
+
   build-artifacts:
     name: Build Artifacts
     runs-on: ubuntu-latest
