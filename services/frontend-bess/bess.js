@@ -7422,4 +7422,178 @@ window.runBaselineHealth = runBaselineHealth;
 window.exportBaselineHealthCSV = exportBaselineHealthCSV;
 window.exportBaselineHealthZIP = exportBaselineHealthZIP;
 
-console.log('[BESS] bess.js v3.29 - v1.8.0 Backend Version Badge');
+console.log('[BESS] bess.js v3.30 - v2.0.0 Pricing Engine Tab');
+
+// =============================================================================
+// v2.0.0: Pricing Engine Functions
+// =============================================================================
+
+// Store price override data
+let priceOverrideData = null;
+
+/**
+ * Update pricing display from sizing response
+ */
+function updatePricingDisplay(response) {
+  const variants = response.variants || [];
+  const recommended = variants.find(v => v.is_recommended);
+
+  if (!recommended) return;
+
+  // Update pricing mode label
+  const modeLabel = document.getElementById('pricingModeLabel');
+  const priceHashShort = document.getElementById('priceHashShort');
+
+  if (recommended.pricing_mode) {
+    modeLabel.textContent = recommended.pricing_mode.toUpperCase();
+    modeLabel.style.background = recommended.pricing_mode === 'override' ? '#ff9800' : '#4caf50';
+  }
+
+  if (recommended.price_hash) {
+    priceHashShort.textContent = recommended.price_hash.substring(0, 12) + '...';
+    priceHashShort.title = recommended.price_hash;
+  }
+
+  // Update price values from price_timeseries
+  const priceTseries = recommended.price_timeseries;
+  if (priceTseries) {
+    const importPrices = priceTseries.import_price_pln_per_mwh || [];
+    const exportPrices = priceTseries.export_price_pln_per_mwh || [];
+
+    // Calculate averages
+    const avgImport = importPrices.length > 0
+      ? importPrices.reduce((a, b) => a + b, 0) / importPrices.length
+      : 0;
+    const avgExport = exportPrices.length > 0
+      ? exportPrices.reduce((a, b) => a + b, 0) / exportPrices.length
+      : 0;
+
+    document.getElementById('priceImportValue').textContent = avgImport.toFixed(0) + ' PLN/MWh';
+    document.getElementById('priceExportValue').textContent = avgExport.toFixed(0) + ' PLN/MWh';
+  }
+
+  // Update cost buckets from ledger_timeseries
+  const ledgerTs = recommended.ledger_timeseries;
+  if (ledgerTs) {
+    updateCostBucketsChart(ledgerTs);
+  }
+}
+
+/**
+ * Update cost buckets display
+ */
+function updateCostBucketsChart(ledgerTs) {
+  const container = document.getElementById('costBucketsChart');
+  if (!container) return;
+
+  const buckets = [
+    { name: 'Import', value: ledgerTs.sum_import_cost_pln || 0, color: '#d32f2f' },
+    { name: 'Export', value: ledgerTs.sum_export_revenue_pln || 0, color: '#388e3c' },
+    { name: 'Opłaty', value: ledgerTs.sum_other_fees_pln || 0, color: '#ff9800' },
+    { name: 'Kary', value: ledgerTs.sum_unserved_penalty_pln || 0, color: '#9c27b0' },
+  ].filter(b => b.value !== 0);
+
+  const total = buckets.reduce((sum, b) => sum + Math.abs(b.value), 0);
+
+  container.innerHTML = buckets.map(b => {
+    const pct = total > 0 ? (Math.abs(b.value) / total * 100).toFixed(1) : 0;
+    const sign = b.name === 'Export' ? '+' : '';
+    return `
+      <div style="background:${b.color};color:white;padding:8px 12px;border-radius:4px;font-size:12px;">
+        <div style="font-weight:600;">${b.name}</div>
+        <div>${sign}${b.value.toFixed(2)} PLN</div>
+        <div style="font-size:10px;opacity:0.8;">${pct}%</div>
+      </div>
+    `;
+  }).join('');
+
+  if (buckets.length === 0) {
+    container.innerHTML = '<span style="color:#999;font-size:11px;">Brak danych kosztowych</span>';
+  }
+}
+
+/**
+ * Handle CSV price override upload
+ */
+function handlePriceOverrideCsv(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const statusDiv = document.getElementById('priceOverrideStatus');
+  const clearBtn = document.getElementById('clearPriceOverride');
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const lines = e.target.result.split('\n').filter(l => l.trim());
+      const header = lines[0].toLowerCase();
+
+      // Parse CSV - expect import_price, export_price columns
+      const importPrices = [];
+      const exportPrices = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',');
+        if (parts.length >= 2) {
+          importPrices.push(parseFloat(parts[0]) || 0);
+          exportPrices.push(parseFloat(parts[1]) || 0);
+        }
+      }
+
+      if (importPrices.length === 0) {
+        statusDiv.innerHTML = '<span style="color:#d32f2f;">❌ Błąd: Brak danych w CSV</span>';
+        return;
+      }
+
+      priceOverrideData = {
+        import_price_pln_per_mwh: importPrices,
+        export_price_pln_per_mwh: exportPrices,
+        step_minutes: 60,  // Default to hourly
+        steps: importPrices.length,
+        timezone: 'Europe/Warsaw',
+        period_start: '2025-01-01T00:00:00',
+        period_end: `2025-01-01T${(importPrices.length - 1).toString().padStart(2, '0')}:00:00`,
+      };
+
+      statusDiv.innerHTML = `<span style="color:#388e3c;">✅ Załadowano ${importPrices.length} kroków czasowych</span>`;
+      clearBtn.style.display = 'inline-block';
+
+      // Update mode label
+      const modeLabel = document.getElementById('pricingModeLabel');
+      modeLabel.textContent = 'OVERRIDE (pending)';
+      modeLabel.style.background = '#ff9800';
+
+    } catch (err) {
+      statusDiv.innerHTML = `<span style="color:#d32f2f;">❌ Błąd parsowania: ${err.message}</span>`;
+    }
+  };
+  reader.readAsText(file);
+}
+
+/**
+ * Clear price override
+ */
+function clearPriceOverride() {
+  priceOverrideData = null;
+  document.getElementById('priceOverrideCsv').value = '';
+  document.getElementById('priceOverrideStatus').innerHTML = '';
+  document.getElementById('clearPriceOverride').style.display = 'none';
+
+  const modeLabel = document.getElementById('pricingModeLabel');
+  modeLabel.textContent = 'GENERATED';
+  modeLabel.style.background = '#4caf50';
+}
+
+/**
+ * Get price override for sizing request
+ */
+function getPriceOverrideForRequest() {
+  return priceOverrideData;
+}
+
+// Export pricing functions
+window.updatePricingDisplay = updatePricingDisplay;
+window.updateCostBucketsChart = updateCostBucketsChart;
+window.handlePriceOverrideCsv = handlePriceOverrideCsv;
+window.clearPriceOverride = clearPriceOverride;
+window.getPriceOverrideForRequest = getPriceOverrideForRequest;
