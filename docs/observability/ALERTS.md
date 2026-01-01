@@ -615,3 +615,111 @@ Tracks adoption of portfolio feature.
     summary: "Portfolio feature adoption"
     description: "{{ $value | humanize }} portfolio summary requests in last 24 hours"
 ```
+
+---
+
+## Report Generation Alerts (v2.4.0)
+
+Alerting rules for report generation (PDF, XLSX, ZIP).
+
+### Warning: Report Generation Failures
+
+Alerts when report generation is failing frequently.
+
+```yaml
+- alert: BESSReportGenerationFailing
+  expr: rate(bess_report_errors_total[5m]) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Report generation failures detected"
+    description: "Report generation errors rate {{ $value | humanize }}/s for format={{ $labels.format }}, error_type={{ $labels.error_type }}"
+```
+
+### Warning: Slow Report Generation
+
+Alerts when report generation is taking too long.
+
+```yaml
+- alert: BESSSlowReportGeneration
+  expr: histogram_quantile(0.95, rate(bess_report_generation_duration_seconds_bucket[10m])) > 10
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow report generation detected"
+    description: "95th percentile report generation time is {{ $value | humanize }}s for format={{ $labels.format }}"
+```
+
+### Warning: Large Report Files
+
+Alerts when generated reports are unusually large.
+
+```yaml
+- alert: BESSLargeReportFiles
+  expr: histogram_quantile(0.95, rate(bess_report_size_bytes_bucket[1h])) > 5000000
+  for: 30m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Large report files detected"
+    description: "95th percentile report size is {{ $value | humanize }}B for format={{ $labels.format }}"
+```
+
+### Warning: Portfolio Report Failures
+
+Alerts when portfolio report generation is failing.
+
+```yaml
+- alert: BESSPortfolioReportFailing
+  expr: rate(bess_portfolio_report_errors_total[5m]) > 0.05
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Portfolio report generation failures"
+    description: "Portfolio report errors rate {{ $value | humanize }}/s for error_type={{ $labels.error_type }}"
+```
+
+### Info: Report Usage by Format
+
+Tracks report generation by format for adoption monitoring.
+
+```yaml
+- alert: BESSReportUsage
+  expr: sum by (format) (increase(bess_report_requests_total[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Report usage by format"
+    description: "{{ $value | humanize }} {{ $labels.format }} reports generated in last 24 hours"
+```
+
+### Info: Engineering Profile Adoption
+
+Tracks adoption of engineering profile for reports.
+
+```yaml
+- alert: BESSEngineeringReportAdoption
+  expr: sum(increase(bess_report_profile_requests_total{profile="engineering"}[1d])) > 5
+  labels:
+    severity: info
+  annotations:
+    summary: "Engineering profile adoption"
+    description: "{{ $value | humanize }} engineering profile reports in last 24 hours"
+```
+
+### Info: Custom Branding Usage
+
+Tracks adoption of custom branding fields.
+
+```yaml
+- alert: BESSReportBrandingAdoption
+  expr: sum by (field) (increase(bess_report_branding_usage_total[1d])) > 5
+  labels:
+    severity: info
+  annotations:
+    summary: "Report branding field usage"
+    description: "{{ $value | humanize }} reports with {{ $labels.field }} in last 24 hours"
+```

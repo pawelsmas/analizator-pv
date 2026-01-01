@@ -1026,6 +1026,15 @@ async def get_run_report_zip(
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_zip_helper import build_run_report_zip
 
+    # Import metrics
+    import time
+    from observability.report_metrics import (
+        track_report_request, track_report_error, track_report_branding,
+        track_report_generation
+    )
+
+    start_time = time.time()
+
     # Build options from query params
     branding = None
     if any([report_title, client_name, site_name, prepared_by, prepared_for]):
@@ -1049,8 +1058,21 @@ async def get_run_report_zip(
         max_table_rows=max_table_rows,
     )
 
+    # Track request metrics
+    track_report_request("zip", report_profile.value)
+    track_report_branding(
+        client_name=client_name,
+        site_name=site_name,
+        report_title=report_title,
+        notes=notes
+    )
+
     # Build report ZIP
     zip_content = build_run_report_zip(stored, options)
+
+    # Track generation metrics
+    duration = time.time() - start_time
+    track_report_generation("zip", duration, len(zip_content))
 
     return Response(
         content=zip_content,
@@ -1095,9 +1117,15 @@ async def get_run_report_pdf(
         raise HTTPException(404, f"Run {run_id} not found")
 
     # Import report modules
+    import time
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_data import build_report_data_from_run
     from report_pdf import render_pdf
+    from observability.report_metrics import (
+        track_report_request, track_report_branding, track_report_generation
+    )
+
+    start_time = time.time()
 
     # Build options from query params
     branding = None
@@ -1122,9 +1150,22 @@ async def get_run_report_pdf(
         max_table_rows=max_table_rows,
     )
 
+    # Track request metrics
+    track_report_request("pdf", report_profile.value)
+    track_report_branding(
+        client_name=client_name,
+        site_name=site_name,
+        report_title=report_title,
+        notes=notes
+    )
+
     # Build report data and render PDF
     report_data = build_report_data_from_run(stored, options)
     pdf_content = render_pdf(report_data)
+
+    # Track generation metrics
+    duration = time.time() - start_time
+    track_report_generation("pdf", duration, len(pdf_content))
 
     return Response(
         content=pdf_content,
@@ -1169,9 +1210,15 @@ async def get_run_report_xlsx(
         raise HTTPException(404, f"Run {run_id} not found")
 
     # Import report modules
+    import time
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from report_data import build_report_data_from_run
     from report_xlsx import render_xlsx
+    from observability.report_metrics import (
+        track_report_request, track_report_branding, track_report_generation
+    )
+
+    start_time = time.time()
 
     # Build options from query params
     branding = None
@@ -1196,9 +1243,22 @@ async def get_run_report_xlsx(
         max_table_rows=max_table_rows,
     )
 
+    # Track request metrics
+    track_report_request("xlsx", report_profile.value)
+    track_report_branding(
+        client_name=client_name,
+        site_name=site_name,
+        report_title=report_title,
+        notes=notes
+    )
+
     # Build report data and render XLSX
     report_data = build_report_data_from_run(stored, options)
     xlsx_content = render_xlsx(report_data)
+
+    # Track generation metrics
+    duration = time.time() - start_time
+    track_report_generation("xlsx", duration, len(xlsx_content))
 
     return Response(
         content=xlsx_content,
@@ -5195,7 +5255,11 @@ async def get_portfolio_report_zip(request: PortfolioReportRequest):
     from report_models import ReportOptions, ReportProfile, ReportBranding
     from portfolio_report_helper import build_portfolio_report_zip
     from observability.portfolio_metrics import record_portfolio_export_request
+    from observability.report_metrics import (
+        track_portfolio_report_request, track_portfolio_report_error
+    )
     record_portfolio_export_request(source="api", format="zip")
+    track_portfolio_report_request(len(request.run_ids))
 
     try:
         # Compute portfolio summary
@@ -5249,8 +5313,10 @@ async def get_portfolio_report_zip(request: PortfolioReportRequest):
         )
 
     except HTTPException:
+        track_portfolio_report_error("validation")
         raise
     except Exception as e:
+        track_portfolio_report_error("generation")
         raise HTTPException(500, f"Portfolio report error: {str(e)}")
 
 
