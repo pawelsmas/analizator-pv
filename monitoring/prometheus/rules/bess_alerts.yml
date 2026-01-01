@@ -41,3 +41,48 @@ groups:
         annotations:
           summary: "High 5xx error rate on bess-dispatch"
           description: "5xx error rate > 1% for 5m."
+
+      # v2.7.0: Deprecation usage alerts
+      - alert: BessDeprecationUsageHigh
+        expr: |
+          sum(rate(bess_deprecation_used_total[1h])) > 100
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "High deprecated API usage"
+          description: "Deprecated API fields are being used at >100 req/hr. Migration required before sunset."
+
+      - alert: BessLegacyCompatModeHigh
+        expr: |
+          sum(rate(bess_compat_legacy_responses_total[1h])) > 50
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "High legacy compat mode usage"
+          description: "compat=legacy mode usage >50 req/hr. Clients should migrate to compat=clean."
+
+      - alert: BessDeprecationSunsetApproaching
+        expr: |
+          (
+            days_to_timestamp(vector(1740787200))
+            -
+            days_to_timestamp(time())
+          ) < 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deprecation sunset approaching"
+          description: "Less than 30 days until deprecation sunset (2026-03-01). Ensure all clients are migrated."
+
+      - alert: BessDeprecatedFieldStillUsed
+        expr: |
+          sum by (field) (rate(bess_deprecation_used_total[24h])) > 0
+        for: 24h
+        labels:
+          severity: info
+        annotations:
+          summary: "Deprecated field still in use: {{ $labels.field }}"
+          description: "The deprecated field '{{ $labels.field }}' is still being used. Check docs/DEPRECATIONS.md for migration guide."
