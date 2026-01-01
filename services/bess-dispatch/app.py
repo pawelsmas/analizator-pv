@@ -372,6 +372,10 @@ async def deprecation_tracking_middleware(request: Request, call_next):
 from api_arbitrage import router as arbitrage_router
 app.include_router(arbitrage_router)
 
+# Include auth router (v3.0.0)
+from auth_router import router as auth_router
+app.include_router(auth_router, prefix="/api/bess-dispatch")
+
 
 # =============================================================================
 # Health and Info Endpoints
