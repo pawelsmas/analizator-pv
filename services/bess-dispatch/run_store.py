@@ -1,6 +1,6 @@
 """
-RunStore - SQLite-backed persistence for sizing runs (v1.3.0)
-=============================================================
+RunStore - SQLite-backed persistence for sizing runs (v1.3.0, v2.8.0)
+=====================================================================
 
 Provides audit trail and run registry for sizing operations:
 - Auto-save sizing runs with request/response blobs (zlib-compressed)
@@ -8,6 +8,8 @@ Provides audit trail and run registry for sizing operations:
 - List/search runs by request_hash, created_at, endpoint
 - Retention pruning (configurable via RUN_STORE_RETENTION_DAYS)
 - Metadata updates: label, tags, notes (v1.3.0)
+- v2.8.0: Responses are normalized to clean format before storage
+  (deprecated fields are removed, legacy is only applied on read if requested)
 
 Environment Variables:
 - RUN_STORE_PATH: Path to SQLite database (default: /data/runs.sqlite)
@@ -45,6 +47,27 @@ def _compress_json(data: Dict[str, Any]) -> bytes:
     """Compress dict to zlib-compressed JSON bytes."""
     json_str = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
     return zlib.compress(json_str.encode("utf-8"))
+
+
+def _normalize_response_to_clean(response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize a response to clean format before storage (v2.8.0).
+
+    Removes deprecated field aliases to ensure consistent storage.
+    Legacy fields can be re-added on read if compat=legacy is requested.
+
+    Args:
+        response: Response dict (may contain deprecated fields)
+
+    Returns:
+        Response with deprecated fields removed
+    """
+    try:
+        from compat_mode import apply_compat_mode, CompatMode
+        return apply_compat_mode(response, CompatMode.CLEAN)
+    except ImportError:
+        # Fallback if compat_mode not available (shouldn't happen)
+        return response
 
 
 def _decompress_json(data: bytes) -> Dict[str, Any]:
@@ -239,12 +262,17 @@ class RunStore:
             request: Request payload dict
             response: Response payload dict
             created_at: ISO 8601 timestamp (defaults to now)
+
+        Note (v2.8.0): Response is normalized to clean format before storage.
         """
         if created_at is None:
             created_at = datetime.now(timezone.utc).isoformat()
 
+        # v2.8.0: Normalize response to clean format before storage
+        clean_response = _normalize_response_to_clean(response)
+
         request_blob = _compress_json(request)
-        response_blob = _compress_json(response)
+        response_blob = _compress_json(clean_response)
 
         conn = sqlite3.connect(self.db_path)
         try:
