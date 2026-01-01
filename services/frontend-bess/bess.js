@@ -3961,6 +3961,10 @@ function buildSizingRequest(variantData) {
     }
   }
 
+  // v2.2.0: Request battery trace for dispatch trace display
+  request.include_battery_trace = true;
+  request.include_invariants = true;
+
   return request;
 }
 
@@ -4016,6 +4020,15 @@ function updateDisplayWithSizingResult(result) {
 
   // Update quick results summary panel
   updateConfigResultsSummary(result);
+
+  // v2.2.0: Update dispatch trace display
+  const recommended = result.variants?.find(v => v.is_recommended) || result.variants?.[0];
+  if (recommended) {
+    const batteryTrace = recommended.battery_trace || null;
+    const cycleSummary = recommended.cycle_summary || recommended.dispatch_summary?.cycle_summary || null;
+    const invariants = recommended.invariants || recommended.dispatch_summary?.invariants || null;
+    updateDispatchTraceDisplay(batteryTrace, cycleSummary, invariants);
+  }
 }
 
 /**
@@ -7971,4 +7984,377 @@ document.addEventListener('DOMContentLoaded', function() {
   initTariffSelector();
 });
 
-console.log('[BESS] bess.js v3.31 - v2.1.0 Tariff Selector + Pricing Preview');
+// =============================================================================
+// v2.2.0: DISPATCH TRACE SECTION
+// =============================================================================
+
+/**
+ * Current battery trace data from sizing result
+ */
+let currentBatteryTrace = null;
+let socTimeseriesChart = null;
+let powerTimeseriesChart = null;
+
+/**
+ * Update dispatch trace display with battery trace data
+ * @param {object} batteryTrace - BatteryTraceTimeseries from API
+ * @param {object} cycleSummary - Cycle summary data (optional)
+ * @param {object} invariants - Invariants check result (optional)
+ */
+function updateDispatchTraceDisplay(batteryTrace, cycleSummary, invariants) {
+  console.log('[DispatchTrace] Updating display:', { batteryTrace, cycleSummary, invariants });
+
+  currentBatteryTrace = batteryTrace;
+
+  // Update SOC chart
+  if (batteryTrace && batteryTrace.soc_kwh && batteryTrace.soc_kwh.length > 0) {
+    updateSocChart(batteryTrace);
+    updatePowerChart(batteryTrace);
+
+    // Enable export button
+    const exportBtn = document.getElementById('exportTraceBtn');
+    if (exportBtn) exportBtn.disabled = false;
+
+    // Hide placeholders, show charts
+    document.getElementById('socChartPlaceholder').style.display = 'none';
+    document.getElementById('socTimeseriesChart').style.display = 'block';
+    document.getElementById('powerChartPlaceholder').style.display = 'none';
+    document.getElementById('powerTimeseriesChart').style.display = 'block';
+  } else {
+    // Show placeholders
+    document.getElementById('socChartPlaceholder').style.display = 'flex';
+    document.getElementById('socTimeseriesChart').style.display = 'none';
+    document.getElementById('powerChartPlaceholder').style.display = 'flex';
+    document.getElementById('powerTimeseriesChart').style.display = 'none';
+
+    const exportBtn = document.getElementById('exportTraceBtn');
+    if (exportBtn) exportBtn.disabled = true;
+  }
+
+  // Update cycle summary
+  updateCycleSummaryDisplay(cycleSummary);
+
+  // Update invariants
+  updateInvariantsDisplay(invariants);
+}
+
+/**
+ * Update SOC timeseries chart
+ */
+function updateSocChart(trace) {
+  const canvas = document.getElementById('socTimeseriesChart');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+
+  // Destroy existing chart
+  if (socTimeseriesChart) {
+    socTimeseriesChart.destroy();
+    socTimeseriesChart = null;
+  }
+
+  const steps = trace.steps || trace.soc_kwh.length;
+  const labels = Array.from({ length: steps }, (_, i) => i);
+
+  // Downsample for large datasets
+  const maxPoints = 500;
+  let displayLabels = labels;
+  let displaySoc = trace.soc_kwh;
+
+  if (steps > maxPoints) {
+    const step = Math.ceil(steps / maxPoints);
+    displayLabels = labels.filter((_, i) => i % step === 0);
+    displaySoc = trace.soc_kwh.filter((_, i) => i % step === 0);
+  }
+
+  socTimeseriesChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: displayLabels,
+      datasets: [{
+        label: 'SOC (kWh)',
+        data: displaySoc,
+        borderColor: '#4caf50',
+        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+        fill: true,
+        tension: 0.1,
+        pointRadius: 0,
+      }, {
+        label: 'Capacity',
+        data: displayLabels.map(() => trace.battery_energy_kwh || 0),
+        borderColor: '#ff9800',
+        borderDash: [5, 5],
+        fill: false,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        title: { display: false }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Step (hour)' },
+          ticks: { maxTicksLimit: 12 }
+        },
+        y: {
+          title: { display: true, text: 'SOC (kWh)' },
+          min: 0
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Update power timeseries chart (charge/discharge)
+ */
+function updatePowerChart(trace) {
+  const canvas = document.getElementById('powerTimeseriesChart');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+
+  // Destroy existing chart
+  if (powerTimeseriesChart) {
+    powerTimeseriesChart.destroy();
+    powerTimeseriesChart = null;
+  }
+
+  const steps = trace.steps || trace.charge_kw.length;
+  const labels = Array.from({ length: steps }, (_, i) => i);
+
+  // Downsample for large datasets
+  const maxPoints = 500;
+  let displayLabels = labels;
+  let displayCharge = trace.charge_kw;
+  let displayDischarge = trace.discharge_kw;
+
+  if (steps > maxPoints) {
+    const step = Math.ceil(steps / maxPoints);
+    displayLabels = labels.filter((_, i) => i % step === 0);
+    displayCharge = trace.charge_kw.filter((_, i) => i % step === 0);
+    displayDischarge = trace.discharge_kw.filter((_, i) => i % step === 0);
+  }
+
+  powerTimeseriesChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: displayLabels,
+      datasets: [{
+        label: 'Charge (kW)',
+        data: displayCharge,
+        borderColor: '#2196f3',
+        backgroundColor: 'rgba(33, 150, 243, 0.1)',
+        fill: true,
+        tension: 0.1,
+        pointRadius: 0,
+      }, {
+        label: 'Discharge (kW)',
+        data: displayDischarge.map(v => -v), // Show as negative
+        borderColor: '#f44336',
+        backgroundColor: 'rgba(244, 67, 54, 0.1)',
+        fill: true,
+        tension: 0.1,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' },
+        title: { display: false }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Step (hour)' },
+          ticks: { maxTicksLimit: 12 }
+        },
+        y: {
+          title: { display: true, text: 'Power (kW)' }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Update cycle summary display
+ */
+function updateCycleSummaryDisplay(cycleSummary) {
+  const totalEfcEl = document.getElementById('cycleTotalEfc');
+  const avgDailyEl = document.getElementById('cycleAvgDailyEfc');
+  const maxDailyEl = document.getElementById('cycleMaxDailyEfc');
+  const throughputEl = document.getElementById('cycleThroughputMwh');
+  const warningEl = document.getElementById('cycleLimitWarning');
+  const warningDaysEl = document.getElementById('cycleLimitDays');
+
+  if (cycleSummary) {
+    totalEfcEl.textContent = (cycleSummary.efc_total || 0).toFixed(1);
+    avgDailyEl.textContent = (cycleSummary.avg_daily_efc || 0).toFixed(2);
+    maxDailyEl.textContent = (cycleSummary.max_daily_efc || 0).toFixed(2);
+    throughputEl.textContent = ((cycleSummary.total_throughput_kwh || 0) / 1000).toFixed(1) + ' MWh';
+
+    if (cycleSummary.days_exceeding_limit && cycleSummary.days_exceeding_limit > 0) {
+      warningEl.style.display = 'block';
+      warningDaysEl.textContent = cycleSummary.days_exceeding_limit;
+    } else {
+      warningEl.style.display = 'none';
+    }
+  } else {
+    totalEfcEl.textContent = '-';
+    avgDailyEl.textContent = '-';
+    maxDailyEl.textContent = '-';
+    throughputEl.textContent = '- MWh';
+    warningEl.style.display = 'none';
+  }
+}
+
+/**
+ * Update invariants status display
+ */
+function updateInvariantsDisplay(invariants) {
+  const socBoundsEl = document.getElementById('invariantSocBounds');
+  const powerLimitsEl = document.getElementById('invariantPowerLimits');
+  const noSimultaneousEl = document.getElementById('invariantNoSimultaneous');
+  const energyBalanceEl = document.getElementById('invariantEnergyBalance');
+  const allOkEl = document.getElementById('invariantsAllOk');
+  const violationsEl = document.getElementById('invariantsViolations');
+  const violationCountEl = document.getElementById('invariantsViolationCount');
+
+  if (invariants) {
+    // SOC bounds
+    if (invariants.soc_bounds_ok) {
+      socBoundsEl.textContent = '✅ OK';
+      socBoundsEl.style.color = '#2e7d32';
+    } else {
+      socBoundsEl.textContent = '❌ FAIL';
+      socBoundsEl.style.color = '#c62828';
+    }
+
+    // Power limits
+    if (invariants.power_limits_ok) {
+      powerLimitsEl.textContent = '✅ OK';
+      powerLimitsEl.style.color = '#2e7d32';
+    } else {
+      powerLimitsEl.textContent = '❌ FAIL';
+      powerLimitsEl.style.color = '#c62828';
+    }
+
+    // No simultaneous
+    if (invariants.no_simultaneous_ok) {
+      noSimultaneousEl.textContent = '✅ OK';
+      noSimultaneousEl.style.color = '#2e7d32';
+    } else {
+      noSimultaneousEl.textContent = '❌ FAIL';
+      noSimultaneousEl.style.color = '#c62828';
+    }
+
+    // Energy balance
+    if (invariants.energy_balance_ok) {
+      energyBalanceEl.textContent = '✅ OK';
+      energyBalanceEl.style.color = '#2e7d32';
+    } else {
+      energyBalanceEl.textContent = '⚠️ WARN';
+      energyBalanceEl.style.color = '#ff9800';
+    }
+
+    // Overall status
+    if (invariants.all_ok) {
+      allOkEl.style.display = 'block';
+      violationsEl.style.display = 'none';
+    } else {
+      allOkEl.style.display = 'none';
+      violationsEl.style.display = 'block';
+      violationCountEl.textContent = invariants.violations_count || 0;
+    }
+  } else {
+    socBoundsEl.textContent = '-';
+    powerLimitsEl.textContent = '-';
+    noSimultaneousEl.textContent = '-';
+    energyBalanceEl.textContent = '-';
+    socBoundsEl.style.color = '#666';
+    powerLimitsEl.style.color = '#666';
+    noSimultaneousEl.style.color = '#666';
+    energyBalanceEl.style.color = '#666';
+    allOkEl.style.display = 'none';
+    violationsEl.style.display = 'none';
+  }
+}
+
+/**
+ * Export battery trace to CSV
+ */
+function exportBatteryTrace() {
+  if (!currentBatteryTrace) {
+    alert('Brak danych battery trace do eksportu');
+    return;
+  }
+
+  const trace = currentBatteryTrace;
+  const steps = trace.steps || trace.soc_kwh.length;
+
+  // Build CSV
+  let csv = 'step,soc_kwh,charge_kw,discharge_kw,charge_from_pv_kw,charge_from_grid_kw,discharge_to_load_kw,discharge_to_grid_kw\n';
+
+  for (let i = 0; i < steps; i++) {
+    csv += `${i},${trace.soc_kwh[i] || 0},${trace.charge_kw[i] || 0},${trace.discharge_kw[i] || 0},`;
+    csv += `${trace.charge_from_pv_kw ? trace.charge_from_pv_kw[i] || 0 : 0},`;
+    csv += `${trace.charge_from_grid_kw ? trace.charge_from_grid_kw[i] || 0 : 0},`;
+    csv += `${trace.discharge_to_load_kw ? trace.discharge_to_load_kw[i] || 0 : 0},`;
+    csv += `${trace.discharge_to_grid_kw ? trace.discharge_to_grid_kw[i] || 0 : 0}\n`;
+  }
+
+  // Download
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'battery_trace.csv';
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Clear dispatch trace display
+ */
+function clearDispatchTraceDisplay() {
+  currentBatteryTrace = null;
+
+  // Destroy charts
+  if (socTimeseriesChart) {
+    socTimeseriesChart.destroy();
+    socTimeseriesChart = null;
+  }
+  if (powerTimeseriesChart) {
+    powerTimeseriesChart.destroy();
+    powerTimeseriesChart = null;
+  }
+
+  // Show placeholders
+  document.getElementById('socChartPlaceholder').style.display = 'flex';
+  document.getElementById('socTimeseriesChart').style.display = 'none';
+  document.getElementById('powerChartPlaceholder').style.display = 'flex';
+  document.getElementById('powerTimeseriesChart').style.display = 'none';
+
+  // Disable export
+  const exportBtn = document.getElementById('exportTraceBtn');
+  if (exportBtn) exportBtn.disabled = true;
+
+  // Clear cycle summary
+  updateCycleSummaryDisplay(null);
+
+  // Clear invariants
+  updateInvariantsDisplay(null);
+}
+
+// Export v2.2.0 dispatch trace functions
+window.updateDispatchTraceDisplay = updateDispatchTraceDisplay;
+window.clearDispatchTraceDisplay = clearDispatchTraceDisplay;
+window.exportBatteryTrace = exportBatteryTrace;
+
+console.log('[BESS] bess.js v3.32 - v2.2.0 Dispatch Trace + Cycle Summary');
