@@ -4438,6 +4438,42 @@ async def export_validate_pack_zip(job_id: str):
 
 from price_timeseries_helper import generate_price_timeseries, compute_price_hash
 from models import PriceTimeseriesPlnPerMwh
+from tariff_presets_helper import (
+    list_presets,
+    get_preset,
+    generate_price_timeseries_from_preset,
+)
+
+
+# =============================================================================
+# Tariff Presets (v2.1.0)
+# =============================================================================
+
+class TariffPresetInfo(BaseModel):
+    """Tariff preset summary."""
+    id: str = Field(..., description="Preset identifier")
+    label: str = Field(..., description="Human-readable label")
+
+
+class TariffPresetsResponse(BaseModel):
+    """Response from GET /tariffs endpoint."""
+    presets: List[TariffPresetInfo] = Field(
+        ...,
+        description="List of available tariff presets"
+    )
+
+
+@app.get("/api/bess-dispatch/tariffs", response_model=TariffPresetsResponse)
+async def get_tariffs():
+    """
+    List available tariff presets.
+
+    Returns list of preset IDs and labels for UI dropdown.
+    """
+    presets = list_presets()
+    return TariffPresetsResponse(
+        presets=[TariffPresetInfo(id=p["id"], label=p["label"]) for p in presets]
+    )
 
 
 class PricingPreviewRequest(BaseModel):
@@ -4459,9 +4495,13 @@ class PricingPreviewRequest(BaseModel):
         ...,
         description="Period end (ISO 8601: YYYY-MM-DDTHH:MM:SS)"
     )
-    pricing_config: PriceConfig = Field(
-        ...,
-        description="Pricing configuration"
+    pricing_config: Optional[PriceConfig] = Field(
+        None,
+        description="Pricing configuration (required if tariff_preset not provided)"
+    )
+    tariff_preset: Optional[str] = Field(
+        None,
+        description="Tariff preset ID (e.g., 'pl_flat_2026'). If provided, pricing_mode='preset'"
     )
 
 
@@ -4504,6 +4544,10 @@ async def pricing_preview(request: PricingPreviewRequest):
     Returns price_timeseries with the same logic as sizing endpoint,
     but without running the actual dispatch/economics calculations.
 
+    Supports multiple pricing modes:
+    - 'generated': From pricing_config (default)
+    - 'preset': From tariff_preset (e.g., 'pl_flat_2026')
+
     Useful for:
     - Previewing what prices will be used before running sizing
     - Verifying ToU zone mapping
@@ -4512,6 +4556,10 @@ async def pricing_preview(request: PricingPreviewRequest):
     from datetime import datetime, timedelta
 
     try:
+        # Validate that at least one pricing source is provided
+        if not request.tariff_preset and not request.pricing_config:
+            raise HTTPException(400, "Either tariff_preset or pricing_config must be provided")
+
         # Parse period dates
         try:
             start_dt = datetime.fromisoformat(request.period_start.replace('Z', '+00:00'))
@@ -4532,14 +4580,29 @@ async def pricing_preview(request: PricingPreviewRequest):
         if n_steps > 35136:  # Max ~4 years at 15-min resolution
             raise HTTPException(400, f"Too many steps: {n_steps} (max 35136)")
 
-        # Generate price timeseries using the same helper as sizing
-        price_timeseries = generate_price_timeseries(
-            prices=request.pricing_config,
-            n_steps=n_steps,
-            step_minutes=request.interval_minutes,
-            start_datetime=request.period_start,
-            timezone=request.timezone,
-        )
+        # Determine pricing mode and generate timeseries
+        if request.tariff_preset:
+            # Use tariff preset
+            price_timeseries = generate_price_timeseries_from_preset(
+                preset_id=request.tariff_preset,
+                n_steps=n_steps,
+                step_minutes=request.interval_minutes,
+                start_datetime=request.period_start,
+                timezone=request.timezone,
+            )
+            if not price_timeseries:
+                raise HTTPException(404, f"Tariff preset not found: {request.tariff_preset}")
+            pricing_mode = "preset"
+        else:
+            # Use pricing_config (generated mode)
+            price_timeseries = generate_price_timeseries(
+                prices=request.pricing_config,
+                n_steps=n_steps,
+                step_minutes=request.interval_minutes,
+                start_datetime=request.period_start,
+                timezone=request.timezone,
+            )
+            pricing_mode = "generated"
 
         # Compute deterministic price hash
         price_hash = compute_price_hash(price_timeseries)
@@ -4557,7 +4620,7 @@ async def pricing_preview(request: PricingPreviewRequest):
         )
 
         return PricingPreviewResponse(
-            pricing_mode="generated",
+            pricing_mode=pricing_mode,
             price_hash=price_hash,
             price_timeseries=price_timeseries,
             period_info=period_info,

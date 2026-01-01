@@ -1,0 +1,40 @@
+{
+  "presets": [
+    {
+      "id": "pl_flat_2026",
+      "label": "PL Flat 2026",
+      "description": "Flat tariff for Poland 2026 (no time-of-use)",
+      "import_price_pln_per_mwh": 510.0,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 451.0
+    },
+    {
+      "id": "pl_flat_2025",
+      "label": "PL Flat 2025",
+      "description": "Flat tariff for Poland 2025",
+      "import_price_pln_per_mwh": 480.0,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 430.0
+    },
+    {
+      "id": "pl_tou_simple_2026",
+      "label": "PL ToU Simple 2026",
+      "description": "Simple time-of-use tariff for Poland 2026 (peak 7-22, off-peak otherwise)",
+      "import_price_pln_per_mwh": null,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 451.0,
+      "weekday_peak_hours": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+      "weekday_peak_price_pln_per_mwh": 700.0,
+      "weekday_offpeak_price_pln_per_mwh": 350.0,
+      "weekend_price_pln_per_mwh": 350.0
+    },
+    {
+      "id": "de_flat_2026",
+      "label": "DE Flat 2026",
+      "description": "Flat tariff for Germany 2026",
+      "import_price_pln_per_mwh": 1200.0,
+      "export_price_pln_per_mwh": 400.0,
+      "other_fees_pln_per_mwh": 200.0
+    }
+  ]
+}
