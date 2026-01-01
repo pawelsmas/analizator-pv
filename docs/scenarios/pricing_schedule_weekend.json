@@ -1,0 +1,35 @@
+{
+  "scenario_id": "pricing_schedule_weekend",
+  "description": "Pricing preview with custom schedule on weekend (Saturday)",
+  "endpoint": "/api/bess-dispatch/pricing/preview",
+  "method": "POST",
+  "request": {
+    "interval_minutes": 60,
+    "timezone": "Europe/Warsaw",
+    "period_start": "2025-01-04T00:00:00",
+    "period_end": "2025-01-04T23:00:00",
+    "tariff_schedule": {
+      "weekday_import_price_pln_per_mwh": [600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600],
+      "weekend_import_price_pln_per_mwh": [350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350, 350],
+      "weekday_export_price_pln_per_mwh": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "weekend_export_price_pln_per_mwh": [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
+      "holiday_dates": [],
+      "timezone": "Europe/Warsaw"
+    }
+  },
+  "expected": {
+    "pricing_mode": "schedule",
+    "period_info": {
+      "steps": 24,
+      "interval_minutes": 60
+    },
+    "price_timeseries": {
+      "uses_weekend_prices": true,
+      "all_steps_import": 350.0,
+      "all_steps_export": 100.0
+    }
+  },
+  "tolerances": {
+    "default_rel": 0.001
+  }
+}

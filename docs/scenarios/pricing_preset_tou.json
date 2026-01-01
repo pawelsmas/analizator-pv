@@ -1,0 +1,28 @@
+{
+  "scenario_id": "pricing_preset_tou",
+  "description": "Pricing preview with ToU preset (pl_tou_simple_2026)",
+  "endpoint": "/api/bess-dispatch/pricing/preview",
+  "method": "POST",
+  "request": {
+    "interval_minutes": 60,
+    "timezone": "Europe/Warsaw",
+    "period_start": "2025-01-06T00:00:00",
+    "period_end": "2025-01-06T23:00:00",
+    "tariff_preset": "pl_tou_simple_2026"
+  },
+  "expected": {
+    "pricing_mode": "preset",
+    "period_info": {
+      "steps": 24,
+      "interval_minutes": 60
+    },
+    "price_timeseries": {
+      "has_varying_prices": true,
+      "import_price_min": 350.0,
+      "import_price_max": 700.0
+    }
+  },
+  "tolerances": {
+    "default_rel": 0.001
+  }
+}

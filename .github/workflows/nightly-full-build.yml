@@ -51,6 +51,13 @@ jobs:
         env:
           BASE_URL: http://localhost:8031
 
+      # v2.1.0: Pricing scenarios validation
+      - name: Run pricing pack validation
+        run: |
+          python scripts/validate_scenarios.py --pack pricing --json
+        env:
+          BASE_URL: http://localhost:8031
+
       - name: Run all scenario validations
         run: |
           python scripts/validate_scenarios.py --json
