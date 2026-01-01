@@ -298,6 +298,108 @@ class AuthStore:
             return None
         return user
 
+    def list_users(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """List users for a tenant (without password_hash)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, email, role, created_at, disabled
+                FROM users WHERE tenant_id = ?
+                ORDER BY created_at DESC
+            """, (tenant_id,))
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "email": row[2],
+                    "role": row[3],
+                    "created_at": row[4],
+                    "disabled": bool(row[5]),
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def count_active_admins(self, tenant_id: str) -> int:
+        """Count active (non-disabled) admin users in a tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM users
+                WHERE tenant_id = ? AND role = ? AND disabled = 0
+            """, (tenant_id, Role.ADMIN.value))
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def update_user(
+        self,
+        user_id: str,
+        tenant_id: str,
+        role: Optional[str] = None,
+        disabled: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update user role and/or disabled status. Returns updated user or None."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Build update parts
+            updates = []
+            params = []
+            if role is not None:
+                updates.append("role = ?")
+                params.append(role)
+            if disabled is not None:
+                updates.append("disabled = ?")
+                params.append(1 if disabled else 0)
+
+            if not updates:
+                # Nothing to update
+                return self.get_user_by_id(user_id)
+
+            params.extend([user_id, tenant_id])
+            query = f"UPDATE users SET {', '.join(updates)} WHERE id = ? AND tenant_id = ?"
+            cursor.execute(query, params)
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                return None
+
+            return self.get_user_by_id(user_id)
+        finally:
+            conn.close()
+
+    def set_user_password(self, user_id: str, tenant_id: str, new_password: str) -> bool:
+        """Set a new password for a user. Returns True if user found and updated."""
+        password_hash = hash_password(new_password)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users SET password_hash = ?
+                WHERE id = ? AND tenant_id = ?
+            """, (password_hash, user_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def email_exists_in_tenant(self, email: str, tenant_id: str) -> bool:
+        """Check if email already exists in tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM users WHERE email = ? AND tenant_id = ?
+            """, (email, tenant_id))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
     # -------------------------------------------------------------------------
     # API key operations
     # -------------------------------------------------------------------------
