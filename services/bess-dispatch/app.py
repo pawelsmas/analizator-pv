@@ -39,10 +39,20 @@ from limits_config import (
     MAX_REQUEST_BYTES,
     MAX_VARIANTS,
     MAX_DURATIONS,
+    MAX_TRACE_STEPS,
+    TimeseriesMode,
     ErrorCode,
     get_limits_info,
 )
 from middleware.request_size_limit import RequestSizeLimitMiddleware
+from timeseries_throttle import (
+    resolve_timeseries_mode,
+    validate_preview_rows,
+    check_full_timeseries_limit,
+    truncate_timeseries_array,
+    truncate_timeseries_dict,
+    get_timeseries_info,
+)
 
 from observability.batch_metrics import (
     record_batch_request,
@@ -1799,6 +1809,51 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                 media_type="application/json",
             )
 
+        # Resolve timeseries modes (v2.5.0 PR2)
+        # Mode params override include_* flags for backward compatibility
+        battery_trace_mode = resolve_timeseries_mode(
+            include_flag=request.include_battery_trace,
+            mode_param=getattr(request, 'battery_trace_mode', None),
+        )
+        ledger_timeseries_mode = resolve_timeseries_mode(
+            include_flag=request.include_ledger_timeseries,
+            mode_param=getattr(request, 'ledger_timeseries_mode', None),
+        )
+        price_timeseries_mode = resolve_timeseries_mode(
+            include_flag=request.include_price_timeseries,
+            mode_param=getattr(request, 'price_timeseries_mode', None),
+        )
+        preview_rows = validate_preview_rows(
+            getattr(request, 'timeseries_preview_rows', None)
+        )
+
+        # Validate full timeseries mode limits (v2.5.0 PR2)
+        # Any FULL mode with steps > MAX_TRACE_STEPS must be rejected
+        if battery_trace_mode == TimeseriesMode.FULL:
+            is_ok, error = check_full_timeseries_limit(n_steps)
+            if not is_ok:
+                return Response(
+                    content=json.dumps(error),
+                    status_code=422,
+                    media_type="application/json",
+                )
+        if ledger_timeseries_mode == TimeseriesMode.FULL:
+            is_ok, error = check_full_timeseries_limit(n_steps)
+            if not is_ok:
+                return Response(
+                    content=json.dumps(error),
+                    status_code=422,
+                    media_type="application/json",
+                )
+        if price_timeseries_mode == TimeseriesMode.FULL:
+            is_ok, error = check_full_timeseries_limit(n_steps)
+            if not is_ok:
+                return Response(
+                    content=json.dumps(error),
+                    status_code=422,
+                    media_type="application/json",
+                )
+
         # Validate arbitrage requirements
         if request.arbitrage_config and request.arbitrage_config.enabled:
             if not request.start_date:
@@ -2099,6 +2154,51 @@ async def run_sizing_optimization(request: SizingRequestAPI):
                         failed_invariants=[k for k, v in invariants_result.items() if k.endswith("_ok") and not v],
                         invariants=invariants_result,
                     )
+        # Apply timeseries truncation based on mode (v2.5.0 PR2)
+        # Only truncate if mode is PREVIEW (NONE doesn't include, FULL keeps all)
+        if battery_trace_mode == TimeseriesMode.PREVIEW:
+            for variant in result.variants:
+                if variant.dispatch_summary and variant.dispatch_summary.battery_trace:
+                    trace = variant.dispatch_summary.battery_trace
+                    truncated = truncate_timeseries_dict(
+                        trace.model_dump(mode="json"),
+                        battery_trace_mode,
+                        preview_rows,
+                    )
+                    # Update the trace object
+                    for key, val in truncated.items():
+                        setattr(trace, key, val)
+        if ledger_timeseries_mode == TimeseriesMode.PREVIEW:
+            for variant in result.variants:
+                if variant.dispatch_summary and variant.dispatch_summary.ledger_timeseries:
+                    ledger = variant.dispatch_summary.ledger_timeseries
+                    truncated = truncate_timeseries_dict(
+                        ledger.model_dump(mode="json"),
+                        ledger_timeseries_mode,
+                        preview_rows,
+                    )
+                    for key, val in truncated.items():
+                        setattr(ledger, key, val)
+        if price_timeseries_mode == TimeseriesMode.PREVIEW:
+            for variant in result.variants:
+                if variant.dispatch_summary and variant.dispatch_summary.price_timeseries:
+                    prices = variant.dispatch_summary.price_timeseries
+                    truncated = truncate_timeseries_dict(
+                        prices.model_dump(mode="json"),
+                        price_timeseries_mode,
+                        preview_rows,
+                    )
+                    for key, val in truncated.items():
+                        setattr(prices, key, val)
+
+        # Build timeseries_info metadata (v2.5.0 PR2)
+        timeseries_info = {
+            "battery_trace": get_timeseries_info(battery_trace_mode, n_steps, preview_rows),
+            "ledger_timeseries": get_timeseries_info(ledger_timeseries_mode, n_steps, preview_rows),
+            "price_timeseries": get_timeseries_info(price_timeseries_mode, n_steps, preview_rows),
+        }
+        result.timeseries_info = timeseries_info
+
         # Add cache_info to result
         cache_info = build_cache_info(
             request_hash=request_hash,

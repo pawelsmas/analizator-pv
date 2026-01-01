@@ -6,6 +6,7 @@ All limits can be overridden via environment variables.
 """
 
 import os
+from enum import Enum
 
 
 # -----------------------------------------------------------------------------
@@ -26,7 +27,7 @@ MAX_DURATIONS = int(os.environ.get("MAX_DURATIONS", "10"))
 
 
 # -----------------------------------------------------------------------------
-# Timeseries Limits (for PR 2/6)
+# Timeseries Limits (v2.5.0 PR2)
 # -----------------------------------------------------------------------------
 
 # Maximum steps for full timeseries output (default: 10000)
@@ -34,6 +35,21 @@ MAX_TRACE_STEPS = int(os.environ.get("MAX_TRACE_STEPS", "10000"))
 
 # Default preview rows when timeseries is in preview mode
 DEFAULT_PREVIEW_ROWS = int(os.environ.get("DEFAULT_PREVIEW_ROWS", "48"))
+
+# Minimum and maximum preview rows
+MIN_PREVIEW_ROWS = 12
+MAX_PREVIEW_ROWS = 240
+
+
+# -----------------------------------------------------------------------------
+# Timeseries Mode Enum (v2.5.0 PR2)
+# -----------------------------------------------------------------------------
+
+class TimeseriesMode(str, Enum):
+    """Mode for timeseries output in responses."""
+    NONE = "none"      # Do not include timeseries
+    PREVIEW = "preview"  # Include first N rows only (preview_rows)
+    FULL = "full"      # Include all rows (subject to MAX_TRACE_STEPS)
 
 
 # -----------------------------------------------------------------------------
@@ -62,4 +78,6 @@ def get_limits_info() -> dict:
         "max_durations": MAX_DURATIONS,
         "max_trace_steps": MAX_TRACE_STEPS,
         "default_preview_rows": DEFAULT_PREVIEW_ROWS,
+        "min_preview_rows": MIN_PREVIEW_ROWS,
+        "max_preview_rows": MAX_PREVIEW_ROWS,
     }
