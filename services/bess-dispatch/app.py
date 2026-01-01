@@ -3873,6 +3873,29 @@ class TopMismatch(BaseModel):
     rel_diff_pct: Optional[float] = Field(None, description="Relative difference as percentage")
 
 
+class CostBucket(BaseModel):
+    """A cost bucket for top cost breakdown (v2.0.0)."""
+    category: str = Field(..., description="Cost category (import/export/fees/penalty)")
+    sum_pln: float = Field(..., description="Sum of costs in this category [PLN]")
+    pct_of_total: float = Field(..., description="Percentage of total costs")
+
+
+class PricingDebug(BaseModel):
+    """Pricing debug info for /validate response (v2.0.0 PR4)."""
+    pricing_mode: Optional[str] = Field(
+        None,
+        description="Source of prices: 'generated' or 'override'"
+    )
+    price_hash: Optional[str] = Field(
+        None,
+        description="SHA256 hash of price timeseries (if include_price_timeseries=True)"
+    )
+    top_cost_buckets: List[CostBucket] = Field(
+        default_factory=list,
+        description="Top cost buckets from ledger_timeseries sums"
+    )
+
+
 class ValidateSizingResponse(BaseModel):
     """Response from /validate/sizing endpoint."""
     passed: bool = Field(..., description="True if all KPIs pass within tolerances")
@@ -3890,6 +3913,11 @@ class ValidateSizingResponse(BaseModel):
     debug_summary: Optional[Dict[str, Any]] = Field(
         None,
         description="Debug events summary from sizing response (v1.8.0)"
+    )
+    # v2.0.0 PR4: Pricing debug info
+    pricing_debug: Optional[PricingDebug] = Field(
+        None,
+        description="Pricing debug info (mode/hash/top buckets) for transparency (v2.0.0)"
     )
 
 
@@ -3922,8 +3950,12 @@ async def validate_sizing(body: ValidateSizingRequest):
     )
 
     # Parse and run sizing
+    # v2.0.0: Auto-enable price/ledger timeseries for pricing_debug in response
+    request_dict = dict(body.request)
+    request_dict["include_price_timeseries"] = True
+    request_dict["include_ledger_timeseries"] = True
     try:
-        sizing_req = SizingRequestAPI(**body.request)
+        sizing_req = SizingRequestAPI(**request_dict)
     except Exception as e:
         from observability import record_validation_error
         record_validation_error("422")
@@ -4009,6 +4041,47 @@ async def validate_sizing(body: ValidateSizingRequest):
         dispatch_summary = recommended.get("dispatch_summary", {})
         debug_summary = dispatch_summary.get("debug_events")
 
+    # v2.0.0 PR4: Extract pricing_debug from recommended variant
+    pricing_debug = None
+    if recommended:
+        pricing_mode = recommended.get("pricing_mode")
+        price_hash = recommended.get("price_hash")
+        ledger_ts = recommended.get("ledger_timeseries")
+
+        # Build top_cost_buckets from ledger_timeseries sums
+        top_cost_buckets = []
+        if ledger_ts:
+            # Collect cost categories
+            buckets_raw = [
+                ("import", ledger_ts.get("sum_import_cost_pln", 0)),
+                ("export_revenue", ledger_ts.get("sum_export_revenue_pln", 0)),
+                ("other_fees", ledger_ts.get("sum_other_fees_pln", 0)),
+                ("unserved_penalty", ledger_ts.get("sum_unserved_penalty_pln", 0)),
+            ]
+
+            # Calculate total (absolute sum for percentage calculation)
+            total_abs = sum(abs(v) for _, v in buckets_raw if v != 0)
+
+            # Sort by absolute value descending
+            buckets_sorted = sorted(buckets_raw, key=lambda x: abs(x[1]), reverse=True)
+
+            for category, sum_pln in buckets_sorted:
+                if sum_pln != 0:
+                    pct = (abs(sum_pln) / total_abs * 100) if total_abs > 0 else 0
+                    top_cost_buckets.append(CostBucket(
+                        category=category,
+                        sum_pln=sum_pln,
+                        pct_of_total=round(pct, 2),
+                    ))
+
+        # Only include pricing_debug if we have data
+        if pricing_mode or price_hash or top_cost_buckets:
+            pricing_debug = PricingDebug(
+                pricing_mode=pricing_mode,
+                price_hash=price_hash,
+                top_cost_buckets=top_cost_buckets,
+            )
+
     return ValidateSizingResponse(
         passed=passed,
         run_id=run_id,
@@ -4019,6 +4092,7 @@ async def validate_sizing(body: ValidateSizingRequest):
         passed_fields=passed_fields,
         top_mismatches=top_mismatches,
         debug_summary=debug_summary,
+        pricing_debug=pricing_debug,
     )
 
 
