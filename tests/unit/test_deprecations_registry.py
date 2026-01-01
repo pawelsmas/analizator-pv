@@ -200,7 +200,7 @@ class TestDeprecationsSchema:
     def test_top_level_only_has_known_fields(self):
         """Top level should only have documented fields."""
         data = _load_deprecations()
-        known_fields = {"version", "last_updated", "items"}
+        known_fields = {"version", "last_updated", "items", "sunset_date"}
         data_fields = set(data.keys())
         extra = data_fields - known_fields
         assert len(extra) == 0, f"Unknown top-level fields: {extra}"

@@ -1,6 +1,7 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "last_updated": "2026-01-01",
+  "sunset_date": "2026-03-01",
   "items": [
     {
       "field": "export_revenue_pln",
@@ -37,6 +38,33 @@
       "remove_in": "v3.0.0",
       "replacement": "dt_minutes",
       "notes": "Renamed for consistency with dispatch API. Both fields accepted during transition."
+    },
+    {
+      "field": "include_battery_trace",
+      "location": "SizingRequest",
+      "status": "deprecated",
+      "since": "v2.5.0",
+      "remove_in": "v3.0.0",
+      "replacement": "battery_trace_mode",
+      "notes": "Use battery_trace_mode='full'|'preview'|'none' instead of boolean flag."
+    },
+    {
+      "field": "include_price_timeseries",
+      "location": "SizingRequest",
+      "status": "deprecated",
+      "since": "v2.5.0",
+      "remove_in": "v3.0.0",
+      "replacement": "price_timeseries_mode",
+      "notes": "Use price_timeseries_mode='full'|'preview'|'none' instead of boolean flag."
+    },
+    {
+      "field": "include_ledger_timeseries",
+      "location": "SizingRequest",
+      "status": "deprecated",
+      "since": "v2.5.0",
+      "remove_in": "v3.0.0",
+      "replacement": "ledger_timeseries_mode",
+      "notes": "Use ledger_timeseries_mode='full'|'preview'|'none' instead of boolean flag."
     }
   ]
 }
