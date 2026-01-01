@@ -8357,4 +8357,280 @@ window.updateDispatchTraceDisplay = updateDispatchTraceDisplay;
 window.clearDispatchTraceDisplay = clearDispatchTraceDisplay;
 window.exportBatteryTrace = exportBatteryTrace;
 
-console.log('[BESS] bess.js v3.32 - v2.2.0 Dispatch Trace + Cycle Summary');
+// ============================================
+// v2.3.0 PORTFOLIO SUMMARY
+// ============================================
+
+/**
+ * Current portfolio state
+ */
+let portfolioSelectedRunIds = [];
+let portfolioLastResponse = null;
+
+/**
+ * Load available runs for portfolio selection
+ */
+async function loadAvailableRuns() {
+  console.log('[Portfolio] Loading available runs...');
+  const select = document.getElementById('portfolioRunSelect');
+  if (!select) return;
+
+  try {
+    // Get recent runs from /runs endpoint
+    const response = await fetch('/runs?limit=50');
+    if (!response.ok) {
+      throw new Error(`Failed to fetch runs: ${response.status}`);
+    }
+    const data = await response.json();
+    const runs = data.items || data.runs || [];
+
+    // Clear existing options
+    select.innerHTML = '';
+
+    if (runs.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Brak dostepnych wynikow';
+      opt.disabled = true;
+      select.appendChild(opt);
+      return;
+    }
+
+    // Add runs as options
+    runs.forEach(run => {
+      const opt = document.createElement('option');
+      opt.value = run.run_id;
+      const label = run.label || run.run_id.slice(0, 8);
+      const npv = run.npv_pln ? ` (NPV: ${formatNpv(run.npv_pln)})` : '';
+      opt.textContent = `${label}${npv}`;
+      select.appendChild(opt);
+    });
+
+    console.log(`[Portfolio] Loaded ${runs.length} runs`);
+
+  } catch (error) {
+    console.error('[Portfolio] Error loading runs:', error);
+    select.innerHTML = '<option value="" disabled>Blad ladowania wynikow</option>';
+  }
+}
+
+/**
+ * Refresh run list
+ */
+function refreshRunList() {
+  loadAvailableRuns();
+}
+
+/**
+ * Update portfolio selection state
+ */
+function updatePortfolioSelection() {
+  const select = document.getElementById('portfolioRunSelect');
+  if (!select) return;
+
+  portfolioSelectedRunIds = Array.from(select.selectedOptions).map(opt => opt.value);
+
+  const countEl = document.getElementById('portfolioSelectionCount');
+  if (countEl) {
+    countEl.textContent = `${portfolioSelectedRunIds.length} wybranych`;
+  }
+
+  const btn = document.getElementById('runPortfolioSummaryBtn');
+  if (btn) {
+    btn.disabled = portfolioSelectedRunIds.length < 2;
+  }
+}
+
+/**
+ * Run portfolio summary calculation
+ */
+async function runPortfolioSummary() {
+  if (portfolioSelectedRunIds.length < 2) {
+    alert('Wybierz co najmniej 2 wyniki do agregacji');
+    return;
+  }
+
+  console.log('[Portfolio] Running portfolio summary for:', portfolioSelectedRunIds);
+
+  // Show loading state
+  const resultsContainer = document.getElementById('portfolioResultsContainer');
+  const statusIcon = document.getElementById('portfolioStatusIcon');
+  const statusText = document.getElementById('portfolioStatusText');
+  const summaryDisplay = document.getElementById('portfolioSummaryDisplay');
+  const itemsTable = document.getElementById('portfolioItemsTable');
+  const actions = document.getElementById('portfolioActions');
+
+  if (resultsContainer) resultsContainer.style.display = 'block';
+  if (statusIcon) statusIcon.textContent = '⏳';
+  if (statusText) statusText.textContent = 'Obliczanie portfolio...';
+  if (summaryDisplay) summaryDisplay.style.display = 'none';
+  if (itemsTable) itemsTable.style.display = 'none';
+  if (actions) actions.style.display = 'none';
+
+  try {
+    const response = await fetch('/api/bess-dispatch/portfolio/summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_ids: portfolioSelectedRunIds }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Portfolio summary failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    portfolioLastResponse = data;
+
+    displayPortfolioResults(data);
+
+    if (statusIcon) statusIcon.textContent = '✅';
+    if (statusText) statusText.textContent = 'Portfolio obliczone';
+
+  } catch (error) {
+    console.error('[Portfolio] Error:', error);
+    if (statusIcon) statusIcon.textContent = '❌';
+    if (statusText) statusText.textContent = `Blad: ${error.message}`;
+  }
+}
+
+/**
+ * Display portfolio results
+ * @param {object} data - PortfolioResponse from API
+ */
+function displayPortfolioResults(data) {
+  const summary = data.summary;
+  const items = data.items || [];
+
+  // Update summary counts
+  const totalEl = document.getElementById('portfolioItemsTotal');
+  const okEl = document.getElementById('portfolioItemsOk');
+  const errorEl = document.getElementById('portfolioItemsError');
+
+  if (totalEl) totalEl.textContent = summary.items_total || 0;
+  if (okEl) okEl.textContent = summary.items_ok || 0;
+  if (errorEl) errorEl.textContent = summary.items_error || 0;
+
+  // Update KPIs
+  const npvEl = document.getElementById('portfolioTotalNpv');
+  const capexEl = document.getElementById('portfolioTotalCapex');
+  const paybackEl = document.getElementById('portfolioPayback');
+  const mixedEl = document.getElementById('portfolioMixedAssumptions');
+
+  if (npvEl) {
+    const npv = summary.total_npv_pln || 0;
+    npvEl.textContent = formatNpv(npv);
+    npvEl.classList.toggle('positive', npv >= 0);
+    npvEl.classList.toggle('negative', npv < 0);
+  }
+  if (capexEl) capexEl.textContent = formatNpv(summary.total_capex_pln || 0);
+  if (paybackEl) {
+    const payback = summary.weighted_payback_years;
+    paybackEl.textContent = payback ? `${payback.toFixed(1)} lat` : '-';
+  }
+  if (mixedEl) {
+    mixedEl.textContent = summary.mixed_assumptions ? '⚠️ Tak' : '✅ Nie';
+    mixedEl.classList.toggle('warning', summary.mixed_assumptions);
+  }
+
+  // Show summary
+  const summaryDisplay = document.getElementById('portfolioSummaryDisplay');
+  if (summaryDisplay) summaryDisplay.style.display = 'block';
+
+  // Populate top items table
+  const topItems = summary.top_items_by_npv || items.slice(0, 5);
+  const tbody = document.getElementById('portfolioItemsBody');
+  if (tbody && topItems.length > 0) {
+    tbody.innerHTML = '';
+    topItems.forEach(item => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="monospace">${item.run_id.slice(0, 8)}</td>
+        <td>${item.label || '-'}</td>
+        <td class="${(item.npv_pln || 0) >= 0 ? 'positive' : 'negative'}">${formatNpv(item.npv_pln || 0)}</td>
+        <td>${item.payback_years ? item.payback_years.toFixed(1) + ' lat' : '-'}</td>
+        <td>${formatNpv(item.capex_pln || 0)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    const itemsTable = document.getElementById('portfolioItemsTable');
+    if (itemsTable) itemsTable.style.display = 'block';
+  }
+
+  // Show actions
+  const actions = document.getElementById('portfolioActions');
+  if (actions) actions.style.display = 'block';
+}
+
+/**
+ * Export portfolio to CSV
+ */
+async function exportPortfolioCSV() {
+  if (!portfolioSelectedRunIds.length) return;
+
+  try {
+    const response = await fetch('/api/bess-dispatch/portfolio/summary/export/csv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_ids: portfolioSelectedRunIds }),
+    });
+
+    if (!response.ok) throw new Error('Export failed');
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `portfolio_${portfolioSelectedRunIds.length}items.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+  } catch (error) {
+    console.error('[Portfolio] CSV export error:', error);
+    alert('Export CSV nie powiodl sie');
+  }
+}
+
+/**
+ * Export portfolio to ZIP
+ */
+async function exportPortfolioZIP() {
+  if (!portfolioSelectedRunIds.length) return;
+
+  try {
+    const response = await fetch('/api/bess-dispatch/portfolio/summary/export/zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_ids: portfolioSelectedRunIds }),
+    });
+
+    if (!response.ok) throw new Error('Export failed');
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `portfolio_${portfolioSelectedRunIds.length}items.zip`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+  } catch (error) {
+    console.error('[Portfolio] ZIP export error:', error);
+    alert('Export ZIP nie powiodl sie');
+  }
+}
+
+// Initialize portfolio on page load
+document.addEventListener('DOMContentLoaded', () => {
+  loadAvailableRuns();
+});
+
+// Export v2.3.0 portfolio functions
+window.loadAvailableRuns = loadAvailableRuns;
+window.refreshRunList = refreshRunList;
+window.updatePortfolioSelection = updatePortfolioSelection;
+window.runPortfolioSummary = runPortfolioSummary;
+window.exportPortfolioCSV = exportPortfolioCSV;
+window.exportPortfolioZIP = exportPortfolioZIP;
+
+console.log('[BESS] bess.js v3.33 - v2.3.0 Portfolio Summary');

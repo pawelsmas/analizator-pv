@@ -1569,6 +1569,93 @@
             </div>
           </div>
         </div>
+
+        <!-- v2.3.0: Portfolio Summary Card -->
+        <div class="config-card portfolio-card">
+          <h3>📊 Portfolio Summary</h3>
+          <div class="config-description">
+            Agreguj wyniki wielu analiz sizing w portfolio i zobacz laczne KPI
+          </div>
+          <div class="portfolio-inputs">
+            <div class="run-selector">
+              <label>Wyniki do agregacji:</label>
+              <select id="portfolioRunSelect" multiple size="5" onchange="updatePortfolioSelection()">
+                <!-- Dynamically filled by loadAvailableRuns() -->
+              </select>
+              <button class="btn btn-tiny btn-secondary" onclick="refreshRunList()">🔄</button>
+            </div>
+            <div class="portfolio-selection-info">
+              <span id="portfolioSelectionCount">0 wybranych</span>
+            </div>
+            <button class="btn btn-small btn-primary" id="runPortfolioSummaryBtn" onclick="runPortfolioSummary()" disabled>
+              📊 Oblicz Portfolio Summary
+            </button>
+          </div>
+          <!-- Portfolio Summary Results Container -->
+          <div id="portfolioResultsContainer" class="portfolio-results-container" style="display: none;">
+            <div class="portfolio-status" id="portfolioStatus">
+              <span class="status-icon" id="portfolioStatusIcon">⏳</span>
+              <span class="status-text" id="portfolioStatusText">Obliczanie...</span>
+            </div>
+            <div class="portfolio-summary" id="portfolioSummaryDisplay" style="display: none;">
+              <div class="summary-row">
+                <div class="summary-item">
+                  <span class="label">Items Total:</span>
+                  <span class="value" id="portfolioItemsTotal">0</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Items OK:</span>
+                  <span class="value passed" id="portfolioItemsOk">0</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Items Error:</span>
+                  <span class="value failed" id="portfolioItemsError">0</span>
+                </div>
+              </div>
+              <div class="summary-row kpi-row">
+                <div class="summary-item">
+                  <span class="label">Total NPV:</span>
+                  <span class="value npv" id="portfolioTotalNpv">-</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Total CAPEX:</span>
+                  <span class="value" id="portfolioTotalCapex">-</span>
+                </div>
+                <div class="summary-item">
+                  <span class="label">Weighted Payback:</span>
+                  <span class="value" id="portfolioPayback">-</span>
+                </div>
+              </div>
+              <div class="summary-row">
+                <div class="summary-item">
+                  <span class="label">Mixed Assumptions:</span>
+                  <span class="value" id="portfolioMixedAssumptions">-</span>
+                </div>
+              </div>
+            </div>
+            <div class="portfolio-items" id="portfolioItemsTable" style="display: none;">
+              <h5>Top Items by NPV</h5>
+              <table class="items-table">
+                <thead>
+                  <tr>
+                    <th>Run ID</th>
+                    <th>Label</th>
+                    <th>NPV</th>
+                    <th>Payback</th>
+                    <th>CAPEX</th>
+                  </tr>
+                </thead>
+                <tbody id="portfolioItemsBody">
+                  <!-- Dynamically filled by displayPortfolioResults() -->
+                </tbody>
+              </table>
+            </div>
+            <div class="portfolio-actions" id="portfolioActions" style="display: none;">
+              <button class="btn btn-tiny btn-secondary" onclick="exportPortfolioCSV()">📥 Export CSV</button>
+              <button class="btn btn-tiny btn-secondary" onclick="exportPortfolioZIP()">📦 Export ZIP</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Apply Configuration Button -->
