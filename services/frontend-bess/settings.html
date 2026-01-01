@@ -40,7 +40,13 @@
 
   <!-- Settings Tabs -->
   <div class="settings-tabs">
-    <button class="settings-tab active" data-tab="api-keys" onclick="switchSettingsTab('api-keys')">
+    <button class="settings-tab active" data-tab="users" onclick="switchSettingsTab('users')">
+      Uzytkownicy
+    </button>
+    <button class="settings-tab" data-tab="invites" onclick="switchSettingsTab('invites')">
+      Zaproszenia
+    </button>
+    <button class="settings-tab" data-tab="api-keys" onclick="switchSettingsTab('api-keys')">
       Klucze API
     </button>
     <button class="settings-tab" data-tab="audit-log" onclick="switchSettingsTab('audit-log')">
@@ -48,8 +54,54 @@
     </button>
   </div>
 
+  <!-- Users Section (v3.1.0) -->
+  <div id="usersSection" class="settings-section">
+    <div class="api-keys-container">
+      <div class="api-keys-header">
+        <h2 class="api-keys-title">Uzytkownicy</h2>
+        <button class="btn-create-key" onclick="showCreateUserModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Dodaj uzytkownika
+        </button>
+      </div>
+
+      <div class="api-keys-table" id="usersTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">👥</div>
+          <p>Ladowanie uzytkownikow...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Invites Section (v3.1.0) -->
+  <div id="invitesSection" class="settings-section" style="display:none;">
+    <div class="api-keys-container">
+      <div class="api-keys-header">
+        <h2 class="api-keys-title">Zaproszenia</h2>
+        <button class="btn-create-key" onclick="showCreateInviteModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Nowe zaproszenie
+        </button>
+      </div>
+
+      <div class="api-keys-table" id="invitesTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">✉️</div>
+          <p>Ladowanie zaproszen...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- API Keys Section -->
-  <div id="apiKeysSection" class="settings-section">
+  <div id="apiKeysSection" class="settings-section" style="display:none;">
     <div class="api-keys-container">
       <div class="api-keys-header">
         <h2 class="api-keys-title">Klucze API</h2>
@@ -166,7 +218,98 @@
   </div>
 </div>
 
-<script src="auth.js?v=3.0.0"></script>
+<!-- Create User Modal (v3.1.0) -->
+<div id="createUserModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">Dodaj uzytkownika</h3>
+      <button class="modal-close" onclick="hideCreateUserModal()">&times;</button>
+    </div>
+
+    <form id="createUserForm" class="modal-form" onsubmit="handleCreateUser(event)">
+      <div class="form-group">
+        <label class="form-label" for="userEmail">Email</label>
+        <input type="email" id="userEmail" class="form-input" placeholder="user@example.com" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="userRole">Rola</label>
+        <select id="userRole" class="form-input" required>
+          <option value="viewer">Viewer - tylko odczyt</option>
+          <option value="editor" selected>Editor - odczyt i zapis</option>
+          <option value="admin">Admin - pelny dostep</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="userPassword">Haslo</label>
+        <input type="password" id="userPassword" class="form-input" placeholder="Min. 6 znakow" required minlength="6">
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="hideCreateUserModal()">Anuluj</button>
+        <button type="submit" class="btn-submit" id="createUserBtn">Utworz uzytkownika</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Create Invite Modal (v3.1.0) -->
+<div id="createInviteModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">Nowe zaproszenie</h3>
+      <button class="modal-close" onclick="hideCreateInviteModal()">&times;</button>
+    </div>
+
+    <form id="createInviteForm" class="modal-form" onsubmit="handleCreateInvite(event)">
+      <div class="form-group">
+        <label class="form-label" for="inviteEmail">Email</label>
+        <input type="email" id="inviteEmail" class="form-input" placeholder="user@example.com" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="inviteRole">Rola</label>
+        <select id="inviteRole" class="form-input" required>
+          <option value="viewer">Viewer - tylko odczyt</option>
+          <option value="editor" selected>Editor - odczyt i zapis</option>
+          <option value="admin">Admin - pelny dostep</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="inviteExpires">Wygasa za</label>
+        <select id="inviteExpires" class="form-input">
+          <option value="24">24 godziny</option>
+          <option value="72" selected>3 dni</option>
+          <option value="168">7 dni</option>
+        </select>
+      </div>
+
+      <div id="newInviteDisplay" class="new-key-display" style="display:none;">
+        <div class="new-key-label">Link do zaproszenia:</div>
+        <div class="new-key-value">
+          <input type="text" id="newInviteLink" readonly>
+          <button type="button" class="btn-copy" onclick="copyInviteLink()">Kopiuj</button>
+        </div>
+        <div class="new-key-warning">
+          Wyslij ten link do osoby zaproszonej. Nie bedzie mozna go ponownie wyswietlic.
+        </div>
+      </div>
+
+      <div class="modal-actions" id="createInviteActions">
+        <button type="button" class="btn-cancel" onclick="hideCreateInviteModal()">Anuluj</button>
+        <button type="submit" class="btn-submit" id="createInviteBtn">Wyslij zaproszenie</button>
+      </div>
+
+      <div class="modal-actions" id="closeInviteActions" style="display:none;">
+        <button type="button" class="btn-submit" onclick="hideCreateInviteModal()">Zamknij</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="auth.js?v=3.1.0"></script>
 <script>
 console.log('[SETTINGS] Settings page loaded');
 
@@ -181,14 +324,330 @@ function switchSettingsTab(tab) {
   });
 
   // Show/hide sections
+  document.getElementById('usersSection').style.display = tab === 'users' ? 'block' : 'none';
+  document.getElementById('invitesSection').style.display = tab === 'invites' ? 'block' : 'none';
   document.getElementById('apiKeysSection').style.display = tab === 'api-keys' ? 'block' : 'none';
   document.getElementById('auditLogSection').style.display = tab === 'audit-log' ? 'block' : 'none';
 
   // Load data
-  if (tab === 'api-keys') {
+  if (tab === 'users') {
+    loadUsers();
+  } else if (tab === 'invites') {
+    loadInvites();
+  } else if (tab === 'api-keys') {
     loadApiKeys();
   } else if (tab === 'audit-log') {
     loadAuditLog();
+  }
+}
+
+// ============================================
+// USERS (v3.1.0)
+// ============================================
+
+async function loadUsers() {
+  const tableEl = document.getElementById('usersTable');
+
+  try {
+    const response = await authFetch('/admin/users');
+    if (!response.ok) throw new Error('Failed to load users');
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">👥</div>
+          <p>Brak uzytkownikow</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Rola</th>
+            <th>Utworzono</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(user => `
+            <tr class="${user.disabled ? 'disabled-row' : ''}">
+              <td class="api-key-label">${escapeHtml(user.email)}</td>
+              <td><span class="api-key-role role-${user.role}">${user.role}</span></td>
+              <td class="api-key-created">${formatDate(user.created_at)}</td>
+              <td>${user.disabled ? '<span class="status-disabled">Wylaczony</span>' : '<span class="status-active">Aktywny</span>'}</td>
+              <td>
+                <button class="btn-revoke" onclick="toggleUserDisabled('${user.id}', ${user.disabled})">
+                  ${user.disabled ? 'Wlacz' : 'Wylacz'}
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading users:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania uzytkownikow</p>
+        <p style="font-size:12px;margin-top:8px;">${escapeHtml(error.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function showCreateUserModal() {
+  document.getElementById('createUserModal').classList.add('visible');
+  document.getElementById('createUserForm').reset();
+  document.getElementById('userEmail').focus();
+}
+
+function hideCreateUserModal() {
+  document.getElementById('createUserModal').classList.remove('visible');
+  loadUsers();
+}
+
+async function handleCreateUser(event) {
+  event.preventDefault();
+
+  const email = document.getElementById('userEmail').value.trim();
+  const role = document.getElementById('userRole').value;
+  const password = document.getElementById('userPassword').value;
+
+  const createBtn = document.getElementById('createUserBtn');
+  createBtn.disabled = true;
+  createBtn.textContent = 'Tworzenie...';
+
+  try {
+    const response = await authFetch('/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, role, password }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail?.message || 'Failed to create user');
+    }
+
+    console.log('[SETTINGS] User created:', email);
+    hideCreateUserModal();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error creating user:', error);
+    alert('Blad tworzenia uzytkownika: ' + error.message);
+  } finally {
+    createBtn.disabled = false;
+    createBtn.textContent = 'Utworz uzytkownika';
+  }
+}
+
+async function toggleUserDisabled(userId, currentlyDisabled) {
+  const action = currentlyDisabled ? 'wlaczyc' : 'wylaczyc';
+  if (!confirm(`Czy na pewno chcesz ${action} tego uzytkownika?`)) {
+    return;
+  }
+
+  try {
+    const response = await authFetch(`/admin/users/${userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disabled: !currentlyDisabled }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail?.message || 'Failed to update user');
+    }
+
+    console.log('[SETTINGS] User updated:', userId);
+    loadUsers();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error updating user:', error);
+    alert('Blad aktualizacji uzytkownika: ' + error.message);
+  }
+}
+
+// ============================================
+// INVITES (v3.1.0)
+// ============================================
+
+async function loadInvites() {
+  const tableEl = document.getElementById('invitesTable');
+
+  try {
+    const response = await authFetch('/admin/invites');
+    if (!response.ok) throw new Error('Failed to load invites');
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">✉️</div>
+          <p>Brak zaproszen</p>
+          <p style="font-size:12px;margin-top:8px;">Kliknij "Nowe zaproszenie" aby zaprosiç uzytkownika.</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Rola</th>
+            <th>Wygasa</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(invite => `
+            <tr class="${invite.revoked_at || invite.accepted_at ? 'disabled-row' : ''}">
+              <td class="api-key-label">${escapeHtml(invite.email)}</td>
+              <td><span class="api-key-role role-${invite.role}">${invite.role}</span></td>
+              <td class="api-key-expires ${getExpiryClass(invite.expires_at)}">${formatExpiry(invite.expires_at)}</td>
+              <td>${getInviteStatus(invite)}</td>
+              <td>
+                ${!invite.revoked_at && !invite.accepted_at ? `
+                  <button class="btn-revoke" onclick="handleRevokeInvite('${invite.id}', '${escapeHtml(invite.email)}')">
+                    Anuluj
+                  </button>
+                ` : ''}
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading invites:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania zaproszen</p>
+        <p style="font-size:12px;margin-top:8px;">${escapeHtml(error.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function getInviteStatus(invite) {
+  if (invite.accepted_at) {
+    return '<span class="status-active">Zaakceptowane</span>';
+  }
+  if (invite.revoked_at) {
+    return '<span class="status-disabled">Anulowane</span>';
+  }
+  const expiresAt = new Date(invite.expires_at);
+  if (expiresAt < new Date()) {
+    return '<span class="status-disabled">Wygaslo</span>';
+  }
+  return '<span class="status-pending">Oczekuje</span>';
+}
+
+function showCreateInviteModal() {
+  document.getElementById('createInviteModal').classList.add('visible');
+  document.getElementById('newInviteDisplay').style.display = 'none';
+  document.getElementById('createInviteActions').style.display = 'flex';
+  document.getElementById('closeInviteActions').style.display = 'none';
+  document.getElementById('createInviteForm').reset();
+  document.getElementById('inviteEmail').focus();
+}
+
+function hideCreateInviteModal() {
+  document.getElementById('createInviteModal').classList.remove('visible');
+  if (document.getElementById('newInviteDisplay').style.display !== 'none') {
+    loadInvites();
+  }
+}
+
+async function handleCreateInvite(event) {
+  event.preventDefault();
+
+  const email = document.getElementById('inviteEmail').value.trim();
+  const role = document.getElementById('inviteRole').value;
+  const expiresHours = parseInt(document.getElementById('inviteExpires').value);
+
+  const createBtn = document.getElementById('createInviteBtn');
+  createBtn.disabled = true;
+  createBtn.textContent = 'Wysylanie...';
+
+  try {
+    const response = await authFetch('/admin/invites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, role, expires_hours: expiresHours }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail?.message || 'Failed to create invite');
+    }
+
+    const result = await response.json();
+
+    // Generate invite link
+    const inviteLink = `${window.location.origin}/accept-invite.html?token=${result.token}`;
+    document.getElementById('newInviteLink').value = inviteLink;
+    document.getElementById('newInviteDisplay').style.display = 'block';
+    document.getElementById('createInviteActions').style.display = 'none';
+    document.getElementById('closeInviteActions').style.display = 'flex';
+
+    console.log('[SETTINGS] Invite created for:', email);
+
+  } catch (error) {
+    console.error('[SETTINGS] Error creating invite:', error);
+    alert('Blad tworzenia zaproszenia: ' + error.message);
+  } finally {
+    createBtn.disabled = false;
+    createBtn.textContent = 'Wyslij zaproszenie';
+  }
+}
+
+function copyInviteLink() {
+  const input = document.getElementById('newInviteLink');
+  input.select();
+  document.execCommand('copy');
+
+  const copyBtn = event.target;
+  copyBtn.textContent = 'Skopiowano!';
+  setTimeout(() => {
+    copyBtn.textContent = 'Kopiuj';
+  }, 2000);
+}
+
+async function handleRevokeInvite(inviteId, email) {
+  if (!confirm(`Czy na pewno chcesz anulowac zaproszenie dla "${email}"?`)) {
+    return;
+  }
+
+  try {
+    const response = await authFetch(`/admin/invites/${inviteId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to revoke invite');
+    }
+
+    console.log('[SETTINGS] Invite revoked:', inviteId);
+    loadInvites();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error revoking invite:', error);
+    alert('Blad anulowania zaproszenia: ' + error.message);
   }
 }
 
@@ -511,8 +970,8 @@ async function initSettingsPage() {
     return;
   }
 
-  // Load initial data
-  loadApiKeys();
+  // Load initial data (users tab is now default)
+  loadUsers();
 }
 
 // Initialize
@@ -565,6 +1024,26 @@ initSettingsPage();
 /* Override page header for settings */
 .page-header h1::before {
   content: '⚙️';
+}
+
+/* Status indicators (v3.1.0) */
+.status-active {
+  color: #4caf50;
+  font-weight: 500;
+}
+
+.status-disabled {
+  color: #f44336;
+  font-weight: 500;
+}
+
+.status-pending {
+  color: #ff9800;
+  font-weight: 500;
+}
+
+.disabled-row {
+  opacity: 0.6;
 }
 </style>
 </body>

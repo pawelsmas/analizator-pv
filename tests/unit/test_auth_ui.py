@@ -178,6 +178,71 @@ class TestSettingsPage:
 
         assert "whoamiBadge" in content
 
+    # v3.1.0 Users/Invites tests
+    def test_settings_page_has_users_section(self):
+        """settings.html should have users section (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "usersSection" in content
+        assert "usersTable" in content
+
+    def test_settings_page_has_invites_section(self):
+        """settings.html should have invites section (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "invitesSection" in content
+        assert "invitesTable" in content
+
+    def test_settings_page_has_create_user_modal(self):
+        """settings.html should have create user modal (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "createUserModal" in content
+        assert "userEmail" in content
+        assert "userRole" in content
+        assert "userPassword" in content
+
+    def test_settings_page_has_create_invite_modal(self):
+        """settings.html should have create invite modal (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "createInviteModal" in content
+        assert "inviteEmail" in content
+        assert "inviteRole" in content
+        assert "inviteExpires" in content
+
+    def test_settings_page_has_users_tab(self):
+        """settings.html should have users tab (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert 'data-tab="users"' in content
+
+    def test_settings_page_has_invites_tab(self):
+        """settings.html should have invites tab (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert 'data-tab="invites"' in content
+
+    def test_settings_page_has_load_users_function(self):
+        """settings.html should have loadUsers function (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "async function loadUsers" in content
+
+    def test_settings_page_has_load_invites_function(self):
+        """settings.html should have loadInvites function (v3.1.0)."""
+        settings_html = FRONTEND_DIR / "settings.html"
+        content = settings_html.read_text(encoding="utf-8")
+
+        assert "async function loadInvites" in content
+
     def test_settings_page_checks_admin_role(self):
         """settings.html should check for admin role."""
         settings_html = FRONTEND_DIR / "settings.html"
