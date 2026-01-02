@@ -8887,4 +8887,191 @@ window.downloadRunReportXLSX = downloadRunReportXLSX;
 window.downloadRunReportZIP = downloadRunReportZIP;
 window.exportPortfolioReportZIP = exportPortfolioReportZIP;
 
-console.log('[BESS] bess.js v3.35 - v3.7.0 Project Scoping');
+// =============================================================================
+// v3.8.0: Share Modal v2 - Password/Single-use/Max Access
+// =============================================================================
+
+/**
+ * Open share modal for a run.
+ * @param {string} runId - Run ID to share
+ */
+function openShareModal(runId) {
+  const modal = document.getElementById('shareModal');
+  if (!modal) {
+    console.error('[Share] Modal not found');
+    return;
+  }
+
+  // Reset form
+  document.getElementById('shareRunId').value = runId;
+  document.getElementById('shareLabel').value = '';
+  document.getElementById('shareExpiresHours').value = '168'; // Default 7 days
+  document.getElementById('shareRequiresPassword').checked = false;
+  document.getElementById('sharePassword').value = '';
+  document.getElementById('sharePasswordGroup').style.display = 'none';
+  document.getElementById('shareSingleUse').checked = false;
+  document.getElementById('shareMaxAccessCount').value = '';
+
+  // Clear result
+  const resultDiv = document.getElementById('shareResult');
+  resultDiv.style.display = 'none';
+  resultDiv.innerHTML = '';
+
+  // Show modal
+  modal.style.display = 'flex';
+}
+
+/**
+ * Close share modal.
+ */
+function closeShareModal() {
+  const modal = document.getElementById('shareModal');
+  if (modal) modal.style.display = 'none';
+}
+
+/**
+ * Toggle password field visibility.
+ */
+function toggleSharePassword() {
+  const checkbox = document.getElementById('shareRequiresPassword');
+  const group = document.getElementById('sharePasswordGroup');
+  group.style.display = checkbox.checked ? 'block' : 'none';
+}
+
+/**
+ * Create share link via API.
+ */
+async function createShareLink() {
+  const runId = document.getElementById('shareRunId').value;
+  const label = document.getElementById('shareLabel').value.trim() || null;
+  const expiresHours = parseInt(document.getElementById('shareExpiresHours').value) || null;
+  const requiresPassword = document.getElementById('shareRequiresPassword').checked;
+  const password = document.getElementById('sharePassword').value;
+  const singleUse = document.getElementById('shareSingleUse').checked;
+  const maxAccessCount = parseInt(document.getElementById('shareMaxAccessCount').value) || null;
+
+  // Validate password if required
+  if (requiresPassword && (!password || password.length < 10)) {
+    showShareError('Haslo musi miec co najmniej 10 znakow');
+    return;
+  }
+
+  const payload = {
+    resource_type: 'run',
+    resource_id: runId,
+    label: label,
+    expires_hours: expiresHours,
+    requires_password: requiresPassword,
+    single_use: singleUse,
+    max_access_count: maxAccessCount
+  };
+
+  if (requiresPassword) {
+    payload.password = password;
+  }
+
+  // Add project_id if available
+  if (typeof getCurrentProjectId === 'function') {
+    const projectId = getCurrentProjectId();
+    if (projectId) {
+      payload.project_id = projectId;
+    }
+  }
+
+  try {
+    const response = await fetch('/api/bess-dispatch/admin/shares', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.detail?.message || `HTTP ${response.status}`);
+    }
+
+    const share = await response.json();
+    showShareSuccess(share);
+
+  } catch (err) {
+    console.error('[Share] Create error:', err);
+    showShareError(err.message);
+  }
+}
+
+/**
+ * Show share creation error.
+ */
+function showShareError(message) {
+  const resultDiv = document.getElementById('shareResult');
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = `
+    <div class="share-error">
+      <strong>Blad:</strong> ${escapeHtml(message)}
+    </div>
+  `;
+}
+
+/**
+ * Show share creation success.
+ */
+function showShareSuccess(share) {
+  const resultDiv = document.getElementById('shareResult');
+  resultDiv.style.display = 'block';
+
+  const shareUrl = `${window.location.origin}/shared/runs/${share.resource_id}?token=${share.token}`;
+
+  resultDiv.innerHTML = `
+    <div class="share-success">
+      <div class="share-created-header">
+        <strong>Link udostepniania utworzony!</strong>
+        ${share.requires_password ? '<span class="badge badge-info">Chroniony haslem</span>' : ''}
+        ${share.single_use ? '<span class="badge badge-warning">Jednorazowy</span>' : ''}
+        ${share.max_access_count ? `<span class="badge badge-info">Max: ${share.max_access_count}</span>` : ''}
+      </div>
+      <div class="share-token-row">
+        <input type="text" id="shareTokenDisplay" value="${escapeHtml(shareUrl)}" readonly class="share-token-input">
+        <button class="btn btn-primary" onclick="copyShareToken()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          Kopiuj
+        </button>
+      </div>
+      <p class="share-warning">
+        <strong>Uwaga:</strong> Ten link jest pokazywany tylko raz. Zapisz go teraz!
+      </p>
+      ${share.expires_at ? `<p class="share-expires">Wygasa: ${new Date(share.expires_at).toLocaleString('pl-PL')}</p>` : ''}
+    </div>
+  `;
+}
+
+/**
+ * Copy share token to clipboard.
+ */
+function copyShareToken() {
+  const input = document.getElementById('shareTokenDisplay');
+  if (!input) return;
+
+  input.select();
+  input.setSelectionRange(0, 99999); // For mobile
+
+  try {
+    navigator.clipboard.writeText(input.value);
+    alert('Link skopiowany do schowka!');
+  } catch (err) {
+    // Fallback for older browsers
+    document.execCommand('copy');
+    alert('Link skopiowany do schowka!');
+  }
+}
+
+// Export share functions
+window.openShareModal = openShareModal;
+window.closeShareModal = closeShareModal;
+window.toggleSharePassword = toggleSharePassword;
+window.createShareLink = createShareLink;
+window.copyShareToken = copyShareToken;
+
+console.log('[BESS] bess.js v3.36 - v3.8.0 Share Modal v2');

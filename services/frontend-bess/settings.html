@@ -49,6 +49,9 @@
     <button class="settings-tab" data-tab="invites" onclick="switchSettingsTab('invites')">
       Zaproszenia
     </button>
+    <button class="settings-tab" data-tab="shares" onclick="switchSettingsTab('shares')">
+      Linki
+    </button>
     <button class="settings-tab" data-tab="api-keys" onclick="switchSettingsTab('api-keys')">
       Klucze API
     </button>
@@ -121,6 +124,86 @@
         <div class="api-keys-empty">
           <div class="api-keys-empty-icon">✉️</div>
           <p>Ladowanie zaproszen...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shares Section (v3.8.0) -->
+  <div id="sharesSection" class="settings-section" style="display:none;">
+    <div class="api-keys-container">
+      <div class="api-keys-header">
+        <h2 class="api-keys-title">Linki udostepniania</h2>
+        <div class="shares-header-actions">
+          <button class="btn-create-key btn-danger" onclick="revokeAllSharesConfirm()" title="Odwolaj wszystkie">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+            Odwolaj wszystkie
+          </button>
+          <button class="btn-create-key" onclick="refreshSharesList()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            Odswiez
+          </button>
+        </div>
+      </div>
+
+      <div class="api-keys-table" id="sharesTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">🔗</div>
+          <p>Ladowanie linkow udostepniania...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Stats Modal (v3.8.0) -->
+  <div id="shareStatsModal" class="modal-overlay" style="display:none;" onclick="closeShareStatsModal()">
+    <div class="modal-content share-stats-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>Statystyki linku</h3>
+        <button class="modal-close-btn" onclick="closeShareStatsModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Dostepy ogółem</div>
+            <div class="stat-value" id="statTotalAccesses">-</div>
+          </div>
+          <div class="stat-card stat-success">
+            <div class="stat-label">Udane</div>
+            <div class="stat-value" id="statSuccessful">-</div>
+          </div>
+          <div class="stat-card stat-danger">
+            <div class="stat-label">Odmowy</div>
+            <div class="stat-value" id="statDenied">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Unikalne IP</div>
+            <div class="stat-value" id="statUniqueIps">-</div>
+          </div>
+        </div>
+        <div class="stats-info">
+          <div class="info-row">
+            <span class="info-label">Pierwszy dostep:</span>
+            <span class="info-value" id="statFirstAccess">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Ostatni dostep:</span>
+            <span class="info-value" id="statLastAccess">-</span>
+          </div>
+        </div>
+        <div class="stats-logs">
+          <h4>Ostatnie dostepu</h4>
+          <div id="shareAccessLogs" class="access-logs-table">
+            <div class="loading-row">Ladowanie...</div>
+          </div>
         </div>
       </div>
     </div>
@@ -551,6 +634,7 @@ function switchSettingsTab(tab) {
   document.getElementById('usersSection').style.display = tab === 'users' ? 'block' : 'none';
   document.getElementById('projectsSection').style.display = tab === 'projects' ? 'block' : 'none';
   document.getElementById('invitesSection').style.display = tab === 'invites' ? 'block' : 'none';
+  document.getElementById('sharesSection').style.display = tab === 'shares' ? 'block' : 'none';
   document.getElementById('apiKeysSection').style.display = tab === 'api-keys' ? 'block' : 'none';
   document.getElementById('auditLogSection').style.display = tab === 'audit-log' ? 'block' : 'none';
 
@@ -561,6 +645,8 @@ function switchSettingsTab(tab) {
     loadProjects();
   } else if (tab === 'invites') {
     loadInvites();
+  } else if (tab === 'shares') {
+    loadShares();
   } else if (tab === 'api-keys') {
     loadApiKeys();
   } else if (tab === 'audit-log') {
@@ -1299,6 +1385,230 @@ async function handleRevokeInvite(inviteId, email) {
 }
 
 // ============================================
+// SHARES (v3.8.0)
+// ============================================
+
+async function loadShares() {
+  const tableEl = document.getElementById('sharesTable');
+
+  try {
+    const response = await authFetch('/admin/shares');
+    if (!response.ok) throw new Error('Failed to load shares');
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">🔗</div>
+          <p>Brak linkow udostepniania</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table class="keys-table">
+        <thead>
+          <tr>
+            <th>Etykieta</th>
+            <th>Zasob</th>
+            <th>Utworzono</th>
+            <th>Wygasa</th>
+            <th>Opcje</th>
+            <th>Dostepu</th>
+            <th>Status</th>
+            <th>Akcje</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(share => {
+            const isRevoked = share.revoked_at !== null;
+            const isExpired = share.expires_at && new Date(share.expires_at) < new Date();
+            const statusClass = isRevoked ? 'status-revoked' : (isExpired ? 'status-expired' : 'status-active');
+            const statusText = isRevoked ? 'Odwolany' : (isExpired ? 'Wygasly' : 'Aktywny');
+
+            const options = [];
+            if (share.requires_password) options.push('<span class="badge badge-info" title="Chroniony haslem">🔒</span>');
+            if (share.single_use) options.push('<span class="badge badge-warning" title="Jednorazowy">1x</span>');
+            if (share.max_access_count) options.push('<span class="badge badge-info" title="Max dostepow">Max: ' + share.max_access_count + '</span>');
+
+            return `
+              <tr class="${isRevoked || isExpired ? 'row-inactive' : ''}">
+                <td>${escapeHtml(share.label || '-')}</td>
+                <td><span class="resource-badge">${share.resource_type}:${share.resource_id.substring(0, 8)}...</span></td>
+                <td>${new Date(share.created_at).toLocaleDateString('pl-PL')}</td>
+                <td>${share.expires_at ? new Date(share.expires_at).toLocaleDateString('pl-PL') : 'Nigdy'}</td>
+                <td>${options.join(' ') || '-'}</td>
+                <td>${share.access_count || 0}</td>
+                <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                <td>
+                  <div class="action-buttons">
+                    <button class="btn btn-tiny btn-secondary" onclick="openShareStats('${share.id}')" title="Statystyki">
+                      📊
+                    </button>
+                    ${!isRevoked ? `
+                      <button class="btn btn-tiny btn-warning" onclick="rotateShareToken('${share.id}')" title="Rotuj token">
+                        🔄
+                      </button>
+                      <button class="btn btn-tiny btn-danger" onclick="revokeShare('${share.id}')" title="Odwolaj">
+                        ❌
+                      </button>
+                    ` : ''}
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    console.error('[Settings] Load shares error:', err);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania linkow: ${escapeHtml(err.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function refreshSharesList() {
+  loadShares();
+}
+
+async function revokeShare(shareId) {
+  if (!confirm('Czy na pewno chcesz odwolac ten link?')) return;
+
+  try {
+    const response = await authFetch('/admin/shares/' + shareId, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) throw new Error('Failed to revoke share');
+
+    loadShares();
+    alert('Link zostal odwolany');
+  } catch (err) {
+    console.error('[Settings] Revoke share error:', err);
+    alert('Blad podczas odwolywania: ' + err.message);
+  }
+}
+
+async function rotateShareToken(shareId) {
+  if (!confirm('Czy na pewno chcesz rotowac token? Stary link przestanie dzialac.')) return;
+
+  try {
+    const response = await authFetch('/admin/shares/' + shareId + '/rotate', {
+      method: 'POST'
+    });
+
+    if (!response.ok) throw new Error('Failed to rotate token');
+
+    const result = await response.json();
+
+    // Show new token
+    alert('Nowy token (skopiuj!):\\n\\n' + result.token + '\\n\\nWersja: ' + result.token_version);
+
+    loadShares();
+  } catch (err) {
+    console.error('[Settings] Rotate token error:', err);
+    alert('Blad podczas rotacji: ' + err.message);
+  }
+}
+
+async function revokeAllSharesConfirm() {
+  const count = document.querySelectorAll('#sharesTable tbody tr:not(.row-inactive)').length;
+  if (!confirm('Czy na pewno chcesz odwolac WSZYSTKIE aktywne linki (' + count + ')? Ta operacja jest nieodwracalna!')) return;
+
+  try {
+    const response = await authFetch('/admin/shares/revoke-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resource_type: 'run', resource_id: '*' })
+    });
+
+    if (!response.ok) throw new Error('Failed to revoke all shares');
+
+    const result = await response.json();
+    alert('Odwolano ' + result.revoked_count + ' linkow');
+
+    loadShares();
+  } catch (err) {
+    console.error('[Settings] Revoke all shares error:', err);
+    alert('Blad: ' + err.message);
+  }
+}
+
+async function openShareStats(shareId) {
+  const modal = document.getElementById('shareStatsModal');
+  if (!modal) return;
+
+  modal.style.display = 'flex';
+
+  // Reset values
+  document.getElementById('statTotalAccesses').textContent = '...';
+  document.getElementById('statSuccessful').textContent = '...';
+  document.getElementById('statDenied').textContent = '...';
+  document.getElementById('statUniqueIps').textContent = '...';
+  document.getElementById('statFirstAccess').textContent = '...';
+  document.getElementById('statLastAccess').textContent = '...';
+  document.getElementById('shareAccessLogs').innerHTML = '<div class="loading-row">Ladowanie...</div>';
+
+  try {
+    // Load stats
+    const statsResponse = await authFetch('/admin/shares/' + shareId + '/stats');
+    if (!statsResponse.ok) throw new Error('Failed to load stats');
+    const stats = await statsResponse.json();
+
+    document.getElementById('statTotalAccesses').textContent = stats.total_accesses;
+    document.getElementById('statSuccessful').textContent = stats.successful_accesses;
+    document.getElementById('statDenied').textContent = stats.denied_accesses;
+    document.getElementById('statUniqueIps').textContent = stats.unique_ips;
+    document.getElementById('statFirstAccess').textContent = stats.first_access_at ? new Date(stats.first_access_at).toLocaleString('pl-PL') : '-';
+    document.getElementById('statLastAccess').textContent = stats.last_access_at ? new Date(stats.last_access_at).toLocaleString('pl-PL') : '-';
+
+    // Load access logs
+    const logsResponse = await authFetch('/admin/shares/' + shareId + '/access-logs?limit=20');
+    if (!logsResponse.ok) throw new Error('Failed to load logs');
+    const logs = await logsResponse.json();
+
+    if (logs.items.length === 0) {
+      document.getElementById('shareAccessLogs').innerHTML = '<div class="empty-row">Brak dostepow</div>';
+    } else {
+      document.getElementById('shareAccessLogs').innerHTML = `
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Wynik</th>
+              <th>IP</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${logs.items.map(log => `
+              <tr class="${log.access_result === 'success' ? 'row-success' : 'row-denied'}">
+                <td>${new Date(log.accessed_at).toLocaleString('pl-PL')}</td>
+                <td>${log.access_result}</td>
+                <td>${log.ip_address || '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+  } catch (err) {
+    console.error('[Settings] Load share stats error:', err);
+    document.getElementById('shareAccessLogs').innerHTML = '<div class="error-row">Blad: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function closeShareStatsModal() {
+  const modal = document.getElementById('shareStatsModal');
+  if (modal) modal.style.display = 'none';
+}
+
+// ============================================
 // API KEYS
 // ============================================
 
@@ -1917,6 +2227,170 @@ initSettingsPage();
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+/* v3.8.0: Shares section styles */
+.shares-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: white;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.btn-warning {
+  background: #f59e0b;
+  color: white;
+}
+
+.btn-warning:hover {
+  background: #d97706;
+}
+
+.resource-badge {
+  background: #e5e7eb;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-revoked {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-expired {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.row-inactive {
+  opacity: 0.5;
+}
+
+.row-success {
+  background: #f0fdf4;
+}
+
+.row-denied {
+  background: #fef2f2;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+/* Share stats modal */
+.share-stats-modal {
+  max-width: 600px;
+  width: 90%;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.stat-card.stat-success {
+  background: #dcfce7;
+}
+
+.stat-card.stat-danger {
+  background: #fee2e2;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #333;
+}
+
+.stats-info {
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.stats-logs {
+  margin-top: 16px;
+}
+
+.stats-logs h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.access-logs-table {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.logs-table th,
+.logs-table td {
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+}
+
+.logs-table th {
+  background: #f1f5f9;
+  font-weight: 500;
+}
+
+.empty-row,
+.loading-row,
+.error-row {
+  padding: 20px;
+  text-align: center;
+  color: #888;
+}
+
+.error-row {
+  color: #dc2626;
 }
 </style>
 </body>
