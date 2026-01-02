@@ -1034,3 +1034,130 @@ def revoke_all_resource_shares(
     )
 
     return RevokeAllSharesResponse(revoked_count=revoked_count)
+
+
+# -------------------------------------------------------------------------
+# Share Access Logs and Stats (v3.8.0 PR3)
+# -------------------------------------------------------------------------
+
+
+class ShareAccessLogEntry(BaseModel):
+    """Single access log entry for a share."""
+    id: str
+    share_id: str
+    tenant_id: str
+    accessed_at: str
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    access_result: str  # "success", "denied_share_password_invalid", etc.
+
+
+class ShareAccessLogsResponse(BaseModel):
+    """Response for listing share access logs."""
+    items: List[ShareAccessLogEntry]
+    total: int
+
+
+class ShareStatsResponse(BaseModel):
+    """Statistics for a share (v3.8.0 PR3)."""
+    share_id: str
+    total_accesses: int
+    successful_accesses: int
+    denied_accesses: int
+    first_access_at: Optional[str] = None
+    last_access_at: Optional[str] = None
+    unique_ips: int
+
+
+@router.get("/shares/{share_id}/access-logs", response_model=ShareAccessLogsResponse)
+def get_share_access_logs(
+    share_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Get access logs for a share (v3.8.0 PR3).
+
+    Returns paginated list of access attempts with IP, user agent, and result.
+
+    Query parameters:
+    - limit: Max entries to return (default 100, max 1000)
+    - offset: Number of entries to skip (default 0)
+
+    Requires admin role.
+    """
+    # Validate limit
+    if limit < 1 or limit > 1000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_LIMIT", "message": "limit must be between 1 and 1000"},
+        )
+
+    auth_store = get_auth_store()
+
+    # Verify share exists and belongs to tenant
+    share = auth_store.get_share_by_id(share_id, auth.tenant_id)
+    if share is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found"},
+        )
+
+    logs = auth_store.list_share_access_logs(share_id, auth.tenant_id, limit=limit, offset=offset)
+    total = auth_store.count_share_access_logs(share_id, auth.tenant_id)
+
+    items = [
+        ShareAccessLogEntry(
+            id=log["id"],
+            share_id=log["share_id"],
+            tenant_id=log["tenant_id"],
+            accessed_at=log["accessed_at"],
+            ip_address=log.get("ip_address"),
+            user_agent=log.get("user_agent"),
+            access_result=log["access_result"],
+        )
+        for log in logs
+    ]
+
+    return ShareAccessLogsResponse(items=items, total=total)
+
+
+@router.get("/shares/{share_id}/stats", response_model=ShareStatsResponse)
+def get_share_stats(
+    share_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Get statistics for a share (v3.8.0 PR3).
+
+    Returns aggregated stats including:
+    - Total access attempts
+    - Successful accesses
+    - Denied accesses
+    - First and last access timestamps
+    - Count of unique IP addresses
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+
+    # Verify share exists and belongs to tenant
+    share = auth_store.get_share_by_id(share_id, auth.tenant_id)
+    if share is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found"},
+        )
+
+    stats = auth_store.get_share_stats(share_id, auth.tenant_id)
+
+    return ShareStatsResponse(
+        share_id=share_id,
+        total_accesses=stats["total_accesses"],
+        successful_accesses=stats["successful_accesses"],
+        denied_accesses=stats["denied_accesses"],
+        first_access_at=stats.get("first_access_at"),
+        last_access_at=stats.get("last_access_at"),
+        unique_ips=stats["unique_ips"],
+    )

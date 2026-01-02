@@ -11,12 +11,43 @@ Headers:
 
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from auth_store import get_auth_store
 from audit_store import log_audit
 
 router = APIRouter(prefix="/shared", tags=["shared"])
+
+
+def _get_client_ip(request: Request) -> Optional[str]:
+    """Extract client IP from request (handles proxies)."""
+    # Check X-Forwarded-For first (reverse proxy)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    # Fall back to direct client
+    if request.client:
+        return request.client.host
+    return None
+
+
+def _log_share_access(
+    auth_store,
+    share_id: str,
+    tenant_id: str,
+    access_result: str,
+    request: Request,
+):
+    """Log share access attempt with IP and user agent (v3.8.0 PR3)."""
+    ip_address = _get_client_ip(request)
+    user_agent = request.headers.get("User-Agent")
+    auth_store.log_share_access(
+        share_id=share_id,
+        tenant_id=tenant_id,
+        access_result=access_result,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
 
 
 # =============================================================================
@@ -27,6 +58,7 @@ router = APIRouter(prefix="/shared", tags=["shared"])
 @router.get("/runs/{run_id}")
 def get_shared_run(
     run_id: str,
+    request: Request,
     x_share_token: str = Header(..., alias="X-Share-Token"),
     x_share_password: Optional[str] = Header(None, alias="X-Share-Password"),
 ) -> Dict[str, Any]:
@@ -59,10 +91,21 @@ def get_shared_run(
 
     if not result["valid"]:
         error_code = result["error_code"]
+        share_for_log = result.get("share")
 
-        # Log failed access attempt for security monitoring
+        # Log to access logs table (v3.8.0 PR3) if we have share info
+        if share_for_log:
+            _log_share_access(
+                auth_store,
+                share_id=share_for_log["id"],
+                tenant_id=share_for_log["tenant_id"],
+                access_result=f"denied_{error_code.lower()}",
+                request=request,
+            )
+
+        # Log failed access attempt for audit
         log_audit(
-            tenant_id="unknown",
+            tenant_id=share_for_log["tenant_id"] if share_for_log else "unknown",
             action="share_access_denied",
             actor_id="anonymous",
             actor_email=None,
@@ -72,7 +115,7 @@ def get_shared_run(
             resource_id=run_id,
             details={
                 "error_code": error_code,
-                "share_id": result.get("share", {}).get("id") if result.get("share") else None,
+                "share_id": share_for_log["id"] if share_for_log else None,
             },
         )
 
@@ -123,7 +166,16 @@ def get_shared_run(
     # Record the access (increment counter, auto-revoke if single-use)
     access_result = auth_store.record_share_access(share["id"])
 
-    # Log successful access
+    # Log to access logs table (v3.8.0 PR3)
+    _log_share_access(
+        auth_store,
+        share_id=share["id"],
+        tenant_id=share["tenant_id"],
+        access_result="success",
+        request=request,
+    )
+
+    # Log successful access for audit
     log_audit(
         tenant_id=share["tenant_id"],
         action="share_accessed",
@@ -147,6 +199,7 @@ def get_shared_run(
 @router.get("/runs/{run_id}/summary")
 def get_shared_run_summary(
     run_id: str,
+    request: Request,
     x_share_token: str = Header(..., alias="X-Share-Token"),
     x_share_password: Optional[str] = Header(None, alias="X-Share-Password"),
 ) -> Dict[str, Any]:
@@ -170,6 +223,18 @@ def get_shared_run_summary(
 
     if not result["valid"]:
         error_code = result["error_code"]
+        share_for_log = result.get("share")
+
+        # Log to access logs table (v3.8.0 PR3) if we have share info
+        if share_for_log:
+            _log_share_access(
+                auth_store,
+                share_id=share_for_log["id"],
+                tenant_id=share_for_log["tenant_id"],
+                access_result=f"denied_{error_code.lower()}",
+                request=request,
+            )
+
         if error_code in ("SHARE_NOT_FOUND", "SHARE_EXPIRED", "SHARE_PASSWORD_REQUIRED", "SHARE_PASSWORD_INVALID"):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -213,6 +278,15 @@ def get_shared_run_summary(
 
     # Record access
     auth_store.record_share_access(share["id"])
+
+    # Log to access logs table (v3.8.0 PR3)
+    _log_share_access(
+        auth_store,
+        share_id=share["id"],
+        tenant_id=share["tenant_id"],
+        access_result="success",
+        request=request,
+    )
 
     # Return only summary fields
     summary = {

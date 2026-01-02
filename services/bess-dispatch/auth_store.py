@@ -8,6 +8,7 @@ Tables:
 - invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
 - shares(id, tenant_id, project_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label,
          requires_password, password_hash, single_use, max_access_count, access_count, last_access_at, token_version)  # v3.8.0
+- share_access_logs(id, share_id, tenant_id, accessed_at, ip_address, user_agent, access_result)  # v3.8.0 PR3
 - projects(id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours)
 - project_memberships(id, tenant_id, project_id, user_id, role, created_at)
 """
@@ -301,6 +302,30 @@ class AuthStore:
                 CREATE INDEX IF NOT EXISTS idx_memberships_tenant ON project_memberships(tenant_id)
             """)
 
+            # Share access logs table (v3.8.0 PR3)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS share_access_logs (
+                    id TEXT PRIMARY KEY,
+                    share_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    accessed_at TEXT NOT NULL,
+                    ip_address TEXT,
+                    user_agent TEXT,
+                    access_result TEXT NOT NULL,
+                    FOREIGN KEY (share_id) REFERENCES shares(id),
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_access_logs_share ON share_access_logs(share_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_access_logs_tenant ON share_access_logs(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_access_logs_accessed_at ON share_access_logs(accessed_at)
+            """)
+
             conn.commit()
         finally:
             conn.close()
@@ -308,6 +333,7 @@ class AuthStore:
         # Run migrations for existing databases
         self._migrate_shares_project_id()
         self._migrate_shares_v2()
+        self._migrate_share_access_logs()
 
     def _migrate_shares_project_id(self) -> None:
         """Add project_id column to shares table if not exists (v3.7.0)."""
@@ -348,6 +374,38 @@ class AuthStore:
             if "token_version" not in existing_columns:
                 cursor.execute("ALTER TABLE shares ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
 
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _migrate_share_access_logs(self) -> None:
+        """Create share_access_logs table if not exists (v3.8.0 PR3)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            # Check if table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='share_access_logs'
+            """)
+            if cursor.fetchone() is None:
+                # Table doesn't exist, create it
+                cursor.execute("""
+                    CREATE TABLE share_access_logs (
+                        id TEXT PRIMARY KEY,
+                        share_id TEXT NOT NULL,
+                        tenant_id TEXT NOT NULL,
+                        accessed_at TEXT NOT NULL,
+                        ip_address TEXT,
+                        user_agent TEXT,
+                        access_result TEXT NOT NULL,
+                        FOREIGN KEY (share_id) REFERENCES shares(id),
+                        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+                    )
+                """)
+                cursor.execute("CREATE INDEX idx_access_logs_share ON share_access_logs(share_id)")
+                cursor.execute("CREATE INDEX idx_access_logs_tenant ON share_access_logs(tenant_id)")
+                cursor.execute("CREATE INDEX idx_access_logs_accessed_at ON share_access_logs(accessed_at)")
             conn.commit()
         finally:
             conn.close()
@@ -1451,6 +1509,211 @@ class AuthStore:
                 return {"valid": False, "error_code": "SHARE_PASSWORD_INVALID", "share": None}
 
         return {"valid": True, "error_code": None, "share": share}
+
+    # -------------------------------------------------------------------------
+    # Share access logs (v3.8.0 PR3)
+    # -------------------------------------------------------------------------
+
+    def log_share_access(
+        self,
+        share_id: str,
+        tenant_id: str,
+        access_result: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Log a share access attempt (v3.8.0 PR3).
+
+        Args:
+            share_id: Share identifier
+            tenant_id: Tenant identifier
+            access_result: "success", "denied_password", "denied_expired", "denied_max_access", etc.
+            ip_address: Client IP address (optional)
+            user_agent: Client user agent (optional)
+
+        Returns:
+            Dict with log entry details
+        """
+        log_id = str(uuid.uuid4())
+        accessed_at = datetime.now(timezone.utc).isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO share_access_logs (id, share_id, tenant_id, accessed_at, ip_address, user_agent, access_result)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (log_id, share_id, tenant_id, accessed_at, ip_address, user_agent, access_result))
+            conn.commit()
+            return {
+                "id": log_id,
+                "share_id": share_id,
+                "tenant_id": tenant_id,
+                "accessed_at": accessed_at,
+                "ip_address": ip_address,
+                "user_agent": user_agent,
+                "access_result": access_result,
+            }
+        finally:
+            conn.close()
+
+    def list_share_access_logs(
+        self,
+        share_id: str,
+        tenant_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List access logs for a share (v3.8.0 PR3).
+
+        Args:
+            share_id: Share identifier
+            tenant_id: Tenant identifier
+            limit: Maximum number of logs to return
+            offset: Offset for pagination
+
+        Returns:
+            List of access log dicts
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, share_id, tenant_id, accessed_at, ip_address, user_agent, access_result
+                FROM share_access_logs
+                WHERE share_id = ? AND tenant_id = ?
+                ORDER BY accessed_at DESC
+                LIMIT ? OFFSET ?
+            """, (share_id, tenant_id, limit, offset))
+            return [
+                {
+                    "id": row[0],
+                    "share_id": row[1],
+                    "tenant_id": row[2],
+                    "accessed_at": row[3],
+                    "ip_address": row[4],
+                    "user_agent": row[5],
+                    "access_result": row[6],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_share_stats(self, share_id: str, tenant_id: str) -> Dict[str, Any]:
+        """
+        Get statistics for a share (v3.8.0 PR3).
+
+        Args:
+            share_id: Share identifier
+            tenant_id: Tenant identifier
+
+        Returns:
+            Dict with:
+            - total_accesses: Total number of access attempts
+            - successful_accesses: Number of successful accesses
+            - denied_accesses: Number of denied accesses
+            - first_access_at: First access timestamp (or None)
+            - last_access_at: Last access timestamp (or None)
+            - unique_ips: Count of unique IP addresses
+            - access_by_result: Dict of result -> count
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Total and by result
+            cursor.execute("""
+                SELECT access_result, COUNT(*) as cnt
+                FROM share_access_logs
+                WHERE share_id = ? AND tenant_id = ?
+                GROUP BY access_result
+            """, (share_id, tenant_id))
+            access_by_result = {}
+            total = 0
+            success = 0
+            denied = 0
+            for row in cursor.fetchall():
+                result, count = row
+                access_by_result[result] = count
+                total += count
+                if result == "success":
+                    success = count
+                else:
+                    denied += count
+
+            # First and last access
+            cursor.execute("""
+                SELECT MIN(accessed_at), MAX(accessed_at)
+                FROM share_access_logs
+                WHERE share_id = ? AND tenant_id = ?
+            """, (share_id, tenant_id))
+            row = cursor.fetchone()
+            first_access_at = row[0] if row else None
+            last_access_at = row[1] if row else None
+
+            # Count unique IPs (excluding nulls)
+            cursor.execute("""
+                SELECT COUNT(DISTINCT ip_address)
+                FROM share_access_logs
+                WHERE share_id = ? AND tenant_id = ? AND ip_address IS NOT NULL
+            """, (share_id, tenant_id))
+            unique_ips = cursor.fetchone()[0] or 0
+
+            return {
+                "total_accesses": total,
+                "successful_accesses": success,
+                "denied_accesses": denied,
+                "first_access_at": first_access_at,
+                "last_access_at": last_access_at,
+                "unique_ips": unique_ips,
+                "access_by_result": access_by_result,
+            }
+        finally:
+            conn.close()
+
+    def count_share_access_logs(self, share_id: str, tenant_id: str) -> int:
+        """Count total access logs for a share (v3.8.0 PR3)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM share_access_logs
+                WHERE share_id = ? AND tenant_id = ?
+            """, (share_id, tenant_id))
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def prune_share_access_logs(
+        self,
+        tenant_id: str,
+        older_than_days: int = 90,
+    ) -> int:
+        """
+        Prune old share access logs (v3.8.0 PR3).
+
+        Args:
+            tenant_id: Tenant identifier
+            older_than_days: Delete logs older than this many days
+
+        Returns:
+            Number of logs deleted
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM share_access_logs
+                WHERE tenant_id = ? AND accessed_at < ?
+            """, (tenant_id, cutoff))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
 
     # -------------------------------------------------------------------------
     # Project operations (v3.7.0)
