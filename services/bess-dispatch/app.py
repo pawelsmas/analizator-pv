@@ -388,6 +388,10 @@ app.include_router(audit_router, prefix="/api/bess-dispatch")
 from projects_router import router as projects_router
 app.include_router(projects_router, prefix="/api/bess-dispatch")
 
+# Include shared router for public share access (v3.8.0)
+from shared_router import router as shared_router
+app.include_router(shared_router, prefix="/api/bess-dispatch")
+
 
 # =============================================================================
 # Health and Info Endpoints
