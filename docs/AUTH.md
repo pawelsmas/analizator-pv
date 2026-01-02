@@ -1,4 +1,4 @@
-# Authentication & Authorization (v3.0.0)
+# Authentication & Authorization (v3.7.0)
 
 This document describes the authentication and authorization system in BESS PRO.
 
@@ -170,3 +170,116 @@ When upgrading from v2.x (no auth):
 5. Update clients to use API keys
 
 Existing runs and jobs get `tenant_id='default'` automatically.
+
+## Projects & Per-Project RBAC (v3.7.0)
+
+### Overview
+
+Projects provide a way to organize resources (runs, jobs, reports) and control access at a granular level. Each project has:
+- **Members** with roles (owner, editor, viewer)
+- **Share policies** (allow_public_shares, share_max_expiry_hours)
+- **Scoped resources** (runs, jobs, reports)
+
+### Project Endpoints
+
+| Endpoint | Method | Description | Required Role |
+|----------|--------|-------------|---------------|
+| `/projects` | GET | List user's projects | viewer |
+| `/projects` | POST | Create project | editor |
+| `/projects/{id}` | GET | Get project details | project viewer |
+| `/projects/{id}` | PATCH | Update project | project owner |
+| `/projects/{id}` | DELETE | Archive project | project owner |
+| `/projects/{id}/members` | GET | List members | project viewer |
+| `/projects/{id}/members` | POST | Add member | project owner |
+| `/projects/{id}/members/{user_id}` | PATCH | Update role | project owner |
+| `/projects/{id}/members/{user_id}` | DELETE | Remove member | project owner |
+
+### Project Roles
+
+```
+owner > editor > viewer
+```
+
+- **owner**: Full control - update settings, manage members, create/delete resources
+- **editor**: Create runs/jobs, update resources, cannot manage members
+- **viewer**: Read-only access to project resources
+
+### Project-Scoped Resources
+
+Resources are filtered by project when `project_id` query parameter is provided:
+
+```bash
+# Get runs for specific project
+GET /runs?project_id=proj_abc123
+
+# Create run in project
+POST /sizing
+{ "project_id": "proj_abc123", ... }
+```
+
+### Share Policies
+
+Each project can configure share policies:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `allow_public_shares` | bool | true | Allow creating public share links |
+| `share_max_expiry_hours` | int | null | Max expiration for shares (null = unlimited) |
+
+Policy enforcement:
+- If `allow_public_shares=false`: Share creation fails with error `PUBLIC_SHARES_DISABLED`
+- If `share_max_expiry_hours` set: Expiration is clamped to max value
+
+### Default Project
+
+When authentication is enabled, a default project is created for each tenant:
+- Name: "Default Project"
+- ID: `proj_default_{tenant_id}`
+- All existing runs migrate to this project
+
+### Migration from v3.6.x
+
+When upgrading from v3.6.x:
+
+1. Database migration creates `projects` and `project_memberships` tables
+2. Default project is created for each tenant
+3. Existing runs get assigned to the default project
+4. All tenant users become members of the default project
+5. Admin users become project owners
+
+### Frontend Integration
+
+#### Project Selector (index.html)
+
+A project dropdown in the main page allows filtering by project:
+- Stored in `localStorage` as `bess_selected_project`
+- Refreshes run lists when changed
+
+#### Projects Admin (settings.html)
+
+The Settings page has a "Projekty" tab for:
+- Creating new projects
+- Editing project settings
+- Managing project members
+- Archiving projects
+
+### Audit Events
+
+Project operations are logged:
+- `project_created`
+- `project_updated`
+- `project_archived`
+- `project_member_added`
+- `project_member_updated`
+- `project_member_removed`
+- `share_created` (includes project_id)
+- `share_revoked`
+- `share_create_denied` (policy violation)
+
+### Regression Testing
+
+Use the `projects_rbac_auth` scenario pack for validation:
+
+```bash
+make validate-pack PACK=projects_rbac_auth
+```
