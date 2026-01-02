@@ -1,0 +1,68 @@
+# Kind HA cluster configuration for chaos testing (v3.9.0)
+# Creates a multi-node cluster for failover testing
+#
+# Usage:
+#   kind create cluster --config k8s/kind/kind-ha-cluster.yaml --name bess-ha
+#   kind delete cluster --name bess-ha
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: bess-ha
+
+# 3 control plane + 3 worker nodes for HA testing
+nodes:
+  # Control plane nodes
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+      - containerPort: 30031
+        hostPort: 30031
+        protocol: TCP
+
+  - role: control-plane
+
+  - role: control-plane
+
+  # Worker nodes
+  - role: worker
+    labels:
+      workload: bess
+      zone: zone-a
+
+  - role: worker
+    labels:
+      workload: bess
+      zone: zone-b
+
+  - role: worker
+    labels:
+      workload: bess
+      zone: zone-c
+
+# Networking configuration
+networking:
+  # Use calico for network policies
+  disableDefaultCNI: false
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/16"
+
+# Feature gates for testing
+featureGates:
+  "GracefulNodeShutdown": true
+
+# Container runtime configuration
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+      endpoint = ["http://kind-registry:5000"]
