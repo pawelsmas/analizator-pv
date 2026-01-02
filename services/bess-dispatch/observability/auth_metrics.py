@@ -1,5 +1,5 @@
 """
-Auth metrics for Prometheus instrumentation (v3.1.0).
+Auth metrics for Prometheus instrumentation (v3.8.0).
 
 Provides:
 - bess_auth_login_total: Counter for login attempts (success/failure)
@@ -14,11 +14,21 @@ Provides:
 - bess_share_access_total: Counter for share link accesses (v3.1.0)
 - bess_user_operations_total: Counter for user admin operations (v3.1.0)
 
+v3.8.0 Share Security metrics:
+- bess_share_v2_created_total: Counter for v2 share creations with security features
+- bess_share_access_denied_total: Counter for share access denials by reason
+- bess_share_token_rotation_total: Counter for token rotation operations
+- bess_share_revoke_all_total: Counter for bulk revoke operations
+- bess_share_retention_purge_total: Counter for retention purge operations
+- bess_share_password_attempts_total: Counter for password verification attempts
+- bess_share_access_count_exceeded_total: Counter for max access count exceeded events
+
 Label cardinality rules:
 - result: "success" or "failure"
 - auth_method: "jwt", "api_key", "disabled"
 - operation: "create", "revoke", "list"
 - action: audit action type (login_success, api_key_created, etc.)
+- denial_reason: "password_required", "invalid_password", "access_limit_exceeded", "expired", "revoked"
 """
 
 from prometheus_client import Counter, Histogram
@@ -269,3 +279,188 @@ def record_user_operation(operation: str, success: bool):
         operation=operation,
         result="success" if success else "failure",
     ).inc()
+
+
+# -------------------------------------------------------------------------
+# v3.8.0: Share Security metrics
+# -------------------------------------------------------------------------
+
+# Share v2 creation with security features
+SHARE_V2_CREATED_TOTAL = Counter(
+    "bess_share_v2_created_total",
+    "Total v2 shares created with security features",
+    ["resource_type", "has_password", "single_use", "has_max_access"],
+)
+
+# Share access denial by reason
+SHARE_ACCESS_DENIED_TOTAL = Counter(
+    "bess_share_access_denied_total",
+    "Total share access denials",
+    ["resource_type", "denial_reason"],
+)
+
+# Token rotation operations
+SHARE_TOKEN_ROTATION_TOTAL = Counter(
+    "bess_share_token_rotation_total",
+    "Total share token rotation operations",
+    ["result"],
+)
+
+# Bulk revoke operations
+SHARE_REVOKE_ALL_TOTAL = Counter(
+    "bess_share_revoke_all_total",
+    "Total bulk share revoke operations",
+    ["scope", "result"],  # scope: project, resource
+)
+
+# Retention purge operations
+SHARE_RETENTION_PURGE_TOTAL = Counter(
+    "bess_share_retention_purge_total",
+    "Total retention purge operations",
+    ["purge_type", "result"],  # purge_type: expired_shares, revoked_shares, access_logs
+)
+
+# Retention purge items deleted
+SHARE_RETENTION_PURGED_ITEMS_TOTAL = Counter(
+    "bess_share_retention_purged_items_total",
+    "Total items purged by retention operations",
+    ["purge_type"],
+)
+
+# Password verification attempts
+SHARE_PASSWORD_ATTEMPTS_TOTAL = Counter(
+    "bess_share_password_attempts_total",
+    "Total share password verification attempts",
+    ["result"],  # success, failure
+)
+
+# Access count exceeded events
+SHARE_ACCESS_COUNT_EXCEEDED_TOTAL = Counter(
+    "bess_share_access_count_exceeded_total",
+    "Total times max access count was exceeded",
+    ["resource_type"],
+)
+
+# Share access log entries
+SHARE_ACCESS_LOG_ENTRIES_TOTAL = Counter(
+    "bess_share_access_log_entries_total",
+    "Total share access log entries created",
+    ["access_result"],  # success, denied
+)
+
+# Share stats queries
+SHARE_STATS_QUERIES_TOTAL = Counter(
+    "bess_share_stats_queries_total",
+    "Total share statistics queries",
+)
+
+
+# v3.8.0: Share security helper functions
+def record_share_v2_created(
+    resource_type: str,
+    has_password: bool,
+    single_use: bool,
+    has_max_access: bool,
+):
+    """Record a v2 share creation with security features.
+
+    Args:
+        resource_type: "run" or "report"
+        has_password: Whether share has password protection
+        single_use: Whether share is single-use
+        has_max_access: Whether share has max access count limit
+    """
+    SHARE_V2_CREATED_TOTAL.labels(
+        resource_type=resource_type,
+        has_password="true" if has_password else "false",
+        single_use="true" if single_use else "false",
+        has_max_access="true" if has_max_access else "false",
+    ).inc()
+
+
+def record_share_access_denied(resource_type: str, denial_reason: str):
+    """Record a share access denial.
+
+    Args:
+        resource_type: "run" or "report"
+        denial_reason: "password_required", "invalid_password", "access_limit_exceeded", "expired", "revoked"
+    """
+    SHARE_ACCESS_DENIED_TOTAL.labels(
+        resource_type=resource_type,
+        denial_reason=denial_reason,
+    ).inc()
+
+
+def record_share_token_rotation(success: bool):
+    """Record a share token rotation operation.
+
+    Args:
+        success: Whether the rotation succeeded
+    """
+    SHARE_TOKEN_ROTATION_TOTAL.labels(
+        result="success" if success else "failure",
+    ).inc()
+
+
+def record_share_revoke_all(scope: str, success: bool):
+    """Record a bulk share revoke operation.
+
+    Args:
+        scope: "project" or "resource"
+        success: Whether the operation succeeded
+    """
+    SHARE_REVOKE_ALL_TOTAL.labels(
+        scope=scope,
+        result="success" if success else "failure",
+    ).inc()
+
+
+def record_share_retention_purge(purge_type: str, success: bool, deleted_count: int = 0):
+    """Record a retention purge operation.
+
+    Args:
+        purge_type: "expired_shares", "revoked_shares", or "access_logs"
+        success: Whether the operation succeeded
+        deleted_count: Number of items deleted
+    """
+    SHARE_RETENTION_PURGE_TOTAL.labels(
+        purge_type=purge_type,
+        result="success" if success else "failure",
+    ).inc()
+
+    if deleted_count > 0:
+        SHARE_RETENTION_PURGED_ITEMS_TOTAL.labels(purge_type=purge_type).inc(deleted_count)
+
+
+def record_share_password_attempt(success: bool):
+    """Record a share password verification attempt.
+
+    Args:
+        success: Whether the password was correct
+    """
+    SHARE_PASSWORD_ATTEMPTS_TOTAL.labels(
+        result="success" if success else "failure",
+    ).inc()
+
+
+def record_share_access_count_exceeded(resource_type: str):
+    """Record a max access count exceeded event.
+
+    Args:
+        resource_type: "run" or "report"
+    """
+    SHARE_ACCESS_COUNT_EXCEEDED_TOTAL.labels(resource_type=resource_type).inc()
+
+
+def record_share_access_log_entry(access_result: str):
+    """Record a share access log entry creation.
+
+    Args:
+        access_result: "success" or "denied"
+    """
+    SHARE_ACCESS_LOG_ENTRIES_TOTAL.labels(access_result=access_result).inc()
+
+
+def record_share_stats_query():
+    """Record a share statistics query."""
+    SHARE_STATS_QUERIES_TOTAL.inc()

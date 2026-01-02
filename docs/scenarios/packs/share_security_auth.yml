@@ -1,0 +1,73 @@
+# Share Security Auth scenario pack for v3.8.0
+# Tests share link security features (password, single-use, max access, retention)
+name: share_security_auth
+description: |
+  Regression scenarios for Share Security (v3.8.0):
+  - Password-protected shares
+  - Single-use token auto-revocation
+  - Max access count enforcement
+  - Token rotation
+  - Bulk revocation
+  - Access logging and statistics
+  - Data retention and cleanup
+
+scenarios:
+  # Share v2 Creation
+  - share_v2_create_basic
+  - share_v2_create_with_password
+  - share_v2_create_single_use
+  - share_v2_create_max_access_count
+  - share_v2_create_combined_options
+  - share_v2_password_min_length_enforced
+
+  # Password Protection
+  - share_v2_access_without_password_denied
+  - share_v2_access_wrong_password_denied
+  - share_v2_access_correct_password_success
+  - share_v2_password_verification_logged
+
+  # Single-Use Tokens
+  - share_v2_single_use_first_access_success
+  - share_v2_single_use_second_access_denied
+  - share_v2_single_use_auto_revoked
+
+  # Max Access Count
+  - share_v2_max_access_count_enforced
+  - share_v2_access_count_incremented
+  - share_v2_access_limit_exceeded_denied
+
+  # Token Rotation
+  - share_v2_rotate_token_success
+  - share_v2_rotate_preserves_settings
+  - share_v2_old_token_invalid_after_rotation
+  - share_v2_new_token_works_after_rotation
+  - share_v2_rotation_audit_event_logged
+
+  # Bulk Revocation
+  - share_v2_revoke_all_project
+  - share_v2_revoke_all_resource
+  - share_v2_revoke_all_audit_logged
+
+  # Access Logging
+  - share_v2_access_log_success_recorded
+  - share_v2_access_log_denied_recorded
+  - share_v2_access_log_includes_ip_user_agent
+  - share_v2_access_logs_list_paginated
+
+  # Statistics
+  - share_v2_stats_total_accesses
+  - share_v2_stats_success_vs_denied
+  - share_v2_stats_unique_ips
+  - share_v2_stats_first_last_access
+
+  # Data Retention
+  - share_v2_retention_stats_returned
+  - share_v2_purge_expired_shares
+  - share_v2_purge_revoked_shares
+  - share_v2_prune_access_logs
+  - share_v2_purge_deletes_associated_logs
+  - share_v2_retention_audit_logged
+
+  # Integration with Projects
+  - share_v2_respects_project_policy
+  - share_v2_denied_when_public_disabled
