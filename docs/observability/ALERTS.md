@@ -1047,3 +1047,155 @@ Fires when users attempt to access resources in projects they don't have access 
     summary: "Cross-project resource access denied"
     description: "{{ $value | humanize }} denied access attempts to {{ $labels.resource_type }} resources"
 ```
+
+## Quota & Usage Alerts (v4.0.0)
+
+Alerting rules for quota enforcement and usage monitoring.
+
+### Critical: Quota Exceeded Spike
+
+Fires when quota exceeded events spike, indicating users hitting limits.
+
+```yaml
+- alert: BESSQuotaExceededSpike
+  expr: increase(bess_quota_exceeded_total[5m]) > 10
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Quota exceeded spike detected"
+    description: "{{ $value | humanize }} quota exceeded events for {{ $labels.quota_name }} ({{ $labels.plan_id }} plan) in last 5 minutes"
+```
+
+### Warning: High Quota Denial Rate
+
+Fires when quota denial rate is consistently high for a quota type.
+
+```yaml
+- alert: BESSHighQuotaDenialRate
+  expr: |
+    sum by (quota_name) (rate(bess_quota_check_total{result="denied"}[15m])) /
+    sum by (quota_name) (rate(bess_quota_check_total[15m])) > 0.1
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High quota denial rate"
+    description: "More than 10% of {{ $labels.quota_name }} quota checks are being denied"
+```
+
+### Warning: Tenant Near Quota Limit
+
+Fires when a tenant is approaching their quota limit (>90% usage).
+
+```yaml
+- alert: BESSTenantNearQuotaLimit
+  expr: bess_quota_usage_pct > 90
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Tenant near quota limit"
+    description: "{{ $labels.tenant_id }}/{{ $labels.project_id }} is at {{ $value | humanize }}% of {{ $labels.quota_name }} limit"
+```
+
+### Warning: Free Plan Quota Exhaustion
+
+Fires when free plan users frequently exhaust their quotas.
+
+```yaml
+- alert: BESSFreePlanQuotaExhaustion
+  expr: increase(bess_quota_exceeded_total{plan_id="free"}[1h]) > 20
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Free plan users exhausting quotas"
+    description: "{{ $value | humanize }} free plan quota exceeded events in last hour. Consider reviewing limits."
+```
+
+### Info: Usage API Request Volume
+
+Tracks usage API adoption.
+
+```yaml
+- alert: BESSUsageAPIAdoption
+  expr: sum(increase(bess_usage_api_requests_total[1d])) > 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Usage API adoption"
+    description: "{{ $value | humanize }} usage API requests in last 24 hours"
+```
+
+### Info: Usage Export Activity
+
+Tracks usage export activity.
+
+```yaml
+- alert: BESSUsageExportActivity
+  expr: sum by (format) (increase(bess_usage_export_total[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Usage export activity"
+    description: "{{ $value | humanize }} {{ $labels.format }} exports in last 24 hours"
+```
+
+### Warning: Plan Assignment Changes
+
+Fires when plan assignments change frequently.
+
+```yaml
+- alert: BESSFrequentPlanChanges
+  expr: increase(bess_plan_assignments_total{operation="change"}[1d]) > 10
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Frequent plan changes detected"
+    description: "{{ $value | humanize }} plan changes in last 24 hours"
+```
+
+### Info: Project Override Activity
+
+Tracks project quota override activity.
+
+```yaml
+- alert: BESSProjectOverrideActivity
+  expr: sum(increase(bess_project_override_total[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Project override activity"
+    description: "{{ $value | humanize }} project quota overrides in last 24 hours"
+```
+
+### Warning: Slow Usage Queries
+
+Fires when usage queries are taking too long.
+
+```yaml
+- alert: BESSSlowUsageQueries
+  expr: histogram_quantile(0.95, rate(bess_usage_query_duration_seconds_bucket[15m])) > 1.0
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow usage queries detected"
+    description: "P95 usage query duration is {{ $value | humanizeDuration }} for {{ $labels.query_type }}"
+```
+
+### Info: Plan Tier Distribution
+
+Tracks tenant distribution across plan tiers.
+
+```yaml
+- alert: BESSPlanTierDistribution
+  expr: bess_plan_usage_by_tier > 0
+  labels:
+    severity: info
+  annotations:
+    summary: "Plan tier distribution"
+    description: "{{ $value | humanize }} tenants on {{ $labels.plan_id }} plan"
+```
