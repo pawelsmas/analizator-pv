@@ -1047,3 +1047,128 @@ Fires when users attempt to access resources in projects they don't have access 
     summary: "Cross-project resource access denied"
     description: "{{ $value | humanize }} denied access attempts to {{ $labels.resource_type }} resources"
 ```
+
+## Share Security Alerts (v3.8.0)
+
+Alerting rules for share link security features (password protection, single-use, access limits).
+
+### Warning: High Share Access Denial Rate
+
+Fires when share access denials are increasing, indicating possible brute-force or misconfigured shares.
+
+```yaml
+- alert: BESSShareAccessDenialSpike
+  expr: increase(bess_share_access_denied_total[5m]) > 20
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Share access denial spike"
+    description: "{{ $value | humanize }} share access denials in last 5 minutes. Reason: {{ $labels.denial_reason }}"
+```
+
+### Warning: Share Password Failures
+
+Fires when share password verification is failing frequently (possible brute-force).
+
+```yaml
+- alert: BESSSharePasswordFailures
+  expr: increase(bess_share_password_attempts_total{result="failure"}[15m]) > 10
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Share password failures"
+    description: "{{ $value | humanize }} failed password attempts in the last 15 minutes"
+```
+
+### Warning: Share Access Limit Exceeded Frequently
+
+Fires when max access count is being exceeded on multiple shares.
+
+```yaml
+- alert: BESSShareAccessLimitExceeded
+  expr: increase(bess_share_access_count_exceeded_total[1h]) > 5
+  for: 30m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Share access limits being exceeded"
+    description: "{{ $value | humanize }} times max access count exceeded in the last hour"
+```
+
+### Info: Share Token Rotations
+
+Tracks token rotation activity (may indicate security concerns).
+
+```yaml
+- alert: BESSShareTokenRotations
+  expr: increase(bess_share_token_rotation_total{result="success"}[1d]) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "High share token rotation activity"
+    description: "{{ $value | humanize }} token rotations in the last 24 hours"
+```
+
+### Info: Bulk Share Revocation
+
+Tracks bulk revocation events.
+
+```yaml
+- alert: BESSShareBulkRevocation
+  expr: increase(bess_share_revoke_all_total{result="success"}[1d]) > 5
+  labels:
+    severity: info
+  annotations:
+    summary: "Bulk share revocation events"
+    description: "{{ $value | humanize }} bulk revoke operations in the last 24 hours (scope: {{ $labels.scope }})"
+```
+
+### Info: Share Retention Purge Activity
+
+Tracks retention purge activity.
+
+```yaml
+- alert: BESSShareRetentionPurge
+  expr: sum(increase(bess_share_retention_purged_items_total[1d])) > 100
+  labels:
+    severity: info
+  annotations:
+    summary: "Share retention purge activity"
+    description: "{{ $value | humanize }} items purged by retention in the last 24 hours"
+```
+
+### Warning: Password-Protected Share Adoption Low
+
+Fires when security features are underutilized for sensitive resources.
+
+```yaml
+- alert: BESSPasswordProtectedSharesLow
+  expr: |
+    sum(rate(bess_share_v2_created_total{has_password="true"}[1d])) /
+    sum(rate(bess_share_v2_created_total[1d])) < 0.1
+  for: 1d
+  labels:
+    severity: info
+  annotations:
+    summary: "Low password-protected share adoption"
+    description: "Less than 10% of shares are password-protected. Consider security policy review."
+```
+
+### Info: Share Security Feature Adoption
+
+Tracks adoption of v3.8.0 share security features.
+
+```yaml
+- alert: BESSShareSecurityAdoption
+  expr: |
+    sum(rate(bess_share_v2_created_total{has_password="true"}[1d])) +
+    sum(rate(bess_share_v2_created_total{single_use="true"}[1d])) +
+    sum(rate(bess_share_v2_created_total{has_max_access="true"}[1d])) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "Share security feature adoption"
+    description: "{{ $value | humanize }} shares with security features in last 24 hours"
+```
