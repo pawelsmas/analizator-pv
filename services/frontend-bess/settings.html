@@ -43,6 +43,9 @@
     <button class="settings-tab active" data-tab="users" onclick="switchSettingsTab('users')">
       Uzytkownicy
     </button>
+    <button class="settings-tab" data-tab="projects" onclick="switchSettingsTab('projects')">
+      Projekty
+    </button>
     <button class="settings-tab" data-tab="invites" onclick="switchSettingsTab('invites')">
       Zaproszenia
     </button>
@@ -72,6 +75,29 @@
         <div class="api-keys-empty">
           <div class="api-keys-empty-icon">👥</div>
           <p>Ladowanie uzytkownikow...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Projects Section (v3.7.0) -->
+  <div id="projectsSection" class="settings-section" style="display:none;">
+    <div class="api-keys-container">
+      <div class="api-keys-header">
+        <h2 class="api-keys-title">Projekty</h2>
+        <button class="btn-create-key" onclick="showCreateProjectModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Nowy projekt
+        </button>
+      </div>
+
+      <div class="api-keys-table" id="projectsTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">📁</div>
+          <p>Ladowanie projektow...</p>
         </div>
       </div>
     </div>
@@ -362,7 +388,152 @@
   </div>
 </div>
 
-<script src="auth.js?v=3.1.0"></script>
+<!-- Create Project Modal (v3.7.0) -->
+<div id="createProjectModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">Nowy projekt</h3>
+      <button class="modal-close" onclick="hideCreateProjectModal()">&times;</button>
+    </div>
+
+    <form id="createProjectForm" class="modal-form" onsubmit="handleCreateProject(event)">
+      <div class="form-group">
+        <label class="form-label" for="projectName">Nazwa projektu</label>
+        <input type="text" id="projectName" class="form-input" placeholder="np. Instalacja PV Klient ABC" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Polityki udostepniania</label>
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="projectAllowPublicShares" checked>
+            Zezwalaj na publiczne linki
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="projectMaxExpiry">Maksymalne wygasniecie linkow (godziny)</label>
+        <input type="number" id="projectMaxExpiry" class="form-input" placeholder="Brak limitu" min="1" max="8760">
+        <div class="form-hint">Pozostaw puste = brak limitu</div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="hideCreateProjectModal()">Anuluj</button>
+        <button type="submit" class="btn-submit" id="createProjectBtn">Utworz projekt</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Project Modal (v3.7.0) -->
+<div id="editProjectModal" class="modal-overlay">
+  <div class="modal-content modal-content-wide">
+    <div class="modal-header">
+      <h3 class="modal-title">Edycja projektu</h3>
+      <button class="modal-close" onclick="hideEditProjectModal()">&times;</button>
+    </div>
+
+    <div class="project-edit-tabs">
+      <button class="project-edit-tab active" data-tab="settings" onclick="switchProjectEditTab('settings')">
+        Ustawienia
+      </button>
+      <button class="project-edit-tab" data-tab="members" onclick="switchProjectEditTab('members')">
+        Czlonkowie
+      </button>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="projectSettingsTab" class="project-edit-section">
+      <form id="editProjectForm" class="modal-form" onsubmit="handleUpdateProject(event)">
+        <input type="hidden" id="editProjectId">
+
+        <div class="form-group">
+          <label class="form-label" for="editProjectName">Nazwa projektu</label>
+          <input type="text" id="editProjectName" class="form-input" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Polityki udostepniania</label>
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="editProjectAllowPublicShares">
+              Zezwalaj na publiczne linki
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="editProjectMaxExpiry">Maksymalne wygasniecie linkow (godziny)</label>
+          <input type="number" id="editProjectMaxExpiry" class="form-input" placeholder="Brak limitu" min="0" max="8760">
+          <div class="form-hint">0 lub puste = brak limitu</div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel btn-danger" onclick="handleArchiveProject()">
+            Archiwizuj
+          </button>
+          <button type="submit" class="btn-submit" id="updateProjectBtn">Zapisz zmiany</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Members Tab -->
+    <div id="projectMembersTab" class="project-edit-section" style="display:none;">
+      <div class="members-header">
+        <button class="btn-create-key btn-sm" onclick="showAddMemberModal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Dodaj czlonka
+        </button>
+      </div>
+
+      <div class="members-table" id="projectMembersTable">
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">👥</div>
+          <p>Ladowanie czlonkow...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Member Modal (v3.7.0) -->
+<div id="addMemberModal" class="modal-overlay">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title">Dodaj czlonka projektu</h3>
+      <button class="modal-close" onclick="hideAddMemberModal()">&times;</button>
+    </div>
+
+    <form id="addMemberForm" class="modal-form" onsubmit="handleAddMember(event)">
+      <div class="form-group">
+        <label class="form-label" for="memberUserId">Uzytkownik</label>
+        <select id="memberUserId" class="form-input" required>
+          <option value="">Wybierz uzytkownika...</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="memberRole">Rola w projekcie</label>
+        <select id="memberRole" class="form-input" required>
+          <option value="viewer">Viewer - tylko podglad</option>
+          <option value="editor" selected>Editor - edycja</option>
+          <option value="owner">Owner - pelne uprawnienia</option>
+        </select>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="hideAddMemberModal()">Anuluj</button>
+        <button type="submit" class="btn-submit" id="addMemberBtn">Dodaj czlonka</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="auth.js?v=3.7.0"></script>
 <script>
 console.log('[SETTINGS] Settings page loaded');
 
@@ -378,6 +549,7 @@ function switchSettingsTab(tab) {
 
   // Show/hide sections
   document.getElementById('usersSection').style.display = tab === 'users' ? 'block' : 'none';
+  document.getElementById('projectsSection').style.display = tab === 'projects' ? 'block' : 'none';
   document.getElementById('invitesSection').style.display = tab === 'invites' ? 'block' : 'none';
   document.getElementById('apiKeysSection').style.display = tab === 'api-keys' ? 'block' : 'none';
   document.getElementById('auditLogSection').style.display = tab === 'audit-log' ? 'block' : 'none';
@@ -385,6 +557,8 @@ function switchSettingsTab(tab) {
   // Load data
   if (tab === 'users') {
     loadUsers();
+  } else if (tab === 'projects') {
+    loadProjects();
   } else if (tab === 'invites') {
     loadInvites();
   } else if (tab === 'api-keys') {
@@ -527,6 +701,426 @@ async function toggleUserDisabled(userId, currentlyDisabled) {
   } catch (error) {
     console.error('[SETTINGS] Error updating user:', error);
     alert('Blad aktualizacji uzytkownika: ' + error.message);
+  }
+}
+
+// ============================================
+// PROJECTS (v3.7.0)
+// ============================================
+
+let currentEditProjectId = null;
+
+async function loadProjects() {
+  const tableEl = document.getElementById('projectsTable');
+
+  try {
+    const response = await authFetch('/projects');
+    if (!response.ok) throw new Error('Failed to load projects');
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">📁</div>
+          <p>Brak projektow</p>
+          <p style="font-size:12px;margin-top:8px;">Kliknij "Nowy projekt" aby utworzyc pierwszy projekt.</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Nazwa</th>
+            <th>Publiczne linki</th>
+            <th>Max wygasniecie</th>
+            <th>Utworzono</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(project => `
+            <tr class="${project.archived_at ? 'archived' : ''}">
+              <td class="project-name">
+                ${escapeHtml(project.name)}
+                ${project.archived_at ? '<span class="badge-archived">Archiwum</span>' : ''}
+              </td>
+              <td>
+                <span class="badge ${project.allow_public_shares ? 'badge-success' : 'badge-warning'}">
+                  ${project.allow_public_shares ? 'Tak' : 'Nie'}
+                </span>
+              </td>
+              <td>${project.share_max_expiry_hours ? project.share_max_expiry_hours + 'h' : 'Brak limitu'}</td>
+              <td class="api-key-created">${formatDate(project.created_at)}</td>
+              <td>
+                <button class="btn-edit" onclick="showEditProjectModal('${project.id}')">
+                  Edytuj
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading projects:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania projektow</p>
+        <p style="font-size:12px;margin-top:8px;">${escapeHtml(error.message)}</p>
+      </div>
+    `;
+  }
+}
+
+function showCreateProjectModal() {
+  document.getElementById('createProjectModal').classList.add('visible');
+  document.getElementById('createProjectForm').reset();
+  document.getElementById('projectAllowPublicShares').checked = true;
+  document.getElementById('projectName').focus();
+}
+
+function hideCreateProjectModal() {
+  document.getElementById('createProjectModal').classList.remove('visible');
+}
+
+async function handleCreateProject(event) {
+  event.preventDefault();
+
+  const name = document.getElementById('projectName').value.trim();
+  const allowPublicShares = document.getElementById('projectAllowPublicShares').checked;
+  const maxExpiryStr = document.getElementById('projectMaxExpiry').value;
+  const maxExpiry = maxExpiryStr ? parseInt(maxExpiryStr) : null;
+
+  const createBtn = document.getElementById('createProjectBtn');
+  createBtn.disabled = true;
+  createBtn.textContent = 'Tworzenie...';
+
+  try {
+    const response = await authFetch('/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        allow_public_shares: allowPublicShares,
+        share_max_expiry_hours: maxExpiry,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to create project');
+    }
+
+    console.log('[SETTINGS] Project created:', name);
+    hideCreateProjectModal();
+    loadProjects();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error creating project:', error);
+    alert('Blad tworzenia projektu: ' + error.message);
+  } finally {
+    createBtn.disabled = false;
+    createBtn.textContent = 'Utworz projekt';
+  }
+}
+
+async function showEditProjectModal(projectId) {
+  currentEditProjectId = projectId;
+  document.getElementById('editProjectModal').classList.add('visible');
+  switchProjectEditTab('settings');
+
+  try {
+    const response = await authFetch(`/projects/${projectId}`);
+    if (!response.ok) throw new Error('Failed to load project');
+    const project = await response.json();
+
+    document.getElementById('editProjectId').value = project.id;
+    document.getElementById('editProjectName').value = project.name;
+    document.getElementById('editProjectAllowPublicShares').checked = project.allow_public_shares;
+    document.getElementById('editProjectMaxExpiry').value = project.share_max_expiry_hours || '';
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading project:', error);
+    alert('Blad ladowania projektu: ' + error.message);
+    hideEditProjectModal();
+  }
+}
+
+function hideEditProjectModal() {
+  document.getElementById('editProjectModal').classList.remove('visible');
+  currentEditProjectId = null;
+}
+
+function switchProjectEditTab(tab) {
+  document.querySelectorAll('.project-edit-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  document.getElementById('projectSettingsTab').style.display = tab === 'settings' ? 'block' : 'none';
+  document.getElementById('projectMembersTab').style.display = tab === 'members' ? 'block' : 'none';
+
+  if (tab === 'members') {
+    loadProjectMembers();
+  }
+}
+
+async function handleUpdateProject(event) {
+  event.preventDefault();
+
+  const projectId = document.getElementById('editProjectId').value;
+  const name = document.getElementById('editProjectName').value.trim();
+  const allowPublicShares = document.getElementById('editProjectAllowPublicShares').checked;
+  const maxExpiryStr = document.getElementById('editProjectMaxExpiry').value;
+  const maxExpiry = maxExpiryStr ? parseInt(maxExpiryStr) : 0;
+
+  const updateBtn = document.getElementById('updateProjectBtn');
+  updateBtn.disabled = true;
+  updateBtn.textContent = 'Zapisywanie...';
+
+  try {
+    const response = await authFetch(`/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        allow_public_shares: allowPublicShares,
+        share_max_expiry_hours: maxExpiry,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to update project');
+    }
+
+    console.log('[SETTINGS] Project updated:', projectId);
+    hideEditProjectModal();
+    loadProjects();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error updating project:', error);
+    alert('Blad aktualizacji projektu: ' + error.message);
+  } finally {
+    updateBtn.disabled = false;
+    updateBtn.textContent = 'Zapisz zmiany';
+  }
+}
+
+async function handleArchiveProject() {
+  const projectId = document.getElementById('editProjectId').value;
+  const projectName = document.getElementById('editProjectName').value;
+
+  if (!confirm(`Czy na pewno chcesz zarchiwizowac projekt "${projectName}"?\n\nProjekt zostanie ukryty, ale nie usuniety.`)) {
+    return;
+  }
+
+  try {
+    const response = await authFetch(`/projects/${projectId}/archive`, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to archive project');
+    }
+
+    console.log('[SETTINGS] Project archived:', projectId);
+    hideEditProjectModal();
+    loadProjects();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error archiving project:', error);
+    alert('Blad archiwizacji projektu: ' + error.message);
+  }
+}
+
+async function loadProjectMembers() {
+  const tableEl = document.getElementById('projectMembersTable');
+  const projectId = currentEditProjectId;
+
+  if (!projectId) return;
+
+  try {
+    const response = await authFetch(`/projects/${projectId}/members`);
+    if (!response.ok) throw new Error('Failed to load members');
+    const data = await response.json();
+
+    if (!data.items || data.items.length === 0) {
+      tableEl.innerHTML = `
+        <div class="api-keys-empty">
+          <div class="api-keys-empty-icon">👥</div>
+          <p>Brak czlonkow</p>
+        </div>
+      `;
+      return;
+    }
+
+    tableEl.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Uzytkownik</th>
+            <th>Rola</th>
+            <th>Dodano</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.items.map(member => `
+            <tr>
+              <td>${escapeHtml(member.user_email || member.user_id)}</td>
+              <td>
+                <select class="form-input form-input-sm" onchange="handleUpdateMemberRole('${member.user_id}', this.value)">
+                  <option value="viewer" ${member.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+                  <option value="editor" ${member.role === 'editor' ? 'selected' : ''}>Editor</option>
+                  <option value="owner" ${member.role === 'owner' ? 'selected' : ''}>Owner</option>
+                </select>
+              </td>
+              <td class="api-key-created">${formatDate(member.created_at)}</td>
+              <td>
+                <button class="btn-revoke" onclick="handleRemoveMember('${member.user_id}', '${escapeHtml(member.user_email || member.user_id)}')">
+                  Usun
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading project members:', error);
+    tableEl.innerHTML = `
+      <div class="api-keys-empty">
+        <div class="api-keys-empty-icon">⚠️</div>
+        <p>Blad ladowania czlonkow</p>
+      </div>
+    `;
+  }
+}
+
+async function showAddMemberModal() {
+  document.getElementById('addMemberModal').classList.add('visible');
+  document.getElementById('addMemberForm').reset();
+
+  // Load users for dropdown
+  try {
+    const response = await authFetch('/admin/users');
+    if (!response.ok) throw new Error('Failed to load users');
+    const data = await response.json();
+
+    const select = document.getElementById('memberUserId');
+    select.innerHTML = '<option value="">Wybierz uzytkownika...</option>';
+
+    data.items.forEach(user => {
+      if (!user.disabled) {
+        const option = document.createElement('option');
+        option.value = user.id;
+        option.textContent = user.email;
+        select.appendChild(option);
+      }
+    });
+
+  } catch (error) {
+    console.error('[SETTINGS] Error loading users for member select:', error);
+  }
+}
+
+function hideAddMemberModal() {
+  document.getElementById('addMemberModal').classList.remove('visible');
+}
+
+async function handleAddMember(event) {
+  event.preventDefault();
+
+  const userId = document.getElementById('memberUserId').value;
+  const role = document.getElementById('memberRole').value;
+  const projectId = currentEditProjectId;
+
+  const addBtn = document.getElementById('addMemberBtn');
+  addBtn.disabled = true;
+  addBtn.textContent = 'Dodawanie...';
+
+  try {
+    const response = await authFetch(`/projects/${projectId}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: userId,
+        role,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to add member');
+    }
+
+    console.log('[SETTINGS] Member added:', userId);
+    hideAddMemberModal();
+    loadProjectMembers();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error adding member:', error);
+    alert('Blad dodawania czlonka: ' + error.message);
+  } finally {
+    addBtn.disabled = false;
+    addBtn.textContent = 'Dodaj czlonka';
+  }
+}
+
+async function handleUpdateMemberRole(userId, newRole) {
+  const projectId = currentEditProjectId;
+
+  try {
+    const response = await authFetch(`/projects/${projectId}/members/${userId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: newRole }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to update role');
+    }
+
+    console.log('[SETTINGS] Member role updated:', userId, newRole);
+
+  } catch (error) {
+    console.error('[SETTINGS] Error updating member role:', error);
+    alert('Blad zmiany roli: ' + error.message);
+    loadProjectMembers();
+  }
+}
+
+async function handleRemoveMember(userId, userEmail) {
+  if (!confirm(`Czy na pewno chcesz usunac "${userEmail}" z projektu?`)) {
+    return;
+  }
+
+  const projectId = currentEditProjectId;
+
+  try {
+    const response = await authFetch(`/projects/${projectId}/members/${userId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail?.message || 'Failed to remove member');
+    }
+
+    console.log('[SETTINGS] Member removed:', userId);
+    loadProjectMembers();
+
+  } catch (error) {
+    console.error('[SETTINGS] Error removing member:', error);
+    alert('Blad usuwania czlonka: ' + error.message);
   }
 }
 
@@ -1170,6 +1764,159 @@ initSettingsPage();
 
 .disabled-row {
   opacity: 0.6;
+}
+
+/* Projects (v3.7.0) */
+.project-name {
+  font-weight: 500;
+}
+
+.badge-archived {
+  background: #f5f5f5;
+  color: #666;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  margin-left: 8px;
+  text-transform: uppercase;
+}
+
+.badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.badge-success {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.badge-warning {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.btn-edit {
+  background: #e3f2fd;
+  color: #1976d2;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-edit:hover {
+  background: #bbdefb;
+}
+
+.btn-danger {
+  background: #ffebee !important;
+  color: #c62828 !important;
+}
+
+.btn-danger:hover {
+  background: #ffcdd2 !important;
+}
+
+.archived {
+  opacity: 0.6;
+}
+
+.modal-content-wide {
+  max-width: 600px;
+}
+
+.project-edit-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 8px;
+}
+
+.project-edit-tab {
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  font-size: 13px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.project-edit-tab:hover {
+  background: #f5f5f5;
+}
+
+.project-edit-tab.active {
+  background: #9c27b0;
+  color: white;
+}
+
+.project-edit-section {
+  animation: fadeIn 0.2s ease;
+}
+
+.members-header {
+  margin-bottom: 16px;
+}
+
+.members-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.members-table th,
+.members-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.members-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #666;
+  font-weight: 600;
+}
+
+.btn-sm {
+  padding: 6px 12px !important;
+  font-size: 12px !important;
+}
+
+.form-input-sm {
+  padding: 6px 10px !important;
+  font-size: 12px !important;
+}
+
+.form-hint {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.checkbox-group {
+  margin-top: 8px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
 }
 </style>
 </body>

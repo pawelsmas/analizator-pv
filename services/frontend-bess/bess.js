@@ -1,4 +1,4 @@
-console.log('[BESS] bess.js LOADED v=3.25 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=3.35 - timestamp:', new Date().toISOString());
 
 // ============================================
 // v2.7.0 COMPAT MODE + DEPRECATION TRACKING
@@ -6097,6 +6097,14 @@ async function refreshRunList() {
       params.set('endpoint', runExplorerState.currentEndpoint);
     }
 
+    // v3.7.0: Add project_id filter if available
+    if (typeof getCurrentProjectId === 'function') {
+      const projectId = getCurrentProjectId();
+      if (projectId) {
+        params.set('project_id', projectId);
+      }
+    }
+
     const response = await fetch(`http://localhost:8031/runs?${params.toString()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -6483,7 +6491,16 @@ async function loadRunsForPicker() {
   listContainer.innerHTML = '<div class="loading-row">Ladowanie...</div>';
 
   try {
-    const response = await fetch(`${API_BASE_URL}/runs?limit=50&sort=created_at_desc`);
+    // v3.7.0: Use project-scoped URL if available
+    let url = `${API_BASE_URL}/runs?limit=50&sort=created_at_desc`;
+    if (typeof getCurrentProjectId === 'function') {
+      const projectId = getCurrentProjectId();
+      if (projectId) {
+        url += `&project_id=${projectId}`;
+      }
+    }
+
+    const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to load runs');
 
     const data = await response.json();
@@ -8453,8 +8470,17 @@ async function loadAvailableRuns() {
   if (!select) return;
 
   try {
+    // v3.7.0: Use project-scoped URL if available
+    let url = '/runs?limit=50';
+    if (typeof getCurrentProjectId === 'function') {
+      const projectId = getCurrentProjectId();
+      if (projectId) {
+        url += `&project_id=${projectId}`;
+      }
+    }
+
     // Get recent runs from /runs endpoint
-    const response = await fetch('/runs?limit=50');
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to fetch runs: ${response.status}`);
     }
@@ -8861,4 +8887,4 @@ window.downloadRunReportXLSX = downloadRunReportXLSX;
 window.downloadRunReportZIP = downloadRunReportZIP;
 window.exportPortfolioReportZIP = exportPortfolioReportZIP;
 
-console.log('[BESS] bess.js v3.34 - v2.4.0 Report Downloads');
+console.log('[BESS] bess.js v3.35 - v3.7.0 Project Scoping');
