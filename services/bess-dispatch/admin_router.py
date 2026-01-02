@@ -1,5 +1,5 @@
 """
-Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites/shares API).
+Admin API router for BESS API (v3.0.0 PR3, v3.1.0 users/invites/shares API, v3.8.0 retention).
 
 Endpoints:
 - GET /admin/api-keys - List API keys for tenant
@@ -21,6 +21,12 @@ Shares (v3.1.0):
 - GET /admin/shares - List shares for tenant
 - POST /admin/shares - Create new share link
 - DELETE /admin/shares/{share_id} - Revoke share link
+
+Retention (v3.8.0 PR5):
+- GET /admin/retention/stats - Get retention statistics
+- POST /admin/retention/purge-expired-shares - Purge expired shares
+- POST /admin/retention/purge-revoked-shares - Purge revoked shares
+- POST /admin/retention/prune-access-logs - Prune old access logs
 
 Requires admin role for all operations.
 """
@@ -1160,4 +1166,165 @@ def get_share_stats(
         first_access_at=stats.get("first_access_at"),
         last_access_at=stats.get("last_access_at"),
         unique_ips=stats["unique_ips"],
+    )
+
+
+# -------------------------------------------------------------------------
+# Retention endpoints (v3.8.0 PR5)
+# -------------------------------------------------------------------------
+
+
+class RetentionStatsResponse(BaseModel):
+    """Retention statistics response."""
+    active_shares: int
+    expired_shares: int
+    expired_shares_purgeable: int
+    revoked_shares: int
+    revoked_shares_purgeable: int
+    total_access_logs: int
+    access_logs_purgeable: int
+
+
+class PurgeRequest(BaseModel):
+    """Request model for purge operations."""
+    older_than_days: int = 30
+
+
+class PurgeResponse(BaseModel):
+    """Response model for purge operations."""
+    deleted_count: int
+    message: str
+
+
+@router.get("/retention/stats", response_model=RetentionStatsResponse)
+def get_retention_stats(
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> RetentionStatsResponse:
+    """
+    Get retention statistics for the tenant (v3.8.0 PR5).
+
+    Returns counts of active/expired/revoked shares and access logs
+    that can be purged.
+    """
+    auth_store = get_auth_store()
+    stats = auth_store.get_retention_stats(auth.tenant_id)
+
+    return RetentionStatsResponse(
+        active_shares=stats["active_shares"],
+        expired_shares=stats["expired_shares"],
+        expired_shares_purgeable=stats["expired_shares_purgeable"],
+        revoked_shares=stats["revoked_shares"],
+        revoked_shares_purgeable=stats["revoked_shares_purgeable"],
+        total_access_logs=stats["total_access_logs"],
+        access_logs_purgeable=stats["access_logs_purgeable"],
+    )
+
+
+@router.post("/retention/purge-expired-shares", response_model=PurgeResponse)
+def purge_expired_shares(
+    request: PurgeRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> PurgeResponse:
+    """
+    Purge expired shares (v3.8.0 PR5).
+
+    Deletes shares that expired more than `older_than_days` ago
+    along with their access logs.
+    """
+    auth_store = get_auth_store()
+
+    deleted_count = auth_store.purge_expired_shares(
+        tenant_id=auth.tenant_id,
+        expired_before_days=request.older_than_days,
+    )
+
+    # Audit log
+    log_audit(
+        tenant_id=auth.tenant_id,
+        user_id=auth.user_id or "api_key",
+        action="retention.purge_expired_shares",
+        resource_type="shares",
+        resource_id=None,
+        details={
+            "older_than_days": request.older_than_days,
+            "deleted_count": deleted_count,
+        },
+    )
+
+    return PurgeResponse(
+        deleted_count=deleted_count,
+        message=f"Purged {deleted_count} expired share(s)",
+    )
+
+
+@router.post("/retention/purge-revoked-shares", response_model=PurgeResponse)
+def purge_revoked_shares(
+    request: PurgeRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> PurgeResponse:
+    """
+    Purge revoked shares (v3.8.0 PR5).
+
+    Deletes shares that were revoked more than `older_than_days` ago
+    along with their access logs.
+    """
+    auth_store = get_auth_store()
+
+    deleted_count = auth_store.purge_revoked_shares(
+        tenant_id=auth.tenant_id,
+        revoked_before_days=request.older_than_days,
+    )
+
+    # Audit log
+    log_audit(
+        tenant_id=auth.tenant_id,
+        user_id=auth.user_id or "api_key",
+        action="retention.purge_revoked_shares",
+        resource_type="shares",
+        resource_id=None,
+        details={
+            "older_than_days": request.older_than_days,
+            "deleted_count": deleted_count,
+        },
+    )
+
+    return PurgeResponse(
+        deleted_count=deleted_count,
+        message=f"Purged {deleted_count} revoked share(s)",
+    )
+
+
+@router.post("/retention/prune-access-logs", response_model=PurgeResponse)
+def prune_access_logs(
+    request: PurgeRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+) -> PurgeResponse:
+    """
+    Prune old share access logs (v3.8.0 PR5).
+
+    Deletes access logs older than `older_than_days`.
+    """
+    auth_store = get_auth_store()
+
+    deleted_count = auth_store.prune_share_access_logs(
+        tenant_id=auth.tenant_id,
+        older_than_days=request.older_than_days,
+    )
+
+    # Audit log
+    log_audit(
+        tenant_id=auth.tenant_id,
+        user_id=auth.user_id or "api_key",
+        action="retention.prune_access_logs",
+        resource_type="share_access_logs",
+        resource_id=None,
+        details={
+            "older_than_days": request.older_than_days,
+            "deleted_count": deleted_count,
+        },
+    )
+
+    return PurgeResponse(
+        deleted_count=deleted_count,
+        message=f"Pruned {deleted_count} access log(s)",
     )

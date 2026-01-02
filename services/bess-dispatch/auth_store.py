@@ -1715,6 +1715,182 @@ class AuthStore:
         finally:
             conn.close()
 
+    def purge_expired_shares(
+        self,
+        tenant_id: str,
+        expired_before_days: int = 30,
+    ) -> int:
+        """
+        Purge expired shares (v3.8.0 PR5).
+
+        Deletes shares that expired more than `expired_before_days` ago.
+        Also deletes associated access logs.
+
+        Args:
+            tenant_id: Tenant identifier
+            expired_before_days: Only delete shares expired at least this many days ago
+
+        Returns:
+            Number of shares deleted
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=expired_before_days)).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Get IDs of shares to delete
+            cursor.execute("""
+                SELECT id FROM shares
+                WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+            """, (tenant_id, cutoff))
+            share_ids = [row[0] for row in cursor.fetchall()]
+
+            if not share_ids:
+                return 0
+
+            # Delete access logs for these shares
+            placeholders = ",".join("?" * len(share_ids))
+            cursor.execute(f"""
+                DELETE FROM share_access_logs WHERE share_id IN ({placeholders})
+            """, share_ids)
+
+            # Delete the shares
+            cursor.execute(f"""
+                DELETE FROM shares WHERE id IN ({placeholders})
+            """, share_ids)
+
+            conn.commit()
+            return len(share_ids)
+        finally:
+            conn.close()
+
+    def purge_revoked_shares(
+        self,
+        tenant_id: str,
+        revoked_before_days: int = 30,
+    ) -> int:
+        """
+        Purge revoked shares (v3.8.0 PR5).
+
+        Deletes shares that were revoked more than `revoked_before_days` ago.
+        Also deletes associated access logs.
+
+        Args:
+            tenant_id: Tenant identifier
+            revoked_before_days: Only delete shares revoked at least this many days ago
+
+        Returns:
+            Number of shares deleted
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=revoked_before_days)).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Get IDs of shares to delete
+            cursor.execute("""
+                SELECT id FROM shares
+                WHERE tenant_id = ? AND revoked_at IS NOT NULL AND revoked_at < ?
+            """, (tenant_id, cutoff))
+            share_ids = [row[0] for row in cursor.fetchall()]
+
+            if not share_ids:
+                return 0
+
+            # Delete access logs for these shares
+            placeholders = ",".join("?" * len(share_ids))
+            cursor.execute(f"""
+                DELETE FROM share_access_logs WHERE share_id IN ({placeholders})
+            """, share_ids)
+
+            # Delete the shares
+            cursor.execute(f"""
+                DELETE FROM shares WHERE id IN ({placeholders})
+            """, share_ids)
+
+            conn.commit()
+            return len(share_ids)
+        finally:
+            conn.close()
+
+    def get_retention_stats(self, tenant_id: str) -> Dict[str, Any]:
+        """
+        Get retention statistics for a tenant (v3.8.0 PR5).
+
+        Returns:
+            Dict with retention stats including counts of expired/revoked shares
+            and access log counts by age.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        cutoff_90d = (now - timedelta(days=90)).isoformat()
+        now_iso = now.isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Count active shares
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE tenant_id = ? AND revoked_at IS NULL
+                AND (expires_at IS NULL OR expires_at > ?)
+            """, (tenant_id, now_iso))
+            active_shares = cursor.fetchone()[0]
+
+            # Count expired shares
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+            """, (tenant_id, now_iso))
+            expired_shares = cursor.fetchone()[0]
+
+            # Count expired shares older than 30 days (purgeable)
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?
+            """, (tenant_id, cutoff_30d))
+            expired_shares_purgeable = cursor.fetchone()[0]
+
+            # Count revoked shares
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE tenant_id = ? AND revoked_at IS NOT NULL
+            """, (tenant_id,))
+            revoked_shares = cursor.fetchone()[0]
+
+            # Count revoked shares older than 30 days (purgeable)
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE tenant_id = ? AND revoked_at IS NOT NULL AND revoked_at < ?
+            """, (tenant_id, cutoff_30d))
+            revoked_shares_purgeable = cursor.fetchone()[0]
+
+            # Count total access logs
+            cursor.execute("""
+                SELECT COUNT(*) FROM share_access_logs WHERE tenant_id = ?
+            """, (tenant_id,))
+            total_access_logs = cursor.fetchone()[0]
+
+            # Count access logs older than 90 days (purgeable)
+            cursor.execute("""
+                SELECT COUNT(*) FROM share_access_logs
+                WHERE tenant_id = ? AND accessed_at < ?
+            """, (tenant_id, cutoff_90d))
+            access_logs_purgeable = cursor.fetchone()[0]
+
+            return {
+                "active_shares": active_shares,
+                "expired_shares": expired_shares,
+                "expired_shares_purgeable": expired_shares_purgeable,
+                "revoked_shares": revoked_shares,
+                "revoked_shares_purgeable": revoked_shares_purgeable,
+                "total_access_logs": total_access_logs,
+                "access_logs_purgeable": access_logs_purgeable,
+            }
+        finally:
+            conn.close()
+
     # -------------------------------------------------------------------------
     # Project operations (v3.7.0)
     # -------------------------------------------------------------------------
