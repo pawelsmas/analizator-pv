@@ -856,3 +856,181 @@ def revoke_share(
     )
 
     return None
+
+
+# -------------------------------------------------------------------------
+# Share Token Rotation and Revoke-All (v3.8.0)
+# -------------------------------------------------------------------------
+
+
+class ShareRotateResponse(BaseModel):
+    """Response after rotating share token (v3.8.0)."""
+    id: str
+    tenant_id: str
+    resource_type: str
+    resource_id: str
+    token_version: int
+    token: str  # New plaintext token - shown only once!
+
+
+class RevokeAllSharesResponse(BaseModel):
+    """Response after revoking all shares (v3.8.0)."""
+    revoked_count: int
+
+
+@router.post("/shares/{share_id}/rotate", response_model=ShareRotateResponse)
+def rotate_share_token(
+    share_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Rotate a share token (v3.8.0).
+
+    Generates a new token for an existing share, incrementing token_version.
+    Old tokens become invalid immediately.
+
+    IMPORTANT: The new share token is returned ONLY in this response.
+    Store it securely - it cannot be retrieved later.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+
+    # Get share details before rotation for audit log
+    share_before = auth_store.get_share_by_id(share_id, auth.tenant_id)
+
+    result = auth_store.rotate_share_token(share_id, auth.tenant_id)
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found or already revoked"},
+        )
+
+    # Log audit event for token rotation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="share_token_rotated",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="share",
+        resource_id=share_id,
+        details={
+            "shared_resource_type": result["resource_type"],
+            "shared_resource_id": result["resource_id"],
+            "old_token_version": share_before.get("token_version", 1) if share_before else 1,
+            "new_token_version": result["token_version"],
+            "project_id": share_before.get("project_id") if share_before else None,
+        },
+    )
+
+    return ShareRotateResponse(
+        id=result["id"],
+        tenant_id=result["tenant_id"],
+        resource_type=result["resource_type"],
+        resource_id=result["resource_id"],
+        token_version=result["token_version"],
+        token=result["token"],
+    )
+
+
+@router.post("/projects/{project_id}/shares/revoke-all", response_model=RevokeAllSharesResponse)
+def revoke_all_project_shares(
+    project_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke all active shares for a project (v3.8.0).
+
+    All active (non-revoked) shares associated with the project will be revoked.
+    This is useful for security incidents or when decommissioning a project.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+
+    # Verify project exists and user has access
+    project = auth_store.get_project(project_id, auth.tenant_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "PROJECT_NOT_FOUND", "message": "Project not found"},
+        )
+
+    # Count active shares before revocation for audit
+    count_before = auth_store.count_active_shares_for_project(project_id, auth.tenant_id)
+
+    # Revoke all shares
+    revoked_count = auth_store.revoke_all_shares_for_project(project_id, auth.tenant_id)
+
+    # Log audit event for bulk revocation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="shares_revoked_all",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="project",
+        resource_id=project_id,
+        details={
+            "project_name": project["name"],
+            "shares_revoked": revoked_count,
+            "active_shares_before": count_before,
+        },
+    )
+
+    return RevokeAllSharesResponse(revoked_count=revoked_count)
+
+
+class RevokeSharesForResourceRequest(BaseModel):
+    """Request to revoke all shares for a resource (v3.8.0)."""
+    resource_type: str  # "run" or "report"
+    resource_id: str
+
+
+@router.post("/shares/revoke-all", response_model=RevokeAllSharesResponse)
+def revoke_all_resource_shares(
+    request: RevokeSharesForResourceRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke all active shares for a specific resource (v3.8.0).
+
+    All active (non-revoked) shares for the given resource will be revoked.
+
+    Requires admin role.
+    """
+    # Validate resource_type
+    if request.resource_type not in ("run", "report"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_RESOURCE_TYPE", "message": "resource_type must be 'run' or 'report'"},
+        )
+
+    auth_store = get_auth_store()
+
+    revoked_count = auth_store.revoke_all_shares_for_resource(
+        resource_type=request.resource_type,
+        resource_id=request.resource_id,
+        tenant_id=auth.tenant_id,
+    )
+
+    # Log audit event for bulk revocation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="shares_revoked_for_resource",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type=request.resource_type,
+        resource_id=request.resource_id,
+        details={
+            "shares_revoked": revoked_count,
+        },
+    )
+
+    return RevokeAllSharesResponse(revoked_count=revoked_count)

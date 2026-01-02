@@ -1186,6 +1186,135 @@ class AuthStore:
         finally:
             conn.close()
 
+    def rotate_share_token(self, share_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Rotate a share token (v3.8.0).
+
+        Generates a new token for an existing share, incrementing token_version.
+        Old tokens become invalid immediately.
+
+        Args:
+            share_id: Share identifier
+            tenant_id: Tenant identifier
+
+        Returns:
+            Dict with share info and new plaintext token, or None if share not found
+        """
+        # First check share exists and is not revoked
+        share = self.get_share_by_id(share_id, tenant_id)
+        if share is None:
+            return None
+        if share.get("revoked_at") is not None:
+            return None
+
+        # Generate new token
+        new_token = generate_share_token()
+        new_token_hash = hash_share_token(new_token)
+        new_version = (share.get("token_version", 1) or 1) + 1
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE shares
+                SET token_hash = ?, token_version = ?
+                WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL
+            """, (new_token_hash, new_version, share_id, tenant_id))
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                return None
+
+            # Return updated share info with new token
+            return {
+                "id": share_id,
+                "tenant_id": tenant_id,
+                "resource_type": share["resource_type"],
+                "resource_id": share["resource_id"],
+                "token_version": new_version,
+                "token": new_token,  # Shown once!
+            }
+        finally:
+            conn.close()
+
+    def revoke_all_shares_for_project(self, project_id: str, tenant_id: str) -> int:
+        """
+        Revoke all active shares for a project (v3.8.0).
+
+        Args:
+            project_id: Project identifier
+            tenant_id: Tenant identifier
+
+        Returns:
+            Number of shares revoked
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE shares SET revoked_at = ?
+                WHERE project_id = ? AND tenant_id = ? AND revoked_at IS NULL
+            """, (now, project_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def revoke_all_shares_for_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+        tenant_id: str,
+    ) -> int:
+        """
+        Revoke all active shares for a specific resource (v3.8.0).
+
+        Args:
+            resource_type: Type of resource ('run' or 'report')
+            resource_id: ID of the resource
+            tenant_id: Tenant identifier
+
+        Returns:
+            Number of shares revoked
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE shares SET revoked_at = ?
+                WHERE resource_type = ? AND resource_id = ? AND tenant_id = ? AND revoked_at IS NULL
+            """, (now, resource_type, resource_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def count_active_shares_for_project(self, project_id: str, tenant_id: str) -> int:
+        """
+        Count active (non-revoked, non-expired) shares for a project (v3.8.0).
+
+        Args:
+            project_id: Project identifier
+            tenant_id: Tenant identifier
+
+        Returns:
+            Number of active shares
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM shares
+                WHERE project_id = ? AND tenant_id = ? AND revoked_at IS NULL
+                AND (expires_at IS NULL OR expires_at > ?)
+            """, (project_id, tenant_id, now))
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
     def is_share_expired(self, share: Dict[str, Any]) -> bool:
         """Check if a share is expired."""
         if share["expires_at"] is None:
