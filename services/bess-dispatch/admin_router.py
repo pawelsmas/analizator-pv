@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from auth_config import AuthContext, Role
 from auth_deps import require_role
 from auth_store import get_auth_store
+from audit_store import log_audit
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -572,6 +573,7 @@ class ShareResponse(BaseModel):
     revoked_at: Optional[str] = None
     created_by: str
     label: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class ShareListResponse(BaseModel):
@@ -586,6 +588,7 @@ class ShareCreateRequest(BaseModel):
     resource_id: str
     label: Optional[str] = None
     expires_hours: Optional[int] = None  # None = never expires
+    project_id: Optional[str] = None  # v3.7.0: optional project for policy enforcement
 
 
 class ShareCreateResponse(BaseModel):
@@ -598,6 +601,7 @@ class ShareCreateResponse(BaseModel):
     expires_at: Optional[str] = None
     created_by: str
     label: Optional[str] = None
+    project_id: Optional[str] = None
     token: str  # Plaintext token - shown only once!
 
 
@@ -605,17 +609,23 @@ class ShareCreateResponse(BaseModel):
 def list_shares(
     resource_type: Optional[str] = None,
     resource_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     auth: AuthContext = Depends(require_role(Role.ADMIN)),
 ):
     """
     List shares for the current tenant.
 
-    Can optionally filter by resource_type and resource_id.
+    Can optionally filter by resource_type, resource_id, and project_id.
 
     Requires admin role.
     """
     auth_store = get_auth_store()
-    shares = auth_store.list_shares(auth.tenant_id, resource_type, resource_id)
+    shares = auth_store.list_shares(
+        auth.tenant_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        project_id=project_id,
+    )
 
     items = [
         ShareResponse(
@@ -628,6 +638,7 @@ def list_shares(
             revoked_at=share["revoked_at"],
             created_by=share["created_by"],
             label=share["label"],
+            project_id=share.get("project_id"),
         )
         for share in shares
     ]
@@ -645,6 +656,10 @@ def create_share(
 
     IMPORTANT: The share token is returned ONLY in this response.
     Store it securely - it cannot be retrieved later.
+
+    If project_id is provided, project share policies are enforced:
+    - allow_public_shares must be True or request is rejected
+    - share_max_expiry_hours caps the requested expires_hours
 
     Requires admin role.
     """
@@ -665,13 +680,57 @@ def create_share(
 
     auth_store = get_auth_store()
 
-    share = auth_store.create_share(
+    try:
+        share = auth_store.create_share(
+            tenant_id=auth.tenant_id,
+            resource_type=request.resource_type,
+            resource_id=request.resource_id,
+            created_by=auth.user_id,
+            label=request.label,
+            expires_hours=request.expires_hours,
+            project_id=request.project_id,
+        )
+    except ValueError as e:
+        error_msg = str(e)
+        if "PUBLIC_SHARES_DISABLED" in error_msg:
+            # Log audit event for policy violation
+            log_audit(
+                tenant_id=auth.tenant_id,
+                action="share_create_denied",
+                actor_id=auth.user_id,
+                actor_email=auth.email,
+                actor_role=auth.role.value if auth.role else None,
+                auth_method=auth.auth_method,
+                resource_type=request.resource_type,
+                resource_id=request.resource_id,
+                details={
+                    "reason": "public_shares_disabled",
+                    "project_id": request.project_id,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error_code": "PUBLIC_SHARES_DISABLED", "message": "Project does not allow public shares"},
+            )
+        raise
+
+    # Log audit event for share creation
+    log_audit(
         tenant_id=auth.tenant_id,
-        resource_type=request.resource_type,
-        resource_id=request.resource_id,
-        created_by=auth.user_id,
-        label=request.label,
-        expires_hours=request.expires_hours,
+        action="share_created",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="share",
+        resource_id=share["id"],
+        details={
+            "shared_resource_type": request.resource_type,
+            "shared_resource_id": request.resource_id,
+            "project_id": request.project_id,
+            "expires_at": share["expires_at"],
+            "label": request.label,
+        },
     )
 
     return ShareCreateResponse(
@@ -683,6 +742,7 @@ def create_share(
         expires_at=share["expires_at"],
         created_by=share["created_by"],
         label=share["label"],
+        project_id=share.get("project_id"),
         token=share["token"],
     )
 
@@ -701,6 +761,10 @@ def revoke_share(
     Requires admin role.
     """
     auth_store = get_auth_store()
+
+    # Get share details before revoking for audit log
+    share = auth_store.get_share_by_id(share_id, auth.tenant_id)
+
     revoked = auth_store.revoke_share(share_id, auth.tenant_id)
 
     if not revoked:
@@ -708,5 +772,22 @@ def revoke_share(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found or already revoked"},
         )
+
+    # Log audit event for share revocation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="share_revoked",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="share",
+        resource_id=share_id,
+        details={
+            "shared_resource_type": share["resource_type"] if share else None,
+            "shared_resource_id": share["resource_id"] if share else None,
+            "project_id": share.get("project_id") if share else None,
+        },
+    )
 
     return None
