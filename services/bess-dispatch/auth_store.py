@@ -858,13 +858,54 @@ class AuthStore:
         created_by: str,
         label: Optional[str] = None,
         expires_hours: Optional[int] = None,
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new share link. Returns dict with plaintext token (shown once)."""
+        """
+        Create a new share link. Returns dict with plaintext token (shown once).
+
+        If project_id is provided, share policies from the project are enforced:
+        - allow_public_shares: if False, raises ValueError
+        - share_max_expiry_hours: if set, caps expires_hours (or sets if not provided)
+
+        Args:
+            tenant_id: Tenant identifier
+            resource_type: Type of resource ('run' or 'report')
+            resource_id: ID of the resource being shared
+            created_by: User ID who is creating the share
+            label: Optional label for the share
+            expires_hours: Optional expiry in hours
+            project_id: Optional project ID for policy enforcement
+
+        Returns:
+            Share dict with plaintext token
+
+        Raises:
+            ValueError: If project policies prohibit the share
+        """
+        # Enforce project share policies if project_id provided
+        effective_expires_hours = expires_hours
+        if project_id:
+            project = self.get_project(project_id, tenant_id)
+            if project:
+                # Check if public shares are allowed
+                if not project["allow_public_shares"]:
+                    raise ValueError("PUBLIC_SHARES_DISABLED: Project does not allow public shares")
+
+                # Enforce max expiry hours
+                if project["share_max_expiry_hours"] is not None:
+                    max_hours = project["share_max_expiry_hours"]
+                    if effective_expires_hours is None:
+                        # No expiry requested but project requires one
+                        effective_expires_hours = max_hours
+                    elif effective_expires_hours > max_hours:
+                        # Requested expiry exceeds max, cap it
+                        effective_expires_hours = max_hours
+
         share_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc)
         expires_at = None
-        if expires_hours:
-            expires_at = created_at + timedelta(hours=expires_hours)
+        if effective_expires_hours:
+            expires_at = created_at + timedelta(hours=effective_expires_hours)
         plaintext_token = generate_share_token()
         token_hash = hash_share_token(plaintext_token)
 
@@ -872,8 +913,8 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO shares (id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, created_by, label)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO shares (id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, created_by, label, project_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 share_id,
                 tenant_id,
@@ -884,6 +925,7 @@ class AuthStore:
                 expires_at.isoformat() if expires_at else None,
                 created_by,
                 label,
+                project_id,
             ))
             conn.commit()
             return {
@@ -895,18 +937,25 @@ class AuthStore:
                 "expires_at": expires_at.isoformat() if expires_at else None,
                 "created_by": created_by,
                 "label": label,
+                "project_id": project_id,
                 "token": plaintext_token,  # Shown once!
             }
         finally:
             conn.close()
 
-    def list_shares(self, tenant_id: str, resource_type: Optional[str] = None, resource_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List shares for a tenant, optionally filtered by resource."""
+    def list_shares(
+        self,
+        tenant_id: str,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List shares for a tenant, optionally filtered by resource and/or project."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             query = """
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
                 FROM shares WHERE tenant_id = ?
             """
             params = [tenant_id]
@@ -916,6 +965,9 @@ class AuthStore:
             if resource_id:
                 query += " AND resource_id = ?"
                 params.append(resource_id)
+            if project_id:
+                query += " AND project_id = ?"
+                params.append(project_id)
             query += " ORDER BY created_at DESC"
 
             cursor.execute(query, params)
@@ -930,6 +982,7 @@ class AuthStore:
                     "revoked_at": row[6],
                     "created_by": row[7],
                     "label": row[8],
+                    "project_id": row[9],
                 }
                 for row in cursor.fetchall()
             ]
@@ -942,7 +995,7 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
                 FROM shares WHERE id = ? AND tenant_id = ?
             """, (share_id, tenant_id))
             row = cursor.fetchone()
@@ -958,6 +1011,7 @@ class AuthStore:
                 "revoked_at": row[6],
                 "created_by": row[7],
                 "label": row[8],
+                "project_id": row[9],
             }
         finally:
             conn.close()
@@ -969,7 +1023,7 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
                 FROM shares WHERE token_hash = ? AND revoked_at IS NULL
             """, (token_hash,))
             row = cursor.fetchone()
@@ -985,6 +1039,7 @@ class AuthStore:
                 "revoked_at": row[6],
                 "created_by": row[7],
                 "label": row[8],
+                "project_id": row[9],
             }
         finally:
             conn.close()
