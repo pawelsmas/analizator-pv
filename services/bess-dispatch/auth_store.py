@@ -1,12 +1,14 @@
 """
-Auth store - SQLite-backed storage for users, tenants, API keys, invites, and shares (v3.1.0).
+Auth store - SQLite-backed storage for users, tenants, API keys, invites, shares, projects (v3.7.0).
 
 Tables:
 - tenants(id, name, created_at)
 - users(id, tenant_id, email, password_hash, role, created_at, disabled)
 - api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at)
 - invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
-- shares(id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label)
+- shares(id, tenant_id, project_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label)
+- projects(id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours)
+- project_memberships(id, tenant_id, project_id, user_id, role, created_at)
 """
 
 import hashlib
@@ -27,6 +29,18 @@ from auth_config import (
     Role,
     is_auth_enabled,
 )
+from enum import Enum
+
+
+class ProjectRole(Enum):
+    """Project membership roles (v3.7.0)."""
+    OWNER = "owner"
+    EDITOR = "editor"
+    VIEWER = "viewer"
+
+
+# Default project name for backfill
+DEFAULT_PROJECT_NAME = "Default Project"
 
 
 def hash_password(password: str) -> str:
@@ -211,6 +225,71 @@ class AuthStore:
                 CREATE INDEX IF NOT EXISTS idx_shares_resource ON shares(resource_type, resource_id)
             """)
 
+            # Projects table (v3.7.0)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    archived_at TEXT,
+                    created_by_user_id TEXT,
+                    allow_public_shares INTEGER NOT NULL DEFAULT 1,
+                    share_max_expiry_hours INTEGER,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                    FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_projects_tenant ON projects(tenant_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(tenant_id, name)
+            """)
+
+            # Project memberships table (v3.7.0)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS project_memberships (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (user_id) REFERENCES users(id),
+                    UNIQUE(project_id, user_id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memberships_project ON project_memberships(project_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memberships_user ON project_memberships(user_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memberships_tenant ON project_memberships(tenant_id)
+            """)
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Run migrations for existing databases
+        self._migrate_shares_project_id()
+
+    def _migrate_shares_project_id(self) -> None:
+        """Add project_id column to shares table if not exists (v3.7.0)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(shares)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            if "project_id" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN project_id TEXT")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_shares_project ON shares(project_id)")
             conn.commit()
         finally:
             conn.close()
@@ -939,6 +1018,487 @@ class AuthStore:
         if self.is_share_expired(share):
             return None
         return share
+
+    # -------------------------------------------------------------------------
+    # Project operations (v3.7.0)
+    # -------------------------------------------------------------------------
+
+    def create_project(
+        self,
+        tenant_id: str,
+        name: str,
+        created_by_user_id: Optional[str] = None,
+        allow_public_shares: bool = True,
+        share_max_expiry_hours: Optional[int] = None,
+        project_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new project.
+
+        Args:
+            tenant_id: Tenant identifier
+            name: Project name
+            created_by_user_id: User who created the project
+            allow_public_shares: Whether public shares are allowed
+            share_max_expiry_hours: Max expiry for shares (None = unlimited)
+            project_id: Optional project ID (auto-generated if not provided)
+
+        Returns:
+            Dict with project details
+        """
+        if project_id is None:
+            project_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO projects (id, tenant_id, name, created_at, created_by_user_id, allow_public_shares, share_max_expiry_hours)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                project_id,
+                tenant_id,
+                name,
+                created_at,
+                created_by_user_id,
+                1 if allow_public_shares else 0,
+                share_max_expiry_hours,
+            ))
+            conn.commit()
+            return {
+                "id": project_id,
+                "tenant_id": tenant_id,
+                "name": name,
+                "created_at": created_at,
+                "archived_at": None,
+                "created_by_user_id": created_by_user_id,
+                "allow_public_shares": allow_public_shares,
+                "share_max_expiry_hours": share_max_expiry_hours,
+            }
+        finally:
+            conn.close()
+
+    def get_project(self, project_id: str, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get project by ID within tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours
+                FROM projects WHERE id = ? AND tenant_id = ?
+            """, (project_id, tenant_id))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "name": row[2],
+                "created_at": row[3],
+                "archived_at": row[4],
+                "created_by_user_id": row[5],
+                "allow_public_shares": bool(row[6]),
+                "share_max_expiry_hours": row[7],
+            }
+        finally:
+            conn.close()
+
+    def list_projects(
+        self,
+        tenant_id: str,
+        include_archived: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """List projects for a tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            if include_archived:
+                cursor.execute("""
+                    SELECT id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours
+                    FROM projects WHERE tenant_id = ?
+                    ORDER BY created_at DESC
+                """, (tenant_id,))
+            else:
+                cursor.execute("""
+                    SELECT id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours
+                    FROM projects WHERE tenant_id = ? AND archived_at IS NULL
+                    ORDER BY created_at DESC
+                """, (tenant_id,))
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "name": row[2],
+                    "created_at": row[3],
+                    "archived_at": row[4],
+                    "created_by_user_id": row[5],
+                    "allow_public_shares": bool(row[6]),
+                    "share_max_expiry_hours": row[7],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def update_project(
+        self,
+        project_id: str,
+        tenant_id: str,
+        name: Optional[str] = None,
+        allow_public_shares: Optional[bool] = None,
+        share_max_expiry_hours: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update project settings. Returns updated project or None if not found."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            updates = []
+            params: List[Any] = []
+            if name is not None:
+                updates.append("name = ?")
+                params.append(name)
+            if allow_public_shares is not None:
+                updates.append("allow_public_shares = ?")
+                params.append(1 if allow_public_shares else 0)
+            if share_max_expiry_hours is not None:
+                updates.append("share_max_expiry_hours = ?")
+                params.append(share_max_expiry_hours if share_max_expiry_hours > 0 else None)
+
+            if not updates:
+                return self.get_project(project_id, tenant_id)
+
+            params.extend([project_id, tenant_id])
+            query = f"UPDATE projects SET {', '.join(updates)} WHERE id = ? AND tenant_id = ?"
+            cursor.execute(query, params)
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                return None
+
+            return self.get_project(project_id, tenant_id)
+        finally:
+            conn.close()
+
+    def archive_project(self, project_id: str, tenant_id: str) -> bool:
+        """Archive a project. Returns True if found and archived."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE projects SET archived_at = ?
+                WHERE id = ? AND tenant_id = ? AND archived_at IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), project_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def unarchive_project(self, project_id: str, tenant_id: str) -> bool:
+        """Unarchive a project. Returns True if found and unarchived."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE projects SET archived_at = NULL
+                WHERE id = ? AND tenant_id = ? AND archived_at IS NOT NULL
+            """, (project_id, tenant_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def project_name_exists(self, name: str, tenant_id: str, exclude_project_id: Optional[str] = None) -> bool:
+        """Check if project name already exists in tenant."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            if exclude_project_id:
+                cursor.execute("""
+                    SELECT 1 FROM projects WHERE name = ? AND tenant_id = ? AND id != ?
+                """, (name, tenant_id, exclude_project_id))
+            else:
+                cursor.execute("""
+                    SELECT 1 FROM projects WHERE name = ? AND tenant_id = ?
+                """, (name, tenant_id))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    # -------------------------------------------------------------------------
+    # Project membership operations (v3.7.0)
+    # -------------------------------------------------------------------------
+
+    def add_project_member(
+        self,
+        tenant_id: str,
+        project_id: str,
+        user_id: str,
+        role: ProjectRole,
+    ) -> Dict[str, Any]:
+        """
+        Add a member to a project.
+
+        Args:
+            tenant_id: Tenant identifier
+            project_id: Project identifier
+            user_id: User to add
+            role: Project role (owner, editor, viewer)
+
+        Returns:
+            Dict with membership details
+
+        Raises:
+            sqlite3.IntegrityError: If user is already a member
+        """
+        membership_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO project_memberships (id, tenant_id, project_id, user_id, role, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (membership_id, tenant_id, project_id, user_id, role.value, created_at))
+            conn.commit()
+            return {
+                "id": membership_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "user_id": user_id,
+                "role": role.value,
+                "created_at": created_at,
+            }
+        finally:
+            conn.close()
+
+    def get_project_membership(
+        self,
+        project_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get membership for a user in a project."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, tenant_id, project_id, user_id, role, created_at
+                FROM project_memberships WHERE project_id = ? AND user_id = ?
+            """, (project_id, user_id))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "tenant_id": row[1],
+                "project_id": row[2],
+                "user_id": row[3],
+                "role": row[4],
+                "created_at": row[5],
+            }
+        finally:
+            conn.close()
+
+    def list_project_members(self, project_id: str) -> List[Dict[str, Any]]:
+        """List all members of a project."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT pm.id, pm.tenant_id, pm.project_id, pm.user_id, pm.role, pm.created_at,
+                       u.email
+                FROM project_memberships pm
+                JOIN users u ON pm.user_id = u.id
+                WHERE pm.project_id = ?
+                ORDER BY pm.created_at
+            """, (project_id,))
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "project_id": row[2],
+                    "user_id": row[3],
+                    "role": row[4],
+                    "created_at": row[5],
+                    "user_email": row[6],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def list_user_projects(self, user_id: str, tenant_id: str) -> List[Dict[str, Any]]:
+        """List all projects a user is a member of (with their role)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.id, p.tenant_id, p.name, p.created_at, p.archived_at,
+                       p.created_by_user_id, p.allow_public_shares, p.share_max_expiry_hours,
+                       pm.role
+                FROM projects p
+                JOIN project_memberships pm ON p.id = pm.project_id
+                WHERE pm.user_id = ? AND p.tenant_id = ? AND p.archived_at IS NULL
+                ORDER BY p.created_at DESC
+            """, (user_id, tenant_id))
+            return [
+                {
+                    "id": row[0],
+                    "tenant_id": row[1],
+                    "name": row[2],
+                    "created_at": row[3],
+                    "archived_at": row[4],
+                    "created_by_user_id": row[5],
+                    "allow_public_shares": bool(row[6]),
+                    "share_max_expiry_hours": row[7],
+                    "role": row[8],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def update_project_member_role(
+        self,
+        project_id: str,
+        user_id: str,
+        new_role: ProjectRole,
+    ) -> bool:
+        """Update a member's role in a project. Returns True if updated."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE project_memberships SET role = ?
+                WHERE project_id = ? AND user_id = ?
+            """, (new_role.value, project_id, user_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def remove_project_member(self, project_id: str, user_id: str) -> bool:
+        """Remove a member from a project. Returns True if removed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM project_memberships WHERE project_id = ? AND user_id = ?
+            """, (project_id, user_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def count_project_owners(self, project_id: str) -> int:
+        """Count owners in a project."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM project_memberships
+                WHERE project_id = ? AND role = ?
+            """, (project_id, ProjectRole.OWNER.value))
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def user_has_project_access(
+        self,
+        user_id: str,
+        project_id: str,
+        min_role: Optional[ProjectRole] = None,
+    ) -> bool:
+        """
+        Check if user has access to a project, optionally with minimum role.
+
+        Args:
+            user_id: User identifier
+            project_id: Project identifier
+            min_role: Minimum required role (owner > editor > viewer)
+
+        Returns:
+            True if user has access with required role
+        """
+        membership = self.get_project_membership(project_id, user_id)
+        if membership is None:
+            return False
+
+        if min_role is None:
+            return True
+
+        role_hierarchy = {
+            ProjectRole.VIEWER.value: 1,
+            ProjectRole.EDITOR.value: 2,
+            ProjectRole.OWNER.value: 3,
+        }
+
+        user_level = role_hierarchy.get(membership["role"], 0)
+        required_level = role_hierarchy.get(min_role.value, 0)
+
+        return user_level >= required_level
+
+    # -------------------------------------------------------------------------
+    # Default project backfill helper (v3.7.0)
+    # -------------------------------------------------------------------------
+
+    def backfill_default_project(self, tenant_id: str, created_by_user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Create a default project for a tenant and add all users as owners.
+
+        Args:
+            tenant_id: Tenant identifier
+            created_by_user_id: User who triggered the backfill
+
+        Returns:
+            Dict with project details and member count
+        """
+        # Check if default project already exists
+        existing = None
+        for proj in self.list_projects(tenant_id, include_archived=True):
+            if proj["name"] == DEFAULT_PROJECT_NAME:
+                existing = proj
+                break
+
+        if existing:
+            return {
+                "project": existing,
+                "members_added": 0,
+                "already_existed": True,
+            }
+
+        # Create default project
+        project = self.create_project(
+            tenant_id=tenant_id,
+            name=DEFAULT_PROJECT_NAME,
+            created_by_user_id=created_by_user_id,
+            allow_public_shares=True,
+            share_max_expiry_hours=None,
+        )
+
+        # Add all existing users as owners
+        users = self.list_users(tenant_id)
+        members_added = 0
+        for user in users:
+            try:
+                self.add_project_member(
+                    tenant_id=tenant_id,
+                    project_id=project["id"],
+                    user_id=user["id"],
+                    role=ProjectRole.OWNER,
+                )
+                members_added += 1
+            except sqlite3.IntegrityError:
+                # User already a member (shouldn't happen, but be safe)
+                pass
+
+        return {
+            "project": project,
+            "members_added": members_added,
+            "already_existed": False,
+        }
 
 
 # Global instance (lazy initialization)
