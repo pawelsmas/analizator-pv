@@ -1,0 +1,44 @@
+# Projects RBAC Auth scenario pack for v3.7.0
+# Tests project-level authorization and share policies
+name: projects_rbac_auth
+description: |
+  Regression scenarios for Projects & Per-Project RBAC (v3.7.0):
+  - Project membership and role enforcement
+  - Project-scoped run/job/report access
+  - Share policy enforcement (allow_public_shares, max_expiry)
+  - Cross-project isolation
+
+scenarios:
+  # Project CRUD
+  - projects_create_default_project
+  - projects_list_user_projects
+  - projects_update_project_settings
+  - projects_archive_project
+
+  # Project Membership
+  - projects_add_member_owner
+  - projects_add_member_editor
+  - projects_add_member_viewer
+  - projects_update_member_role
+  - projects_remove_member
+  - projects_owner_cannot_be_removed
+
+  # Project-scoped Access
+  - projects_runs_scoped_by_project
+  - projects_jobs_scoped_by_project
+  - projects_reports_scoped_by_project
+  - projects_cross_project_access_denied
+
+  # Role-based Permissions
+  - projects_owner_full_access
+  - projects_editor_write_access
+  - projects_viewer_read_only
+  - projects_viewer_cannot_create_runs
+  - projects_editor_cannot_manage_members
+
+  # Share Policies
+  - projects_share_policy_allow_public
+  - projects_share_policy_deny_public
+  - projects_share_max_expiry_enforced
+  - projects_share_max_expiry_clamped
+  - projects_share_audit_events_logged
