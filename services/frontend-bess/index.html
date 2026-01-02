@@ -61,6 +61,19 @@
     </div>
   </div>
 
+  <!-- Project Selector (v3.7.0) -->
+  <div id="projectSelector" class="project-selector" style="display:none;">
+    <div class="project-selector-label">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+      </svg>
+      Projekt:
+    </div>
+    <select id="projectSelect" class="project-select" onchange="handleProjectChange()">
+      <option value="">Wszystkie projekty</option>
+    </select>
+  </div>
+
   <!-- Variant Selector -->
   <div class="variant-selector">
     <div class="selector-label">Wybierz wariant instalacji:</div>
@@ -2075,11 +2088,180 @@
 <script src="auth.js?v=3.0.0"></script>
 <script src="bess.js?v=3.16-BESS-V2"></script>
 <script>
-  // Initialize auth module after page load
-  document.addEventListener('DOMContentLoaded', function() {
-    initAuth().catch(function(error) {
-      console.error('[BESS] Auth init error:', error);
+  // ============================================
+  // v3.7.0 PROJECT SELECTOR MODULE
+  // ============================================
+
+  const PROJECT_CONFIG = {
+    storageKey: 'bess_selected_project',
+    baseUrl: '/api/bess-dispatch',
+  };
+
+  // Current project state
+  let currentProjectId = null;
+  let userProjects = [];
+
+  /**
+   * Load user's projects and populate selector
+   */
+  async function loadUserProjects() {
+    console.log('[Projects] Loading user projects...');
+    const selector = document.getElementById('projectSelector');
+    const select = document.getElementById('projectSelect');
+
+    if (!selector || !select) {
+      console.log('[Projects] Selector elements not found');
+      return;
+    }
+
+    try {
+      const response = await authFetch(`${PROJECT_CONFIG.baseUrl}/projects`);
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          console.log('[Projects] Not authorized - hiding selector');
+          selector.style.display = 'none';
+          return;
+        }
+        throw new Error(`Failed to load projects: ${response.status}`);
+      }
+
+      const data = await response.json();
+      userProjects = data.items || [];
+
+      console.log(`[Projects] Loaded ${userProjects.length} projects`);
+
+      // Only show selector if user has projects
+      if (userProjects.length === 0) {
+        selector.style.display = 'none';
+        return;
+      }
+
+      // Show selector
+      selector.style.display = 'flex';
+
+      // Populate options
+      select.innerHTML = '<option value="">Wszystkie projekty</option>';
+      userProjects.forEach(project => {
+        const opt = document.createElement('option');
+        opt.value = project.id;
+        opt.textContent = project.name + (project.is_default ? ' (domyślny)' : '');
+        select.appendChild(opt);
+      });
+
+      // Restore saved selection
+      const savedProjectId = localStorage.getItem(PROJECT_CONFIG.storageKey);
+      if (savedProjectId && userProjects.find(p => p.id === savedProjectId)) {
+        select.value = savedProjectId;
+        currentProjectId = savedProjectId;
+      }
+
+      console.log('[Projects] Current project:', currentProjectId || 'all');
+
+    } catch (error) {
+      console.error('[Projects] Error loading projects:', error);
+      selector.style.display = 'none';
+    }
+  }
+
+  /**
+   * Handle project selection change
+   */
+  function handleProjectChange() {
+    const select = document.getElementById('projectSelect');
+    const projectId = select.value;
+
+    currentProjectId = projectId || null;
+
+    // Save to localStorage
+    if (projectId) {
+      localStorage.setItem(PROJECT_CONFIG.storageKey, projectId);
+    } else {
+      localStorage.removeItem(PROJECT_CONFIG.storageKey);
+    }
+
+    console.log('[Projects] Selected project:', currentProjectId || 'all');
+
+    // Refresh data that depends on project context
+    refreshProjectScopedData();
+  }
+
+  /**
+   * Get current project ID (for use in API calls)
+   * @returns {string|null} Project ID or null for all projects
+   */
+  function getCurrentProjectId() {
+    return currentProjectId;
+  }
+
+  /**
+   * Refresh data that depends on project context
+   * Called when project selection changes
+   */
+  function refreshProjectScopedData() {
+    // Refresh runs list if Run Explorer is visible
+    if (typeof loadAvailableRuns === 'function') {
+      loadAvailableRuns();
+    }
+
+    // Refresh portfolio runs
+    if (typeof refreshRunList === 'function') {
+      refreshRunList();
+    }
+
+    // Refresh runs for picker
+    if (typeof loadRunsForPicker === 'function') {
+      loadRunsForPicker();
+    }
+
+    console.log('[Projects] Project-scoped data refreshed');
+  }
+
+  /**
+   * Build URL with project_id query parameter
+   * @param {string} baseUrl - Base URL
+   * @param {object} params - Additional query parameters
+   * @returns {string} URL with project_id if set
+   */
+  function buildProjectScopedUrl(baseUrl, params = {}) {
+    const url = new URL(baseUrl, window.location.origin);
+
+    // Add project_id if selected
+    if (currentProjectId) {
+      url.searchParams.set('project_id', currentProjectId);
+    }
+
+    // Add other params
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        url.searchParams.set(key, value);
+      }
     });
+
+    return url.pathname + url.search;
+  }
+
+  // Export project functions to window
+  window.loadUserProjects = loadUserProjects;
+  window.handleProjectChange = handleProjectChange;
+  window.getCurrentProjectId = getCurrentProjectId;
+  window.buildProjectScopedUrl = buildProjectScopedUrl;
+
+  // ============================================
+  // INITIALIZATION
+  // ============================================
+
+  // Initialize auth module after page load
+  document.addEventListener('DOMContentLoaded', async function() {
+    try {
+      await initAuth();
+
+      // Load projects after auth is initialized
+      await loadUserProjects();
+
+    } catch(error) {
+      console.error('[BESS] Init error:', error);
+    }
   });
 </script>
 </body>
