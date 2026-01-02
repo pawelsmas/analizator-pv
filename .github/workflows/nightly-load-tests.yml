@@ -1,0 +1,151 @@
+# Nightly Load Tests workflow (v3.9.0)
+# Runs k6 load tests against staging environment
+name: Nightly Load Tests
+
+on:
+  schedule:
+    # Run at 2:00 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Load test scenario'
+        required: true
+        default: 'baseline'
+        type: choice
+        options:
+          - smoke
+          - baseline
+          - stress
+          - soak
+      target_url:
+        description: 'Target URL (default: staging)'
+        required: false
+        default: ''
+
+env:
+  DEFAULT_TARGET_URL: 'http://bess-staging.internal:8031'
+
+jobs:
+  load-tests:
+    name: Run Load Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Verify k6 installation
+        run: k6 version
+
+      - name: Determine target URL
+        id: target
+        run: |
+          if [ -n "${{ github.event.inputs.target_url }}" ]; then
+            echo "url=${{ github.event.inputs.target_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "url=${{ env.DEFAULT_TARGET_URL }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine scenario
+        id: scenario
+        run: |
+          if [ -n "${{ github.event.inputs.scenario }}" ]; then
+            echo "name=${{ github.event.inputs.scenario }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=baseline" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run sizing load test
+        continue-on-error: true
+        run: |
+          k6 run \
+            --env TARGET_URL=${{ steps.target.outputs.url }} \
+            --env SCENARIO=${{ steps.scenario.outputs.name }} \
+            --out json=sizing_results.json \
+            tests/load/sizing_load.js
+
+      - name: Run validation load test
+        continue-on-error: true
+        run: |
+          k6 run \
+            --env TARGET_URL=${{ steps.target.outputs.url }} \
+            --env SCENARIO=${{ steps.scenario.outputs.name }} \
+            --out json=validation_results.json \
+            tests/load/validation_load.js
+
+      - name: Run jobs load test
+        continue-on-error: true
+        run: |
+          k6 run \
+            --env TARGET_URL=${{ steps.target.outputs.url }} \
+            --env SCENARIO=${{ steps.scenario.outputs.name }} \
+            --out json=jobs_results.json \
+            tests/load/jobs_load.js
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: |
+            *_results.json
+          retention-days: 30
+
+      - name: Generate summary
+        run: |
+          echo "## Load Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Target:** ${{ steps.target.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Scenario:** ${{ steps.scenario.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tests Run" >> $GITHUB_STEP_SUMMARY
+          echo "- Sizing endpoint load test" >> $GITHUB_STEP_SUMMARY
+          echo "- Validation endpoint load test" >> $GITHUB_STEP_SUMMARY
+          echo "- Jobs endpoint load test" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Results uploaded as artifacts." >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: load-tests
+    if: failure()
+
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Load Test Failure - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Load Test Failure
+
+            The nightly load tests have failed.
+
+            **Workflow Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+            **Scenario:** ${{ github.event.inputs.scenario || 'baseline' }}
+            **Date:** ${new Date().toISOString()}
+
+            Please investigate the failure and check:
+            1. Is the staging environment healthy?
+            2. Are there any recent deployments that could affect performance?
+            3. Check the test artifacts for detailed metrics.
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['load-test', 'automated', 'needs-investigation']
+            });
