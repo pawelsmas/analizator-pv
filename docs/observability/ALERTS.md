@@ -923,3 +923,127 @@ Tracks audit log write volume.
     summary: "High audit log volume"
     description: "{{ $value | humanize }} audit entries in the last hour"
 ```
+
+## Projects & RBAC Alerts (v3.7.0)
+
+Alerting rules for project management and per-project RBAC.
+
+### Critical: Project Access Denied Spike
+
+Fires when project access denials spike, indicating potential misconfigured permissions or attack.
+
+```yaml
+- alert: BESSProjectAccessDeniedSpike
+  expr: increase(bess_project_access_denied_total[5m]) > 20
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Project access denied spike"
+    description: "{{ $value | humanize }} project access denials in the last 5 minutes. Reason: {{ $labels.reason }}"
+```
+
+### Warning: High Project Forbidden Rate
+
+Fires when project forbidden rate is consistently high.
+
+```yaml
+- alert: BESSProjectForbiddenRateHigh
+  expr: |
+    sum(rate(bess_project_access_checks_total{result="denied"}[15m])) /
+    sum(rate(bess_project_access_checks_total[15m])) > 0.1
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High project forbidden rate"
+    description: "More than 10% of project access checks are being denied"
+```
+
+### Warning: Share Policy Denials
+
+Fires when share policy is denying share creation attempts.
+
+```yaml
+- alert: BESSSharePolicyDenials
+  expr: increase(bess_project_share_policy_enforcements_total{enforcement_result="denied"}[15m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Share policy denials"
+    description: "{{ $value | humanize }} share creation attempts denied by {{ $labels.policy }} policy"
+```
+
+### Info: Share Policy Clamping Active
+
+Tracks when share max_expiry_hours is clamping requested expiration.
+
+```yaml
+- alert: BESSSharePolicyClamping
+  expr: rate(bess_project_share_policy_enforcements_total{enforcement_result="clamped"}[1h]) > 1
+  for: 30m
+  labels:
+    severity: info
+  annotations:
+    summary: "Share expiry clamping active"
+    description: "Share expiration times being clamped to project max_expiry_hours limit"
+```
+
+### Info: Project Membership Changes
+
+Tracks project membership activity.
+
+```yaml
+- alert: BESSProjectMembershipActivity
+  expr: sum(increase(bess_project_membership_operations_total[1d])) > 20
+  labels:
+    severity: info
+  annotations:
+    summary: "High project membership activity"
+    description: "{{ $value | humanize }} membership changes in the last 24 hours"
+```
+
+### Warning: Non-Member Access Attempts
+
+Fires when users are frequently trying to access projects they're not members of.
+
+```yaml
+- alert: BESSNonMemberAccessAttempts
+  expr: increase(bess_project_access_denied_total{reason="not_member"}[15m]) > 10
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Non-member project access attempts"
+    description: "{{ $value | humanize }} access attempts by non-members in the last 15 minutes"
+```
+
+### Info: Project Creation Rate
+
+Tracks new project creation.
+
+```yaml
+- alert: BESSProjectCreationRate
+  expr: increase(bess_project_operations_total{operation="create", result="success"}[1d]) > 10
+  labels:
+    severity: info
+  annotations:
+    summary: "High project creation rate"
+    description: "{{ $value | humanize }} new projects created in the last 24 hours"
+```
+
+### Warning: Cross-Project Resource Access Denied
+
+Fires when users attempt to access resources in projects they don't have access to.
+
+```yaml
+- alert: BESSCrossProjectAccessDenied
+  expr: increase(bess_project_resource_access_total{result="denied"}[15m]) > 10
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Cross-project resource access denied"
+    description: "{{ $value | humanize }} denied access attempts to {{ $labels.resource_type }} resources"
+```
