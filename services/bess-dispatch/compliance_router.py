@@ -809,3 +809,236 @@ def get_purge_run(
         )
 
     return run
+
+
+# -------------------------------------------------------------------------
+# Compliance Export Endpoints
+# -------------------------------------------------------------------------
+
+class ExportOptionsRequest(BaseModel):
+    """Request to create compliance export."""
+    include_runs: bool = Field(default=True)
+    include_jobs: bool = Field(default=True)
+    include_audit_logs: bool = Field(default=True)
+    include_retention_policies: bool = Field(default=True)
+    include_legal_holds: bool = Field(default=True)
+    include_purge_runs: bool = Field(default=True)
+    include_users: bool = Field(default=False)
+    include_api_keys: bool = Field(default=False)
+    date_from: Optional[str] = Field(default=None)
+    date_to: Optional[str] = Field(default=None)
+    redaction_mode: str = Field(default="standard")
+    max_records_per_type: int = Field(default=100000)
+
+
+class ExportJobResponse(BaseModel):
+    """Response for export job."""
+    id: str
+    tenant_id: str
+    project_id: Optional[str] = None
+    status: str
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    created_by_user_id: str
+    progress_pct: int = 0
+    current_step: Optional[str] = None
+    bundle_size_bytes: Optional[int] = None
+    record_count: Optional[int] = None
+    error: Optional[str] = None
+
+
+class ExportListResponse(BaseModel):
+    """Response for listing exports."""
+    items: List[ExportJobResponse]
+    total: int
+
+
+@router.post("/exports", response_model=ExportJobResponse)
+def create_compliance_export(
+    request: ExportOptionsRequest,
+    project_id: Optional[str] = Query(default=None),
+    wait: bool = Query(default=False, description="Wait for completion"),
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Create a compliance export job.
+
+    Returns immediately with job ID, unless wait=true.
+    """
+    from compliance_export_helper import ExportOptions, RedactionMode
+    from compliance_export_worker import start_export_job, get_export_status
+
+    store = get_compliance_store()
+
+    # Convert request to ExportOptions
+    try:
+        redaction = RedactionMode(request.redaction_mode)
+    except ValueError:
+        redaction = RedactionMode.STANDARD
+
+    options = ExportOptions(
+        include_runs=request.include_runs,
+        include_jobs=request.include_jobs,
+        include_audit_logs=request.include_audit_logs,
+        include_retention_policies=request.include_retention_policies,
+        include_legal_holds=request.include_legal_holds,
+        include_purge_runs=request.include_purge_runs,
+        include_users=request.include_users,
+        include_api_keys=request.include_api_keys,
+        date_from=request.date_from,
+        date_to=request.date_to,
+        redaction_mode=redaction,
+        max_records_per_type=request.max_records_per_type,
+    )
+
+    # Start job
+    job = start_export_job(
+        compliance_store=store,
+        tenant_id=auth.tenant_id,
+        options=options,
+        created_by_user_id=auth.user_id,
+        project_id=project_id,
+        run_async=not wait,
+    )
+
+    log_audit(
+        "compliance_export_started",
+        auth.tenant_id,
+        auth.user_id,
+        details={"job_id": job.id, "project_id": project_id},
+    )
+
+    # If wait=true, poll for completion
+    if wait:
+        import time
+        for _ in range(300):  # Max 5 minutes
+            status = get_export_status(store, job.id)
+            if status and status.status in ("completed", "failed"):
+                return ExportJobResponse(**status.model_dump())
+            time.sleep(1)
+
+    return ExportJobResponse(
+        id=job.id,
+        tenant_id=job.tenant_id,
+        project_id=job.project_id,
+        status=job.status,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        created_by_user_id=job.created_by_user_id,
+        progress_pct=job.progress_pct,
+        current_step=job.current_step,
+    )
+
+
+@router.get("/exports", response_model=ExportListResponse)
+def list_compliance_exports(
+    project_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    List compliance export jobs.
+    """
+    from compliance_export_worker import list_export_jobs
+
+    store = get_compliance_store()
+    jobs = list_export_jobs(store, auth.tenant_id, project_id, limit)
+
+    return ExportListResponse(
+        items=[ExportJobResponse(**j.model_dump()) for j in jobs],
+        total=len(jobs),
+    )
+
+
+@router.get("/exports/{job_id}", response_model=ExportJobResponse)
+def get_compliance_export_status(
+    job_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Get compliance export job status.
+    """
+    from compliance_export_worker import get_export_status
+
+    store = get_compliance_store()
+    job = get_export_status(store, job_id)
+
+    if not job or job.tenant_id != auth.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Export job not found",
+        )
+
+    return ExportJobResponse(**job.model_dump())
+
+
+@router.get("/exports/{job_id}/download")
+def download_compliance_export(
+    job_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Download completed compliance export bundle.
+
+    Returns ZIP file with manifest and data.
+    """
+    from fastapi.responses import StreamingResponse
+    from compliance_export_worker import get_export_download
+    import io
+
+    store = get_compliance_store()
+    result = get_export_download(store, job_id)
+
+    if not result or result.tenant_id != auth.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Export not found or not ready",
+        )
+
+    log_audit(
+        "compliance_export_downloaded",
+        auth.tenant_id,
+        auth.user_id,
+        details={"job_id": job_id, "size_bytes": result.bundle_size_bytes},
+    )
+
+    filename = f"compliance_export_{result.tenant_id}_{job_id[:8]}.zip"
+
+    return StreamingResponse(
+        io.BytesIO(result.bundle_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.delete("/exports/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_compliance_export(
+    job_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Delete a compliance export bundle.
+
+    Marks the export as expired and removes the bundle.
+    """
+    from compliance_export_worker import delete_export_bundle, get_export_status
+
+    store = get_compliance_store()
+    job = get_export_status(store, job_id)
+
+    if not job or job.tenant_id != auth.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Export job not found",
+        )
+
+    delete_export_bundle(store, job_id)
+
+    log_audit(
+        "compliance_export_deleted",
+        auth.tenant_id,
+        auth.user_id,
+        details={"job_id": job_id},
+    )

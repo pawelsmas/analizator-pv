@@ -164,7 +164,15 @@ class ComplianceStore:
                     job_id TEXT,
                     artifact_name TEXT,
                     created_at TEXT NOT NULL,
-                    finished_at TEXT
+                    started_at TEXT,
+                    finished_at TEXT,
+                    progress_pct INTEGER DEFAULT 0,
+                    current_step TEXT,
+                    bundle_size_bytes INTEGER,
+                    record_count INTEGER,
+                    manifest_json TEXT,
+                    error TEXT,
+                    error_detail TEXT
                 )
             """)
             conn.execute("""
@@ -681,10 +689,10 @@ class ComplianceStore:
     def create_compliance_export(
         self,
         tenant_id: str,
-        requested_by_user_id: str,
-        scope: str,
-        options_json: Dict[str, Any],
+        created_by_user_id: str,
+        options: Dict[str, Any],
         project_id: Optional[str] = None,
+        scope: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -692,10 +700,10 @@ class ComplianceStore:
 
         Args:
             tenant_id: Tenant ID
-            requested_by_user_id: User requesting the export
-            scope: "tenant" or "project"
-            options_json: Export options (what to include)
-            project_id: Required if scope is "project"
+            created_by_user_id: User requesting the export
+            options: Export options (what to include)
+            project_id: Optional project scope
+            scope: "tenant" or "project" (auto-detected if not provided)
             job_id: Optional job ID if using job queue
 
         Returns:
@@ -705,28 +713,31 @@ class ComplianceStore:
         try:
             export_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
+            actual_scope = scope or ("project" if project_id else "tenant")
 
             conn.execute("""
                 INSERT INTO compliance_exports
                 (id, tenant_id, project_id, requested_by_user_id, scope, options_json,
-                 status, job_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (export_id, tenant_id, project_id, requested_by_user_id, scope,
-                  json.dumps(options_json), "queued", job_id, now))
+                 status, job_id, created_at, progress_pct)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (export_id, tenant_id, project_id, created_by_user_id, actual_scope,
+                  json.dumps(options), "pending", job_id, now, 0))
             conn.commit()
 
             return {
                 "id": export_id,
                 "tenant_id": tenant_id,
                 "project_id": project_id,
-                "requested_by_user_id": requested_by_user_id,
-                "scope": scope,
-                "options_json": options_json,
-                "status": "queued",
+                "created_by_user_id": created_by_user_id,
+                "scope": actual_scope,
+                "options": options,
+                "status": "pending",
                 "job_id": job_id,
-                "artifact_name": None,
                 "created_at": now,
+                "started_at": None,
                 "finished_at": None,
+                "progress_pct": 0,
+                "current_step": None,
             }
         finally:
             conn.close()
@@ -788,8 +799,18 @@ class ComplianceStore:
                 return None
 
             result = dict(row)
-            if result["options_json"]:
-                result["options_json"] = json.loads(result["options_json"])
+            # Parse JSON fields
+            if result.get("options_json"):
+                result["options"] = json.loads(result["options_json"])
+            else:
+                result["options"] = {}
+            if result.get("manifest_json"):
+                result["manifest"] = json.loads(result["manifest_json"])
+            else:
+                result["manifest"] = None
+            # Map created_by field for compatibility
+            if "requested_by_user_id" in result:
+                result["created_by_user_id"] = result["requested_by_user_id"]
             return result
         finally:
             conn.close()
@@ -821,10 +842,102 @@ class ComplianceStore:
             results = []
             for row in rows:
                 result = dict(row)
-                if result["options_json"]:
-                    result["options_json"] = json.loads(result["options_json"])
+                if result.get("options_json"):
+                    result["options"] = json.loads(result["options_json"])
+                else:
+                    result["options"] = {}
+                if result.get("manifest_json"):
+                    result["manifest"] = json.loads(result["manifest_json"])
+                if "requested_by_user_id" in result:
+                    result["created_by_user_id"] = result["requested_by_user_id"]
                 results.append(result)
             return results
+        finally:
+            conn.close()
+
+    def update_compliance_export(
+        self,
+        export_id: str,
+        status: Optional[str] = None,
+        started_at: Optional[str] = None,
+        finished_at: Optional[str] = None,
+        progress_pct: Optional[int] = None,
+        current_step: Optional[str] = None,
+        bundle_size_bytes: Optional[int] = None,
+        record_count: Optional[int] = None,
+        manifest: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        error_detail: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update compliance export with flexible fields.
+
+        Args:
+            export_id: Export ID
+            status: New status
+            started_at: Start timestamp
+            finished_at: Finish timestamp
+            progress_pct: Progress percentage (0-100)
+            current_step: Current processing step
+            bundle_size_bytes: Size of generated bundle
+            record_count: Number of records exported
+            manifest: Export manifest
+            error: Error message if failed
+            error_detail: Detailed error info
+
+        Returns:
+            Updated export record
+        """
+        conn = self._get_conn()
+        try:
+            # Build dynamic update
+            updates = []
+            params: List[Any] = []
+
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            if started_at is not None:
+                updates.append("started_at = ?")
+                params.append(started_at)
+            if finished_at is not None:
+                updates.append("finished_at = ?")
+                params.append(finished_at)
+            if progress_pct is not None:
+                updates.append("progress_pct = ?")
+                params.append(progress_pct)
+            if current_step is not None:
+                updates.append("current_step = ?")
+                params.append(current_step)
+            if bundle_size_bytes is not None:
+                updates.append("bundle_size_bytes = ?")
+                params.append(bundle_size_bytes)
+            if record_count is not None:
+                updates.append("record_count = ?")
+                params.append(record_count)
+            if manifest is not None:
+                updates.append("manifest_json = ?")
+                params.append(json.dumps(manifest))
+            if error is not None:
+                updates.append("error = ?")
+                params.append(error)
+            if error_detail is not None:
+                updates.append("error_detail = ?")
+                params.append(error_detail)
+
+            if not updates:
+                return self.get_compliance_export(export_id)
+
+            params.append(export_id)
+
+            conn.execute(f"""
+                UPDATE compliance_exports
+                SET {', '.join(updates)}
+                WHERE id = ?
+            """, params)
+            conn.commit()
+
+            return self.get_compliance_export(export_id)
         finally:
             conn.close()
 
