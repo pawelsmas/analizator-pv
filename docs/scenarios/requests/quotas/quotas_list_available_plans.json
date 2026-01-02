@@ -1,0 +1,8 @@
+{
+  "endpoint": "GET /api/bess-dispatch/plans",
+  "description": "List all available subscription plans",
+  "auth": {
+    "type": "jwt",
+    "role": "admin"
+  }
+}

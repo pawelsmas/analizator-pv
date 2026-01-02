@@ -1,0 +1,22 @@
+{
+  "endpoint": "GET /api/bess-dispatch/projects/{project_id}/quotas",
+  "description": "Get project quotas showing override takes precedence over plan",
+  "auth": {
+    "type": "jwt",
+    "role": "admin",
+    "tenant_id": "override-test-tenant"
+  },
+  "path_params": {
+    "project_id": "override-test-project"
+  },
+  "setup": {
+    "tenant_settings": {
+      "plan_id": "free"
+    },
+    "project_quota": {
+      "overrides": {
+        "jobs_per_day": 200
+      }
+    }
+  }
+}

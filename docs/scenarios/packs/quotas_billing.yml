@@ -1,0 +1,57 @@
+# Quotas & Billing scenario pack for v4.0.0
+# Tests quota enforcement, usage tracking, and billing features
+name: quotas_billing
+description: |
+  Regression scenarios for Plans / Quotas / Usage / Billing (v4.0.0):
+  - Plan management (free, pro, enterprise)
+  - Quota limits and enforcement
+  - Project quota overrides
+  - Usage tracking and metering
+  - Billing UI components
+
+scenarios:
+  # Plan Management
+  - quotas_list_available_plans
+  - quotas_get_plan_details
+  - quotas_plan_limits_structure
+
+  # Tenant Settings
+  - quotas_get_tenant_settings
+  - quotas_update_tenant_plan
+  - quotas_default_plan_for_new_tenant
+
+  # Quota Enforcement
+  - quotas_jobs_per_day_allowed
+  - quotas_jobs_per_day_denied
+  - quotas_reports_per_day_allowed
+  - quotas_reports_per_day_denied
+  - quotas_storage_mb_allowed
+  - quotas_storage_mb_denied
+  - quotas_shares_total_allowed
+  - quotas_shares_total_denied
+  - quotas_429_response_structure
+  - quotas_retry_after_header
+
+  # Project Overrides
+  - quotas_project_override_get
+  - quotas_project_override_set
+  - quotas_project_override_clear
+  - quotas_override_takes_precedence
+  - quotas_zero_override_unlimited
+
+  # Usage Tracking
+  - quotas_usage_tenant_summary
+  - quotas_usage_project_summary
+  - quotas_usage_daily_records
+  - quotas_usage_date_range_filter
+  - quotas_usage_export_csv
+
+  # Quota Reset
+  - quotas_reset_at_midnight_utc
+  - quotas_seconds_until_reset
+
+  # Billing UI
+  - quotas_billing_page_structure
+  - quotas_billing_quota_cards
+  - quotas_billing_usage_history
+  - quotas_project_quotas_editor

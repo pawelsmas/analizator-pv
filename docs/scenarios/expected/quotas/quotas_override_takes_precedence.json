@@ -1,0 +1,21 @@
+{
+  "status": 200,
+  "response_shape": {
+    "tenant_id": "string",
+    "project_id": "string",
+    "plan_id": "string",
+    "overrides": {
+      "jobs_per_day": "integer"
+    },
+    "effective_limits": {
+      "jobs_per_day": "integer",
+      "reports_per_day": "integer"
+    }
+  },
+  "assertions": [
+    "response['plan_id'] == 'free'",
+    "response['overrides']['jobs_per_day'] == 200",
+    "response['effective_limits']['jobs_per_day'] == 200",
+    "response['effective_limits']['reports_per_day'] == 5"
+  ]
+}
