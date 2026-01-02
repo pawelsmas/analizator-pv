@@ -1,0 +1,58 @@
+# Compliance & Retention Auth scenario pack for v4.3.0
+# Tests compliance features authorization and access control
+name: compliance_retention_auth
+description: |
+  Regression scenarios for Compliance & Retention (v4.3.0):
+  - Retention policy CRUD authorization
+  - Legal hold create/release authorization
+  - Purge execution authorization
+  - Compliance export authorization
+  - Cross-tenant isolation
+
+scenarios:
+  # Retention Policy Authorization
+  - compliance_retention_policy_admin_can_create
+  - compliance_retention_policy_admin_can_update
+  - compliance_retention_policy_admin_can_delete
+  - compliance_retention_policy_editor_cannot_create
+  - compliance_retention_policy_viewer_cannot_read
+  - compliance_retention_policy_tenant_isolation
+  - compliance_retention_policy_project_override_requires_project_owner
+
+  # Legal Hold Authorization
+  - compliance_legal_hold_admin_can_create
+  - compliance_legal_hold_admin_can_release
+  - compliance_legal_hold_editor_cannot_create
+  - compliance_legal_hold_viewer_cannot_view
+  - compliance_legal_hold_tenant_isolation
+  - compliance_legal_hold_audit_events_logged
+
+  # Purge Authorization
+  - compliance_purge_dry_run_admin_only
+  - compliance_purge_execute_admin_only
+  - compliance_purge_editor_cannot_execute
+  - compliance_purge_respects_legal_holds
+  - compliance_purge_respects_max_deletions
+  - compliance_purge_tenant_isolation
+  - compliance_purge_project_scope
+
+  # Compliance Export Authorization
+  - compliance_export_admin_can_create
+  - compliance_export_admin_can_download
+  - compliance_export_admin_can_delete
+  - compliance_export_editor_cannot_create
+  - compliance_export_viewer_cannot_view
+  - compliance_export_tenant_isolation
+  - compliance_export_contains_redacted_data
+
+  # Cross-tenant Isolation
+  - compliance_tenant_a_cannot_access_tenant_b_policies
+  - compliance_tenant_a_cannot_access_tenant_b_holds
+  - compliance_tenant_a_cannot_access_tenant_b_exports
+  - compliance_tenant_a_cannot_purge_tenant_b_data
+
+  # Audit Trail
+  - compliance_retention_policy_changes_audited
+  - compliance_legal_hold_changes_audited
+  - compliance_purge_execution_audited
+  - compliance_export_requests_audited
