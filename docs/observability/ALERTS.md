@@ -1047,3 +1047,158 @@ Fires when users attempt to access resources in projects they don't have access 
     summary: "Cross-project resource access denied"
     description: "{{ $value | humanize }} denied access attempts to {{ $labels.resource_type }} resources"
 ```
+
+## Compliance & Retention Alerts (v4.3.0)
+
+### Critical: Retention Purge Failure
+
+Fires when retention purge jobs are failing.
+
+```yaml
+- alert: BESSRetentionPurgeFailure
+  expr: increase(bess_purge_runs_total{mode="execute", result="failure"}[1h]) > 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Retention purge job failed"
+    description: "Retention purge execution failed. Check logs for error details."
+    runbook: "Check retention-purge CronJob logs. Verify database connectivity and legal hold status."
+```
+
+### Warning: Purge Job Hitting Limits
+
+Fires when purge jobs are frequently hitting deletion limits, indicating a backlog.
+
+```yaml
+- alert: BESSPurgeHittingLimits
+  expr: increase(bess_purge_hit_limit_total{mode="execute"}[24h]) > 3
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Purge jobs frequently hitting limits"
+    description: "{{ $value | humanize }} purge jobs hit the deletion limit in 24h. Consider increasing MAX_DELETIONS_PER_RUN."
+```
+
+### Info: High Legal Hold Count
+
+Fires when there are many active legal holds, which may impact purge efficiency.
+
+```yaml
+- alert: BESSHighLegalHoldCount
+  expr: sum(bess_legal_hold_active) by (tenant_id) > 100
+  for: 1h
+  labels:
+    severity: info
+  annotations:
+    summary: "High legal hold count"
+    description: "Tenant {{ $labels.tenant_id }} has {{ $value | humanize }} active legal holds"
+```
+
+### Warning: Legal Hold Blocking Purges
+
+Fires when many resources are being skipped due to legal holds.
+
+```yaml
+- alert: BESSLegalHoldBlockingPurges
+  expr: |
+    sum(rate(bess_purge_skipped_total{reason="held"}[1h])) /
+    sum(rate(bess_purge_found_total[1h])) > 0.5
+  for: 30m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Legal holds blocking >50% of purge candidates"
+    description: "More than 50% of resources eligible for purge are being skipped due to legal holds. Review hold policies."
+```
+
+### Warning: Compliance Export Failures
+
+Fires when compliance export jobs are failing.
+
+```yaml
+- alert: BESSComplianceExportFailure
+  expr: increase(bess_compliance_export_operations_total{operation="create", result="failure"}[1h]) > 0
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Compliance export job failed"
+    description: "Compliance export creation is failing. Check worker logs."
+```
+
+### Info: Large Compliance Exports
+
+Fires when compliance exports are unusually large.
+
+```yaml
+- alert: BESSLargeComplianceExport
+  expr: histogram_quantile(0.95, rate(bess_compliance_export_size_bytes_bucket[1h])) > 104857600
+  for: 15m
+  labels:
+    severity: info
+  annotations:
+    summary: "Large compliance exports detected"
+    description: "95th percentile export size exceeds 100MB. Consider archival strategy."
+```
+
+### Warning: Slow Compliance Exports
+
+Fires when compliance exports are taking too long.
+
+```yaml
+- alert: BESSSlowComplianceExport
+  expr: histogram_quantile(0.95, rate(bess_compliance_export_duration_seconds_bucket[1h])) > 300
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Slow compliance exports"
+    description: "95th percentile export duration exceeds 5 minutes. Check database performance."
+```
+
+### Critical: No Retention Policy Defined
+
+Fires when a tenant has runs but no retention policy (data never gets purged).
+
+```yaml
+- alert: BESSNoRetentionPolicy
+  expr: bess_retention_policy_days == 0 and on(tenant_id) increase(bess_sizing_runs_total[7d]) > 100
+  for: 24h
+  labels:
+    severity: critical
+  annotations:
+    summary: "No retention policy for active tenant"
+    description: "Tenant {{ $labels.tenant_id }} has {{ $value | humanize }} runs but no retention policy. Data will never be purged."
+    runbook: "Set up retention policy via Compliance UI or API"
+```
+
+### Info: Purge Activity Summary
+
+Tracks daily purge activity for monitoring trends.
+
+```yaml
+- alert: BESSPurgeActivitySummary
+  expr: sum(increase(bess_purge_deleted_total[24h])) by (category) > 0
+  labels:
+    severity: info
+  annotations:
+    summary: "Daily purge activity"
+    description: "{{ $value | humanize }} {{ $labels.category }} resources purged in last 24h"
+```
+
+### Warning: Retention Policy Changes
+
+Fires when retention policies are modified, for audit trail.
+
+```yaml
+- alert: BESSRetentionPolicyChanged
+  expr: increase(bess_retention_policy_operations_total{operation=~"update|delete"}[1h]) > 0
+  for: 0m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Retention policy modified"
+    description: "{{ $value | humanize }} retention policy {{ $labels.operation }} operations in last hour"
+```
