@@ -941,6 +941,25 @@ class ComplianceStore:
         finally:
             conn.close()
 
+    def list_tenants_with_policies(self) -> List[str]:
+        """
+        List all tenant IDs that have retention policies.
+
+        Returns:
+            List of tenant IDs with active retention policies
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("""
+                SELECT DISTINCT tenant_id
+                FROM retention_policies
+                WHERE enabled = 1
+                ORDER BY tenant_id
+            """)
+            return [row["tenant_id"] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
 
 # Global instance
 _compliance_store: Optional[ComplianceStore] = None

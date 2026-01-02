@@ -1,0 +1,158 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: retention-purge
+  namespace: pv-optimizer
+  labels:
+    app: retention-purge
+    component: compliance
+    tier: backend
+spec:
+  # Run daily at 2:00 AM UTC
+  schedule: "0 2 * * *"
+  # Allow max 3 hours for execution
+  startingDeadlineSeconds: 10800
+  # Do not run if previous job is still running
+  concurrencyPolicy: Forbid
+  # Keep last 5 successful and 3 failed jobs for debugging
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: retention-purge
+        component: compliance
+    spec:
+      # Automatically clean up jobs after 24 hours
+      ttlSecondsAfterFinished: 86400
+      # Allow 2 retries on failure
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: retention-purge
+            component: compliance
+        spec:
+          serviceAccountName: retention-purge
+          restartPolicy: OnFailure
+          containers:
+          - name: retention-purge
+            image: pv-optimizer/bess-dispatch:latest
+            imagePullPolicy: IfNotPresent
+            command:
+            - python
+            - -m
+            - retention_purge_job
+            env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: DB_PATH
+              value: "/data/compliance.db"
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: retention-config
+                  key: log_level
+            - name: MAX_DELETIONS_PER_RUN
+              valueFrom:
+                configMapKeyRef:
+                  name: retention-config
+                  key: max_deletions_per_run
+            - name: DRY_RUN_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: retention-config
+                  key: dry_run_mode
+            - name: NOTIFY_ON_COMPLETION
+              valueFrom:
+                configMapKeyRef:
+                  name: retention-config
+                  key: notify_on_completion
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: retention-secrets
+                  key: slack_webhook_url
+                  optional: true
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+            volumeMounts:
+            - name: compliance-data
+              mountPath: /data
+          volumes:
+          - name: compliance-data
+            persistentVolumeClaim:
+              claimName: compliance-data-pvc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retention-config
+  namespace: pv-optimizer
+  labels:
+    app: retention-purge
+    component: compliance
+data:
+  # Log level for retention job
+  log_level: "INFO"
+  # Maximum number of deletions per run (safety limit)
+  max_deletions_per_run: "10000"
+  # Set to "true" to run in dry-run mode (no actual deletions)
+  dry_run_mode: "false"
+  # Set to "true" to send Slack notification on completion
+  notify_on_completion: "true"
+  # Enabled categories (comma-separated)
+  enabled_categories: "runs,jobs,reports,audit_logs,exports"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: retention-purge
+  namespace: pv-optimizer
+  labels:
+    app: retention-purge
+    component: compliance
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: retention-purge
+  namespace: pv-optimizer
+  labels:
+    app: retention-purge
+    component: compliance
+rules:
+# Allow reading configmaps for configuration
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+# Allow reading secrets for credentials
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+# Allow updating job status
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: retention-purge
+  namespace: pv-optimizer
+  labels:
+    app: retention-purge
+    component: compliance
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: retention-purge
+subjects:
+- kind: ServiceAccount
+  name: retention-purge
+  namespace: pv-optimizer

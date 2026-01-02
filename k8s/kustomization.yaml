@@ -12,6 +12,8 @@ resources:
   - typical-days-deployment.yaml
   - frontend-deployment.yaml
   - ingress.yaml
+  - compliance-pvc.yaml
+  - retention-cronjob.yaml
 
 commonLabels:
   app.kubernetes.io/name: pv-optimizer
