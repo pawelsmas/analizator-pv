@@ -1,0 +1,184 @@
+# BESS Dispatch SLO Alerting Rules
+# Version: v3.9.0
+#
+# Multi-window, multi-burn-rate alerting based on Google SRE practices.
+# Requires slo_recording_rules.yml for SLI metrics.
+
+groups:
+  # =========================================================================
+  # Availability SLO Alerts (99.5% / 30d)
+  # =========================================================================
+  - name: bess_slo_availability_alerts
+    rules:
+      # Fast burn: 14.4x burn rate for 2% budget in 1h
+      # Alerts after ~5 minutes of sustained high error rate
+      - alert: BESSAvailabilitySLOFastBurn
+        expr: |
+          bess:error_budget:burn_rate_1h > 14.4
+          and
+          bess:error_budget:burn_rate_5m > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+          burn_window: 1h
+        annotations:
+          summary: "BESS availability SLO fast burn (14.4x in 1h)"
+          description: |
+            Error budget is being consumed at 14.4x the sustainable rate.
+            At this rate, the 30-day error budget will be exhausted in ~2 days.
+            Current 1h burn rate: {{ $value | printf "%.2f" }}x
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-availability"
+
+      # Medium burn: 6x burn rate for 5% budget in 6h
+      - alert: BESSAvailabilitySLOMediumBurn
+        expr: |
+          bess:error_budget:burn_rate_6h > 6
+          and
+          bess:error_budget:burn_rate_30m > 6
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+          burn_window: 6h
+        annotations:
+          summary: "BESS availability SLO medium burn (6x in 6h)"
+          description: |
+            Error budget is being consumed at 6x the sustainable rate.
+            At this rate, the 30-day error budget will be exhausted in ~5 days.
+            Current 6h burn rate: {{ $value | printf "%.2f" }}x
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-availability"
+
+      # Slow burn: 3x burn rate for 10% budget in 24h
+      - alert: BESSAvailabilitySLOSlowBurn
+        expr: |
+          bess:error_budget:burn_rate_24h > 3
+          and
+          bess:error_budget:burn_rate_2h > 3
+        for: 1h
+        labels:
+          severity: warning
+          slo: availability
+          burn_window: 24h
+        annotations:
+          summary: "BESS availability SLO slow burn (3x in 24h)"
+          description: |
+            Error budget is being consumed at 3x the sustainable rate.
+            At this rate, the 30-day error budget will be exhausted in ~10 days.
+            Current 24h burn rate: {{ $value | printf "%.2f" }}x
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-availability"
+
+      # Budget exhausted
+      - alert: BESSAvailabilityBudgetExhausted
+        expr: bess:error_budget:remaining_ratio < 0
+        for: 5m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "BESS availability error budget exhausted"
+          description: |
+            The 30-day availability error budget has been completely consumed.
+            Remaining budget: {{ $value | printf "%.2f" }}%
+            Consider freezing non-critical changes until budget recovers.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-budget-exhausted"
+
+      # Budget low warning
+      - alert: BESSAvailabilityBudgetLow
+        expr: bess:error_budget:remaining_ratio < 0.25 and bess:error_budget:remaining_ratio >= 0
+        for: 30m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "BESS availability error budget low (< 25%)"
+          description: |
+            The 30-day availability error budget is below 25%.
+            Remaining budget: {{ $value | printf "%.2f" }}%
+            Increased monitoring and cautious deployments recommended.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-budget-low"
+
+  # =========================================================================
+  # Latency SLO Alerts (p95 < 2s / 30d)
+  # =========================================================================
+  - name: bess_slo_latency_alerts
+    rules:
+      # p95 latency exceeding target
+      - alert: BESSLatencySLOBreach
+        expr: bess:sli:latency:p95_5m > 2
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "BESS latency SLO breach (p95 > 2s)"
+          description: |
+            The p95 latency has exceeded the 2-second SLO target.
+            Current p95 (5m): {{ $value | printf "%.3f" }}s
+            Check for slow queries, increased load, or resource constraints.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-latency"
+
+      # Sustained latency issue
+      - alert: BESSLatencySLOSustained
+        expr: bess:sli:latency:p95_1h > 2
+        for: 15m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "BESS latency SLO sustained breach (1h p95 > 2s)"
+          description: |
+            The p95 latency has exceeded the 2-second target for over 1 hour.
+            Current p95 (1h): {{ $value | printf "%.3f" }}s
+            This is significantly impacting user experience.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-latency"
+
+      # p99 warning (not SLO but useful early warning)
+      - alert: BESSLatencyP99High
+        expr: bess:sli:latency:p99_5m > 5
+        for: 5m
+        labels:
+          severity: info
+          slo: latency
+        annotations:
+          summary: "BESS p99 latency high (> 5s)"
+          description: |
+            The p99 latency has exceeded 5 seconds.
+            Current p99 (5m): {{ $value | printf "%.3f" }}s
+            Some users are experiencing slow responses.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-latency"
+
+  # =========================================================================
+  # SLO Compliance Alerts
+  # =========================================================================
+  - name: bess_slo_compliance_alerts
+    rules:
+      # Overall SLO non-compliant
+      - alert: BESSSLONonCompliant
+        expr: bess:slo:overall:compliant == 0
+        for: 30m
+        labels:
+          severity: critical
+          slo: overall
+        annotations:
+          summary: "BESS service is not meeting SLO targets"
+          description: |
+            One or more SLO targets are not being met:
+            - Availability target: 99.5%
+            - Latency target: p95 < 2s
+            Check individual SLO alerts for details.
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-overview"
+
+      # Availability SLO breach
+      - alert: BESSAvailabilitySLOBreach
+        expr: bess:slo:availability:compliant == 0
+        for: 10m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "BESS availability SLO not met (< 99.5%)"
+          description: |
+            30-day rolling availability is below the 99.5% target.
+            Current availability: {{ printf "%.3f" (bess:sli:availability:ratio30d * 100) }}%
+          runbook_url: "https://docs.example.com/runbooks/bess-slo-availability"

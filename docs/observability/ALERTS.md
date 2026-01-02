@@ -1047,3 +1047,147 @@ Fires when users attempt to access resources in projects they don't have access 
     summary: "Cross-project resource access denied"
     description: "{{ $value | humanize }} denied access attempts to {{ $labels.resource_type }} resources"
 ```
+
+## SLO Alerts (v3.9.0)
+
+Multi-window, multi-burn-rate alerting for availability and latency SLOs.
+See [SLO.md](../SLO.md) for SLO definitions and [runbooks/SLO_INCIDENTS.md](../runbooks/SLO_INCIDENTS.md) for incident response.
+
+### Critical: Fast Burn (14.4x in 1h)
+
+Fires when error budget is being consumed at 14.4x the sustainable rate.
+
+```yaml
+- alert: BESSAvailabilitySLOFastBurn
+  expr: |
+    bess:error_budget:burn_rate_1h > 14.4
+    and
+    bess:error_budget:burn_rate_5m > 14.4
+  for: 2m
+  labels:
+    severity: critical
+    slo: availability
+  annotations:
+    summary: "BESS availability SLO fast burn (14.4x in 1h)"
+    description: "Error budget is being consumed at {{ $value | printf \"%.2f\" }}x the sustainable rate"
+    runbook_url: "docs/runbooks/SLO_INCIDENTS.md"
+```
+
+### Warning: Medium Burn (6x in 6h)
+
+Fires when error budget is being consumed at 6x the sustainable rate.
+
+```yaml
+- alert: BESSAvailabilitySLOMediumBurn
+  expr: |
+    bess:error_budget:burn_rate_6h > 6
+    and
+    bess:error_budget:burn_rate_30m > 6
+  for: 15m
+  labels:
+    severity: warning
+    slo: availability
+  annotations:
+    summary: "BESS availability SLO medium burn (6x in 6h)"
+    description: "Error budget is being consumed at {{ $value | printf \"%.2f\" }}x the sustainable rate"
+```
+
+### Warning: Slow Burn (3x in 24h)
+
+Fires when error budget is being consumed at 3x the sustainable rate.
+
+```yaml
+- alert: BESSAvailabilitySLOSlowBurn
+  expr: |
+    bess:error_budget:burn_rate_24h > 3
+    and
+    bess:error_budget:burn_rate_2h > 3
+  for: 1h
+  labels:
+    severity: warning
+    slo: availability
+  annotations:
+    summary: "BESS availability SLO slow burn (3x in 24h)"
+    description: "Error budget is being consumed at {{ $value | printf \"%.2f\" }}x the sustainable rate"
+```
+
+### Critical: Budget Exhausted
+
+Fires when 30-day error budget is completely consumed.
+
+```yaml
+- alert: BESSAvailabilityBudgetExhausted
+  expr: bess:error_budget:remaining_ratio < 0
+  for: 5m
+  labels:
+    severity: critical
+    slo: availability
+  annotations:
+    summary: "BESS availability error budget exhausted"
+    description: "30-day error budget is exhausted. Consider feature freeze."
+    runbook_url: "docs/runbooks/SLO_INCIDENTS.md"
+```
+
+### Warning: Budget Low (< 25%)
+
+Fires when error budget drops below 25%.
+
+```yaml
+- alert: BESSAvailabilityBudgetLow
+  expr: bess:error_budget:remaining_ratio < 0.25 and bess:error_budget:remaining_ratio >= 0
+  for: 30m
+  labels:
+    severity: warning
+    slo: availability
+  annotations:
+    summary: "BESS availability error budget low (< 25%)"
+    description: "Remaining budget: {{ $value | printf \"%.2f\" }}%"
+```
+
+### Warning: Latency SLO Breach
+
+Fires when p95 latency exceeds 2-second target.
+
+```yaml
+- alert: BESSLatencySLOBreach
+  expr: bess:sli:latency:p95_5m > 2
+  for: 5m
+  labels:
+    severity: warning
+    slo: latency
+  annotations:
+    summary: "BESS latency SLO breach (p95 > 2s)"
+    description: "Current p95: {{ $value | printf \"%.3f\" }}s"
+```
+
+### Critical: Sustained Latency SLO Breach
+
+Fires when p95 latency exceeds target for 1 hour.
+
+```yaml
+- alert: BESSLatencySLOSustained
+  expr: bess:sli:latency:p95_1h > 2
+  for: 15m
+  labels:
+    severity: critical
+    slo: latency
+  annotations:
+    summary: "BESS latency SLO sustained breach (1h p95 > 2s)"
+    description: "Current 1h p95: {{ $value | printf \"%.3f\" }}s"
+```
+
+### Critical: Overall SLO Non-Compliant
+
+Fires when either availability or latency SLO is not met.
+
+```yaml
+- alert: BESSSLONonCompliant
+  expr: bess:slo:overall:compliant == 0
+  for: 30m
+  labels:
+    severity: critical
+    slo: overall
+  annotations:
+    summary: "BESS service is not meeting SLO targets"
+    description: "One or more SLO targets not met. Check individual alerts."
+```
