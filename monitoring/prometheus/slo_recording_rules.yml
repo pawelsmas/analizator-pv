@@ -1,0 +1,237 @@
+# BESS Dispatch SLO Recording Rules
+# Version: v3.9.0
+#
+# These rules pre-compute SLI metrics for efficient alerting and dashboards.
+# Validated by promtool in CI: make promtool-check
+
+groups:
+  # =========================================================================
+  # Availability SLI Recording Rules
+  # =========================================================================
+  - name: bess_sli_availability
+    interval: 1m
+    rules:
+      # 5-minute availability ratio
+      - record: bess:sli:availability:ratio5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch"}[5m]))
+
+      # 1-hour availability ratio
+      - record: bess:sli:availability:ratio1h
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status!~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch"}[1h]))
+
+      # 6-hour availability ratio
+      - record: bess:sli:availability:ratio6h
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status!~"5.."}[6h]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch"}[6h]))
+
+      # 24-hour availability ratio
+      - record: bess:sli:availability:ratio24h
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status!~"5.."}[24h]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch"}[24h]))
+
+      # 30-day availability ratio (SLO window)
+      - record: bess:sli:availability:ratio30d
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status!~"5.."}[30d]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch"}[30d]))
+
+      # Total requests counter (for budget calculations)
+      - record: bess:sli:requests:total5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch"}[5m]))
+
+      # Error requests counter
+      - record: bess:sli:errors:total5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", status=~"5.."}[5m]))
+
+  # =========================================================================
+  # Latency SLI Recording Rules
+  # =========================================================================
+  - name: bess_sli_latency
+    interval: 1m
+    rules:
+      # p50 latency (5m window)
+      - record: bess:sli:latency:p50_5m
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[5m])) by (le)
+          )
+
+      # p95 latency (5m window)
+      - record: bess:sli:latency:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[5m])) by (le)
+          )
+
+      # p99 latency (5m window)
+      - record: bess:sli:latency:p99_5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[5m])) by (le)
+          )
+
+      # p95 latency (1h window)
+      - record: bess:sli:latency:p95_1h
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[1h])) by (le)
+          )
+
+      # p95 latency (24h window)
+      - record: bess:sli:latency:p95_24h
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[24h])) by (le)
+          )
+
+      # p95 latency (30d window - SLO)
+      - record: bess:sli:latency:p95_30d
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[30d])) by (le)
+          )
+
+      # Requests within latency target (< 2s)
+      - record: bess:sli:latency:within_target_5m
+        expr: |
+          sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch", le="2"}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count{job="bess-dispatch"}[5m]))
+
+  # =========================================================================
+  # SLO Compliance Recording Rules
+  # =========================================================================
+  - name: bess_slo_compliance
+    interval: 1m
+    rules:
+      # Availability SLO target (99.5%)
+      - record: bess:slo:availability:target
+        expr: 0.995
+
+      # Latency SLO target (2 seconds)
+      - record: bess:slo:latency:target_seconds
+        expr: 2
+
+      # Availability SLO compliance (1 = compliant, 0 = breach)
+      - record: bess:slo:availability:compliant
+        expr: |
+          (bess:sli:availability:ratio30d >= 0.995) or vector(0)
+
+      # Latency SLO compliance (1 = compliant, 0 = breach)
+      - record: bess:slo:latency:compliant
+        expr: |
+          (bess:sli:latency:p95_30d <= 2) or vector(0)
+
+      # Overall SLO compliance (both must be met)
+      - record: bess:slo:overall:compliant
+        expr: |
+          bess:slo:availability:compliant * bess:slo:latency:compliant
+
+  # =========================================================================
+  # Error Budget Recording Rules
+  # =========================================================================
+  - name: bess_error_budget
+    interval: 1m
+    rules:
+      # Error budget total (0.5% = 0.005)
+      - record: bess:error_budget:total
+        expr: 0.005
+
+      # Error budget consumed (ratio)
+      - record: bess:error_budget:consumed_ratio
+        expr: |
+          (1 - bess:sli:availability:ratio30d) / 0.005
+
+      # Error budget remaining (ratio)
+      - record: bess:error_budget:remaining_ratio
+        expr: |
+          1 - bess:error_budget:consumed_ratio
+
+      # Error budget remaining (percentage)
+      - record: bess:error_budget:remaining_pct
+        expr: |
+          bess:error_budget:remaining_ratio * 100
+
+      # Burn rate (1h window) - how fast budget is being consumed
+      # Burn rate 1 = consuming budget at exactly SLO rate
+      # Burn rate 14.4 = will exhaust 30d budget in ~2 days
+      - record: bess:error_budget:burn_rate_1h
+        expr: |
+          (1 - bess:sli:availability:ratio1h) / 0.005
+
+      # Burn rate (6h window)
+      - record: bess:error_budget:burn_rate_6h
+        expr: |
+          (1 - bess:sli:availability:ratio6h) / 0.005
+
+      # Burn rate (24h window)
+      - record: bess:error_budget:burn_rate_24h
+        expr: |
+          (1 - bess:sli:availability:ratio24h) / 0.005
+
+  # =========================================================================
+  # Per-Endpoint Availability (for debugging)
+  # =========================================================================
+  - name: bess_endpoint_availability
+    interval: 5m
+    rules:
+      # Per-endpoint availability (5m)
+      - record: bess:endpoint:availability:ratio5m
+        expr: |
+          sum by (path) (rate(http_requests_total{job="bess-dispatch", status!~"5.."}[5m]))
+          /
+          sum by (path) (rate(http_requests_total{job="bess-dispatch"}[5m]))
+
+      # Per-endpoint p95 latency (5m)
+      - record: bess:endpoint:latency:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (path, le) (rate(http_request_duration_seconds_bucket{job="bess-dispatch"}[5m]))
+          )
+
+  # =========================================================================
+  # Critical Endpoint SLIs (sizing, validation)
+  # =========================================================================
+  - name: bess_critical_endpoints
+    interval: 1m
+    rules:
+      # Sizing endpoint availability
+      - record: bess:sizing:availability:ratio5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/sizing.*", status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/sizing.*"}[5m]))
+
+      # Sizing endpoint p95 latency
+      - record: bess:sizing:latency:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="bess-dispatch", path=~"/api/bess-dispatch/sizing.*"}[5m])) by (le)
+          )
+
+      # Validation endpoint availability
+      - record: bess:validation:availability:ratio5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/validation.*", status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/validation.*"}[5m]))
+
+      # Jobs endpoint availability
+      - record: bess:jobs:availability:ratio5m
+        expr: |
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/jobs.*", status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="bess-dispatch", path=~"/api/bess-dispatch/jobs.*"}[5m]))
