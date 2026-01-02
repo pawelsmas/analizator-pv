@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Billing & Usage - BESS Portal</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Billing Dashboard Styles */
+    .billing-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .billing-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+
+    .billing-header h2 {
+      margin: 0;
+      color: #1e3a5f;
+    }
+
+    .plan-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #4caf50 0%, #388e3c 100%);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .plan-badge.free {
+      background: linear-gradient(135deg, #78909c 0%, #546e7a 100%);
+    }
+
+    .plan-badge.pro {
+      background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+    }
+
+    .plan-badge.enterprise {
+      background: linear-gradient(135deg, #7b1fa2 0%, #6a1b9a 100%);
+    }
+
+    .usage-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .usage-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      border: 1px solid #e0e0e0;
+    }
+
+    .usage-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .usage-card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #666;
+      text-transform: uppercase;
+    }
+
+    .usage-card-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: #1e3a5f;
+      margin-bottom: 8px;
+    }
+
+    .usage-card-limit {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    .usage-progress {
+      height: 8px;
+      background: #e0e0e0;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .usage-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4caf50 0%, #8bc34a 100%);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .usage-progress-bar.warning {
+      background: linear-gradient(90deg, #ff9800 0%, #ffc107 100%);
+    }
+
+    .usage-progress-bar.danger {
+      background: linear-gradient(90deg, #f44336 0%, #ff5722 100%);
+    }
+
+    .usage-pct {
+      font-size: 12px;
+      color: #888;
+      margin-top: 8px;
+      text-align: right;
+    }
+
+    .reset-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #e3f2fd;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      color: #1565c0;
+      font-size: 14px;
+    }
+
+    .reset-info svg {
+      flex-shrink: 0;
+    }
+
+    .usage-history-section {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      border: 1px solid #e0e0e0;
+      margin-bottom: 24px;
+    }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1e3a5f;
+    }
+
+    .export-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #1976d2;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .export-btn:hover {
+      background: #1565c0;
+    }
+
+    .usage-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .usage-table th,
+    .usage-table td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .usage-table th {
+      background: #f5f5f5;
+      font-weight: 600;
+      color: #666;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .usage-table tr:hover {
+      background: #fafafa;
+    }
+
+    .days-selector {
+      display: flex;
+      gap: 8px;
+    }
+
+    .days-btn {
+      background: #e0e0e0;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .days-btn.active {
+      background: #1976d2;
+      color: white;
+    }
+
+    .loading-spinner {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 40px;
+      color: #888;
+    }
+
+    .error-message {
+      background: #ffebee;
+      color: #c62828;
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #1976d2;
+      text-decoration: none;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+
+    .back-link:hover {
+      text-decoration: underline;
+    }
+
+    .unlimited-badge {
+      display: inline-block;
+      background: #e8f5e9;
+      color: #2e7d32;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+<div class="bess-container">
+  <div class="page-header">
+    <h1>BILLING & USAGE</h1>
+    <div class="header-info">
+      <div id="whoamiBadge" class="whoami-badge" style="display:none;">
+        <div class="whoami-info">
+          <span class="whoami-email"></span>
+          <span class="whoami-role"></span>
+        </div>
+        <div class="whoami-meta">
+          <span class="whoami-tenant"></span>
+        </div>
+        <button class="whoami-logout" onclick="logout()" title="Wyloguj">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <a href="index.html" class="back-link">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <polyline points="15 18 9 12 15 6"></polyline>
+    </svg>
+    Powrót do BESS
+  </a>
+
+  <div class="billing-container">
+    <div class="billing-header">
+      <h2>📊 Zużycie i Limity</h2>
+      <div id="planBadge" class="plan-badge">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
+        </svg>
+        <span id="planName">Ładowanie...</span>
+      </div>
+    </div>
+
+    <div id="errorMessage" class="error-message" style="display:none;"></div>
+
+    <div id="resetInfo" class="reset-info" style="display:none;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+      <span id="resetText">Limity resetują się o: </span>
+    </div>
+
+    <div id="usageGrid" class="usage-grid">
+      <div class="loading-spinner">Ładowanie danych...</div>
+    </div>
+
+    <div class="usage-history-section">
+      <div class="section-header">
+        <h3 class="section-title">📈 Historia Zużycia</h3>
+        <div style="display:flex;gap:16px;align-items:center;">
+          <div class="days-selector">
+            <button class="days-btn active" onclick="loadHistory(7)">7 dni</button>
+            <button class="days-btn" onclick="loadHistory(14)">14 dni</button>
+            <button class="days-btn" onclick="loadHistory(30)">30 dni</button>
+          </div>
+          <button class="export-btn" onclick="exportCsv()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Eksport CSV
+          </button>
+        </div>
+      </div>
+      <div id="historyTable">
+        <div class="loading-spinner">Ładowanie historii...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="auth.js"></script>
+<script src="billing.js"></script>
+</body>
+</html>
