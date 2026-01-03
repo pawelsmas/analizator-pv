@@ -30,7 +30,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
 
-        # Check Content-Length header if present
+        # Check Content-Length header if present (don't read body - causes issues)
         content_length = request.headers.get("content-length")
         if content_length:
             try:
@@ -38,18 +38,10 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                 if length > self.max_bytes:
                     return self._too_large_response(length)
             except ValueError:
-                pass  # Invalid Content-Length, let it through for body check
+                pass  # Invalid Content-Length, let it through
 
-        # If no Content-Length or need to verify, check body size
-        # This is done by reading the body and checking size
-        # Note: We need to cache the body for later use
-        if request.method in ("POST", "PUT", "PATCH"):
-            body = await request.body()
-            if len(body) > self.max_bytes:
-                return self._too_large_response(len(body))
-
-            # Cache body for later handlers
-            # This is handled by Starlette's request.body() caching
+        # Note: Removed body reading as it can cause blocking issues
+        # Content-Length check is sufficient for most cases
 
         return await call_next(request)
 

@@ -1994,6 +1994,24 @@ class SizingRequestAPI(BaseModel):
         description="If True, include invariants check results in each variant. Default: False."
     )
 
+    # Battery trace (v2.2.0) - optional per-timestep battery data
+    include_battery_trace: bool = Field(
+        False,
+        description="If True, include per-timestep battery trace (SOC, charge/discharge). Default: False."
+    )
+
+    # Price timeseries (v2.0.0) - optional per-timestep pricing
+    include_price_timeseries: bool = Field(
+        False,
+        description="If True, include per-timestep price arrays in response. Default: False."
+    )
+
+    # Ledger timeseries (v2.0.0) - optional per-timestep costs
+    include_ledger_timeseries: bool = Field(
+        False,
+        description="If True, include per-timestep cost ledger in response. Default: False."
+    )
+
     @model_validator(mode='after')
     def validate_optimization_objective(self):
         """Validate optimization.objective is a valid enum value."""

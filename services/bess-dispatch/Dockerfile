@@ -17,41 +17,19 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application modules
-COPY models.py .
-COPY dispatch_engine.py .
-COPY energy_flows_helper.py .
-COPY sizing_runner.py .
-COPY sensitivity_runner.py .
-COPY price_engine.py .
-COPY economics_helper.py .
-COPY dispatch_arbitrage.py .
-COPY api_arbitrage.py .
-COPY excel_export.py .
-COPY cache_helper.py .
-COPY run_store.py .
-COPY job_store.py .
-COPY job_processor.py .
-COPY job_export_helper.py .
-COPY worker.py .
-COPY validation_kpis.py .
-COPY annualization_helper.py .
-COPY invariants_helper.py .
-COPY rounding_helper.py .
-COPY determinism_helper.py .
-COPY validate_pack.py .
-COPY validate_pack_api.py .
-COPY validate_pack_export_helper.py .
-COPY debug_events_helper.py .
+# Copy all Python modules (instead of listing each one)
+COPY *.py ./
 
 # Copy subpackages
 COPY capacity_fee_pl/ ./capacity_fee_pl/
 COPY common/ ./common/
 COPY osd_tariffs/ ./osd_tariffs/
 COPY observability/ ./observability/
+COPY middleware/ ./middleware/
+COPY worker/ ./worker/
 
-# Copy main app (last - changes most often)
-COPY app.py .
+# Copy alembic migrations
+COPY alembic/ ./alembic/
 
 # Expose port
 EXPOSE 8031
