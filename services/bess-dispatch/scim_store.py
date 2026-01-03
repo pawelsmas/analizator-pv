@@ -674,34 +674,40 @@ class ScimStore:
     def update_scim_group(
         self,
         scim_group_id: str,
-        display_name: Optional[str] = None,
-        external_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        updates: Dict[str, Any],
+    ) -> bool:
         """Update a SCIM group record."""
+        if not updates:
+            return True
+
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             now = datetime.now(timezone.utc).isoformat()
 
-            # Get current values
-            cursor.execute("SELECT * FROM scim_groups WHERE id = ?", (scim_group_id,))
-            row = cursor.fetchone()
-            if not row:
-                return None
+            # Build dynamic update query
+            set_clauses = []
+            params = []
 
-            new_display_name = display_name if display_name is not None else row["display_name"]
-            new_external_id = external_id if external_id is not None else row["external_id"]
+            allowed_fields = {"display_name", "external_id"}
 
-            cursor.execute(
-                """
-                UPDATE scim_groups SET display_name = ?, external_id = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (new_display_name, new_external_id, now, scim_group_id),
-            )
+            for field, value in updates.items():
+                if field in allowed_fields:
+                    set_clauses.append(f"{field} = ?")
+                    params.append(value)
+
+            if not set_clauses:
+                return True
+
+            set_clauses.append("updated_at = ?")
+            params.append(now)
+            params.append(scim_group_id)
+
+            sql = f"UPDATE scim_groups SET {', '.join(set_clauses)} WHERE id = ?"
+            cursor.execute(sql, params)
             conn.commit()
 
-            return self.get_scim_group(scim_group_id)
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -719,43 +725,64 @@ class ScimStore:
     def list_scim_groups(
         self,
         tenant_id: str,
-        filter_display_name: Optional[str] = None,
-        start_index: int = 1,
-        count: int = 100,
-    ) -> tuple[List[Dict[str, Any]], int]:
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
         """List SCIM groups with pagination."""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
-
-            # Build query
-            where_clauses = ["tenant_id = ?"]
-            params: List[Any] = [tenant_id]
-
-            if filter_display_name:
-                where_clauses.append("display_name = ?")
-                params.append(filter_display_name)
-
-            where_sql = " AND ".join(where_clauses)
-
-            # Get total count
-            cursor.execute(f"SELECT COUNT(*) FROM scim_groups WHERE {where_sql}", params)
-            total = cursor.fetchone()[0]
-
-            # Get page
-            offset = start_index - 1  # SCIM uses 1-based indexing
             cursor.execute(
-                f"""
+                """
                 SELECT * FROM scim_groups
-                WHERE {where_sql}
+                WHERE tenant_id = ?
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                params + [count, offset],
+                (tenant_id, limit, offset),
             )
-            groups = [dict(row) for row in cursor.fetchall()]
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
 
-            return groups, total
+    def find_scim_groups(
+        self,
+        tenant_id: str,
+        field: str,
+        value: str,
+    ) -> List[Dict[str, Any]]:
+        """Find SCIM groups by a specific field value."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+
+            # Validate field to prevent SQL injection
+            allowed_fields = {"display_name", "external_id"}
+            if field not in allowed_fields:
+                return []
+
+            cursor.execute(
+                f"""
+                SELECT * FROM scim_groups
+                WHERE tenant_id = ? AND {field} = ?
+                ORDER BY created_at DESC
+                """,
+                (tenant_id, value),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def count_scim_groups(self, tenant_id: str) -> int:
+        """Count all SCIM groups for a tenant."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM scim_groups WHERE tenant_id = ?",
+                (tenant_id,),
+            )
+            return cursor.fetchone()[0]
         finally:
             conn.close()
 
