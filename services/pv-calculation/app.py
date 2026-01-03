@@ -33,7 +33,8 @@ optimization_progress = {
 }
 
 # BESS Dispatch Service URL (for PRO mode with LP/MIP solver)
-BESS_DISPATCH_URL = "http://bess-dispatch:8031"  # Docker network name
+# Note: bess-dispatch exposes API at /api/bess-dispatch/ prefix
+BESS_DISPATCH_URL = "http://bess-dispatch:8031/api/bess-dispatch"  # Docker network name
 
 # Legacy - keep for backwards compatibility but prefer BESS_DISPATCH_URL
 BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name (deprecated)

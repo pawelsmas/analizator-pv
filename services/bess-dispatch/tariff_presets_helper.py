@@ -19,10 +19,11 @@ from models import PriceConfig, PriceTimeseriesPlnPerMwh
 logger = logging.getLogger(__name__)
 
 # Path to presets registry
-PRESETS_FILE = os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "docs", "tariffs", "presets.json"
-)
+# In container: /app/docs/tariffs/presets.json (mounted volume)
+# In development: ../../docs/tariffs/presets.json (relative to service dir)
+_CONTAINER_PATH = os.path.join(os.path.dirname(__file__), "docs", "tariffs", "presets.json")
+_DEV_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "tariffs", "presets.json")
+PRESETS_FILE = _CONTAINER_PATH if os.path.exists(_CONTAINER_PATH) else _DEV_PATH
 
 # Cached presets
 _cached_presets: Optional[Dict[str, Any]] = None

@@ -547,6 +547,7 @@ services:
     volumes:
       - bess-dispatch-data:/data
       - ./docs/scenarios:/app/docs/scenarios:ro
+      - ./docs/tariffs:/app/docs/tariffs:ro
     networks:
       - pv-network
     restart: unless-stopped

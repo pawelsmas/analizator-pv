@@ -29,6 +29,54 @@
       "weekend_price_pln_per_mwh": 350.0
     },
     {
+      "id": "pge_c12a_2026",
+      "label": "PGE C12a 2026",
+      "description": "PGE C12a two-zone tariff for Poland 2026 (peak 6-13 & 15-22 weekdays)",
+      "import_price_pln_per_mwh": null,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 451.0,
+      "weekday_peak_hours": [6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 21],
+      "weekday_peak_price_pln_per_mwh": 680.0,
+      "weekday_offpeak_price_pln_per_mwh": 380.0,
+      "weekend_price_pln_per_mwh": 380.0
+    },
+    {
+      "id": "pge_c12b_2026",
+      "label": "PGE C12b 2026",
+      "description": "PGE C12b two-zone tariff for Poland 2026 (peak 7-13 & 16-21 weekdays)",
+      "import_price_pln_per_mwh": null,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 451.0,
+      "weekday_peak_hours": [7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20],
+      "weekday_peak_price_pln_per_mwh": 720.0,
+      "weekday_offpeak_price_pln_per_mwh": 360.0,
+      "weekend_price_pln_per_mwh": 360.0
+    },
+    {
+      "id": "tauron_c12a_2026",
+      "label": "TAURON C12a 2026",
+      "description": "TAURON C12a two-zone tariff for Poland 2026",
+      "import_price_pln_per_mwh": null,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 445.0,
+      "weekday_peak_hours": [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+      "weekday_peak_price_pln_per_mwh": 660.0,
+      "weekday_offpeak_price_pln_per_mwh": 390.0,
+      "weekend_price_pln_per_mwh": 390.0
+    },
+    {
+      "id": "energa_c12a_2026",
+      "label": "ENERGA C12a 2026",
+      "description": "ENERGA C12a two-zone tariff for Poland 2026",
+      "import_price_pln_per_mwh": null,
+      "export_price_pln_per_mwh": 0.0,
+      "other_fees_pln_per_mwh": 440.0,
+      "weekday_peak_hours": [7, 8, 9, 10, 11, 12, 13, 17, 18, 19, 20, 21],
+      "weekday_peak_price_pln_per_mwh": 690.0,
+      "weekday_offpeak_price_pln_per_mwh": 370.0,
+      "weekend_price_pln_per_mwh": 370.0
+    },
+    {
       "id": "de_flat_2026",
       "label": "DE Flat 2026",
       "description": "Flat tariff for Germany 2026",
