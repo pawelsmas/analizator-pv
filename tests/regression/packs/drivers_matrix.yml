@@ -1,0 +1,43 @@
+# Drivers Matrix Regression Pack (v4.5.0)
+# Tests all combinations of objectives and profiles
+
+name: drivers_matrix
+description: Regression tests for v4.5.0 decision drivers
+
+scenarios:
+  # Objective tests
+  - objective_npv_default
+  - objective_irr
+  - objective_lcos
+  - objective_payback
+  - objective_self_consumption
+  - objective_peak_reduction
+  - objective_resilience
+
+  # Profile tests
+  - profile_balanced
+  - profile_pv_self_consumption
+  - profile_commercial_peak_shaving
+  - profile_arbitrage
+  - profile_resilience_backup
+
+  # Alias tests
+  - objective_lcoe_alias
+  - objective_self_consumption_rate_alias
+
+  # Tie-breaker tests
+  - near_optimal_tie_break_self_consumption
+  - near_optimal_tie_break_duration
+
+  # Duration sweep
+  - duration_sweep_enabled
+  - duration_sweep_with_marginal
+
+  # Edge cases
+  - variant_space_custom_grid
+  - recommendation_policy_custom
+
+assertions:
+  - response.status == 200
+  - response.objective_used != null
+  - response.variants.length > 0
