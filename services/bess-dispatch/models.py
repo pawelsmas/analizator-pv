@@ -2847,28 +2847,37 @@ class AuditMetadata(BaseModel):
 
 class OptimizationObjective(str, Enum):
     """
-    Optimization objectives for BESS sizing.
+    Optimization objectives for BESS sizing (v4.5.0 - extended).
 
     Determines which metric is maximized/minimized during grid search.
     """
     NPV = "npv"                             # Maximize Net Present Value (default)
+    IRR = "irr"                             # Maximize Internal Rate of Return
     PAYBACK = "payback"                     # Minimize Simple Payback Period
     SELF_CONSUMPTION = "self_consumption"   # Maximize self-consumption %
+    SELF_CONSUMPTION_RATE = "self_consumption_rate"  # Alias for self_consumption
     PEAK_REDUCTION = "peak_reduction"       # Maximize peak reduction %
     EFC_UTILIZATION = "efc_utilization"     # Maximize EFC utilization within budget
+    LCOS = "lcos"                           # Minimize Levelized Cost of Storage [PLN/MWh]
+    LCOE = "lcoe"                           # Alias for LCOS (maps to lcos internally)
+    RESILIENCE = "resilience"               # Minimize unserved load / maximize backup capability
 
 
 class RecommendedReasonCode(str, Enum):
     """
-    Machine-readable codes for recommended variant selection reason.
+    Machine-readable codes for recommended variant selection reason (v4.5.0 - extended).
 
     UI can use these codes to generate localized descriptions.
     """
     NPV_MAX = "npv_max"                         # Highest NPV selected
+    IRR_MAX = "irr_max"                         # Highest IRR selected
     PAYBACK_MIN = "payback_min"                 # Shortest payback selected
     SELF_CONSUMPTION_MAX = "self_consumption_max"  # Highest self-consumption %
     PEAK_REDUCTION_MAX = "peak_reduction_max"   # Highest peak reduction %
     EFC_UTILIZATION_MAX = "efc_utilization_max" # Optimal EFC utilization
+    LCOS_MIN = "lcos_min"                       # Lowest LCOS selected
+    RESILIENCE_MAX = "resilience_max"           # Best resilience (min unserved load)
+    NPV_NEAR_OPTIMAL_TIE_BREAK = "npv_near_optimal_tie_break"  # Near-optimal NPV with tie-breaker
     CONSTRAINED_FALLBACK = "constrained_fallback"  # Best within constraints
 
 
@@ -2921,6 +2930,144 @@ class OptimizationConfig(BaseModel):
             if c.constraint_type == constraint_type:
                 return c
         return None
+
+
+# =============================================================================
+# Decision Drivers v4.5.0 - Recommendation Policy + Variant Space + Profiles
+# =============================================================================
+
+class OptimizationProfile(str, Enum):
+    """
+    Predefined optimization profiles (v4.5.0).
+
+    Each profile maps to a primary objective and default recommendation policy.
+    """
+    BALANCED = "balanced"                       # NPV with tie-breakers for self-consumption/payback
+    COMMERCIAL_PEAK_SHAVING = "commercial_peak_shaving"  # Peak reduction focus
+    PV_SELF_CONSUMPTION = "pv_self_consumption"  # Maximize self-consumption rate
+    ARBITRAGE = "arbitrage"                     # NPV with grid charging enabled
+    RESILIENCE_BACKUP = "resilience_backup"     # Minimize unserved load
+
+
+class RecommendationPolicy(BaseModel):
+    """
+    Policy for selecting recommended variant (v4.5.0).
+
+    Enables near-optimal selection with tie-breakers to avoid
+    always picking 1h duration when NPV difference is minimal.
+    """
+    near_optimal_tolerance_pct: float = Field(
+        5.0,
+        ge=0.0,
+        le=50.0,
+        description="Tolerance for near-optimal variants (% from best). "
+                    "E.g., 5% means variants within 5% of best NPV are considered."
+    )
+    tie_breakers: List[str] = Field(
+        default_factory=lambda: ["self_consumption_rate", "payback_years", "peak_reduction_kw"],
+        description="Ordered list of metrics for tie-breaking within near-optimal set. "
+                    "Applied in order until a winner is found."
+    )
+    min_npv_pln: Optional[float] = Field(
+        None,
+        description="Minimum NPV constraint for non-NPV objectives. "
+                    "Variants with NPV below this are excluded from selection."
+    )
+
+    @model_validator(mode='after')
+    def validate_tie_breakers(self):
+        """Validate tie-breaker metric names."""
+        valid_metrics = {
+            "self_consumption_rate", "payback_years", "peak_reduction_kw",
+            "npv_pln", "irr_pct", "lcos_pln_per_mwh", "duration_h",
+            "capex_pln", "net_savings_pln", "resilience_unserved_load_kwh"
+        }
+        for tb in self.tie_breakers:
+            if tb not in valid_metrics:
+                raise ValueError(
+                    f"Invalid tie-breaker '{tb}'. "
+                    f"Valid values: {sorted(valid_metrics)}"
+                )
+        return self
+
+
+class VariantSpace(BaseModel):
+    """
+    Custom variant space definition (v4.5.0).
+
+    Allows explicit specification of power x duration grid
+    instead of automatic power range with fixed durations.
+    """
+    power_kw_candidates: List[float] = Field(
+        default_factory=list,
+        description="Explicit power candidates [kW]. If empty, uses min/max/steps from request."
+    )
+    duration_h_candidates: List[float] = Field(
+        default_factory=lambda: [1.0, 2.0, 4.0],
+        description="Duration candidates [hours]. Grid is power x duration."
+    )
+    max_variants: int = Field(
+        60,
+        ge=1,
+        le=200,
+        description="Maximum variants to evaluate (guard against explosion). "
+                    "Returns 422 if grid exceeds this limit."
+    )
+
+    @model_validator(mode='after')
+    def validate_variant_count(self):
+        """Validate variant count is within limits."""
+        if self.power_kw_candidates:
+            grid_size = len(self.power_kw_candidates) * len(self.duration_h_candidates)
+            if grid_size > self.max_variants:
+                raise ValueError(
+                    f"Variant grid size ({grid_size}) exceeds max_variants ({self.max_variants}). "
+                    f"Reduce power_kw_candidates or duration_h_candidates."
+                )
+        return self
+
+
+class DriverRecommendation(BaseModel):
+    """
+    Single recommendation for a specific objective/driver (v4.5.0).
+
+    Response includes one recommendation per active driver.
+    """
+    objective: str = Field(..., description="Objective/driver name (e.g., 'npv', 'lcos')")
+    variant: str = Field(..., description="Recommended variant name (e.g., 'medium', '2h_100kW')")
+    variant_label: Optional[str] = Field(None, description="Human-readable variant label")
+    reason_code: str = Field(..., description="Machine-readable reason code")
+    reason_metric: str = Field(..., description="Metric used for selection")
+    reason_value: float = Field(..., description="Value of the metric")
+    reason_unit: str = Field(..., description="Unit of the metric (e.g., 'PLN', 'ratio', 'years')")
+    is_near_optimal: bool = Field(False, description="True if selected via near-optimal tie-break")
+    tie_breaker_used: Optional[str] = Field(None, description="Tie-breaker metric if near-optimal")
+
+
+class DurationSweepPoint(BaseModel):
+    """Single point in duration sweep analysis (v4.5.0)."""
+    duration_h: float = Field(..., description="Duration [hours]")
+    npv_pln: float = Field(..., description="NPV [PLN]")
+    payback_years: Optional[float] = Field(None, description="Payback [years]")
+    self_consumption_rate: Optional[float] = Field(None, description="Self-consumption rate [0-1]")
+    lcos_pln_per_mwh: Optional[float] = Field(None, description="LCOS [PLN/MWh]")
+    power_kw: Optional[float] = Field(None, description="Representative power for this duration")
+
+
+class MarginalMetrics(BaseModel):
+    """Marginal value metrics for capacity additions (v4.5.0)."""
+    marginal_npv_pln_per_added_kwh: Optional[float] = Field(
+        None,
+        description="Marginal NPV per additional kWh capacity"
+    )
+    marginal_net_savings_pln_per_added_kwh: Optional[float] = Field(
+        None,
+        description="Marginal net savings per additional kWh capacity"
+    )
+    marginal_self_consumption_pct_per_added_kwh: Optional[float] = Field(
+        None,
+        description="Marginal self-consumption improvement per additional kWh"
+    )
 
 
 # =============================================================================

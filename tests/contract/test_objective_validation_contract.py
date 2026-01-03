@@ -3,19 +3,28 @@ Contract tests for objective validation in sizing request.
 
 These tests verify:
 - Default objective is 'npv' when not specified
-- Valid objective values are accepted (npv, payback, etc.)
+- Valid objective values are accepted (npv, payback, lcos, irr, resilience, etc.)
 - Invalid objective values return 422 validation error
+- Objective aliases (lcoe -> lcos, self_consumption_rate -> self_consumption) work
+
+Updated v4.5.0: Added irr, lcos, lcoe, resilience, self_consumption_rate objectives.
 """
 import pytest
 import requests
 
 
+# Core objectives (v4.5.0 extended)
 VALID_OBJECTIVES = {
     "npv",
+    "irr",
     "payback",
     "self_consumption",
+    "self_consumption_rate",  # Alias for self_consumption
     "peak_reduction",
     "efc_utilization",
+    "lcos",
+    "lcoe",  # Alias for lcos
+    "resilience",
 }
 
 
@@ -201,4 +210,123 @@ class TestObjectiveErrorMessage:
         # Should mention at least one valid value
         assert "npv" in error_text or "valid" in error_text, (
             f"Error message should be helpful: {response.text[:500]}"
+        )
+
+
+class TestNewObjectivesV450:
+    """Tests for new objectives added in v4.5.0."""
+
+    def test_irr_objective_accepted(
+        self,
+        wait_for_services,
+        bess_dispatch_url,
+        minimal_sizing_request,
+    ):
+        """IRR objective should be accepted."""
+        request = {
+            **minimal_sizing_request,
+            "optimization": {"objective": "irr"}
+        }
+
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 for objective='irr', got {response.status_code}: {response.text[:300]}"
+        )
+
+    def test_lcos_objective_accepted(
+        self,
+        wait_for_services,
+        bess_dispatch_url,
+        minimal_sizing_request,
+    ):
+        """LCOS objective should be accepted."""
+        request = {
+            **minimal_sizing_request,
+            "optimization": {"objective": "lcos"}
+        }
+
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 for objective='lcos', got {response.status_code}: {response.text[:300]}"
+        )
+
+    def test_resilience_objective_accepted(
+        self,
+        wait_for_services,
+        bess_dispatch_url,
+        minimal_sizing_request,
+    ):
+        """Resilience objective should be accepted."""
+        request = {
+            **minimal_sizing_request,
+            "optimization": {"objective": "resilience"}
+        }
+
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 for objective='resilience', got {response.status_code}: {response.text[:300]}"
+        )
+
+
+class TestObjectiveAliases:
+    """Tests for objective alias normalization (v4.5.0)."""
+
+    def test_lcoe_alias_accepted(
+        self,
+        wait_for_services,
+        bess_dispatch_url,
+        minimal_sizing_request,
+    ):
+        """LCOE (alias for LCOS) should be accepted."""
+        request = {
+            **minimal_sizing_request,
+            "optimization": {"objective": "lcoe"}
+        }
+
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 for objective='lcoe', got {response.status_code}: {response.text[:300]}"
+        )
+
+    def test_self_consumption_rate_alias_accepted(
+        self,
+        wait_for_services,
+        bess_dispatch_url,
+        minimal_sizing_request,
+    ):
+        """self_consumption_rate (alias for self_consumption) should be accepted."""
+        request = {
+            **minimal_sizing_request,
+            "optimization": {"objective": "self_consumption_rate"}
+        }
+
+        response = requests.post(
+            f"{bess_dispatch_url}/sizing",
+            json=request,
+            timeout=120,
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 for objective='self_consumption_rate', "
+            f"got {response.status_code}: {response.text[:300]}"
         )
