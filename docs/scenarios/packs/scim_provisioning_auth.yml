@@ -1,0 +1,137 @@
+# SCIM Provisioning Auth scenario pack for v4.4.0
+# Tests SCIM 2.0 provisioning, group sync, and deprovision flows
+name: scim_provisioning_auth
+description: |
+  Regression scenarios for Enterprise Provisioning: SCIM 2.0 + Group Sync (v4.4.0):
+  - SCIM token authentication and lifecycle
+  - SCIM Users endpoint (CRUD, filter, pagination)
+  - SCIM Groups endpoint (CRUD, membership)
+  - Group → Project mapping and sync
+  - Deprovision semantics (session/key revocation)
+  - Tenant isolation
+
+scenarios:
+  # ==========================================================================
+  # SCIM Token Management
+  # ==========================================================================
+  - scim_token_create_with_expiry
+  - scim_token_create_no_expiry
+  - scim_token_revoke
+  - scim_token_expired_rejected
+  - scim_token_revoked_rejected
+  - scim_token_invalid_rejected
+  - scim_token_list_active_only
+  - scim_token_last_used_updated
+
+  # ==========================================================================
+  # SCIM Base Endpoints (RFC 7644)
+  # ==========================================================================
+  - scim_service_provider_config
+  - scim_resource_types
+  - scim_schemas
+  - scim_endpoint_requires_bearer_token
+
+  # ==========================================================================
+  # SCIM Users CRUD
+  # ==========================================================================
+  - scim_users_create_basic
+  - scim_users_create_with_external_id
+  - scim_users_create_duplicate_email_rejected
+  - scim_users_get_by_id
+  - scim_users_get_not_found
+  - scim_users_list_all
+  - scim_users_list_paginated
+  - scim_users_filter_by_username
+  - scim_users_filter_by_email
+  - scim_users_filter_by_active
+  - scim_users_update_patch
+  - scim_users_update_put
+  - scim_users_deactivate
+  - scim_users_reactivate
+  - scim_users_delete_soft
+  - scim_users_delete_hard
+
+  # ==========================================================================
+  # SCIM Groups CRUD
+  # ==========================================================================
+  - scim_groups_create_basic
+  - scim_groups_create_with_members
+  - scim_groups_create_duplicate_name_rejected
+  - scim_groups_get_by_id
+  - scim_groups_get_not_found
+  - scim_groups_list_all
+  - scim_groups_list_paginated
+  - scim_groups_filter_by_displayname
+  - scim_groups_update_patch_add_member
+  - scim_groups_update_patch_remove_member
+  - scim_groups_update_patch_replace_members
+  - scim_groups_delete
+
+  # ==========================================================================
+  # Group → Project Mapping
+  # ==========================================================================
+  - scim_mapping_create_viewer_role
+  - scim_mapping_create_editor_role
+  - scim_mapping_create_admin_role
+  - scim_mapping_create_duplicate_rejected
+  - scim_mapping_create_invalid_role_rejected
+  - scim_mapping_create_group_not_found_rejected
+  - scim_mapping_list_all
+  - scim_mapping_list_by_group
+  - scim_mapping_list_by_project
+  - scim_mapping_update_role
+  - scim_mapping_disable
+  - scim_mapping_enable
+  - scim_mapping_delete
+
+  # ==========================================================================
+  # Group Sync Engine
+  # ==========================================================================
+  - scim_sync_on_mapping_create
+  - scim_sync_on_mapping_enable
+  - scim_sync_on_group_member_add
+  - scim_sync_on_group_member_remove
+  - scim_sync_preserves_manual_memberships
+  - scim_sync_revokes_on_mapping_disable
+  - scim_sync_revokes_on_mapping_delete
+  - scim_sync_role_change_resync
+  - scim_sync_all_groups
+  - scim_sync_single_group
+  - scim_sync_status
+
+  # ==========================================================================
+  # Deprovision Semantics
+  # ==========================================================================
+  - scim_deprovision_revokes_sessions
+  - scim_deprovision_revokes_api_keys
+  - scim_deprovision_revokes_scim_memberships
+  - scim_deprovision_preserves_manual_memberships
+  - scim_deprovision_marks_user_inactive
+  - scim_deprovision_hard_delete
+  - scim_reprovision_reactivates_user
+
+  # ==========================================================================
+  # Tenant Isolation
+  # ==========================================================================
+  - scim_token_scoped_to_tenant
+  - scim_users_scoped_to_tenant
+  - scim_groups_scoped_to_tenant
+  - scim_mappings_scoped_to_tenant
+  - scim_cross_tenant_access_denied
+
+  # ==========================================================================
+  # Error Handling
+  # ==========================================================================
+  - scim_validation_error_format
+  - scim_not_found_error_format
+  - scim_conflict_error_format
+  - scim_internal_error_format
+  - scim_rate_limit_error_format
+
+  # ==========================================================================
+  # Security
+  # ==========================================================================
+  - scim_token_hash_not_exposed
+  - scim_password_not_in_response
+  - scim_audit_log_provisioning_events
+  - scim_audit_log_deprovision_events
