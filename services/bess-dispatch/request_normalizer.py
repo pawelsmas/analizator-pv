@@ -1,10 +1,14 @@
 """
-Request normalizer for deprecated field mapping (v2.7.0 PR3).
+Request normalizer for deprecated field mapping (v2.7.0 PR3, updated v4.5.0).
 
 Normalizes deprecated request fields to new equivalents:
 - include_battery_trace=true -> battery_trace_mode="full"
 - include_price_timeseries=true -> price_timeseries_mode="full"
 - include_ledger_timeseries=true -> ledger_timeseries_mode="full"
+
+Also handles objective aliases (v4.5.0):
+- lcoe -> lcos (LCOE maps to LCOS for storage)
+- self_consumption_rate -> self_consumption (alias normalization)
 
 This allows old API consumers to continue working while we
 deprecate the old field names.
@@ -21,6 +25,13 @@ REQUEST_FIELD_MAPPINGS: Dict[str, Tuple[str, Any]] = {
     "include_battery_trace": ("battery_trace_mode", lambda v: "full" if v else "none"),
     "include_price_timeseries": ("price_timeseries_mode", lambda v: "full" if v else "none"),
     "include_ledger_timeseries": ("ledger_timeseries_mode", lambda v: "full" if v else "none"),
+}
+
+# Objective alias mappings (v4.5.0)
+# Maps common synonyms/typos to canonical objective names
+OBJECTIVE_ALIASES: Dict[str, str] = {
+    "lcoe": "lcos",  # LCOE is a misnomer for storage; LCOS is correct
+    "self_consumption_rate": "self_consumption",  # Both accepted
 }
 
 
