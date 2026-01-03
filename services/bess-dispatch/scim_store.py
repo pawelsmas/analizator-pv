@@ -92,24 +92,30 @@ class ScimStore:
                 CREATE INDEX IF NOT EXISTS idx_scim_tokens_hash ON scim_tokens(token_hash)
             """)
 
-            # SCIM users table (maps SCIM user to portal user)
+            # SCIM users table (full SCIM user representation)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS scim_users (
                     id TEXT PRIMARY KEY,
                     tenant_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
                     external_id TEXT,
                     user_name TEXT NOT NULL,
+                    email TEXT,
+                    display_name TEXT,
+                    given_name TEXT,
+                    family_name TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(tenant_id, user_name)
                 )
             """)
+            # Unique index on external_id that allows NULLs
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_scim_users_tenant ON scim_users(tenant_id)
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_scim_users_external_id
+                ON scim_users(tenant_id, external_id) WHERE external_id IS NOT NULL
             """)
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_scim_users_user_id ON scim_users(user_id)
+                CREATE INDEX IF NOT EXISTS idx_scim_users_tenant ON scim_users(tenant_id)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scim_users_user_name ON scim_users(tenant_id, user_name)
@@ -385,9 +391,13 @@ class ScimStore:
     def create_scim_user(
         self,
         tenant_id: str,
-        user_id: str,
         user_name: str,
         external_id: Optional[str] = None,
+        email: Optional[str] = None,
+        display_name: Optional[str] = None,
+        given_name: Optional[str] = None,
+        family_name: Optional[str] = None,
+        active: bool = True,
     ) -> Dict[str, Any]:
         """Create a SCIM user record."""
         scim_user_id = str(uuid.uuid4())
@@ -398,19 +408,25 @@ class ScimStore:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO scim_users (id, tenant_id, user_id, external_id, user_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO scim_users (id, tenant_id, external_id, user_name, email,
+                    display_name, given_name, family_name, active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (scim_user_id, tenant_id, user_id, external_id, user_name.lower(), now, now),
+                (scim_user_id, tenant_id, external_id, user_name.lower(), email,
+                 display_name, given_name, family_name, 1 if active else 0, now, now),
             )
             conn.commit()
 
             return {
                 "id": scim_user_id,
                 "tenant_id": tenant_id,
-                "user_id": user_id,
                 "external_id": external_id,
                 "user_name": user_name.lower(),
+                "email": email,
+                "display_name": display_name,
+                "given_name": given_name,
+                "family_name": family_name,
+                "active": active,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -424,14 +440,14 @@ class ScimStore:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM scim_users WHERE id = ?", (scim_user_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return self._format_user_row(row) if row else None
         finally:
             conn.close()
 
     def get_scim_user_by_user_name(
         self, tenant_id: str, user_name: str
     ) -> Optional[Dict[str, Any]]:
-        """Get a SCIM user by userName (email)."""
+        """Get a SCIM user by userName."""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
@@ -440,50 +456,71 @@ class ScimStore:
                 (tenant_id, user_name.lower()),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return self._format_user_row(row) if row else None
         finally:
             conn.close()
 
-    def get_scim_user_by_portal_user(
-        self, tenant_id: str, user_id: str
+    def get_scim_user_by_external_id(
+        self, tenant_id: str, external_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Get a SCIM user by portal user_id."""
+        """Get a SCIM user by externalId."""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM scim_users WHERE tenant_id = ? AND user_id = ?",
-                (tenant_id, user_id),
+                "SELECT * FROM scim_users WHERE tenant_id = ? AND external_id = ?",
+                (tenant_id, external_id),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return self._format_user_row(row) if row else None
         finally:
             conn.close()
 
     def update_scim_user(
         self,
         scim_user_id: str,
-        external_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Update a SCIM user record."""
+        updates: Dict[str, Any],
+    ) -> bool:
+        """Update a SCIM user record with given fields."""
+        if not updates:
+            return True
+
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
             now = datetime.now(timezone.utc).isoformat()
 
-            cursor.execute(
-                """
-                UPDATE scim_users SET external_id = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (external_id, now, scim_user_id),
-            )
+            # Build dynamic update query
+            set_clauses = []
+            params = []
+
+            allowed_fields = {
+                "external_id", "user_name", "email", "display_name",
+                "given_name", "family_name", "active"
+            }
+
+            for field, value in updates.items():
+                if field in allowed_fields:
+                    set_clauses.append(f"{field} = ?")
+                    if field == "active":
+                        params.append(1 if value else 0)
+                    elif field == "user_name":
+                        params.append(value.lower() if value else value)
+                    else:
+                        params.append(value)
+
+            if not set_clauses:
+                return True
+
+            set_clauses.append("updated_at = ?")
+            params.append(now)
+            params.append(scim_user_id)
+
+            sql = f"UPDATE scim_users SET {', '.join(set_clauses)} WHERE id = ?"
+            cursor.execute(sql, params)
             conn.commit()
 
-            if cursor.rowcount == 0:
-                return None
-
-            return self.get_scim_user(scim_user_id)
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -501,45 +538,76 @@ class ScimStore:
     def list_scim_users(
         self,
         tenant_id: str,
-        filter_user_name: Optional[str] = None,
-        start_index: int = 1,
-        count: int = 100,
-    ) -> tuple[List[Dict[str, Any]], int]:
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
         """List SCIM users with pagination."""
         conn = self._get_conn()
         try:
             cursor = conn.cursor()
-
-            # Build query
-            where_clauses = ["tenant_id = ?"]
-            params: List[Any] = [tenant_id]
-
-            if filter_user_name:
-                where_clauses.append("user_name = ?")
-                params.append(filter_user_name.lower())
-
-            where_sql = " AND ".join(where_clauses)
-
-            # Get total count
-            cursor.execute(f"SELECT COUNT(*) FROM scim_users WHERE {where_sql}", params)
-            total = cursor.fetchone()[0]
-
-            # Get page
-            offset = start_index - 1  # SCIM uses 1-based indexing
             cursor.execute(
-                f"""
+                """
                 SELECT * FROM scim_users
-                WHERE {where_sql}
+                WHERE tenant_id = ?
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                params + [count, offset],
+                (tenant_id, limit, offset),
             )
-            users = [dict(row) for row in cursor.fetchall()]
-
-            return users, total
+            return [self._format_user_row(row) for row in cursor.fetchall()]
         finally:
             conn.close()
+
+    def find_scim_users(
+        self,
+        tenant_id: str,
+        field: str,
+        value: str,
+    ) -> List[Dict[str, Any]]:
+        """Find SCIM users by a specific field value."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+
+            # Validate field to prevent SQL injection
+            allowed_fields = {"user_name", "external_id", "email"}
+            if field not in allowed_fields:
+                return []
+
+            # Case-insensitive for user_name
+            if field == "user_name":
+                value = value.lower()
+
+            cursor.execute(
+                f"""
+                SELECT * FROM scim_users
+                WHERE tenant_id = ? AND {field} = ?
+                ORDER BY created_at DESC
+                """,
+                (tenant_id, value),
+            )
+            return [self._format_user_row(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def count_scim_users(self, tenant_id: str) -> int:
+        """Count all SCIM users for a tenant."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM scim_users WHERE tenant_id = ?",
+                (tenant_id,),
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def _format_user_row(self, row: sqlite3.Row) -> Dict[str, Any]:
+        """Format a user row, converting active to boolean."""
+        result = dict(row)
+        result["active"] = bool(result.get("active", 1))
+        return result
 
     # ========== SCIM Group Methods ==========
 
