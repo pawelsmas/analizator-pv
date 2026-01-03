@@ -385,11 +385,129 @@
     return null;
   }
 
+  // ===== DRIVER/PROFILE SUPPORT (v4.5.0) =====
+
+  /**
+   * Available optimization profiles (v4.5.0).
+   */
+  const OPTIMIZATION_PROFILES = {
+    balanced: {
+      objective: 'npv',
+      description: 'NPV optimization with self-consumption tie-breaker',
+      policy: { near_optimal_tolerance_pct: 5.0, tie_breakers: ['self_consumption_rate', 'duration_h'] }
+    },
+    pv_self_consumption: {
+      objective: 'self_consumption',
+      description: 'Maximize PV self-consumption',
+      policy: { near_optimal_tolerance_pct: 10.0, tie_breakers: ['npv_pln', 'duration_h'] }
+    },
+    commercial_peak_shaving: {
+      objective: 'peak_reduction',
+      description: 'Maximize peak reduction for demand charge savings',
+      policy: { near_optimal_tolerance_pct: 5.0, tie_breakers: ['npv_pln', 'capex_pln'] }
+    },
+    arbitrage: {
+      objective: 'npv',
+      description: 'NPV optimization for arbitrage',
+      policy: { near_optimal_tolerance_pct: 3.0, tie_breakers: ['irr_pct', 'payback_years'] }
+    },
+    resilience_backup: {
+      objective: 'resilience',
+      description: 'Maximize backup capability',
+      policy: { near_optimal_tolerance_pct: 15.0, tie_breakers: ['duration_h', 'npv_pln'] }
+    }
+  };
+
+  /**
+   * Available optimization objectives (v4.5.0).
+   */
+  const OPTIMIZATION_OBJECTIVES = [
+    { value: 'npv', label: 'NPV (Net Present Value)', direction: 'maximize' },
+    { value: 'irr', label: 'IRR (Internal Rate of Return)', direction: 'maximize' },
+    { value: 'payback', label: 'Payback Period', direction: 'minimize' },
+    { value: 'self_consumption', label: 'Self-Consumption Rate', direction: 'maximize' },
+    { value: 'peak_reduction', label: 'Peak Reduction', direction: 'maximize' },
+    { value: 'lcos', label: 'LCOS (Levelized Cost of Storage)', direction: 'minimize' },
+    { value: 'resilience', label: 'Resilience (Backup)', direction: 'maximize' }
+  ];
+
+  /**
+   * Add driver/profile configuration to request (v4.5.0).
+   *
+   * @param {Object} request - Base request object
+   * @param {Object} options - Driver options
+   * @param {string} [options.profile] - Profile name (balanced, pv_self_consumption, etc.)
+   * @param {string} [options.objective] - Override objective (npv, lcos, etc.)
+   * @param {Object} [options.recommendation_policy] - Custom recommendation policy
+   * @param {Object} [options.variant_space] - Custom variant space
+   * @returns {Object} Request with driver configuration
+   */
+  function addDriverConfig(request, options = {}) {
+    const driverConfig = {};
+
+    // Profile-based configuration
+    if (options.profile && OPTIMIZATION_PROFILES[options.profile]) {
+      const profile = OPTIMIZATION_PROFILES[options.profile];
+      driverConfig.optimization = { objective: profile.objective };
+      driverConfig.recommendation_policy = profile.policy;
+      console.log(`🎯 Applied profile: ${options.profile} (objective: ${profile.objective})`);
+    }
+
+    // Objective override
+    if (options.objective) {
+      driverConfig.optimization = { objective: options.objective };
+      console.log(`🎯 Objective override: ${options.objective}`);
+    }
+
+    // Custom policy override
+    if (options.recommendation_policy) {
+      driverConfig.recommendation_policy = {
+        ...(driverConfig.recommendation_policy || {}),
+        ...options.recommendation_policy
+      };
+    }
+
+    // Variant space configuration
+    if (options.variant_space) {
+      driverConfig.variant_space = options.variant_space;
+    }
+
+    // Include duration sweep flag
+    if (options.include_duration_sweep !== undefined) {
+      driverConfig.include_duration_sweep = options.include_duration_sweep;
+    }
+
+    return { ...request, ...driverConfig };
+  }
+
+  /**
+   * Get available profiles.
+   */
+  function getAvailableProfiles() {
+    return Object.entries(OPTIMIZATION_PROFILES).map(([key, val]) => ({
+      value: key,
+      label: val.description,
+      objective: val.objective
+    }));
+  }
+
+  /**
+   * Get available objectives.
+   */
+  function getAvailableObjectives() {
+    return OPTIMIZATION_OBJECTIVES;
+  }
+
   // ===== EXPORT TO WINDOW =====
 
   window.buildBessRequest = buildBessRequest;
   window.validateBessRequest = validateBessRequest;
+  window.addDriverConfig = addDriverConfig;
+  window.getAvailableProfiles = getAvailableProfiles;
+  window.getAvailableObjectives = getAvailableObjectives;
+  window.OPTIMIZATION_PROFILES = OPTIMIZATION_PROFILES;
+  window.OPTIMIZATION_OBJECTIVES = OPTIMIZATION_OBJECTIVES;
 
-  console.log('✅ BESS Request Builder loaded (v1.0.0)');
+  console.log('✅ BESS Request Builder loaded (v1.1.0 - drivers support)');
 
 })();
