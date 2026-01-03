@@ -1,0 +1,236 @@
+# SCIM Alerting Rules (v4.4.0 PR10)
+#
+# Prometheus alerting rules for SCIM provisioning monitoring.
+# Import into Prometheus/Alertmanager.
+
+groups:
+  - name: scim_provisioning
+    rules:
+      # =======================================================================
+      # Token Alerts
+      # =======================================================================
+
+      - alert: SCIMTokenExpiringSoon
+        expr: |
+          (scim_token_expiry_timestamp - time()) < 86400 * 7
+          and (scim_token_expiry_timestamp - time()) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM token expiring within 7 days"
+          description: |
+            Token {{ $labels.token_id }} for tenant {{ $labels.tenant_id }}
+            will expire in {{ $value | humanizeDuration }}.
+            Renew the token to avoid provisioning disruption.
+          runbook_url: "https://docs.example.com/runbooks/scim-token-renewal"
+
+      - alert: SCIMTokenExpired
+        expr: |
+          scim_token_validation_total{result="expired"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SCIM token expired - provisioning failing"
+          description: |
+            SCIM requests are failing due to expired token.
+            Immediate action required to restore provisioning.
+          runbook_url: "https://docs.example.com/runbooks/scim-token-expired"
+
+      - alert: SCIMNoActiveTokens
+        expr: |
+          scim_tokens_active == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No active SCIM tokens for tenant"
+          description: |
+            Tenant {{ $labels.tenant_id }} has no active SCIM tokens.
+            SCIM provisioning is unavailable.
+          runbook_url: "https://docs.example.com/runbooks/scim-no-tokens"
+
+      # =======================================================================
+      # Request Rate Alerts
+      # =======================================================================
+
+      - alert: SCIMHighErrorRate
+        expr: |
+          (
+            sum(rate(scim_errors_total[5m])) by (tenant_id)
+            /
+            sum(rate(scim_users_requests_total[5m]) + rate(scim_groups_requests_total[5m])) by (tenant_id)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High SCIM error rate (>10%)"
+          description: |
+            Tenant {{ $labels.tenant_id }} has {{ $value | humanizePercentage }} error rate.
+            Investigate SCIM endpoint errors.
+          runbook_url: "https://docs.example.com/runbooks/scim-high-errors"
+
+      - alert: SCIMRequestLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(scim_users_request_duration_seconds_bucket[5m])) by (le, method)
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM Users API p95 latency > 2s"
+          description: |
+            SCIM Users {{ $labels.method }} requests have p95 latency of {{ $value }}s.
+            This may affect IdP sync performance.
+          runbook_url: "https://docs.example.com/runbooks/scim-slow-requests"
+
+      - alert: SCIMRateLimitExceeded
+        expr: |
+          increase(scim_rate_limit_exceeded_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM rate limit exceeded"
+          description: |
+            Tenant {{ $labels.tenant_id }} is hitting SCIM rate limits.
+            IdP may need to reduce sync frequency.
+          runbook_url: "https://docs.example.com/runbooks/scim-rate-limit"
+
+      # =======================================================================
+      # Sync Alerts
+      # =======================================================================
+
+      - alert: SCIMSyncFailing
+        expr: |
+          increase(scim_sync_errors_total[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM group sync errors detected"
+          description: |
+            Tenant {{ $labels.tenant_id }} has {{ $value }} sync errors in 15 minutes.
+            Group memberships may not be up to date.
+          runbook_url: "https://docs.example.com/runbooks/scim-sync-errors"
+
+      - alert: SCIMSyncStale
+        expr: |
+          (time() - scim_sync_last_success_timestamp) > 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM sync stale - no successful sync in 24h"
+          description: |
+            Tenant {{ $labels.tenant_id }} hasn't had a successful sync
+            in {{ $value | humanizeDuration }}.
+            Check IdP connectivity and SCIM token validity.
+          runbook_url: "https://docs.example.com/runbooks/scim-sync-stale"
+
+      - alert: SCIMSyncDurationHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(scim_sync_duration_seconds_bucket[1h])) by (le, sync_type)
+          ) > 60
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM sync taking too long"
+          description: |
+            {{ $labels.sync_type }} syncs have p95 duration of {{ $value }}s.
+            Consider optimizing sync or breaking into smaller batches.
+          runbook_url: "https://docs.example.com/runbooks/scim-sync-slow"
+
+      # =======================================================================
+      # Deprovision Alerts
+      # =======================================================================
+
+      - alert: SCIMHighDeprovisionRate
+        expr: |
+          increase(scim_users_deprovisioned_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High deprovision rate detected"
+          description: |
+            {{ $value }} users deprovisioned for tenant {{ $labels.tenant_id }} in 1 hour.
+            Verify this is expected (e.g., bulk offboarding).
+          runbook_url: "https://docs.example.com/runbooks/scim-mass-deprovision"
+
+      - alert: SCIMDeprovisionHardDeleteEnabled
+        expr: |
+          increase(scim_deprovision_requests_total{hard_delete="true"}[1h]) > 0
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "SCIM hard delete performed"
+          description: |
+            Hard delete deprovision for tenant {{ $labels.tenant_id }}.
+            User data has been permanently removed.
+
+      # =======================================================================
+      # Capacity Alerts
+      # =======================================================================
+
+      - alert: SCIMUsersNearLimit
+        expr: |
+          scim_users_total > 900
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM users approaching limit"
+          description: |
+            Tenant {{ $labels.tenant_id }} has {{ $value }} SCIM users.
+            Approaching the 1000 user limit.
+          runbook_url: "https://docs.example.com/runbooks/scim-user-limit"
+
+      - alert: SCIMGroupsNearLimit
+        expr: |
+          scim_groups_total > 90
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM groups approaching limit"
+          description: |
+            Tenant {{ $labels.tenant_id }} has {{ $value }} SCIM groups.
+            Approaching the 100 group limit.
+          runbook_url: "https://docs.example.com/runbooks/scim-group-limit"
+
+      # =======================================================================
+      # Mapping Alerts
+      # =======================================================================
+
+      - alert: SCIMNoActiveMappings
+        expr: |
+          scim_mappings_total{enabled="true"} == 0
+          and scim_groups_total > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SCIM groups exist but no active mappings"
+          description: |
+            Tenant {{ $labels.tenant_id }} has SCIM groups but no enabled mappings.
+            Users won't be added to projects automatically.
+          runbook_url: "https://docs.example.com/runbooks/scim-no-mappings"
+
+      - alert: SCIMOrphanedMappings
+        expr: |
+          scim_mappings_total{enabled="true"} > scim_groups_total
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "More mappings than groups - possible orphans"
+          description: |
+            Tenant {{ $labels.tenant_id }} has more enabled mappings than groups.
+            Some mappings may reference deleted groups.
