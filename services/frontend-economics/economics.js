@@ -2292,6 +2292,59 @@ window.addEventListener('message', (event) => {
         window.parent.postMessage({ type: 'REQUEST_SHARED_DATA' }, '*');
       }
       break;
+
+    case 'REQUEST_ECONOMICS_DATA':
+      // Shell is requesting current economics data (for saving to database)
+      console.log('📤 Shell requested economics data - sending current data...');
+      // Get current centralized metrics for the current variant
+      const currentCalc = centralizedMetrics[currentVariant];
+      if (currentCalc && variants[currentVariant]) {
+        const variant = variants[currentVariant];
+        const eaasDuration = systemSettings?.eaasDuration || 10;
+        const analysisPeriod = systemSettings?.analysisPeriod || 25;
+        const discountRate = (systemSettings?.discountRate || 5) / 100;
+
+        // Build economics data similar to what generateEaaSYearlyTable sends
+        const economicsDataForSave = {
+          variantKey: currentVariant,
+          eaasDuration: eaasDuration,
+          analysisPeriod: analysisPeriod,
+          eaasPhaseSavings: currentCalc.eaas?.phaseSavings || 0,
+          ownershipPhaseSavings: currentCalc.eaas?.ownershipPhaseSavings || 0,
+          totalSavings: (currentCalc.eaas?.phaseSavings || 0) + (currentCalc.eaas?.ownershipPhaseSavings || 0),
+          cumulativeNPV: currentCalc.eaas?.npv || 0,
+          discountRate: discountRate,
+          cashFlows: currentCalc.eaas?.cashFlows || [],
+          // CAPEX Client yearly cashflows (for database save)
+          capexCashFlows: currentCalc.capex?.cashFlows || [],
+          // CAPEX data
+          capexInvestment: currentCalc.capex?.investment || 0,
+          capexNPV: currentCalc.capex?.npv || 0,
+          capexIRR: currentCalc.capex?.irr || 0,
+          capexPayback: currentCalc.capex?.simplePayback || 0,
+          irrMode: systemSettings?.irrMode || 'real',
+          // Common parameters
+          totalEnergyPrice: currentCalc.common?.totalEnergyPrice || 0,
+          inflationRate: currentCalc.common?.inflationRate || 0,
+          // BESS info
+          bessIncluded: variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0,
+          bessPowerKw: variant.bess_power_kw || 0,
+          bessEnergyKwh: variant.bess_energy_kwh || 0
+        };
+
+        console.log('📤 Sending ECONOMICS_DATA_RESPONSE:', economicsDataForSave.variantKey);
+        window.parent.postMessage({
+          type: 'ECONOMICS_DATA_RESPONSE',
+          data: economicsDataForSave
+        }, '*');
+      } else {
+        console.log('⚠️ No economics data available to send');
+        window.parent.postMessage({
+          type: 'ECONOMICS_DATA_RESPONSE',
+          data: null
+        }, '*');
+      }
+      break;
   }
 });
 
@@ -2531,7 +2584,12 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   const discountRate = window.economicsSettings?.discountRate || 0.07;
   const inflationRate = window.economicsSettings?.inflationRate || 0.025;
   const eaasIndexation = window.economicsSettings?.eaasIndexation || 'fixed';
-  const analysisPeriod = params.analysis_period;
+  // =========================================================================
+  // DATA CONTRACT: Client analysis horizon = 30 years
+  // Must match: shell.js CLIENT_ANALYSIS_PERIOD, app.py CLIENT_ANALYSIS_PERIOD
+  // =========================================================================
+  const CLIENT_ANALYSIS_PERIOD = 30;
+  const analysisPeriod = CLIENT_ANALYSIS_PERIOD; // Fixed for client models (CAPEX_CLIENT, EAAS_CLIENT)
   const degradationRate = params.degradation_rate; // PV degradation for years 2+ [fraction]
 
   // PV degradation Year 1 from settings (user configurable)
@@ -5428,7 +5486,7 @@ function roundNum(value, decimals = 2) {
 /**
  * Export EaaS analysis to Excel
  */
-function exportEaaSToExcel() {
+async function exportEaaSToExcel() {
   console.log('📥 Exporting EaaS analysis to Excel...');
 
   // Get variant data (same as calculateEaaS)
@@ -5488,30 +5546,49 @@ function exportEaaSToExcel() {
   // Create workbook
   const wb = XLSX.utils.book_new();
 
+  // Get currency settings (needed for both sheets)
+  const currency = systemSettings?.eaasCurrency || 'PLN';
+  const fxPlnEur = systemSettings?.fxPlnEur || 4.5;
+
   // Get total annual consumption from uploaded file
   const annualConsumptionKwh = getAnnualConsumptionKwh();
   const annualConsumptionMwh = annualConsumptionKwh / 1000;
 
-  // Sheet 1: Summary
+  // Sheet 1: Summary (client-facing - no sensitive ESCO data)
+  // Rows 1-3: Header area (logo + title merged A1:B3)
+  // Currency conversion multiplier (1 for PLN, 1/fx for EUR)
+  const currencyMultiplier = currency === 'EUR' ? 1 / fxPlnEur : 1;
+  const currencyLabel = currency;
+  // Currency info for display - separate label and value
+  const currencyInfoLabel = currency === 'EUR' ? 'Waluta EUR:' : 'Waluta:';
+  const currencyInfoValue = currency === 'EUR'
+    ? `${fxPlnEur.toFixed(2).replace('.', ',')} PLN/EUR`
+    : 'PLN';
+
+  // Convert values to contract currency
+  const eaasSubscriptionDisplay = eaasSubscription * currencyMultiplier;
+  const gridPriceDisplay = result.metrics.gridPricePLNperKWh * 1000 * currencyMultiplier;
+  const eaasPriceDisplay = result.metrics.eaasPricePLNperKWh * 1000 * currencyMultiplier;
+  const priceDiffDisplay = result.metrics.priceDifferencePLNperKWh * 1000 * currencyMultiplier;
+  const annualSavingsDisplay = result.metrics.annualSavingsPLN * currencyMultiplier / 1000;
+
   const summaryData = [
-    ['ANALIZA EaaS (Energy-as-a-Service)'],
+    [''],  // Row 1 - logo area
+    [''],  // Row 2 - logo area
+    ['ANALIZA EaaS (Energy-as-a-Service)'],  // Row 3 - title at bottom of merged area
     [''],
-    ['Data eksportu:', new Date().toLocaleString('pl-PL')],
-    ['Wariant:', currentVariant],
+    ['DANE INSTALACJI'],
     ['Moc instalacji [kWp]:', roundNum(capacityKwp, 0)],
     ['Zużycie roczne zakładu [MWh]:', roundNum(annualConsumptionMwh, 1)],
     ['Autokonsumpcja PV [MWh]:', roundNum(autoconsumptionMwh, 1)],
     ['Pokrycie zużycia [%]:', roundNum((autoconsumptionMwh / annualConsumptionMwh) * 100, 1)],
     [''],
-    ['PARAMETRY WEJŚCIOWE'],
-    ['Abonament EaaS [PLN/rok]:', roundNum(eaasSubscription, 0)],
-    ['O&M [PLN/kWp/rok]:', roundNum(eaasOM, 0)],
-    ['CAPEX [PLN]:', roundNum(capex, 0)],
-    ['Stopa ubezpieczenia [%]:', roundNum(EAAS_CONFIG.INSURANCE_RATE * 100, 1)],
-    ['Degradacja [%/rok]:', roundNum(degradationRate * 100, 1)],
+    ['PARAMETRY UMOWY EaaS'],
+    [`Abonament EaaS [${currencyLabel}/rok]:`, roundNum(eaasSubscriptionDisplay, 0)],
     ['Okres analizy [lat]:', analysisPeriod],
+    [currencyInfoLabel, currencyInfoValue],  // Currency info row with value in column C
     [''],
-    ['SKŁADNIKI TARYFY [PLN/MWh]'],
+    ['SKŁADNIKI TARYFY [PLN/MWh]'],  // Tariff always in PLN (base costs)
     ['Energia czynna:', roundNum(tariffComponents.energyActive, 0)],
     ['Dystrybucja:', roundNum(tariffComponents.distribution, 0)],
     ['Opłata jakościowa:', roundNum(tariffComponents.quality, 0)],
@@ -5520,23 +5597,13 @@ function exportEaaSToExcel() {
     ['Opłata mocowa:', roundNum(tariffComponents.capacity, 0)],
     ['Akcyza:', roundNum(tariffComponents.excise, 0)],
     [''],
-    ['WYNIKI ANALIZY'],
-    ['Cena energii z sieci [PLN/MWh]:', roundNum(result.metrics.gridPricePLNperKWh * 1000, 2)],
-    ['Efektywna cena EaaS [PLN/MWh]:', roundNum(result.metrics.eaasPricePLNperKWh * 1000, 2)],
-    ['Różnica cen [PLN/MWh]:', roundNum(result.metrics.priceDifferencePLNperKWh * 1000, 2)],
+    ['KORZYŚCI DLA KLIENTA'],
+    [`Cena energii z sieci [${currencyLabel}/MWh]:`, roundNum(gridPriceDisplay, 2)],
+    [`Efektywna cena EaaS [${currencyLabel}/MWh]:`, roundNum(eaasPriceDisplay, 2)],
+    [`Różnica cen [${currencyLabel}/MWh]:`, roundNum(priceDiffDisplay, 2)],
+    ['Procent oszczędności [%]:', roundNum((result.metrics.priceDifferencePLNperKWh / result.metrics.gridPricePLNperKWh) * 100, 1)],
     [''],
-    ['Roczne oszczędności [tys. PLN]:', roundNum(result.metrics.annualSavingsPLN / 1000, 1)],
-    ['Procent oszczędności [%]:', roundNum(result.metrics.savingsPercentageVsBaseline, 1)],
-    [''],
-    ['Równoważny okres zwrotu [lat]:', roundNum(result.metrics.eaasEquivalentPaybackYears, 1)],
-    ['Równoważny ROI [%]:', roundNum(result.metrics.eaasEquivalentROI, 1)],
-    [''],
-    ['KOSZT DLA KLIENTA EaaS [PLN/rok]'],
-    ['Abonament EaaS (jedyny koszt dla klienta):', roundNum(result.metrics.breakdown.subscriptionCost, 0)],
-    [''],
-    ['Koszty ESCO wbudowane w abonament (informacyjnie):'],
-    ['  - O&M:', roundNum(result.metrics.breakdown.omCost, 0)],
-    ['  - Ubezpieczenie:', roundNum(result.metrics.breakdown.insuranceCost, 0)]
+    [`Roczne oszczędności [tys. ${currencyLabel}]:`, roundNum(annualSavingsDisplay, 1)]
   ];
 
   const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
@@ -5559,7 +5626,8 @@ function exportEaaSToExcel() {
   }
 
   const eaasCashFlows = centralizedCalc.eaas.cashFlows;
-  const eaasDuration = centralizedCalc.eaas.duration;
+  // Get eaasDuration directly from UI to ensure it reflects current user selection
+  const eaasDuration = parseInt(document.getElementById('eaasDuration')?.value) || centralizedCalc.eaas.duration || 10;
   const discountRate = centralizedCalc.common.discountRate;
   const inflationRate = centralizedCalc.common.inflationRate;
   const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice; // PLN/MWh
@@ -5567,6 +5635,8 @@ function exportEaaSToExcel() {
   const baseOmCost = centralizedCalc.eaas.baseOmCost || 0;
   const baseInsuranceCost = centralizedCalc.eaas.baseInsuranceCost || 0;
   const eaasIndexation = window.economicsSettings?.eaasIndexation || 'fixed';
+
+  // currency and fxPlnEur already defined above (for Sheet 1)
 
   // Get degradation rates (same as used in centralizedMetrics)
   const pvDegradationYear1 = (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 2.0) / 100;
@@ -5579,26 +5649,49 @@ function exportEaaSToExcel() {
   console.log('📥 Export EaaS with FORMULAS - baseAutoconsumption:', baseAutoconsumptionMwh, 'MWh');
   console.log('📥 Degradation: Year1:', (pvDegradationYear1 * 100).toFixed(1) + '%, Years2+:', (pvDegradationYears2Plus * 100).toFixed(2) + '%/yr');
 
+  // Convert values to contract currency for Sheet 2
+  const baseSubscriptionDisplay = baseSubscriptionCost * currencyMultiplier / 1000; // tys. w walucie kontraktu
+  const totalEnergyPriceDisplay = totalEnergyPrice * currencyMultiplier; // w walucie kontraktu
+
   // Create worksheet manually to set formulas
+  // PARAMETRY: labels in columns B-D (merged), values in column E
   const ws2 = XLSX.utils.aoa_to_sheet([
-    ['ANALIZA EaaS ROK PO ROKU Z NPV'],
+    ['', 'ANALIZA EaaS ROK PO ROKU Z NPV'],
     [''],
-    ['PARAMETRY:'],
-    ['Stopa dyskontowa:', roundNum(discountRate, 3)],                              // B4
-    ['Inflacja:', roundNum(inflationRate, 3)],                                     // B5
-    ['Degradacja PV Rok 1:', roundNum(pvDegradationYear1, 4)],                     // B6
-    ['Degradacja PV Lata 2+:', roundNum(pvDegradationYears2Plus, 4)],              // B7
-    ['Okres umowy EaaS [lat]:', eaasDuration],                                     // B8
-    ['Okres analizy [lat]:', analysisPeriod],                                      // B9
-    ['Autokonsumpcja bazowa [MWh]:', roundNum(baseAutoconsumptionMwh, 2)],         // B10
-    ['Cena sieci bazowa [PLN/kWh]:', roundNum(totalEnergyPrice / 1000, 4)],        // B11
-    ['Abonament EaaS [tys. PLN/rok]:', roundNum(baseSubscriptionCost / 1000, 2)],  // B12
-    ['O&M + Ubezp. po przejęciu [tys. PLN/rok]:', roundNum((baseOmCost + baseInsuranceCost) / 1000, 2)], // B13
-    ['Indeksacja EaaS:', eaasIndexation === 'cpi' ? 'CPI' : 'Stala'],              // B14
-    [''],
-    // Header row (row 16)
-    ['Rok', 'Faza', 'Autokonsumpcja [MWh]', 'Koszt Sieci [tys. PLN]', 'Koszt EaaS/Własność [tys. PLN]', 'Oszczędności [tys. PLN]', 'CF Zdyskontowany [tys. PLN]', 'Skumulowany NPV [mln PLN]']
+    ['', 'PARAMETRY:'],
+    ['', 'Stopa dyskontowa:', '', '', roundNum(discountRate, 4)],                                // B4, E4 (0.10 = 10%)
+    ['', 'Inflacja:', '', '', roundNum(inflationRate, 4)],                                       // B5, E5 (0.025 = 2.5%)
+    ['', 'Degradacja PV Rok 1:', '', '', roundNum(pvDegradationYear1, 4)],                       // B6, E6 (0.02 = 2%)
+    ['', 'Degradacja PV Lata 2+:', '', '', roundNum(pvDegradationYears2Plus, 4)],                // B7, E7 (0.004 = 0.4%)
+    ['', 'Okres umowy EaaS [lat]:', '', '', eaasDuration],                                       // B8, E8
+    ['', 'Okres analizy [lat]:', '', '', analysisPeriod],                                        // B9, E9
+    ['', 'Autokonsumpcja bazowa [MWh]:', '', '', roundNum(baseAutoconsumptionMwh, 2)],           // B10, E10
+    ['', `Cena sieci bazowa [${currencyLabel}/MWh]:`, '', '', roundNum(totalEnergyPriceDisplay, 2)],    // B11, E11
+    ['', `Abonament EaaS [tys. ${currencyLabel}/rok]:`, '', '', roundNum(baseSubscriptionDisplay, 2)],  // B12, E12
+    ['', `O&M + Ubezp. (rok 1 własności) [tys. ${currencyLabel}/rok]:`, '', '', null], // B13, E13 - formula set below
+    ['', 'Indeksacja EaaS:', '', '', eaasIndexation === 'cpi' ? 'Rata indeksowana inflacją' : 'Rata stała'],  // B14, E14
+    ['', currencyInfoLabel, '', '', currencyInfoValue],  // B15, E15 - Currency info (Waluta EUR: / 4,25 PLN/EUR)
+    [''],  // Row 16 - empty row before header
+    // Header row (row 17)
+    ['Rok', 'Faza', 'Autokonsumpcja [MWh]', `Koszt Sieci [tys. ${currencyLabel}]`, `Koszt EaaS/Własność [tys. ${currencyLabel}]`, `Oszczędności [tys. ${currencyLabel}]`, `CF Zdyskontowany [tys. ${currencyLabel}]`, `Skumulowany NPV [mln ${currencyLabel}]`]
   ]);
+
+  // Format cells E4:E7 as percentages (Excel percentage format)
+  const percentCells = ['E4', 'E5', 'E6', 'E7'];
+  for (const cellRef of percentCells) {
+    if (ws2[cellRef]) {
+      ws2[cellRef].z = '0.00%';  // Excel percentage format
+    }
+  }
+
+  // E13: O&M + Ubezp. (rok 1 własności) - tylko wartość (bez formuły dla ochrony danych)
+  // Wartość już zindeksowana na moment przejścia na własność, w walucie kontraktu
+  const baseOmTotalThousands = (baseOmCost + baseInsuranceCost) * currencyMultiplier / 1000; // tys. w walucie kontraktu
+  const omAtOwnershipYear1 = baseOmTotalThousands * Math.pow(1 + inflationRate, eaasDuration);
+  ws2['E13'] = {
+    t: 'n',
+    v: roundNum(omAtOwnershipYear1, 2)  // Tylko wartość, bez formuły
+  };
 
   // Helper to set cell with formula and pre-calculated value
   function setCell(ws, col, row, formula, value) {
@@ -5614,7 +5707,7 @@ function exportEaaSToExcel() {
     ws[cellRef] = { t: 'n', v: value };
   }
 
-  const dataStartRow = 17; // Row 17 is first data row (0-indexed = 16)
+  const dataStartRow = 18; // Row 18 is first data row (header is now row 17 due to currency info row)
   let cumulativeNPV = 0;
   let eaasPhaseSavings = 0;
   let ownershipPhaseSavings = 0;
@@ -5624,13 +5717,14 @@ function exportEaaSToExcel() {
     const prevRow = row - 1;
     const yearData = eaasCashFlows[year - 1]; // Get pre-calculated values from centralizedMetrics
 
-    // Get values from centralizedMetrics (these are the correct values)
+    // Get values from centralizedMetrics (these are the correct values in PLN)
     const autoconsumptionKwh = yearData?.selfConsumed || 0;
     const autoconsumptionYearMwh = autoconsumptionKwh / 1000;
-    const gridCost = yearData?.gridCost || 0;
-    const eaasCost = yearData?.eaasCost || 0;
-    const savings = yearData?.savings || 0;
-    const discountedCF = yearData?.discountedCF || 0;
+    // Convert to contract currency
+    const gridCost = (yearData?.gridCost || 0) * currencyMultiplier;
+    const eaasCost = (yearData?.eaasCost || 0) * currencyMultiplier;
+    const savings = (yearData?.savings || 0) * currencyMultiplier;
+    const discountedCF = (yearData?.discountedCF || 0) * currencyMultiplier;
     const phase = yearData?.phase || (year <= eaasDuration ? 'eaas' : 'ownership');
 
     cumulativeNPV += discountedCF;
@@ -5643,37 +5737,43 @@ function exportEaaSToExcel() {
     // Column A: Rok
     setCellNumber(ws2, 0, row, year);
 
-    // Column B: Faza - formula
-    const phaseFormula = `IF(A${row}<=$B$8,"EaaS","Własność")`;
+    // Column B: Faza - formula (E8 = okres EaaS)
+    const phaseFormula = `IF(A${row}<=$E$8,"EaaS","Własność")`;
     setCellText(ws2, 1, row, phaseFormula, phase === 'eaas' ? 'EaaS' : 'Własność');
 
     // Column C: Autokonsumpcja [MWh] - formula with Year1 and Years2+ degradation
     // Year 1: base * (1 - degYear1)
     // Year 2+: base * (1 - degYear1) * (1 - degYears2+)^(year-1)
-    const autoFormula = `ROUND($B$10*(1-$B$6)*POWER(1-$B$7,A${row}-1),2)`;
+    // E10=autokonsumpcja bazowa, E6=degradacja rok 1, E7=degradacja lata 2+
+    const autoFormula = `ROUND($E$10*(1-$E$6)*POWER(1-$E$7,A${row}-1),2)`;
     setCell(ws2, 2, row, autoFormula, roundNum(autoconsumptionYearMwh, 2));
 
     // Column D: Koszt Sieci [tys. PLN] = Autokonsumpcja * cena * inflacja
-    // Cena w B11 jest w PLN/kWh, autokonsumpcja w MWh -> mnożymy przez 1000 i dzielimy przez 1000 (tys.)
-    const gridCostFormula = `ROUND(C${row}*$B$11*POWER(1+$B$5,A${row}-1),2)`;
+    // E11 jest teraz w PLN/MWh, autokonsumpcja w MWh -> wynik w PLN, dzielimy przez 1000 żeby mieć tys. PLN
+    // E5 = inflacja
+    const gridCostFormula = `ROUND(C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1),2)`;
     setCell(ws2, 3, row, gridCostFormula, roundNum(gridCost / 1000, 2));
 
     // Column E: Koszt EaaS/Własność [tys. PLN]
-    // W fazie EaaS: abonament (z lub bez indeksacji CPI)
-    // W fazie Własność: O&M + Ubezpieczenie (z inflacją)
-    const eaasCostFormula = `IF(A${row}<=$B$8,IF($B$14="CPI",$B$12*POWER(1+$B$5,A${row}-1),$B$12),$B$13*POWER(1+$B$5,A${row}-1))`;
+    // W fazie EaaS: abonament (z lub bez indeksacji inflacją) - O&M nie występuje
+    // W fazie Własność: E13 (już zindeksowane na rok 1 własności) × inflacja od tego momentu
+    // E8=okres EaaS, E14=indeksacja, E12=abonament, E5=inflacja
+    // E13=O&M już zindeksowane = bazowy * (1+inflacja)^okres_EaaS
+    // Rok 16: E13 * (1.03)^0 = E13, Rok 17: E13 * (1.03)^1, itd.
+    const eaasCostFormula = `IF(A${row}<=$E$8,IF($E$14="Rata indeksowana inflacją",$E$12*POWER(1+$E$5,A${row}-1),$E$12),$E$13*POWER(1+$E$5,A${row}-$E$8-1))`;
     setCell(ws2, 4, row, eaasCostFormula, roundNum(eaasCost / 1000, 2));
 
     // Column F: Oszczędności [tys. PLN] = Koszt Sieci - Koszt EaaS
-    const savingsFormula = `D${row}-E${row}`;
+    const savingsFormula = `ROUND(D${row}-E${row},2)`;
     setCell(ws2, 5, row, savingsFormula, roundNum(savings / 1000, 2));
 
     // Column G: CF Zdyskontowany [tys. PLN]
-    const discountedFormula = `ROUND(F${row}/POWER(1+$B$4,A${row}),2)`;
+    // E4 = stopa dyskontowa
+    const discountedFormula = `ROUND(F${row}/POWER(1+$E$4,A${row}),2)`;
     setCell(ws2, 6, row, discountedFormula, roundNum(discountedCF / 1000, 2));
 
     // Column H: Skumulowany NPV [mln PLN]
-    const npvFormula = year === 1 ? `G${row}/1000` : `H${prevRow}+G${row}/1000`;
+    const npvFormula = year === 1 ? `ROUND(G${row}/1000,2)` : `ROUND(H${prevRow}+G${row}/1000,2)`;
     setCell(ws2, 7, row, npvFormula, roundNum(cumulativeNPV / 1000000, 2));
   }
 
@@ -5709,7 +5809,7 @@ function exportEaaSToExcel() {
     f: `SUM(F${dataStartRow}:F${lastDataRow})`,
     v: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 0)
   };
-  ws2[XLSX.utils.encode_cell({ c: 6, r: summaryRow3 - 1 })] = { t: 's', v: 'NPV [mln PLN]:' };
+  ws2[XLSX.utils.encode_cell({ c: 6, r: summaryRow3 - 1 })] = { t: 's', v: `NPV [mln ${currency}]:` };
   ws2[XLSX.utils.encode_cell({ c: 7, r: summaryRow3 - 1 })] = {
     t: 'n',
     f: `H${lastDataRow}`,
@@ -5730,105 +5830,436 @@ function exportEaaSToExcel() {
 
   XLSX.utils.book_append_sheet(wb, ws2, 'EaaS Rok po Roku');
 
-  // ========== SHEET 3: Monthly Cash Flows (Full Model) ==========
-  // Run full model to get monthly flows
-  const annualEnergyMWh = variant.self_consumed / 1000;
-  const bessDataForExport = getCurrentBessData();
-  const fullModelResult = calculateEaasFullModel(
-    capacityKwp,
-    annualEnergyMWh,
-    systemSettings || {},
-    params,
-    bessDataForExport  // Include BESS in CAPEX/OPEX for export
-  );
+  // NOTE: Sheet 3 (CF Miesięczny) removed - contains sensitive ESCO profitability data
 
-  if (fullModelResult && fullModelResult.monthlyFlows && fullModelResult.monthlyFlows.length > 0) {
-    const monthlyData = [
-      ['MIESIĘCZNE PRZEPŁYWY PIENIĘŻNE (PEŁNY MODEL INWESTORA)'],
-      [''],
-      ['Moc instalacji [kWp]:', roundNum(capacityKwp, 0)],
-      [`Waluta: ${fullModelResult.currency}`, `Target IRR: ${roundNum(fullModelResult.targetIrr * 100, 1)}%`],
-      [`Project IRR: ${roundNum(fullModelResult.projectIrr * 100, 2)}%`, `Equity IRR: ${roundNum(fullModelResult.equityIrr * 100, 2)}%`],
-      [''],
-      ['Miesiąc', 'Rok', 'Abonament', 'OPEX', 'EBITDA', 'Amortyzacja', 'EBIT', 'Odsetki', 'Kapitał', 'Podatek', 'CF Project', 'CF Equity', 'Saldo długu', 'CPI kum.']
-    ];
+  // ========== USE EXCELJS FOR CONDITIONAL FORMATTING ==========
+  // Convert XLSX workbook to ExcelJS for conditional formatting support
+  console.log('📥 Converting to ExcelJS for conditional formatting...');
 
-    for (const flow of fullModelResult.monthlyFlows) {
-      if (flow.month === 0) {
-        // Initial investment row
-        monthlyData.push([
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          roundNum(flow.capex / 1000, 0),
-          roundNum((flow.cfEquity || flow.capex + flow.debtDraw) / 1000, 0),
-          roundNum((flow.debtDraw || 0) / 1000, 0),
-          ''
-        ]);
-      } else {
-        monthlyData.push([
-          flow.month,
-          flow.year,
-          roundNum(flow.subscription / 1000, 1),
-          roundNum(flow.opex / 1000, 1),
-          roundNum(flow.ebitda / 1000, 1),
-          roundNum(flow.depreciation / 1000, 1),
-          roundNum(flow.ebit / 1000, 1),
-          roundNum(flow.interest / 1000, 1),
-          roundNum(flow.principal / 1000, 1),
-          roundNum(flow.tax / 1000, 1),
-          roundNum(flow.cfProject / 1000, 1),
-          roundNum(flow.cfEquity / 1000, 1),
-          roundNum(flow.debtBalance / 1000, 0),
-          roundNum(flow.cumulativeCpi * 100, 1) + '%'
-        ]);
+  const excelWorkbook = new ExcelJS.Workbook();
+
+  // Load logo image as base64
+  let logoImageId = null;
+  try {
+    const logoResponse = await fetch('/logo.png?v=' + Date.now());  // Cache bust
+    const logoBlob = await logoResponse.blob();
+    const logoBase64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(logoBlob);
+    });
+    console.log('📥 Logo loaded successfully');
+
+    logoImageId = excelWorkbook.addImage({
+      base64: logoBase64,
+      extension: 'png'
+    });
+  } catch (err) {
+    console.warn('⚠️ Could not load logo:', err);
+  }
+
+  // Sheet 1: Podsumowanie EaaS (with enhanced styling)
+  const excelSheet1 = excelWorkbook.addWorksheet('Podsumowanie EaaS');
+  excelSheet1.columns = [
+    { width: 3 },   // A: margin column (empty)
+    { width: 38 },  // B: labels
+    { width: 22 }   // C: values
+  ];
+
+  // Hide gridlines and headers for cleaner look
+  excelSheet1.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Copy summary data with styling (shifted to column B)
+  summaryData.forEach((row, idx) => {
+    const excelRow = excelSheet1.getRow(idx + 1);
+    row.forEach((cell, colIdx) => {
+      excelRow.getCell(colIdx + 2).value = cell;  // Start from column B (index 2)
+    });
+  });
+
+  // Style Sheet 1: Podsumowanie EaaS
+  // Merge B1:C3 for header area (logo + title)
+  excelSheet1.mergeCells('B1:C3');
+
+  // Set row heights for header area
+  excelSheet1.getRow(1).height = 20;
+  excelSheet1.getRow(2).height = 20;
+  excelSheet1.getRow(3).height = 24;
+
+  // Style the merged header cell - title at bottom, centered
+  const headerCell = excelSheet1.getCell('B1');
+  headerCell.value = 'ANALIZA EaaS (Energy-as-a-Service)';
+  headerCell.font = { bold: true, size: 14, color: { argb: 'FF1976D2' } };
+  headerCell.alignment = { horizontal: 'center', vertical: 'bottom' };
+
+  // Add logo to merged header area (centered above title)
+  if (logoImageId !== null) {
+    excelSheet1.addImage(logoImageId, {
+      tl: { col: 1.3, row: 0.1 },  // Top-left position (shifted for margin)
+      ext: { width: 200, height: 50 }  // Size in pixels
+    });
+  }
+
+  // Section headers styling (cells shifted to B and C)
+  // Row mapping: DANE INSTALACJI=5, PARAMETRY UMOWY=11, SKŁADNIKI TARYFY=16, KORZYŚCI=25
+  const sectionHeaders1 = [5, 11, 16, 25];
+  sectionHeaders1.forEach(rowNum => {
+    const row = excelSheet1.getRow(rowNum);
+    row.getCell(2).font = { bold: true, size: 11, color: { argb: 'FF2E7D32' } };
+    row.getCell(2).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE8F5E9' }
+    };
+    row.getCell(3).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE8F5E9' }
+    };
+  });
+
+  // Add borders to data cells in Sheet 1 (shifted +1, cells in B and C)
+  for (let r = 6; r <= 9; r++) {
+    const row = excelSheet1.getRow(r);
+    row.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).alignment = { horizontal: 'right' };
+  }
+  for (let r = 12; r <= 14; r++) {  // PARAMETRY UMOWY: Abonament, Okres analizy, Currency info
+    const row = excelSheet1.getRow(r);
+    row.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).alignment = { horizontal: 'right' };
+  }
+  for (let r = 17; r <= 23; r++) {  // SKŁADNIKI TARYFY (7 pozycji)
+    const row = excelSheet1.getRow(r);
+    row.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
+    row.getCell(3).alignment = { horizontal: 'right' };
+  }
+
+  // Highlight key results (savings rows - cells in B and C)
+  // Row mapping: Procent oszczędności=29, Roczne oszczędności=31
+  const savingsRows1 = [29, 31];
+  savingsRows1.forEach(rowNum => {
+    const row = excelSheet1.getRow(rowNum);
+    if (row.getCell(2).value) {
+      row.getCell(2).font = { bold: true, color: { argb: 'FF2E7D32' } };
+      row.getCell(3).font = { bold: true, color: { argb: 'FF2E7D32' } };
+      row.getCell(3).alignment = { horizontal: 'right' };
+    }
+  });
+
+  // Update views: frozen rows + hide gridlines and headers
+  excelSheet1.views = [{ state: 'frozen', ySplit: 3, showGridLines: false, showRowColHeaders: false }];
+
+  // Sheet 2: EaaS Rok po Roku with conditional formatting
+  const excelSheet2 = excelWorkbook.addWorksheet('EaaS Rok po Roku');
+  excelSheet2.columns = [
+    { width: 3 },   // A: margin column (empty)
+    { width: 5 },   // B: Rok
+    { width: 36 },  // C: Faza / PARAMETRY labels (wider for long text)
+    { width: 14 },  // D: Autokonsumpcja
+    { width: 12 },  // E: Koszt Sieci
+    { width: 14 },  // F: Koszt EaaS/Własność / Parameter values
+    { width: 13 },  // G: Oszczędności
+    { width: 15 },  // H: CF Zdyskontowany (wider)
+    { width: 18 }   // I: Skumulowany NPV / NPV [mln PLN]: (wider for summary label)
+  ];
+
+  // Hide gridlines and headers for cleaner look (will be updated with freeze later)
+  excelSheet2.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Copy data from XLSX worksheet to ExcelJS (shifted +1 column for margin)
+  const range = XLSX.utils.decode_range(ws2['!ref']);
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const excelRow = excelSheet2.getRow(R + 1);
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cellRef = XLSX.utils.encode_cell({ c: C, r: R });
+      const cell = ws2[cellRef];
+      if (cell) {
+        const excelCell = excelRow.getCell(C + 2);  // Shifted +1 for margin column
+        if (cell.f) {
+          // Cell has formula - shift column references by 1
+          // Use temporary tokens to avoid cascading replacements
+          let shiftedFormula = cell.f
+            // First pass: replace with temporary tokens (absolute refs)
+            .replace(/\$H/g, '§H§')
+            .replace(/\$G/g, '§G§')
+            .replace(/\$F/g, '§F§')
+            .replace(/\$E/g, '§E§')
+            .replace(/\$D/g, '§D§')
+            .replace(/\$C/g, '§C§')
+            .replace(/\$B/g, '§B§')
+            .replace(/\$A/g, '§A§')
+            // Second pass: replace tokens with shifted columns
+            .replace(/§A§/g, '$B')
+            .replace(/§B§/g, '$C')
+            .replace(/§C§/g, '$D')
+            .replace(/§D§/g, '$E')
+            .replace(/§E§/g, '$F')
+            .replace(/§F§/g, '$G')
+            .replace(/§G§/g, '$H')
+            .replace(/§H§/g, '$I');
+          // Also handle non-absolute references with tokens
+          shiftedFormula = shiftedFormula
+            .replace(/([^$§])H(\d+)/g, '$1«H»$2')
+            .replace(/([^$§])G(\d+)/g, '$1«G»$2')
+            .replace(/([^$§])F(\d+)/g, '$1«F»$2')
+            .replace(/([^$§])E(\d+)/g, '$1«E»$2')
+            .replace(/([^$§])D(\d+)/g, '$1«D»$2')
+            .replace(/([^$§])C(\d+)/g, '$1«C»$2')
+            .replace(/([^$§])B(\d+)/g, '$1«B»$2')
+            .replace(/([^$§])A(\d+)/g, '$1«A»$2')
+            .replace(/«A»/g, 'B')
+            .replace(/«B»/g, 'C')
+            .replace(/«C»/g, 'D')
+            .replace(/«D»/g, 'E')
+            .replace(/«E»/g, 'F')
+            .replace(/«F»/g, 'G')
+            .replace(/«G»/g, 'H')
+            .replace(/«H»/g, 'I');
+          excelCell.value = { formula: shiftedFormula, result: cell.v };
+        } else {
+          excelCell.value = cell.v;
+        }
+        // Apply percentage format for cells F4:F7 (was E4:E7, column F = index 5 after shift)
+        if (C === 4 && R >= 3 && R <= 6) {
+          excelCell.numFmt = '0.00%';
+        }
+        // Apply number format with thousand separator for data rows (row 17+, columns D-I)
+        // Row 16 is header (R=15), data starts at R=16 (row 17)
+        if (R >= 16 && C >= 2 && C <= 7 && typeof cell.v === 'number') {
+          excelCell.numFmt = '#,##0.00';  // Format: 1 000,00
+        }
       }
     }
-
-    // Add residual value note
-    monthlyData.push(['']);
-    monthlyData.push([`Wartość rezydualna: ${(fullModelResult.residualValue || capacityKwp).toLocaleString('pl-PL')} PLN (wykup 1 PLN/kWp)`]);
-    monthlyData.push([`Expected Loss Rate: ${roundNum(fullModelResult.expectedLossRate || 0, 1)}%`]);
-    monthlyData.push([`Degradacja: ${roundNum(fullModelResult.degradationRate || 0.5, 1)}%/rok`]);
-
-    const ws3 = XLSX.utils.aoa_to_sheet(monthlyData);
-
-    // Set column widths
-    ws3['!cols'] = [
-      { wch: 8 },  // Miesiąc
-      { wch: 5 },  // Rok
-      { wch: 12 }, // Abonament
-      { wch: 10 }, // OPEX
-      { wch: 10 }, // EBITDA
-      { wch: 12 }, // Amortyzacja
-      { wch: 10 }, // EBIT
-      { wch: 10 }, // Odsetki
-      { wch: 10 }, // Kapitał
-      { wch: 10 }, // Podatek
-      { wch: 12 }, // CF Project
-      { wch: 12 }, // CF Equity
-      { wch: 12 }, // Saldo długu
-      { wch: 10 }  // CPI kum.
-    ];
-
-    XLSX.utils.book_append_sheet(wb, ws3, 'CF Miesięczny');
-    console.log('✅ Monthly cash flows sheet added');
   }
+
+  // Style title row (row 1) - shifted +1 column for margin
+  const titleRow2 = excelSheet2.getRow(1);
+  titleRow2.getCell(3).font = { bold: true, size: 14, color: { argb: 'FF1976D2' } };
+  titleRow2.height = 22;
+
+  // Style PARAMETRY section header (row 3) - merge C3:E3 and align right with trailing space
+  excelSheet2.mergeCells('C3:E3');
+  const paramHeader = excelSheet2.getRow(3);
+  paramHeader.getCell(3).value = 'PARAMETRY: ';  // Add trailing space
+  paramHeader.getCell(3).font = { bold: true, size: 11, color: { argb: 'FF5D4037' } };
+  paramHeader.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+  // Merge cells C:E for parameter labels (rows 4-15, including currency info) and style them - shifted +1
+  for (let r = 4; r <= 15; r++) {
+    // Merge C:E for the label (was B:D)
+    excelSheet2.mergeCells(`C${r}:E${r}`);
+
+    const row = excelSheet2.getRow(r);
+    // Add trailing space to label text and align right
+    const currentValue = row.getCell(3).value;
+    if (currentValue && typeof currentValue === 'string') {
+      row.getCell(3).value = currentValue + ' ';  // Add trailing space
+    }
+    row.getCell(3).font = { color: { argb: 'FF616161' } };
+    row.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' };
+
+    // Style the value in column F (was E) - align left with leading space
+    const valueCell = row.getCell(6);
+    if (valueCell.value !== null && valueCell.value !== undefined) {
+      // Add leading space for separation
+      if (typeof valueCell.value === 'string') {
+        valueCell.value = ' ' + valueCell.value;
+      }
+    }
+    valueCell.font = { bold: true, color: { argb: 'FF1976D2' } };
+    valueCell.alignment = { horizontal: 'left', vertical: 'middle' };
+
+    // Add subtle border
+    row.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'FFEEEEEE' } } };
+    row.getCell(6).border = { bottom: { style: 'thin', color: { argb: 'FFEEEEEE' } } };
+  }
+
+  // Style header row (row 17) - enhanced with text wrapping, taller for visibility
+  const headerRow = excelSheet2.getRow(17);
+  headerRow.height = 40;  // Taller for wrapped text (increased from 30)
+  headerRow.eachCell((cell, colNum) => {
+    if (colNum === 1) return;  // Skip margin column
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF37474F' }  // Dark blue-grey
+    };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 };  // White text, smaller font
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };  // Text wrapping
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF263238' } },
+      bottom: { style: 'thin', color: { argb: 'FF263238' } }
+    };
+  });
+
+  // Add logo to Sheet 2 (top right corner, columns H-I, row 1) - shifted +1
+  if (logoImageId !== null) {
+    excelSheet2.addImage(logoImageId, {
+      tl: { col: 7, row: 0.2 },  // Top-left position (column H, row 1)
+      ext: { width: 180, height: 45 }  // Size in pixels
+    });
+  }
+
+  // Freeze header row and parameters (header is now row 17)
+  excelSheet2.views = [{ state: 'frozen', ySplit: 17, xSplit: 0, showGridLines: false, showRowColHeaders: false }];
+
+  // Add alternating row shading will be handled by conditional formatting
+  // Add borders to data cells - shifted +1 column
+  for (let r = dataStartRow; r <= lastDataRow; r++) {
+    const row = excelSheet2.getRow(r);
+    for (let c = 2; c <= 9; c++) {  // Start from 2 (skip margin), end at 9
+      const cell = row.getCell(c);
+      cell.border = {
+        bottom: { style: 'hair', color: { argb: 'FFE0E0E0' } }
+      };
+      // Center align year and phase columns (now B and C = indices 2 and 3)
+      if (c <= 3) {
+        cell.alignment = { horizontal: 'center' };
+      } else {
+        cell.alignment = { horizontal: 'right' };
+      }
+    }
+  }
+
+  // Add CONDITIONAL FORMATTING for data rows - shifted +1 column for margin
+  // Colors matching HTML table: EaaS = #fff8e1 (light yellow), Ownership = #e8f5e9 (light green)
+  const dataRange = `B${dataStartRow}:I${lastDataRow}`;  // B-I instead of A-H
+
+  console.log('📥 Adding conditional formatting for range:', dataRange);
+
+  // Rule 1: EaaS phase - light yellow (#fff8e1) when year <= eaasDuration (cell F8, was E8)
+  // Rule 2: Ownership phase - light green (#e8f5e9) when year > eaasDuration
+  excelSheet2.addConditionalFormatting({
+    ref: dataRange,
+    rules: [
+      {
+        type: 'expression',
+        formulae: ['$B18<=$F$8'],  // B is Rok (first data row is 18), F is okres EaaS
+        style: {
+          fill: {
+            type: 'pattern',
+            pattern: 'solid',
+            bgColor: { argb: 'FFFFF8E1' }  // #fff8e1 - light yellow (EaaS phase)
+          }
+        },
+        priority: 1
+      },
+      {
+        type: 'expression',
+        formulae: ['$B18>$F$8'],  // B is Rok (first data row is 18), F is okres EaaS
+        style: {
+          fill: {
+            type: 'pattern',
+            pattern: 'solid',
+            bgColor: { argb: 'FFE8F5E9' }  // #e8f5e9 - light green (Ownership phase)
+          }
+        },
+        priority: 2
+      }
+    ]
+  });
+
+  // Add summary rows with styling matching HTML table exactly (like the image)
+  // All columns shifted +1 for margin
+  const summaryStartRow = lastDataRow + 2;
+
+  // Row 1: Suma oszczędności w fazie EaaS - orange background
+  const eaasSummaryRow = excelSheet2.getRow(summaryStartRow);
+  eaasSummaryRow.height = 22;
+  excelSheet2.mergeCells(summaryStartRow, 2, summaryStartRow, 6); // Merge B-F for label (was A-E)
+  eaasSummaryRow.getCell(2).value = `📋  Suma oszczędności w fazie EaaS (lata 1-${eaasDuration}):`;
+  eaasSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
+  eaasSummaryRow.getCell(7).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"EaaS",G${dataStartRow}:G${lastDataRow})`, result: roundNum(eaasPhaseSavings / 1000, 2) };
+  eaasSummaryRow.getCell(7).numFmt = '#,##0.00';
+  eaasSummaryRow.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+  // Style: light orange background #fff3e0, orange text #f57c00
+  for (let col = 2; col <= 9; col++) {
+    eaasSummaryRow.getCell(col).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFFFF3E0' }
+    };
+    eaasSummaryRow.getCell(col).font = { color: { argb: 'FFF57C00' }, bold: true };
+    eaasSummaryRow.getCell(col).border = {
+      top: { style: 'thin', color: { argb: 'FFFFCC80' } },
+      bottom: { style: 'thin', color: { argb: 'FFFFCC80' } }
+    };
+  }
+
+  // Row 2: Suma oszczędności w fazie własności - green background
+  const ownershipSummaryRow = excelSheet2.getRow(summaryStartRow + 1);
+  ownershipSummaryRow.height = 22;
+  excelSheet2.mergeCells(summaryStartRow + 1, 2, summaryStartRow + 1, 6); // Merge B-F for label (was A-E)
+  ownershipSummaryRow.getCell(2).value = `🏠  Suma oszczędności w fazie własności (${eaasDuration + 1}-${analysisPeriod}):`;
+  ownershipSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
+  ownershipSummaryRow.getCell(7).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"Własność",G${dataStartRow}:G${lastDataRow})`, result: roundNum(ownershipPhaseSavings / 1000, 2) };
+  ownershipSummaryRow.getCell(7).numFmt = '#,##0.00';
+  ownershipSummaryRow.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+  // Style: light green background #e8f5e9, green text #4caf50
+  for (let col = 2; col <= 9; col++) {
+    ownershipSummaryRow.getCell(col).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE8F5E9' }
+    };
+    ownershipSummaryRow.getCell(col).font = { color: { argb: 'FF4CAF50' }, bold: true };
+    ownershipSummaryRow.getCell(col).border = {
+      top: { style: 'thin', color: { argb: 'FFA5D6A7' } },
+      bottom: { style: 'thin', color: { argb: 'FFA5D6A7' } }
+    };
+  }
+
+  // Row 3: SUMA CAŁKOWITA + NPV - highlighted
+  const totalSummaryRow = excelSheet2.getRow(summaryStartRow + 2);
+  totalSummaryRow.height = 26;
+  excelSheet2.mergeCells(summaryStartRow + 2, 2, summaryStartRow + 2, 6); // Merge B-F for label (was A-E)
+  totalSummaryRow.getCell(2).value = '💰  SUMA CAŁKOWITA:';
+  totalSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalSummaryRow.getCell(7).value = { formula: `SUM(G${dataStartRow}:G${lastDataRow})`, result: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 2) };
+  totalSummaryRow.getCell(7).numFmt = '#,##0.00';
+  totalSummaryRow.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalSummaryRow.getCell(8).value = `NPV [mln ${currency}]:`;
+  totalSummaryRow.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+  totalSummaryRow.getCell(9).value = { formula: `I${lastDataRow}`, result: roundNum(cumulativeNPV / 1000000, 2) };
+  totalSummaryRow.getCell(9).numFmt = '#,##0.00';
+  totalSummaryRow.getCell(9).alignment = { horizontal: 'right', vertical: 'middle' };
+  // Style: gradient-like effect with bold
+  for (let col = 2; col <= 9; col++) {
+    totalSummaryRow.getCell(col).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF37474F' }  // Dark background
+    };
+    totalSummaryRow.getCell(col).font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };  // White text
+    totalSummaryRow.getCell(col).border = {
+      top: { style: 'medium', color: { argb: 'FF263238' } },
+      bottom: { style: 'medium', color: { argb: 'FF263238' } }
+    };
+  }
+
+  // Set print area and page setup
+  excelSheet2.pageSetup.printArea = `A1:H${summaryStartRow + 2}`;
+  excelSheet2.pageSetup.fitToPage = true;
+  excelSheet2.pageSetup.fitToWidth = 1;
+  excelSheet2.pageSetup.orientation = 'landscape';
 
   // Generate filename
   const timestamp = new Date().toISOString().slice(0, 10);
   const filename = `EaaS_Analiza_${currentVariant}_${capacityKwp}kWp_${timestamp}.xlsx`;
 
-  // Save file
-  XLSX.writeFile(wb, filename);
-  console.log('✅ EaaS analysis exported to:', filename);
+  // Save file using ExcelJS
+  excelWorkbook.xlsx.writeBuffer().then(buffer => {
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    saveAs(blob, filename);
+    console.log('✅ EaaS analysis exported to:', filename);
+  }).catch(err => {
+    console.error('❌ Error exporting Excel:', err);
+    alert('Błąd eksportu Excel: ' + err.message);
+  });
 }
 
 // Export functions to window for HTML onclick handlers
