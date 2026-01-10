@@ -1245,7 +1245,7 @@ function applySettingsToUI(config) {
   const simpleFields = [
     'distribution', 'qualityFee', 'ozeFee', 'cogenerationFee',
     'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate', 'landLeasePerKwp',
-    'discountRate', 'degradationRate', 'analysisPeriod', 'inflationRate',
+    'discountRate', 'pvDegradationYear1', 'degradationRate', 'analysisPeriod', 'inflationRate',
     // EaaS basic
     'eaasDuration', 'eaasTargetIrrPln', 'eaasTargetIrrEur', 'cpiPln', 'cpiEur', 'fxPlnEur',
     // EaaS tax & depreciation
@@ -1484,6 +1484,100 @@ function applySettingsToUI(config) {
   // NOW call setBessMode() to update UI (status indicators, sections visibility)
   // This also calls renderScenarioTiles() which needs bessScenarioId to be already set
   setBessMode(bessMode);
+
+  // Apply Tariff Configuration (ToU zones and rates)
+  if (config.tariffConfig) {
+    const tc = config.tariffConfig;
+    // Tariff type
+    const tariffTypeEl = document.getElementById('tariffType');
+    if (tariffTypeEl) tariffTypeEl.value = tc.type || 'two_zone';
+    // Tariff name
+    const tariffNameEl = document.getElementById('tariffName');
+    if (tariffNameEl) tariffNameEl.value = tc.name || 'C12a';
+    // Flat rate
+    const tariffFlatRateEl = document.getElementById('tariffFlatRate');
+    if (tariffFlatRateEl) tariffFlatRateEl.value = tc.flatRate || 750;
+    // Two-zone rates
+    if (tc.twoZone) {
+      const tariffDayRateEl = document.getElementById('tariffDayRate');
+      if (tariffDayRateEl) tariffDayRateEl.value = tc.twoZone.dayRate || 850;
+      const tariffNightRateEl = document.getElementById('tariffNightRate');
+      if (tariffNightRateEl) tariffNightRateEl.value = tc.twoZone.nightRate || 450;
+      if (tc.twoZone.weekday) {
+        const dayStartWeekdayEl = document.getElementById('tariffDayStartWeekday');
+        if (dayStartWeekdayEl) dayStartWeekdayEl.value = tc.twoZone.weekday.start || 6;
+        const dayEndWeekdayEl = document.getElementById('tariffDayEndWeekday');
+        if (dayEndWeekdayEl) dayEndWeekdayEl.value = tc.twoZone.weekday.end || 22;
+      }
+      if (tc.twoZone.weekend) {
+        const dayStartWeekendEl = document.getElementById('tariffDayStartWeekend');
+        if (dayStartWeekendEl) dayStartWeekendEl.value = tc.twoZone.weekend.start || 6;
+        const dayEndWeekendEl = document.getElementById('tariffDayEndWeekend');
+        if (dayEndWeekendEl) dayEndWeekendEl.value = tc.twoZone.weekend.end || 13;
+      }
+    }
+    // Three-zone rates
+    if (tc.threeZone) {
+      const tariffPeakRateEl = document.getElementById('tariffPeakRate');
+      if (tariffPeakRateEl) tariffPeakRateEl.value = tc.threeZone.peakRate || 950;
+      const tariffPartialRateEl = document.getElementById('tariffPartialRate');
+      if (tariffPartialRateEl) tariffPartialRateEl.value = tc.threeZone.partialRate || 700;
+      const tariffOffPeakRateEl = document.getElementById('tariffOffPeakRate');
+      if (tariffOffPeakRateEl) tariffOffPeakRateEl.value = tc.threeZone.offPeakRate || 400;
+      if (tc.threeZone.peak1) {
+        const peakStartEl = document.getElementById('tariffPeakStart');
+        if (peakStartEl) peakStartEl.value = tc.threeZone.peak1.start || 7;
+        const peakEndEl = document.getElementById('tariffPeakEnd');
+        if (peakEndEl) peakEndEl.value = tc.threeZone.peak1.end || 13;
+      }
+      if (tc.threeZone.peak2) {
+        const peakStart2El = document.getElementById('tariffPeakStart2');
+        if (peakStart2El) peakStart2El.value = tc.threeZone.peak2.start || 17;
+        const peakEnd2El = document.getElementById('tariffPeakEnd2');
+        if (peakEnd2El) peakEnd2El.value = tc.threeZone.peak2.end || 21;
+      }
+      if (tc.threeZone.partial) {
+        const partialStartEl = document.getElementById('tariffPartialStart');
+        if (partialStartEl) partialStartEl.value = tc.threeZone.partial.start || 13;
+        const partialEndEl = document.getElementById('tariffPartialEnd');
+        if (partialEndEl) partialEndEl.value = tc.threeZone.partial.end || 17;
+      }
+    }
+    // Update tariff UI visibility
+    if (typeof onTariffTypeChange === 'function') {
+      onTariffTypeChange();
+    }
+    console.log('✅ Tariff config applied from import:', tc);
+  }
+
+  // Apply Capacity Fee Configuration (opłata mocowa)
+  if (config.capacityFeeConfig) {
+    const cfc = config.capacityFeeConfig;
+    // Save to localStorage for capacity fee functions to read
+    localStorage.setItem('pv_settings', JSON.stringify({
+      ...JSON.parse(localStorage.getItem('pv_settings') || '{}'),
+      capacityFeeConfig: cfc
+    }));
+    // Re-render capacity fee chart
+    if (typeof renderCapacityFeeChart === 'function') {
+      renderCapacityFeeChart();
+    }
+    console.log('✅ Capacity fee config applied from import:', cfc);
+  }
+
+  // Apply ESG parameters
+  if (config.esgGridEmissionProvider) {
+    const el = document.getElementById('esgGridEmissionProvider');
+    if (el) el.value = config.esgGridEmissionProvider;
+  }
+  if (config.esgGridEmissionFactor !== undefined) {
+    const el = document.getElementById('esgGridEmissionFactor');
+    if (el) el.value = config.esgGridEmissionFactor;
+  }
+  if (config.esgPvTechnology) {
+    const el = document.getElementById('esgPvTechnology');
+    if (el) el.value = config.esgPvTechnology;
+  }
 }
 
 // Get current settings from UI
@@ -1534,7 +1628,8 @@ function getCurrentSettings() {
 
     // EaaS - Contract Basics
     eaasCurrency: document.getElementById('eaasCurrency')?.value || DEFAULT_CONFIG.eaasCurrency,
-    eaasDuration: parseInt(document.getElementById('eaasDuration')?.value || DEFAULT_CONFIG.eaasDuration),
+    // EaaS duration capped at 25 years (data contract maximum)
+    eaasDuration: Math.min(25, parseInt(document.getElementById('eaasDuration')?.value || DEFAULT_CONFIG.eaasDuration)),
     eaasIndexation: document.getElementById('eaasIndexation')?.value || DEFAULT_CONFIG.eaasIndexation,
     eaasTargetIrrPln: parseFloat(document.getElementById('eaasTargetIrrPln')?.value || DEFAULT_CONFIG.eaasTargetIrrPln),
     eaasTargetIrrEur: parseFloat(document.getElementById('eaasTargetIrrEur')?.value || DEFAULT_CONFIG.eaasTargetIrrEur),

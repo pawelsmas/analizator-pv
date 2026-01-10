@@ -18,7 +18,9 @@ import httpx
 
 from models import (
     Base, Company, Project, EnergyProfile, ProfileData,
-    PriceScenario, PriceData, AnalysisResult, AnalysisMode
+    PriceScenario, PriceData, AnalysisResult, AnalysisMode,
+    ProjectSettings, Calculation, CalculationMetric, Export,
+    ApiKey, Webhook, WebhookDelivery, AuditLog
 )
 from schemas import (
     CompanyCreate, CompanyUpdate, CompanyResponse, CompanyWithProjects,
@@ -27,7 +29,15 @@ from schemas import (
     PriceScenarioCreate, PriceScenarioResponse,
     AnalysisResultCreate, AnalysisResultResponse,
     AnalysisModeResponse, DatabaseStats, ProjectSummary,
-    BulkProfileImport, BulkPriceImport
+    BulkProfileImport, BulkPriceImport,
+    # New schemas
+    ProjectSettingsCreate, ProjectSettingsResponse,
+    CalculationCreate, CalculationUpdate, CalculationResponse, CalculationWithMetrics,
+    ExportCreate, ExportResponse,
+    ApiKeyCreate, ApiKeyResponse, ApiKeyWithSecret,
+    WebhookCreate, WebhookUpdate, WebhookResponse, WebhookDeliveryResponse,
+    AuditLogResponse,
+    ExternalProjectResponse, ExternalCalculationResponse, ExternalCalculationListResponse
 )
 
 # ===========================================
@@ -279,6 +289,130 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     db.delete(db_project)
     db.commit()
     return {"message": "Project deleted", "id": project_id}
+
+
+# ===========================================
+# Draft Project (Hybrid Workflow)
+# ===========================================
+
+@app.post("/projects/draft", response_model=ProjectResponse)
+async def create_draft_project(
+    session_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a draft project for the hybrid workflow.
+    Draft projects are temporary - they become real projects when user saves them.
+    """
+    from datetime import datetime
+
+    # Generate session-based name
+    now = datetime.now()
+    draft_name = f"Nowa analiza - {now.strftime('%Y-%m-%d %H:%M')}"
+
+    # Create draft project (no company_id - will be assigned on save)
+    db_project = Project(
+        name=draft_name,
+        description=f"Draft session: {session_id or 'anonymous'}",
+        status="draft",
+        analysis_mode="pv_bess"
+    )
+    db.add(db_project)
+    db.commit()
+    db.refresh(db_project)
+
+    return db_project
+
+
+@app.get("/projects/draft/active")
+async def get_active_draft(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get active draft project for a session.
+    Returns existing draft or creates new one.
+    """
+    # Look for existing draft with this session_id in description
+    draft = db.query(Project).filter(
+        Project.status == "draft",
+        Project.description.contains(f"Draft session: {session_id}")
+    ).order_by(Project.created_at.desc()).first()
+
+    if draft:
+        return {
+            "found": True,
+            "project": draft
+        }
+
+    return {"found": False, "project": None}
+
+
+@app.put("/projects/{project_id}/finalize", response_model=ProjectResponse)
+async def finalize_draft_project(
+    project_id: int,
+    name: str,
+    company_id: Optional[int] = None,
+    description: Optional[str] = None,
+    location_name: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Finalize a draft project - convert it to an active project.
+    This is called when user clicks "Save Project" and provides a name.
+    """
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if db_project.status != "draft":
+        raise HTTPException(status_code=400, detail="Project is not a draft")
+
+    # Update project with user-provided data
+    db_project.name = name
+    db_project.status = "active"
+    if company_id:
+        db_project.company_id = company_id
+    if description:
+        db_project.description = description
+    if location_name:
+        db_project.location_name = location_name
+
+    db.commit()
+    db.refresh(db_project)
+
+    return db_project
+
+
+@app.delete("/projects/drafts/cleanup")
+async def cleanup_old_drafts(
+    days_old: int = 7,
+    db: Session = Depends(get_db)
+):
+    """
+    Clean up old draft projects that were never finalized.
+    Called periodically or on startup.
+    """
+    from datetime import datetime, timedelta
+
+    cutoff_date = datetime.utcnow() - timedelta(days=days_old)
+
+    old_drafts = db.query(Project).filter(
+        Project.status == "draft",
+        Project.created_at < cutoff_date
+    ).all()
+
+    deleted_count = len(old_drafts)
+    for draft in old_drafts:
+        db.delete(draft)
+
+    db.commit()
+
+    return {
+        "message": f"Cleaned up {deleted_count} old draft projects",
+        "deleted_count": deleted_count,
+        "cutoff_date": cutoff_date.isoformat()
+    }
 
 
 # ===========================================
@@ -1113,6 +1247,1178 @@ async def get_stats(db: Session = Depends(get_db)):
         total_profile_data_points=db.query(ProfileData).count(),
         total_price_data_points=db.query(PriceData).count()
     )
+
+
+# ===========================================
+# Project Settings
+# ===========================================
+
+@app.get("/projects/{project_id}/settings", response_model=List[ProjectSettingsResponse])
+async def list_project_settings(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """List all settings versions for a project"""
+    settings = db.query(ProjectSettings).filter(
+        ProjectSettings.project_id == project_id
+    ).order_by(ProjectSettings.version.desc()).all()
+    return settings
+
+
+@app.get("/projects/{project_id}/settings/latest", response_model=ProjectSettingsResponse)
+async def get_latest_settings(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get latest settings version for a project"""
+    settings = db.query(ProjectSettings).filter(
+        ProjectSettings.project_id == project_id
+    ).order_by(ProjectSettings.version.desc()).first()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="No settings found for this project")
+    return settings
+
+
+@app.post("/projects/{project_id}/settings", response_model=ProjectSettingsResponse)
+async def create_project_settings(
+    project_id: int,
+    settings_data: ProjectSettingsCreate,
+    db: Session = Depends(get_db)
+):
+    """Create new settings version for a project"""
+    # Get current max version
+    max_version = db.query(func.max(ProjectSettings.version)).filter(
+        ProjectSettings.project_id == project_id
+    ).scalar() or 0
+
+    db_settings = ProjectSettings(
+        project_id=project_id,
+        version=max_version + 1,
+        settings=settings_data.settings,
+        description=settings_data.description,
+        created_by=settings_data.created_by
+    )
+    db.add(db_settings)
+    db.commit()
+    db.refresh(db_settings)
+    return db_settings
+
+
+# ===========================================
+# Calculations CRUD
+# ===========================================
+
+@app.get("/calculations", response_model=List[CalculationResponse])
+async def list_calculations(
+    project_id: Optional[int] = None,
+    calc_type: Optional[str] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """List calculations with optional filters"""
+    query = db.query(Calculation)
+
+    if project_id:
+        query = query.filter(Calculation.project_id == project_id)
+    if calc_type:
+        query = query.filter(Calculation.calc_type == calc_type)
+    if status:
+        query = query.filter(Calculation.status == status)
+
+    return query.order_by(Calculation.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@app.get("/calculations/{calc_id}", response_model=CalculationWithMetrics)
+async def get_calculation(
+    calc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get calculation by ID with metrics"""
+    calc = db.query(Calculation).filter(Calculation.id == calc_id).first()
+    if not calc:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    # Get project and company names
+    project_name = None
+    company_name = None
+    if calc.project_id:
+        project = db.query(Project).filter(Project.id == calc.project_id).first()
+        if project:
+            project_name = project.name
+            if project.company_id:
+                company = db.query(Company).filter(Company.id == project.company_id).first()
+                company_name = company.name if company else None
+
+    # Get metrics
+    metrics = db.query(CalculationMetric).filter(
+        CalculationMetric.calculation_id == calc_id
+    ).all()
+
+    return CalculationWithMetrics(
+        **{k: v for k, v in calc.__dict__.items() if not k.startswith('_')},
+        metrics=metrics,
+        project_name=project_name,
+        company_name=company_name
+    )
+
+
+@app.get("/calculations/by-uuid/{calc_uuid}")
+async def get_calculation_by_uuid(
+    calc_uuid: str,
+    db: Session = Depends(get_db)
+):
+    """Get calculation by UUID"""
+    calc = db.query(Calculation).filter(Calculation.uuid == calc_uuid).first()
+    if not calc:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+    return calc
+
+
+@app.get("/projects/{project_id}/calculations", response_model=List[CalculationResponse])
+async def get_project_calculations(
+    project_id: int,
+    calc_type: Optional[str] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """Get all calculations for a specific project"""
+    # Verify project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    query = db.query(Calculation).filter(Calculation.project_id == project_id)
+
+    if calc_type:
+        query = query.filter(Calculation.calc_type == calc_type)
+    if status:
+        query = query.filter(Calculation.status == status)
+
+    return query.order_by(Calculation.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@app.post("/calculations", response_model=CalculationResponse)
+async def create_calculation(
+    calc_data: CalculationCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new calculation record"""
+    db_calc = Calculation(
+        project_id=calc_data.project_id,
+        parent_calc_id=calc_data.parent_calc_id,
+        calc_type=calc_data.calc_type.value,
+        status="pending",
+        request_payload=calc_data.request_payload,
+        service_name=calc_data.service_name,
+        service_version=calc_data.service_version,
+        service_endpoint=calc_data.service_endpoint,
+        created_by=calc_data.created_by,
+        calc_metadata=calc_data.metadata or {}
+    )
+    db.add(db_calc)
+    db.commit()
+    db.refresh(db_calc)
+    return db_calc
+
+
+@app.put("/calculations/{calc_id}", response_model=CalculationResponse)
+async def update_calculation(
+    calc_id: int,
+    calc_update: CalculationUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update calculation (status, result, etc.)"""
+    db_calc = db.query(Calculation).filter(Calculation.id == calc_id).first()
+    if not db_calc:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    update_data = calc_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if key == 'status':
+            setattr(db_calc, key, value.value if hasattr(value, 'value') else value)
+        else:
+            setattr(db_calc, key, value)
+
+    db.commit()
+    db.refresh(db_calc)
+    return db_calc
+
+
+@app.get("/calculations/{calc_id}/metrics")
+async def get_calculation_metrics(
+    calc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get extracted metrics for a calculation"""
+    metrics = db.query(CalculationMetric).filter(
+        CalculationMetric.calculation_id == calc_id
+    ).all()
+
+    return {m.metric_name: float(m.metric_value) if m.metric_value else None for m in metrics}
+
+
+@app.get("/calculations/{calc_id}/chain")
+async def get_calculation_chain(
+    calc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get full calculation chain (parent → children)"""
+    calc = db.query(Calculation).filter(Calculation.id == calc_id).first()
+    if not calc:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    # Find root
+    root = calc
+    while root.parent_calc_id:
+        parent = db.query(Calculation).filter(Calculation.id == root.parent_calc_id).first()
+        if parent:
+            root = parent
+        else:
+            break
+
+    # Build tree from root
+    def build_chain(node):
+        children = db.query(Calculation).filter(Calculation.parent_calc_id == node.id).all()
+        return {
+            "id": node.id,
+            "uuid": str(node.uuid),
+            "calc_type": node.calc_type,
+            "status": node.status,
+            "created_at": node.created_at.isoformat() if node.created_at else None,
+            "children": [build_chain(c) for c in children]
+        }
+
+    return build_chain(root)
+
+
+# ===========================================
+# Exports (Excel/PDF files)
+# ===========================================
+
+@app.get("/exports", response_model=List[ExportResponse])
+async def list_exports(
+    project_id: Optional[int] = None,
+    calculation_id: Optional[int] = None,
+    file_type: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """List exports with optional filters"""
+    query = db.query(Export)
+
+    if project_id:
+        query = query.filter(Export.project_id == project_id)
+    if calculation_id:
+        query = query.filter(Export.calculation_id == calculation_id)
+    if file_type:
+        query = query.filter(Export.file_type == file_type)
+
+    return query.order_by(Export.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@app.get("/exports/{export_id}")
+async def get_export(
+    export_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get export metadata by ID"""
+    export = db.query(Export).filter(Export.id == export_id).first()
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return export
+
+
+@app.get("/exports/{export_id}/download")
+async def download_export(
+    export_id: int,
+    db: Session = Depends(get_db)
+):
+    """Download export file"""
+    from fastapi.responses import Response
+
+    export = db.query(Export).filter(Export.id == export_id).first()
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if not export.file_data:
+        raise HTTPException(status_code=404, detail="File data not available")
+
+    media_types = {
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'pdf': 'application/pdf',
+        'csv': 'text/csv',
+        'json': 'application/json'
+    }
+
+    return Response(
+        content=export.file_data,
+        media_type=media_types.get(export.file_type, 'application/octet-stream'),
+        headers={
+            'Content-Disposition': f'attachment; filename="{export.file_name}"'
+        }
+    )
+
+
+@app.get("/exports/by-uuid/{export_uuid}/download")
+async def download_export_by_uuid(
+    export_uuid: str,
+    db: Session = Depends(get_db)
+):
+    """Download export file by UUID"""
+    from fastapi.responses import Response
+
+    export = db.query(Export).filter(Export.uuid == export_uuid).first()
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if not export.file_data:
+        raise HTTPException(status_code=404, detail="File data not available")
+
+    media_types = {
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'pdf': 'application/pdf',
+        'csv': 'text/csv',
+        'json': 'application/json'
+    }
+
+    return Response(
+        content=export.file_data,
+        media_type=media_types.get(export.file_type, 'application/octet-stream'),
+        headers={
+            'Content-Disposition': f'attachment; filename="{export.file_name}"'
+        }
+    )
+
+
+@app.post("/exports", response_model=ExportResponse)
+async def create_export(
+    project_id: int,
+    file_type: str,
+    file_name: str,
+    export_type: Optional[str] = None,
+    calculation_id: Optional[int] = None,
+    created_by: Optional[str] = None,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload and store an export file"""
+    file_data = await file.read()
+
+    db_export = Export(
+        project_id=project_id,
+        calculation_id=calculation_id,
+        file_type=file_type,
+        file_name=file_name,
+        file_size=len(file_data),
+        file_data=file_data,
+        export_type=export_type,
+        created_by=created_by
+    )
+    db.add(db_export)
+    db.commit()
+    db.refresh(db_export)
+    return db_export
+
+
+@app.delete("/exports/{export_id}")
+async def delete_export(
+    export_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete an export"""
+    export = db.query(Export).filter(Export.id == export_id).first()
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    db.delete(export)
+    db.commit()
+    return {"message": "Export deleted", "id": export_id}
+
+
+# ===========================================
+# API Keys (for external portal)
+# ===========================================
+
+import secrets
+import hashlib
+
+
+def generate_api_key() -> tuple:
+    """Generate API key and return (full_key, prefix, hash)"""
+    key = f"pva_{secrets.token_urlsafe(32)}"
+    prefix = key[:12]
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    return key, prefix, key_hash
+
+
+def verify_api_key(key: str, key_hash: str) -> bool:
+    """Verify API key against stored hash"""
+    return hashlib.sha256(key.encode()).hexdigest() == key_hash
+
+
+@app.get("/api-keys", response_model=List[ApiKeyResponse])
+async def list_api_keys(
+    company_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    """List API keys (without secrets)"""
+    query = db.query(ApiKey)
+
+    if company_id:
+        query = query.filter(ApiKey.company_id == company_id)
+    if is_active is not None:
+        query = query.filter(ApiKey.is_active == is_active)
+
+    return query.order_by(ApiKey.created_at.desc()).all()
+
+
+@app.post("/api-keys", response_model=ApiKeyWithSecret)
+async def create_api_key(
+    key_data: ApiKeyCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new API key - returns full key ONLY ONCE"""
+    full_key, prefix, key_hash = generate_api_key()
+
+    db_key = ApiKey(
+        company_id=key_data.company_id,
+        key_prefix=prefix,
+        key_hash=key_hash,
+        name=key_data.name,
+        permissions=key_data.permissions,
+        allowed_ips=key_data.allowed_ips,
+        rate_limit_per_hour=key_data.rate_limit_per_hour,
+        expires_at=key_data.expires_at,
+        created_by=key_data.created_by
+    )
+    db.add(db_key)
+    db.commit()
+    db.refresh(db_key)
+
+    return ApiKeyWithSecret(
+        **{k: v for k, v in db_key.__dict__.items() if not k.startswith('_')},
+        api_key=full_key
+    )
+
+
+@app.delete("/api-keys/{key_id}")
+async def delete_api_key(
+    key_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete/revoke an API key"""
+    key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    db.delete(key)
+    db.commit()
+    return {"message": "API key deleted", "id": key_id}
+
+
+@app.put("/api-keys/{key_id}/deactivate")
+async def deactivate_api_key(
+    key_id: int,
+    db: Session = Depends(get_db)
+):
+    """Deactivate API key without deleting"""
+    key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    key.is_active = False
+    db.commit()
+    return {"message": "API key deactivated", "id": key_id}
+
+
+# ===========================================
+# Webhooks
+# ===========================================
+
+@app.get("/webhooks", response_model=List[WebhookResponse])
+async def list_webhooks(
+    company_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    """List webhooks"""
+    query = db.query(Webhook)
+
+    if company_id:
+        query = query.filter(Webhook.company_id == company_id)
+    if is_active is not None:
+        query = query.filter(Webhook.is_active == is_active)
+
+    return query.order_by(Webhook.created_at.desc()).all()
+
+
+@app.post("/webhooks", response_model=WebhookResponse)
+async def create_webhook(
+    webhook_data: WebhookCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new webhook"""
+    # Generate secret if not provided
+    secret = webhook_data.secret or secrets.token_urlsafe(32)
+
+    db_webhook = Webhook(
+        company_id=webhook_data.company_id,
+        name=webhook_data.name,
+        url=webhook_data.url,
+        secret=secret,
+        events=webhook_data.events,
+        max_retries=webhook_data.max_retries,
+        retry_delay_seconds=webhook_data.retry_delay_seconds
+    )
+    db.add(db_webhook)
+    db.commit()
+    db.refresh(db_webhook)
+    return db_webhook
+
+
+@app.put("/webhooks/{webhook_id}", response_model=WebhookResponse)
+async def update_webhook(
+    webhook_id: int,
+    webhook_update: WebhookUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update webhook"""
+    webhook = db.query(Webhook).filter(Webhook.id == webhook_id).first()
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    update_data = webhook_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(webhook, key, value)
+
+    db.commit()
+    db.refresh(webhook)
+    return webhook
+
+
+@app.delete("/webhooks/{webhook_id}")
+async def delete_webhook(
+    webhook_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete webhook"""
+    webhook = db.query(Webhook).filter(Webhook.id == webhook_id).first()
+    if not webhook:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    db.delete(webhook)
+    db.commit()
+    return {"message": "Webhook deleted", "id": webhook_id}
+
+
+@app.get("/webhooks/{webhook_id}/deliveries", response_model=List[WebhookDeliveryResponse])
+async def list_webhook_deliveries(
+    webhook_id: int,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """List webhook delivery history"""
+    query = db.query(WebhookDelivery).filter(WebhookDelivery.webhook_id == webhook_id)
+
+    if status:
+        query = query.filter(WebhookDelivery.status == status)
+
+    return query.order_by(WebhookDelivery.created_at.desc()).offset(skip).limit(limit).all()
+
+
+@app.post("/webhooks/trigger")
+async def trigger_webhook_event(
+    event_type: str,
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger webhooks for an event.
+    Called internally when events occur (calculation.completed, etc.)
+    """
+    import hmac
+    import hashlib
+    import json
+
+    # Find active webhooks listening to this event
+    webhooks = db.query(Webhook).filter(
+        Webhook.is_active == True,
+        Webhook.events.contains([event_type])
+    ).all()
+
+    results = []
+
+    for webhook in webhooks:
+        # Create delivery record
+        delivery = WebhookDelivery(
+            webhook_id=webhook.id,
+            event_type=event_type,
+            payload=payload,
+            status="pending"
+        )
+        db.add(delivery)
+        db.flush()
+
+        # Prepare request
+        body = json.dumps({
+            "event": event_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": payload
+        })
+
+        # Calculate signature
+        signature = hmac.new(
+            webhook.secret.encode() if webhook.secret else b'',
+            body.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        # Send webhook
+        try:
+            async with httpx.AsyncClient() as client:
+                start_time = datetime.utcnow()
+                response = await client.post(
+                    webhook.url,
+                    content=body,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'X-Webhook-Signature': f'sha256={signature}',
+                        'X-Webhook-Event': event_type
+                    },
+                    timeout=30.0
+                )
+                end_time = datetime.utcnow()
+
+                delivery.status_code = response.status_code
+                delivery.response_time_ms = int((end_time - start_time).total_seconds() * 1000)
+                delivery.status = "success" if response.status_code < 400 else "failed"
+
+                webhook.last_triggered_at = datetime.utcnow()
+                webhook.last_status_code = response.status_code
+                webhook.total_triggers += 1
+
+                if response.status_code >= 400:
+                    webhook.failure_count += 1
+                    delivery.response_body = response.text[:1000]
+
+                results.append({
+                    "webhook_id": webhook.id,
+                    "status": delivery.status,
+                    "status_code": response.status_code
+                })
+
+        except Exception as e:
+            delivery.status = "failed"
+            delivery.response_body = str(e)[:1000]
+            webhook.failure_count += 1
+
+            results.append({
+                "webhook_id": webhook.id,
+                "status": "failed",
+                "error": str(e)
+            })
+
+    db.commit()
+    return {"triggered": len(webhooks), "results": results}
+
+
+# ===========================================
+# Audit Log
+# ===========================================
+
+@app.get("/audit-log", response_model=List[AuditLogResponse])
+async def list_audit_log(
+    company_id: Optional[int] = None,
+    resource_type: Optional[str] = None,
+    action: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """List audit log entries"""
+    query = db.query(AuditLog)
+
+    if company_id:
+        query = query.filter(AuditLog.company_id == company_id)
+    if resource_type:
+        query = query.filter(AuditLog.resource_type == resource_type)
+    if action:
+        query = query.filter(AuditLog.action == action)
+
+    return query.order_by(AuditLog.created_at.desc()).offset(skip).limit(limit).all()
+
+
+# ===========================================
+# External API (for external portal)
+# ===========================================
+
+from fastapi import Header, Security
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_external_api_key(
+    api_key: Optional[str] = Security(api_key_header),
+    db: Session = Depends(get_db)
+):
+    """Verify API key for external access"""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+
+    # Find key by prefix
+    prefix = api_key[:12] if len(api_key) >= 12 else api_key
+    db_key = db.query(ApiKey).filter(
+        ApiKey.key_prefix == prefix,
+        ApiKey.is_active == True
+    ).first()
+
+    if not db_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Verify full key
+    if not verify_api_key(api_key, db_key.key_hash):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Check expiration
+    if db_key.expires_at and db_key.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="API key expired")
+
+    # Update usage stats
+    db_key.last_used_at = datetime.utcnow()
+    db_key.total_requests += 1
+    db.commit()
+
+    return db_key
+
+
+# External API endpoints (accessible with API key)
+@app.get("/api/v1/projects", response_model=List[ExternalProjectResponse])
+async def external_list_projects(
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    api_key: ApiKey = Depends(verify_external_api_key),
+    db: Session = Depends(get_db)
+):
+    """External API: List projects for company associated with API key"""
+    query = db.query(Project).join(Company).filter(
+        Company.id == api_key.company_id
+    )
+
+    if status:
+        query = query.filter(Project.status == status)
+
+    projects = query.offset(skip).limit(limit).all()
+
+    company = db.query(Company).filter(Company.id == api_key.company_id).first()
+    company_name = company.name if company else None
+
+    return [
+        ExternalProjectResponse(
+            uuid=p.uuid,
+            name=p.name,
+            description=p.description,
+            location_name=p.location_name,
+            latitude=float(p.latitude) if p.latitude else None,
+            longitude=float(p.longitude) if p.longitude else None,
+            analysis_mode=p.analysis_mode,
+            status=p.status,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            company_name=company_name
+        )
+        for p in projects
+    ]
+
+
+@app.get("/api/v1/projects/{project_uuid}/calculations", response_model=List[ExternalCalculationListResponse])
+async def external_list_calculations(
+    project_uuid: str,
+    calc_type: Optional[str] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    api_key: ApiKey = Depends(verify_external_api_key),
+    db: Session = Depends(get_db)
+):
+    """External API: List calculations for a project"""
+    # Verify project belongs to company
+    project = db.query(Project).join(Company).filter(
+        Project.uuid == project_uuid,
+        Company.id == api_key.company_id
+    ).first()
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    query = db.query(Calculation).filter(Calculation.project_id == project.id)
+
+    if calc_type:
+        query = query.filter(Calculation.calc_type == calc_type)
+    if status:
+        query = query.filter(Calculation.status == status)
+
+    calcs = query.order_by(Calculation.created_at.desc()).offset(skip).limit(limit).all()
+
+    result = []
+    for c in calcs:
+        metrics = db.query(CalculationMetric).filter(
+            CalculationMetric.calculation_id == c.id
+        ).all()
+        metrics_dict = {m.metric_name: float(m.metric_value) if m.metric_value else None for m in metrics}
+
+        result.append(ExternalCalculationListResponse(
+            uuid=c.uuid,
+            calc_type=c.calc_type,
+            status=c.status,
+            created_at=c.created_at,
+            metrics=metrics_dict if metrics_dict else None
+        ))
+
+    return result
+
+
+@app.get("/api/v1/calculations/{calc_uuid}", response_model=ExternalCalculationResponse)
+async def external_get_calculation(
+    calc_uuid: str,
+    api_key: ApiKey = Depends(verify_external_api_key),
+    db: Session = Depends(get_db)
+):
+    """External API: Get full calculation details"""
+    # Find calculation and verify access
+    calc = db.query(Calculation).join(Project).join(Company).filter(
+        Calculation.uuid == calc_uuid,
+        Company.id == api_key.company_id
+    ).first()
+
+    if not calc:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    # Get metrics
+    metrics = db.query(CalculationMetric).filter(
+        CalculationMetric.calculation_id == calc.id
+    ).all()
+    metrics_dict = {m.metric_name: float(m.metric_value) if m.metric_value else None for m in metrics}
+
+    return ExternalCalculationResponse(
+        uuid=calc.uuid,
+        calc_type=calc.calc_type,
+        status=calc.status,
+        result_payload=calc.result_payload,
+        metrics=metrics_dict if metrics_dict else None,
+        duration_ms=calc.duration_ms,
+        created_at=calc.created_at,
+        completed_at=calc.completed_at
+    )
+
+
+@app.get("/api/v1/exports/{export_uuid}/download")
+async def external_download_export(
+    export_uuid: str,
+    api_key: ApiKey = Depends(verify_external_api_key),
+    db: Session = Depends(get_db)
+):
+    """External API: Download export file"""
+    from fastapi.responses import Response
+
+    # Find export and verify access
+    export = db.query(Export).join(Project).join(Company).filter(
+        Export.uuid == export_uuid,
+        Company.id == api_key.company_id
+    ).first()
+
+    if not export:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if not export.file_data:
+        raise HTTPException(status_code=404, detail="File data not available")
+
+    media_types = {
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'pdf': 'application/pdf',
+        'csv': 'text/csv',
+        'json': 'application/json'
+    }
+
+    return Response(
+        content=export.file_data,
+        media_type=media_types.get(export.file_type, 'application/octet-stream'),
+        headers={
+            'Content-Disposition': f'attachment; filename="{export.file_name}"'
+        }
+    )
+
+
+# ===========================================
+# Economics Snapshot V2 Endpoints
+# ===========================================
+
+from models import ProjectEconomicsSnapshot, ProjectEconomicsCashflowYearly
+from schemas import (
+    EconomicsSnapshotCreate, EconomicsSnapshotResponse,
+    EconomicsSnapshotWithCashflows, EconomicsSnapshotSummary,
+    EconomicsCashflowYearlyCreate
+)
+
+
+@app.post("/projects/{project_id}/economics-snapshot", response_model=EconomicsSnapshotResponse)
+async def create_economics_snapshot(
+    project_id: int,
+    snapshot_data: EconomicsSnapshotCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new economics snapshot for a project (investor-ready v2)"""
+    # Verify project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # =========================================================================
+    # CASHFLOW VALIDATION - Model-specific year ranges
+    # =========================================================================
+    # Contract: Client analysis horizon = 30 years (CAPEX_CLIENT, EAAS_CLIENT)
+    #           Investor horizon = EaaS contract duration (EAAS_INVESTOR, max 25 years)
+    # =========================================================================
+    CLIENT_ANALYSIS_PERIOD = 30  # Fixed for client models
+    MAX_EAAS_DURATION = 25       # Max EaaS contract duration
+
+    if snapshot_data.cashflows:
+        eaas_duration = snapshot_data.eaas_client_duration_years or 10
+
+        # Validate eaas_duration_years
+        if eaas_duration > MAX_EAAS_DURATION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"EaaS duration {eaas_duration} exceeds maximum {MAX_EAAS_DURATION} years"
+            )
+
+        # Define expected year ranges per model type
+        expected_ranges = {
+            'CAPEX_CLIENT': (0, CLIENT_ANALYSIS_PERIOD),      # Years 0..30 (31 records)
+            'EAAS_CLIENT': (1, CLIENT_ANALYSIS_PERIOD),       # Years 1..30 (30 records)
+            'EAAS_INVESTOR': (0, eaas_duration),              # Years 0..duration (duration+1 records)
+        }
+
+        # Calculate max expected cashflows
+        max_expected_cashflows = (
+            (CLIENT_ANALYSIS_PERIOD + 1) +  # CAPEX_CLIENT: 31 records
+            CLIENT_ANALYSIS_PERIOD +         # EAAS_CLIENT: 30 records
+            (eaas_duration + 1)              # EAAS_INVESTOR: duration+1 records
+        )
+
+        if len(snapshot_data.cashflows) > max_expected_cashflows:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many cashflows: {len(snapshot_data.cashflows)} > max {max_expected_cashflows}"
+            )
+
+        # Collect years per model type
+        model_years = {}
+        for cf in snapshot_data.cashflows:
+            model = cf.model_type.value
+            if model not in model_years:
+                model_years[model] = set()
+            if cf.year in model_years[model]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate year {cf.year} for model type {model}"
+                )
+            model_years[model].add(cf.year)
+
+        # Validate each model type
+        for model_type, years in model_years.items():
+            if model_type not in expected_ranges:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown model type: {model_type}"
+                )
+
+            min_year, max_year = expected_ranges[model_type]
+
+            # Check year range
+            for year in years:
+                if year < min_year or year > max_year:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Year {year} out of range [{min_year}, {max_year}] for {model_type}"
+                    )
+
+            # Validate year 0 exists for models that require it
+            if model_type in ['CAPEX_CLIENT', 'EAAS_INVESTOR'] and 0 not in years:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Year 0 (initial investment) is required for {model_type}"
+                )
+
+            # Validate completeness (no gaps)
+            expected_years = set(range(min_year, max_year + 1))
+            missing_years = expected_years - years
+            if missing_years:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing years {sorted(missing_years)} for {model_type}. "
+                           f"Expected complete range [{min_year}, {max_year}]."
+                )
+
+        # Validate that if EAAS models exist, eaas_duration_years must be provided
+        if ('EAAS_CLIENT' in model_years or 'EAAS_INVESTOR' in model_years):
+            if not snapshot_data.eaas_client_duration_years:
+                raise HTTPException(
+                    status_code=400,
+                    detail="eaas_client_duration_years is required when EAAS cashflows are provided"
+                )
+
+    # Determine next snapshot version
+    latest = db.query(func.max(ProjectEconomicsSnapshot.snapshot_version)).filter(
+        ProjectEconomicsSnapshot.project_id == project_id
+    ).scalar() or 0
+
+    # Create snapshot
+    db_snapshot = ProjectEconomicsSnapshot(
+        project_id=project_id,
+        snapshot_version=latest + 1,
+        production_scenario=snapshot_data.production_scenario,
+        variant_key=snapshot_data.variant_key,
+        pv_capacity_kwp=snapshot_data.pv_capacity_kwp,
+        pv_type=snapshot_data.pv_type,
+        bess_power_kw=snapshot_data.bess_power_kw or 0,
+        bess_energy_kwh=snapshot_data.bess_energy_kwh or 0,
+        analysis_period_years=snapshot_data.analysis_period_years,
+        discount_rate_pct=snapshot_data.discount_rate_pct,
+        inflation_rate_pct=snapshot_data.inflation_rate_pct or 2.50,
+        # CAPEX Client
+        capex_client_npv25=snapshot_data.capex_client_npv25,
+        capex_client_irr=snapshot_data.capex_client_irr,
+        capex_client_irr_mode=snapshot_data.capex_client_irr_mode or "real",
+        capex_client_simple_payback=snapshot_data.capex_client_simple_payback,
+        capex_client_discounted_payback=snapshot_data.capex_client_discounted_payback,
+        capex_client_capex0_pln=snapshot_data.capex_client_capex0_pln,
+        # CAPEX Deal
+        capex_deal_sell_price_pln=snapshot_data.capex_deal_sell_price_pln,
+        capex_deal_direct_cost_pln=snapshot_data.capex_deal_direct_cost_pln,
+        capex_deal_gross_margin_pct=snapshot_data.capex_deal_gross_margin_pct,
+        capex_deal_gross_margin_pln=snapshot_data.capex_deal_gross_margin_pln,
+        # EaaS Client
+        eaas_client_npv25=snapshot_data.eaas_client_npv25,
+        eaas_client_duration_years=snapshot_data.eaas_client_duration_years or 10,
+        eaas_client_subscription_annual=snapshot_data.eaas_client_subscription_annual,
+        # EaaS Investor
+        eaas_investor_npv25=snapshot_data.eaas_investor_npv25,
+        eaas_investor_irr=snapshot_data.eaas_investor_irr,
+        eaas_investor_capex0_pln=snapshot_data.eaas_investor_capex0_pln,
+        eaas_investor_revenue_annual=snapshot_data.eaas_investor_revenue_annual,
+        eaas_investor_opex_annual=snapshot_data.eaas_investor_opex_annual,
+        # Full payload backup
+        full_payload=snapshot_data.full_payload,
+        created_by=snapshot_data.created_by
+    )
+
+    db.add(db_snapshot)
+    db.flush()  # Get the ID
+
+    # Add cashflows if provided
+    if snapshot_data.cashflows:
+        for cf in snapshot_data.cashflows:
+            db_cf = ProjectEconomicsCashflowYearly(
+                snapshot_id=db_snapshot.id,
+                model_type=cf.model_type.value,
+                year=cf.year,
+                capex_pln=cf.capex_pln or 0,
+                revenue_pln=cf.revenue_pln or 0,
+                opex_pln=cf.opex_pln or 0,
+                net_cashflow_pln=cf.net_cashflow_pln,
+                cumulative_cashflow_pln=cf.cumulative_cashflow_pln,
+                discounted_cashflow_pln=cf.discounted_cashflow_pln,
+                cumulative_discounted_pln=cf.cumulative_discounted_pln,
+                production_kwh=cf.production_kwh,
+                self_consumed_kwh=cf.self_consumed_kwh,
+                pv_degradation_pct=cf.pv_degradation_pct,
+                bess_degradation_pct=cf.bess_degradation_pct
+            )
+            db.add(db_cf)
+
+    db.commit()
+    db.refresh(db_snapshot)
+    return db_snapshot
+
+
+@app.get("/projects/{project_id}/economics-snapshot", response_model=List[EconomicsSnapshotSummary])
+async def get_project_economics_snapshots(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all economics snapshots for a project"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return db.query(ProjectEconomicsSnapshot).filter(
+        ProjectEconomicsSnapshot.project_id == project_id
+    ).order_by(ProjectEconomicsSnapshot.created_at.desc()).all()
+
+
+@app.get("/projects/{project_id}/economics-snapshot/latest", response_model=EconomicsSnapshotWithCashflows)
+async def get_latest_economics_snapshot(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get the latest economics snapshot with cashflows"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    snapshot = db.query(ProjectEconomicsSnapshot).filter(
+        ProjectEconomicsSnapshot.project_id == project_id
+    ).order_by(ProjectEconomicsSnapshot.snapshot_version.desc()).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No economics snapshot found for this project")
+
+    return snapshot
+
+
+@app.get("/economics-snapshot/{snapshot_id}", response_model=EconomicsSnapshotWithCashflows)
+async def get_economics_snapshot_by_id(
+    snapshot_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get a specific economics snapshot with cashflows by ID"""
+    snapshot = db.query(ProjectEconomicsSnapshot).filter(
+        ProjectEconomicsSnapshot.id == snapshot_id
+    ).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Economics snapshot not found")
+
+    return snapshot
+
+
+@app.delete("/economics-snapshot/{snapshot_id}")
+async def delete_economics_snapshot(
+    snapshot_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete an economics snapshot"""
+    snapshot = db.query(ProjectEconomicsSnapshot).filter(
+        ProjectEconomicsSnapshot.id == snapshot_id
+    ).first()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Economics snapshot not found")
+
+    db.delete(snapshot)
+    db.commit()
+    return {"status": "ok", "message": f"Snapshot {snapshot_id} deleted"}
 
 
 # ===========================================
