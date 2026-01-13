@@ -354,7 +354,7 @@ function buildEconomicsDataFromGlobals(variant, economicData, systemSettings) {
 
         // === OTHER PARAMETERS (match economics.js exactly) ===
         // Discount rate: economics.js uses window.economicsSettings.discountRate
-        const discountRate = window.economicsSettings?.discountRate || 0.07;
+        const discountRate = window.economicsSettings?.discountRate ?? 0.07;
 
         // Degradation rate: economics.js uses params.degradation_rate (from systemSettings as %)
         const degradationRate = (systemSettings?.degradationRate || 0.5) / 100;
@@ -486,7 +486,7 @@ function buildEconomicsDataFromUI(capacity) {
     const analysisPeriod = parseInt(document.getElementById('analysisPeriod')?.value || 25);
 
     // Get discount rate from window.economicsSettings
-    const discountRate = window.economicsSettings?.discountRate || 0.07;
+    const discountRate = window.economicsSettings?.discountRate ?? 0.07;
 
     console.log('🎲 MC: buildEconomicsDataFromUI - totalEnergyPrice:', totalEnergyPrice,
                 '(includes capacityFee:', capacityFee, ')');

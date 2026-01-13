@@ -300,6 +300,13 @@ class MonteCarloResult(BaseModel):
     payback_std: Optional[float] = Field(None, description="Odchylenie standardowe payback")
     payback_percentiles: Optional[PercentileResults] = Field(None, description="Percentyle payback")
     payback_histogram: Optional[HistogramData] = Field(None, description="Histogram payback")
+    payback_valid_count: Optional[int] = Field(None, description="Liczba symulacji z osiągniętym paybackiem")
+    share_no_payback: Optional[float] = Field(
+        None,
+        ge=0,
+        le=1,
+        description="Udział symulacji bez paybacku w horyzoncie analizy (0-1)"
+    )
 
     # Metryki ryzyka
     risk_metrics: RiskMetrics = Field(..., description="Metryki ryzyka")
