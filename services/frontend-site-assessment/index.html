@@ -4,170 +4,661 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>Site Assessment - Ocena Terenu</title>
+  <title>Site Assessment - Ocena Terenu PV | Pagra ENERGY</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
   <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
-<div class="site-assessment-container">
-  <!-- Left Panel - Map -->
-  <div class="map-panel">
-    <div class="map-header">
-      <h2>OCENA TERENU PV</h2>
-      <div class="map-instructions">
-        Narysuj polygon na mapie aby zaznaczyć obszar instalacji
-      </div>
-    </div>
-    <div id="map"></div>
-    <div class="map-controls">
-      <div class="location-search">
-        <input type="text" id="locationSearch" placeholder="Wyszukaj lokalizację (np. Warszawa, ul. Przykładowa 10)"/>
-        <button onclick="searchLocation()">SZUKAJ</button>
-      </div>
-      <div class="coordinates-display">
-        <span id="coordsDisplay">Lat: -, Lng: -</span>
-        <span id="areaDisplay">Obszar: - m²</span>
+<!-- ============================================ -->
+<!-- HEADER -->
+<!-- ============================================ -->
+<header class="app-header">
+  <div class="header-left">
+    <div class="logo">
+      <span class="logo-icon">☀️</span>
+      <div class="logo-text">
+        <span class="logo-title">SITE ASSESSMENT</span>
+        <span class="logo-subtitle">Ocena Terenu PV</span>
       </div>
     </div>
   </div>
+  <div class="header-center">
+    <div class="header-tagline">
+      <span class="tag produce">PRODUCE.</span>
+      <span class="tag store">STORE.</span>
+      <span class="tag perform">PERFORM.</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <button class="btn-header" onclick="openHelp()">
+      <span class="btn-icon">❓</span>
+      <span>Pomoc</span>
+    </button>
+    <button class="btn-header primary" onclick="goToMainApp()">
+      <span class="btn-icon">🏠</span>
+      <span>Energy Studio</span>
+    </button>
+  </div>
+</header>
 
-  <!-- Right Panel - Configuration & Results -->
-  <div class="config-panel">
-    <div class="section">
-      <div class="section-title">TYP INSTALACJI</div>
-      <div class="installation-types">
-        <label class="type-option">
-          <input type="radio" name="installationType" value="flat_roof" checked/>
-          <div class="type-card">
-            <div class="type-icon">🏢</div>
-            <div class="type-name">Dach płaski</div>
-            <div class="type-desc">Balast, rozstaw rzędów</div>
+<!-- ============================================ -->
+<!-- WIZARD PROGRESS BAR -->
+<!-- ============================================ -->
+<div class="wizard-progress">
+  <div class="progress-track">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+  <div class="progress-steps">
+    <div class="step active" data-step="1">
+      <div class="step-number">1</div>
+      <div class="step-label">Lokalizacja</div>
+    </div>
+    <div class="step" data-step="2">
+      <div class="step-number">2</div>
+      <div class="step-label">Obszar</div>
+    </div>
+    <div class="step" data-step="3">
+      <div class="step-number">3</div>
+      <div class="step-label">Konfiguracja</div>
+    </div>
+    <div class="step" data-step="4">
+      <div class="step-number">4</div>
+      <div class="step-label">Wyniki</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- MAIN CONTENT -->
+<!-- ============================================ -->
+<main class="main-content">
+  <!-- ========== STEP 1: LOCATION ========== -->
+  <section class="wizard-step active" id="step1">
+    <div class="step-content">
+      <div class="step-header">
+        <h1>📍 Wybierz lokalizację</h1>
+        <p>Wyszukaj adres lub kliknij na mapę, aby wybrać miejsce instalacji PV</p>
+      </div>
+
+      <div class="location-section">
+        <div class="search-box">
+          <div class="search-input-group">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="locationSearch" placeholder="Wpisz adres (np. Warszawa, ul. Przemysłowa 15)" autocomplete="off"/>
+            <button class="btn-search" onclick="searchLocation()">Szukaj</button>
           </div>
-        </label>
-        <label class="type-option">
-          <input type="radio" name="installationType" value="pitched_roof"/>
-          <div class="type-card">
-            <div class="type-icon">🏠</div>
-            <div class="type-name">Dach skośny</div>
-            <div class="type-desc">Tilt = kąt dachu</div>
+          <div class="search-suggestions" id="searchSuggestions"></div>
+        </div>
+
+        <div class="map-container" id="mapContainer">
+          <div id="map"></div>
+          <div class="map-overlay-info">
+            <div class="coords-badge" id="coordsBadge">
+              <span class="coords-icon">📍</span>
+              <span id="coordsText">Kliknij na mapę</span>
+            </div>
           </div>
-        </label>
-        <label class="type-option">
-          <input type="radio" name="installationType" value="ground"/>
-          <div class="type-card">
-            <div class="type-icon">🌾</div>
-            <div class="type-name">Grunt</div>
-            <div class="type-desc">Optymalny tilt PVGIS</div>
+        </div>
+
+        <div class="location-details" id="locationDetails" style="display:none;">
+          <div class="detail-card">
+            <div class="detail-icon">🌍</div>
+            <div class="detail-content">
+              <div class="detail-label">Współrzędne</div>
+              <div class="detail-value" id="detailCoords">-</div>
+            </div>
           </div>
-        </label>
-        <label class="type-option">
-          <input type="radio" name="installationType" value="carport"/>
-          <div class="type-card">
-            <div class="type-icon">🚗</div>
-            <div class="type-name">Carport</div>
-            <div class="type-desc">Wiata parkingowa</div>
+          <div class="detail-card">
+            <div class="detail-icon">📍</div>
+            <div class="detail-content">
+              <div class="detail-label">Adres</div>
+              <div class="detail-value" id="detailAddress">-</div>
+            </div>
           </div>
-        </label>
+          <div class="detail-card">
+            <div class="detail-icon">☀️</div>
+            <div class="detail-content">
+              <div class="detail-label">Strefa klimatyczna</div>
+              <div class="detail-value" id="detailClimate">Europa Środkowa</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="section">
-      <div class="section-title">PARAMETRY INSTALACJI</div>
-      <div class="params-grid">
-        <div class="param-group">
-          <label>Kąt nachylenia (tilt) [°]</label>
-          <input type="number" id="tiltAngle" value="35" min="0" max="90" step="1"/>
-          <button class="btn-small" onclick="fetchOptimalTilt()">AUTO (PVGIS)</button>
+    <div class="step-footer">
+      <div></div>
+      <button class="btn-next" onclick="goToStep(2)" id="btnNextStep1" disabled>
+        Dalej: Zaznacz obszar
+        <span class="btn-arrow">→</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ========== STEP 2: AREA DRAWING ========== -->
+  <section class="wizard-step" id="step2">
+    <div class="step-content">
+      <div class="step-header">
+        <h1>📐 Zaznacz obszar instalacji</h1>
+        <p>Narysuj polygon lub prostokąt, aby określić powierzchnię dostępną dla paneli PV</p>
+      </div>
+
+      <div class="drawing-section">
+        <div class="drawing-tools">
+          <div class="tool-group">
+            <div class="tool-label">Narzędzia rysowania</div>
+            <div class="tool-buttons">
+              <button class="tool-btn active" onclick="setDrawingTool('polygon')" id="toolPolygon">
+                <span class="tool-icon">⬡</span>
+                <span>Polygon</span>
+              </button>
+              <button class="tool-btn" onclick="setDrawingTool('rectangle')" id="toolRectangle">
+                <span class="tool-icon">▭</span>
+                <span>Prostokąt</span>
+              </button>
+              <button class="tool-btn" onclick="clearDrawing()" id="toolClear">
+                <span class="tool-icon">🗑️</span>
+                <span>Wyczyść</span>
+              </button>
+            </div>
+          </div>
+          <div class="tool-group">
+            <div class="tool-label">Podgląd</div>
+            <div class="tool-buttons">
+              <button class="tool-btn" onclick="toggleMapLayer('street')" id="layerStreet">
+                <span class="tool-icon">🗺️</span>
+                <span>Mapa</span>
+              </button>
+              <button class="tool-btn active" onclick="toggleMapLayer('satellite')" id="layerSatellite">
+                <span class="tool-icon">🛰️</span>
+                <span>Satelita</span>
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="param-group">
-          <label>Azymut [°]</label>
-          <input type="number" id="azimuthAngle" value="180" min="0" max="360" step="1"/>
-          <small>0=N, 90=E, 180=S, 270=W</small>
+
+        <div class="drawing-map-container">
+          <div id="drawingMap"></div>
+          <div class="drawing-instructions" id="drawingInstructions">
+            <span class="instruction-icon">👆</span>
+            <span>Kliknij na mapę, aby rozpocząć rysowanie obszaru</span>
+          </div>
         </div>
-        <div class="param-group">
-          <label>Kąt dachu [°] (dla skośnego)</label>
-          <input type="number" id="roofAngle" value="30" min="0" max="60" step="1"/>
-        </div>
-        <div class="param-group">
-          <label>Współczynnik GCR</label>
-          <input type="number" id="gcrRatio" value="0.40" min="0.2" max="0.8" step="0.05"/>
-          <small>Ground Coverage Ratio (dla płaskich)</small>
+
+        <div class="area-stats" id="areaStats" style="display:none;">
+          <div class="stat-card large">
+            <div class="stat-icon">📏</div>
+            <div class="stat-content">
+              <div class="stat-value" id="statArea">-</div>
+              <div class="stat-label">Powierzchnia całkowita</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">📐</div>
+            <div class="stat-content">
+              <div class="stat-value" id="statPerimeter">-</div>
+              <div class="stat-label">Obwód</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">📍</div>
+            <div class="stat-content">
+              <div class="stat-value" id="statVertices">-</div>
+              <div class="stat-label">Wierzchołki</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="section">
-      <div class="section-title">PARAMETRY MODUŁÓW</div>
-      <div class="params-grid">
-        <div class="param-group">
-          <label>Moc modułu [Wp]</label>
-          <input type="number" id="modulePower" value="580" min="100" max="800" step="10"/>
+    <div class="step-footer">
+      <button class="btn-back" onclick="goToStep(1)">
+        <span class="btn-arrow">←</span>
+        Wróć
+      </button>
+      <button class="btn-next" onclick="goToStep(3)" id="btnNextStep2" disabled>
+        Dalej: Konfiguracja
+        <span class="btn-arrow">→</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ========== STEP 3: CONFIGURATION ========== -->
+  <section class="wizard-step" id="step3">
+    <div class="step-content">
+      <div class="step-header">
+        <h1>⚙️ Skonfiguruj instalację</h1>
+        <p>Wybierz typ instalacji i dostosuj parametry techniczne</p>
+      </div>
+
+      <div class="config-section">
+        <!-- Installation Type Selection -->
+        <div class="config-block">
+          <div class="block-title">
+            <span class="block-icon">🏗️</span>
+            Typ instalacji
+          </div>
+          <div class="installation-types-grid">
+            <label class="type-card-large" data-type="flat_roof">
+              <input type="radio" name="installationType" value="flat_roof" checked/>
+              <div class="card-content">
+                <div class="card-icon">🏢</div>
+                <div class="card-title">Dach płaski</div>
+                <div class="card-desc">Konstrukcja balastowa z rozstawem rzędów. Idealny dla hal przemysłowych i budynków komercyjnych.</div>
+                <div class="card-specs">
+                  <span class="spec">GCR: 35-45%</span>
+                  <span class="spec">Tilt: 10-15°</span>
+                </div>
+              </div>
+              <div class="card-check">✓</div>
+            </label>
+
+            <label class="type-card-large" data-type="pitched_roof">
+              <input type="radio" name="installationType" value="pitched_roof"/>
+              <div class="card-content">
+                <div class="card-icon">🏠</div>
+                <div class="card-title">Dach skośny</div>
+                <div class="card-desc">Montaż równoległy do połaci dachu. Tilt równy kątowi nachylenia dachu.</div>
+                <div class="card-specs">
+                  <span class="spec">Wykorzystanie: 85%</span>
+                  <span class="spec">Tilt = kąt dachu</span>
+                </div>
+              </div>
+              <div class="card-check">✓</div>
+            </label>
+
+            <label class="type-card-large" data-type="ground">
+              <input type="radio" name="installationType" value="ground"/>
+              <div class="card-content">
+                <div class="card-icon">🌾</div>
+                <div class="card-title">Instalacja naziemna</div>
+                <div class="card-desc">Konstrukcja wolnostojąca z optymalnym kątem. Maksymalna produkcja energii.</div>
+                <div class="card-specs">
+                  <span class="spec">GCR: 30-40%</span>
+                  <span class="spec">Tilt: optymalny</span>
+                </div>
+              </div>
+              <div class="card-check">✓</div>
+            </label>
+
+            <label class="type-card-large" data-type="carport">
+              <input type="radio" name="installationType" value="carport"/>
+              <div class="card-content">
+                <div class="card-icon">🚗</div>
+                <div class="card-title">Carport / Wiata</div>
+                <div class="card-desc">Zadaszenie parkingu z panelami PV. Podwójna funkcja: parking + energia.</div>
+                <div class="card-specs">
+                  <span class="spec">Wykorzystanie: 90%</span>
+                  <span class="spec">Tilt: 5-15°</span>
+                </div>
+              </div>
+              <div class="card-check">✓</div>
+            </label>
+          </div>
         </div>
-        <div class="param-group">
-          <label>Wymiary modułu [mm]</label>
-          <div class="dimension-inputs">
-            <input type="number" id="moduleWidth" value="1134" min="500" max="2000"/>
-            <span>x</span>
-            <input type="number" id="moduleHeight" value="2278" min="1000" max="3000"/>
+
+        <!-- Technical Parameters -->
+        <div class="config-columns">
+          <div class="config-block">
+            <div class="block-title">
+              <span class="block-icon">📐</span>
+              Parametry geometryczne
+            </div>
+            <div class="params-form">
+              <div class="param-row">
+                <label>Kąt nachylenia (tilt)</label>
+                <div class="param-input-group">
+                  <input type="number" id="tiltAngle" value="35" min="0" max="90" step="1"/>
+                  <span class="unit">°</span>
+                  <button class="btn-auto" onclick="fetchOptimalTilt()">
+                    <span>⚡</span> AUTO
+                  </button>
+                </div>
+              </div>
+              <div class="param-row">
+                <label>Azymut (orientacja)</label>
+                <div class="param-input-group">
+                  <input type="number" id="azimuthAngle" value="180" min="0" max="360" step="1"/>
+                  <span class="unit">°</span>
+                </div>
+                <div class="param-hint">
+                  <div class="compass-mini">
+                    <span class="dir n">N</span>
+                    <span class="dir e">E</span>
+                    <span class="dir s">S</span>
+                    <span class="dir w">W</span>
+                  </div>
+                  0°=N, 90°=E, 180°=S, 270°=W
+                </div>
+              </div>
+              <div class="param-row" id="roofAngleRow">
+                <label>Kąt dachu</label>
+                <div class="param-input-group">
+                  <input type="number" id="roofAngle" value="30" min="0" max="60" step="1"/>
+                  <span class="unit">°</span>
+                </div>
+              </div>
+              <div class="param-row" id="gcrRow">
+                <label>Współczynnik GCR</label>
+                <div class="param-input-group">
+                  <input type="number" id="gcrRatio" value="0.40" min="0.20" max="0.80" step="0.05"/>
+                  <span class="unit"></span>
+                </div>
+                <div class="param-hint">Ground Coverage Ratio - % powierzchni zajętej przez panele</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-block">
+            <div class="block-title">
+              <span class="block-icon">⬛</span>
+              Parametry modułów PV
+            </div>
+            <div class="params-form">
+              <div class="param-row">
+                <label>Moc modułu</label>
+                <div class="param-input-group">
+                  <input type="number" id="modulePower" value="580" min="100" max="800" step="10"/>
+                  <span class="unit">Wp</span>
+                </div>
+              </div>
+              <div class="param-row">
+                <label>Szerokość modułu</label>
+                <div class="param-input-group">
+                  <input type="number" id="moduleWidth" value="1134" min="500" max="2000" step="1"/>
+                  <span class="unit">mm</span>
+                </div>
+              </div>
+              <div class="param-row">
+                <label>Wysokość modułu</label>
+                <div class="param-input-group">
+                  <input type="number" id="moduleHeight" value="2278" min="1000" max="3000" step="1"/>
+                  <span class="unit">mm</span>
+                </div>
+              </div>
+              <div class="module-preview">
+                <div class="module-visual" id="moduleVisual">
+                  <div class="module-dimension width"><span id="previewWidth">1134</span> mm</div>
+                  <div class="module-dimension height"><span id="previewHeight">2278</span> mm</div>
+                  <div class="module-power"><span id="previewPower">580</span> Wp</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PVGIS Data Panel -->
+        <div class="config-block pvgis-block" id="pvgisBlock" style="display:none;">
+          <div class="block-title">
+            <span class="block-icon">🛰️</span>
+            Dane PVGIS dla lokalizacji
+            <span class="pvgis-badge">API</span>
+          </div>
+          <div class="pvgis-data-grid">
+            <div class="pvgis-item">
+              <div class="pvgis-icon">🎯</div>
+              <div class="pvgis-content">
+                <div class="pvgis-value" id="pvgisOptTilt">-</div>
+                <div class="pvgis-label">Optymalny tilt</div>
+              </div>
+            </div>
+            <div class="pvgis-item">
+              <div class="pvgis-icon">☀️</div>
+              <div class="pvgis-content">
+                <div class="pvgis-value" id="pvgisIrradiance">-</div>
+                <div class="pvgis-label">Irradiacja roczna</div>
+              </div>
+            </div>
+            <div class="pvgis-item">
+              <div class="pvgis-icon">⚡</div>
+              <div class="pvgis-content">
+                <div class="pvgis-value" id="pvgisYield">-</div>
+                <div class="pvgis-label">Specific yield</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <button class="btn-calculate" onclick="calculateCapacity()">OBLICZ POJEMNOŚĆ</button>
+    <div class="step-footer">
+      <button class="btn-back" onclick="goToStep(2)">
+        <span class="btn-arrow">←</span>
+        Wróć
+      </button>
+      <button class="btn-next primary" onclick="calculateAndShowResults()">
+        <span class="btn-icon">🧮</span>
+        Oblicz wyniki
+        <span class="btn-arrow">→</span>
+      </button>
+    </div>
+  </section>
 
-    <div class="section results-section" id="resultsSection" style="display:none;">
-      <div class="section-title">WYNIKI</div>
-      <div class="results-grid">
-        <div class="result-card primary">
-          <div class="result-label">Moc instalacji</div>
-          <div class="result-value" id="resultCapacity">-</div>
-          <div class="result-unit">kWp</div>
-        </div>
-        <div class="result-card">
-          <div class="result-label">Liczba modułów</div>
-          <div class="result-value" id="resultModules">-</div>
-          <div class="result-unit">szt.</div>
-        </div>
-        <div class="result-card">
-          <div class="result-label">Powierzchnia aktywna</div>
-          <div class="result-value" id="resultActiveArea">-</div>
-          <div class="result-unit">m²</div>
-        </div>
-        <div class="result-card">
-          <div class="result-label">Prognoza roczna</div>
-          <div class="result-value" id="resultYield">-</div>
-          <div class="result-unit">MWh/rok</div>
-        </div>
+  <!-- ========== STEP 4: RESULTS ========== -->
+  <section class="wizard-step" id="step4">
+    <div class="step-content">
+      <div class="step-header">
+        <h1>📊 Wyniki analizy</h1>
+        <p>Podsumowanie potencjału instalacji PV dla wybranej lokalizacji</p>
       </div>
 
-      <div class="pvgis-data" id="pvgisData" style="display:none;">
-        <div class="pvgis-title">Dane PVGIS dla lokalizacji</div>
-        <div class="pvgis-grid">
-          <div class="pvgis-item">
-            <span class="pvgis-label">Optymalny tilt:</span>
-            <span class="pvgis-value" id="pvgisOptTilt">-</span>
+      <div class="results-section">
+        <!-- Main KPIs -->
+        <div class="results-hero">
+          <div class="hero-card primary">
+            <div class="hero-icon">⚡</div>
+            <div class="hero-content">
+              <div class="hero-value" id="resultCapacity">-</div>
+              <div class="hero-unit">kWp</div>
+              <div class="hero-label">Moc instalacji</div>
+            </div>
           </div>
-          <div class="pvgis-item">
-            <span class="pvgis-label">Irradiacja roczna:</span>
-            <span class="pvgis-value" id="pvgisIrradiance">-</span>
+          <div class="hero-card">
+            <div class="hero-icon">🔋</div>
+            <div class="hero-content">
+              <div class="hero-value" id="resultYield">-</div>
+              <div class="hero-unit">MWh/rok</div>
+              <div class="hero-label">Produkcja roczna</div>
+            </div>
           </div>
-          <div class="pvgis-item">
-            <span class="pvgis-label">Specific yield:</span>
-            <span class="pvgis-value" id="pvgisYield">-</span>
+          <div class="hero-card">
+            <div class="hero-icon">📊</div>
+            <div class="hero-content">
+              <div class="hero-value" id="resultSpecificYield">-</div>
+              <div class="hero-unit">kWh/kWp</div>
+              <div class="hero-label">Specific Yield</div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="export-buttons">
-        <button class="btn-export" onclick="exportToProject()">PRZENIEŚ DO PROJEKTU</button>
-        <button class="btn-export secondary" onclick="copyResults()">KOPIUJ WYNIKI</button>
+        <!-- Detailed Results -->
+        <div class="results-details">
+          <div class="detail-block">
+            <div class="block-title">
+              <span class="block-icon">⬛</span>
+              Instalacja
+            </div>
+            <div class="detail-rows">
+              <div class="detail-row">
+                <span class="row-label">Liczba modułów</span>
+                <span class="row-value" id="resultModules">-</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Powierzchnia modułów</span>
+                <span class="row-value" id="resultActiveArea">- m²</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Powierzchnia całkowita</span>
+                <span class="row-value" id="resultTotalArea">- m²</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Współczynnik wykorzystania</span>
+                <span class="row-value" id="resultUtilization">- %</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <div class="block-title">
+              <span class="block-icon">📐</span>
+              Konfiguracja
+            </div>
+            <div class="detail-rows">
+              <div class="detail-row">
+                <span class="row-label">Typ instalacji</span>
+                <span class="row-value" id="resultInstType">-</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Kąt nachylenia</span>
+                <span class="row-value" id="resultTilt">-°</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Azymut</span>
+                <span class="row-value" id="resultAzimuth">-°</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Moc modułu</span>
+                <span class="row-value" id="resultModulePower">- Wp</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <div class="block-title">
+              <span class="block-icon">📍</span>
+              Lokalizacja
+            </div>
+            <div class="detail-rows">
+              <div class="detail-row">
+                <span class="row-label">Współrzędne</span>
+                <span class="row-value" id="resultCoords">-</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Adres</span>
+                <span class="row-value" id="resultAddress">-</span>
+              </div>
+              <div class="detail-row">
+                <span class="row-label">Irradiacja</span>
+                <span class="row-value" id="resultIrradiance">- kWh/m²/rok</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Estimation (if available) -->
+        <div class="estimation-block" id="estimationBlock">
+          <div class="block-title">
+            <span class="block-icon">💰</span>
+            Szybka estymacja (orientacyjna)
+          </div>
+          <div class="estimation-grid">
+            <div class="estimation-item">
+              <div class="est-label">Szacunkowy CAPEX</div>
+              <div class="est-value" id="estCapex">-</div>
+              <div class="est-hint">przy 3 500 PLN/kWp</div>
+            </div>
+            <div class="estimation-item">
+              <div class="est-label">Roczne oszczędności</div>
+              <div class="est-value" id="estSavings">-</div>
+              <div class="est-hint">przy 800 PLN/MWh</div>
+            </div>
+            <div class="estimation-item">
+              <div class="est-label">Prosty zwrot</div>
+              <div class="est-value" id="estPayback">-</div>
+              <div class="est-hint">bez dotacji</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="results-actions">
+          <button class="action-btn primary large" onclick="createProject()">
+            <span class="btn-icon">📁</span>
+            <span class="btn-text">
+              <span class="btn-title">Utwórz projekt</span>
+              <span class="btn-desc">Przenieś do Energy Studio</span>
+            </span>
+          </button>
+          <button class="action-btn" onclick="exportPDF()">
+            <span class="btn-icon">📄</span>
+            <span class="btn-text">
+              <span class="btn-title">Eksport PDF</span>
+              <span class="btn-desc">Raport z analizy</span>
+            </span>
+          </button>
+          <button class="action-btn" onclick="copyResults()">
+            <span class="btn-icon">📋</span>
+            <span class="btn-text">
+              <span class="btn-title">Kopiuj wyniki</span>
+              <span class="btn-desc">Do schowka</span>
+            </span>
+          </button>
+          <button class="action-btn" onclick="startNew()">
+            <span class="btn-icon">🔄</span>
+            <span class="btn-text">
+              <span class="btn-title">Nowa analiza</span>
+              <span class="btn-desc">Od początku</span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="step-footer">
+      <button class="btn-back" onclick="goToStep(3)">
+        <span class="btn-arrow">←</span>
+        Zmień konfigurację
+      </button>
+      <div></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============================================ -->
+<!-- HELP MODAL -->
+<!-- ============================================ -->
+<div class="modal-overlay" id="helpModal" style="display:none;">
+  <div class="modal-content help-modal">
+    <div class="modal-header">
+      <h2>❓ Pomoc - Site Assessment</h2>
+      <button class="modal-close" onclick="closeHelp()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="help-section">
+        <h3>Jak korzystać z narzędzia?</h3>
+        <ol>
+          <li><strong>Lokalizacja</strong> - Wyszukaj adres lub kliknij na mapę, aby wybrać miejsce instalacji</li>
+          <li><strong>Obszar</strong> - Narysuj polygon lub prostokąt określający powierzchnię dostępną dla paneli</li>
+          <li><strong>Konfiguracja</strong> - Wybierz typ instalacji i dostosuj parametry techniczne</li>
+          <li><strong>Wyniki</strong> - Zobacz obliczoną moc i prognozowaną produkcję</li>
+        </ol>
+      </div>
+      <div class="help-section">
+        <h3>Typy instalacji</h3>
+        <ul>
+          <li><strong>Dach płaski</strong> - dla hal przemysłowych, budynków komercyjnych (GCR 35-45%)</li>
+          <li><strong>Dach skośny</strong> - montaż równoległy do połaci (wykorzystanie ~85%)</li>
+          <li><strong>Instalacja naziemna</strong> - wolnostojąca z optymalnym kątem (GCR 30-40%)</li>
+          <li><strong>Carport</strong> - wiata parkingowa z panelami (wykorzystanie ~90%)</li>
+        </ul>
+      </div>
+      <div class="help-section">
+        <h3>Źródła danych</h3>
+        <p>Narzędzie wykorzystuje dane z <strong>PVGIS</strong> (Photovoltaic Geographical Information System) - oficjalnego serwisu Komisji Europejskiej do szacowania produkcji energii słonecznej.</p>
       </div>
     </div>
   </div>
 </div>
 
+<!-- ============================================ -->
+<!-- TOAST NOTIFICATIONS -->
+<!-- ============================================ -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ============================================ -->
+<!-- SCRIPTS -->
+<!-- ============================================ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="site-assessment.js"></script>
