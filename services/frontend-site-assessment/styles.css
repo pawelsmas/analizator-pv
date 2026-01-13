@@ -1,0 +1,515 @@
+/* Site Assessment Module Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.site-assessment-container {
+  display: flex;
+  height: 100vh;
+  gap: 0;
+}
+
+/* Left Panel - Map */
+.map-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #16213e;
+  border-right: 2px solid #0f3460;
+}
+
+.map-header {
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+  border-bottom: 1px solid #0f3460;
+}
+
+.map-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #4fc3f7;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.map-instructions {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+#map {
+  flex: 1;
+  min-height: 400px;
+  background: #1a1a2e;
+}
+
+.map-controls {
+  padding: 12px 16px;
+  background: #16213e;
+  border-top: 1px solid #0f3460;
+}
+
+.location-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.location-search input {
+  flex: 1;
+  padding: 10px 14px;
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: white;
+  font-size: 13px;
+}
+
+.location-search input:focus {
+  outline: none;
+  border-color: #4fc3f7;
+}
+
+.location-search button {
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%);
+  border: none;
+  border-radius: 6px;
+  color: #1a1a2e;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.location-search button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(79, 195, 247, 0.3);
+}
+
+.coordinates-display {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: 'Consolas', monospace;
+}
+
+/* Right Panel - Config */
+.config-panel {
+  width: 420px;
+  overflow-y: auto;
+  background: #1a1a2e;
+  padding: 16px;
+}
+
+.section {
+  background: #16213e;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px solid #0f3460;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4fc3f7;
+  letter-spacing: 1px;
+  margin-bottom: 14px;
+  text-transform: uppercase;
+}
+
+/* Installation Types */
+.installation-types {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.type-option {
+  cursor: pointer;
+}
+
+.type-option input {
+  display: none;
+}
+
+.type-card {
+  padding: 14px 12px;
+  background: #1a1a2e;
+  border: 2px solid #0f3460;
+  border-radius: 8px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.type-option input:checked + .type-card {
+  border-color: #4fc3f7;
+  background: rgba(79, 195, 247, 0.1);
+}
+
+.type-card:hover {
+  border-color: #4fc3f7;
+  transform: translateY(-2px);
+}
+
+.type-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+
+.type-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  margin-bottom: 2px;
+}
+
+.type-desc {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Parameters Grid */
+.params-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.param-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.param-group label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.param-group input {
+  padding: 10px 12px;
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+}
+
+.param-group input:focus {
+  outline: none;
+  border-color: #4fc3f7;
+}
+
+.param-group small {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.btn-small {
+  padding: 6px 12px;
+  background: #0f3460;
+  border: 1px solid #4fc3f7;
+  border-radius: 4px;
+  color: #4fc3f7;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: all 0.2s;
+}
+
+.btn-small:hover {
+  background: rgba(79, 195, 247, 0.2);
+}
+
+.dimension-inputs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dimension-inputs input {
+  flex: 1;
+  padding: 10px 12px;
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+}
+
+.dimension-inputs span {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Calculate Button */
+.btn-calculate {
+  width: 100%;
+  padding: 16px;
+  background: linear-gradient(135deg, #4caf50 0%, #66bb6a 100%);
+  border: none;
+  border-radius: 10px;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 16px;
+}
+
+.btn-calculate:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(76, 175, 80, 0.3);
+}
+
+.btn-calculate:disabled {
+  background: #555;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Results Section */
+.results-section {
+  background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%);
+  border-color: #4caf50;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.result-card {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+
+.result-card.primary {
+  grid-column: span 2;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.result-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.result-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: white;
+}
+
+.result-card.primary .result-value {
+  font-size: 42px;
+  color: #a5d6a7;
+}
+
+.result-unit {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* PVGIS Data */
+.pvgis-data {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.pvgis-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a5d6a7;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pvgis-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pvgis-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.pvgis-label {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.pvgis-value {
+  color: white;
+  font-weight: 600;
+  font-family: 'Consolas', monospace;
+}
+
+/* Export Buttons */
+.export-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-export {
+  flex: 1;
+  padding: 12px;
+  background: linear-gradient(135deg, #ff9800 0%, #ffc107 100%);
+  border: none;
+  border-radius: 6px;
+  color: #1a1a2e;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-export:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+}
+
+.btn-export.secondary {
+  background: #0f3460;
+  color: #4fc3f7;
+  border: 1px solid #4fc3f7;
+}
+
+.btn-export.secondary:hover {
+  background: rgba(79, 195, 247, 0.2);
+  box-shadow: 0 4px 15px rgba(79, 195, 247, 0.2);
+}
+
+/* Leaflet Custom Styles */
+.leaflet-control-zoom a {
+  background: #16213e !important;
+  color: #4fc3f7 !important;
+  border: 1px solid #0f3460 !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: #0f3460 !important;
+}
+
+.leaflet-draw-toolbar a {
+  background: #16213e !important;
+  border: 1px solid #0f3460 !important;
+}
+
+.leaflet-bar a {
+  background: #16213e !important;
+  color: #4fc3f7 !important;
+  border-bottom: 1px solid #0f3460 !important;
+}
+
+/* Scrollbar */
+.config-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.config-panel::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+
+.config-panel::-webkit-scrollbar-thumb {
+  background: #0f3460;
+  border-radius: 3px;
+}
+
+.config-panel::-webkit-scrollbar-thumb:hover {
+  background: #4fc3f7;
+}
+
+/* Loading State */
+.loading {
+  position: relative;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border: 2px solid #4fc3f7;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error Toast */
+.error-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 24px;
+  background: #f44336;
+  color: white;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 10000;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Success Toast */
+.success-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 24px;
+  background: #4caf50;
+  color: white;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 10000;
+  animation: slideUp 0.3s ease;
+}

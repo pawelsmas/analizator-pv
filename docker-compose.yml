@@ -150,6 +150,7 @@ services:
       - advanced-analytics
       - typical-days
       - projects-db
+      - database-api
     networks:
       - pv-network
     restart: unless-stopped
@@ -623,6 +624,24 @@ services:
     container_name: pv-frontend-scoring
     ports:
       - "9016:80"
+    networks:
+      - pv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Site Assessment Module (Map-based PV capacity calculator)
+  frontend-site-assessment:
+    build:
+      context: ./services/frontend-site-assessment
+      dockerfile: Dockerfile
+    container_name: pv-frontend-site-assessment
+    ports:
+      - "9017:80"
     networks:
       - pv-network
     restart: unless-stopped

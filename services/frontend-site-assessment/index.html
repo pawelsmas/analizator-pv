@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Site Assessment - Ocena Terenu</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<div class="site-assessment-container">
+  <!-- Left Panel - Map -->
+  <div class="map-panel">
+    <div class="map-header">
+      <h2>OCENA TERENU PV</h2>
+      <div class="map-instructions">
+        Narysuj polygon na mapie aby zaznaczyć obszar instalacji
+      </div>
+    </div>
+    <div id="map"></div>
+    <div class="map-controls">
+      <div class="location-search">
+        <input type="text" id="locationSearch" placeholder="Wyszukaj lokalizację (np. Warszawa, ul. Przykładowa 10)"/>
+        <button onclick="searchLocation()">SZUKAJ</button>
+      </div>
+      <div class="coordinates-display">
+        <span id="coordsDisplay">Lat: -, Lng: -</span>
+        <span id="areaDisplay">Obszar: - m²</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Panel - Configuration & Results -->
+  <div class="config-panel">
+    <div class="section">
+      <div class="section-title">TYP INSTALACJI</div>
+      <div class="installation-types">
+        <label class="type-option">
+          <input type="radio" name="installationType" value="flat_roof" checked/>
+          <div class="type-card">
+            <div class="type-icon">🏢</div>
+            <div class="type-name">Dach płaski</div>
+            <div class="type-desc">Balast, rozstaw rzędów</div>
+          </div>
+        </label>
+        <label class="type-option">
+          <input type="radio" name="installationType" value="pitched_roof"/>
+          <div class="type-card">
+            <div class="type-icon">🏠</div>
+            <div class="type-name">Dach skośny</div>
+            <div class="type-desc">Tilt = kąt dachu</div>
+          </div>
+        </label>
+        <label class="type-option">
+          <input type="radio" name="installationType" value="ground"/>
+          <div class="type-card">
+            <div class="type-icon">🌾</div>
+            <div class="type-name">Grunt</div>
+            <div class="type-desc">Optymalny tilt PVGIS</div>
+          </div>
+        </label>
+        <label class="type-option">
+          <input type="radio" name="installationType" value="carport"/>
+          <div class="type-card">
+            <div class="type-icon">🚗</div>
+            <div class="type-name">Carport</div>
+            <div class="type-desc">Wiata parkingowa</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">PARAMETRY INSTALACJI</div>
+      <div class="params-grid">
+        <div class="param-group">
+          <label>Kąt nachylenia (tilt) [°]</label>
+          <input type="number" id="tiltAngle" value="35" min="0" max="90" step="1"/>
+          <button class="btn-small" onclick="fetchOptimalTilt()">AUTO (PVGIS)</button>
+        </div>
+        <div class="param-group">
+          <label>Azymut [°]</label>
+          <input type="number" id="azimuthAngle" value="180" min="0" max="360" step="1"/>
+          <small>0=N, 90=E, 180=S, 270=W</small>
+        </div>
+        <div class="param-group">
+          <label>Kąt dachu [°] (dla skośnego)</label>
+          <input type="number" id="roofAngle" value="30" min="0" max="60" step="1"/>
+        </div>
+        <div class="param-group">
+          <label>Współczynnik GCR</label>
+          <input type="number" id="gcrRatio" value="0.40" min="0.2" max="0.8" step="0.05"/>
+          <small>Ground Coverage Ratio (dla płaskich)</small>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">PARAMETRY MODUŁÓW</div>
+      <div class="params-grid">
+        <div class="param-group">
+          <label>Moc modułu [Wp]</label>
+          <input type="number" id="modulePower" value="580" min="100" max="800" step="10"/>
+        </div>
+        <div class="param-group">
+          <label>Wymiary modułu [mm]</label>
+          <div class="dimension-inputs">
+            <input type="number" id="moduleWidth" value="1134" min="500" max="2000"/>
+            <span>x</span>
+            <input type="number" id="moduleHeight" value="2278" min="1000" max="3000"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn-calculate" onclick="calculateCapacity()">OBLICZ POJEMNOŚĆ</button>
+
+    <div class="section results-section" id="resultsSection" style="display:none;">
+      <div class="section-title">WYNIKI</div>
+      <div class="results-grid">
+        <div class="result-card primary">
+          <div class="result-label">Moc instalacji</div>
+          <div class="result-value" id="resultCapacity">-</div>
+          <div class="result-unit">kWp</div>
+        </div>
+        <div class="result-card">
+          <div class="result-label">Liczba modułów</div>
+          <div class="result-value" id="resultModules">-</div>
+          <div class="result-unit">szt.</div>
+        </div>
+        <div class="result-card">
+          <div class="result-label">Powierzchnia aktywna</div>
+          <div class="result-value" id="resultActiveArea">-</div>
+          <div class="result-unit">m²</div>
+        </div>
+        <div class="result-card">
+          <div class="result-label">Prognoza roczna</div>
+          <div class="result-value" id="resultYield">-</div>
+          <div class="result-unit">MWh/rok</div>
+        </div>
+      </div>
+
+      <div class="pvgis-data" id="pvgisData" style="display:none;">
+        <div class="pvgis-title">Dane PVGIS dla lokalizacji</div>
+        <div class="pvgis-grid">
+          <div class="pvgis-item">
+            <span class="pvgis-label">Optymalny tilt:</span>
+            <span class="pvgis-value" id="pvgisOptTilt">-</span>
+          </div>
+          <div class="pvgis-item">
+            <span class="pvgis-label">Irradiacja roczna:</span>
+            <span class="pvgis-value" id="pvgisIrradiance">-</span>
+          </div>
+          <div class="pvgis-item">
+            <span class="pvgis-label">Specific yield:</span>
+            <span class="pvgis-value" id="pvgisYield">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="export-buttons">
+        <button class="btn-export" onclick="exportToProject()">PRZENIEŚ DO PROJEKTU</button>
+        <button class="btn-export secondary" onclick="copyResults()">KOPIUJ WYNIKI</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="site-assessment.js"></script>
+</body>
+</html>
