@@ -6,13 +6,7 @@ RUN apk add --no-cache curl
 # Copy files
 COPY index.html /usr/share/nginx/html/
 COPY styles.css /usr/share/nginx/html/
-COPY economics.js /usr/share/nginx/html/
-COPY bankability.js /usr/share/nginx/html/
-COPY monte-carlo.js /usr/share/nginx/html/
-COPY customer-portal.js /usr/share/nginx/html/
-COPY capex-export.js /usr/share/nginx/html/
-COPY logo.png /usr/share/nginx/html/
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY site-assessment.js /usr/share/nginx/html/
 
 # Expose port
 EXPOSE 80

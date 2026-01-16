@@ -108,15 +108,24 @@ class MonteCarloEngine:
             irr_histogram = self._compute_histogram(irr_valid, request.histogram_bins)
 
         # Payback statistics
-        payback_valid = payback_results[~np.isinf(payback_results)]
+        # P1-3 FIX: Filter both inf and NaN, compute share_no_payback
+        payback_valid = payback_results[~np.isinf(payback_results) & ~np.isnan(payback_results)]
+        payback_valid_count = len(payback_valid)
+        share_no_payback = 1.0 - (payback_valid_count / len(payback_results)) if len(payback_results) > 0 else 1.0
+
         payback_percentiles = None
         payback_histogram = None
         payback_mean = None
         payback_std = None
 
-        if len(payback_valid) > 0:
+        if payback_valid_count > 0:
             payback_mean = float(np.mean(payback_valid))
             payback_std = float(np.std(payback_valid))
+            # P1-3 FIX: Guard against NaN/Infinity in stats
+            if np.isnan(payback_mean) or np.isinf(payback_mean):
+                payback_mean = None
+            if np.isnan(payback_std) or np.isinf(payback_std):
+                payback_std = None
             payback_percentiles = self._compute_percentiles(payback_valid)
             payback_histogram = self._compute_histogram(payback_valid, request.histogram_bins)
 
@@ -175,6 +184,8 @@ class MonteCarloEngine:
             payback_std=payback_std,
             payback_percentiles=payback_percentiles,
             payback_histogram=payback_histogram,
+            payback_valid_count=payback_valid_count,
+            share_no_payback=share_no_payback,
             risk_metrics=risk_metrics,
             insights=insights,
             breakeven_price=breakeven_price,
@@ -332,30 +343,48 @@ class MonteCarloEngine:
         feed_in_tariff = params.get("feed_in_tariff", 0.0)
 
         # Get sampled values (or use defaults if not sampled)
+        # P1-3 FIX: Apply additional guardrails to ensure physically valid values
         electricity_prices = samples.get(
             "electricity_price",
             np.full(n_simulations, params.get("energy_price", 450.0))
         )
+        # Ensure electricity prices >= 0 (even if not clipped in distribution)
+        electricity_prices = np.maximum(electricity_prices, 0.0)
+
         production_factors = samples.get(
             "production_factor",
             np.ones(n_simulations)
         )
+        # P1-3 FIX: Production factor must be >= 0 (physical constraint)
+        production_factors = np.maximum(production_factors, 0.0)
+
         investment_costs = samples.get(
             "investment_cost",
             np.full(n_simulations, params.get("investment_cost", 3500.0))
         )
+        # Ensure investment costs >= 0
+        investment_costs = np.maximum(investment_costs, 0.0)
+
         inflation_rates = samples.get(
             "inflation_rate",
             np.full(n_simulations, params.get("inflation_rate", 0.025))
         )
+        # P1-3 FIX: Clamp inflation to sensible range [-5%, 15%]
+        inflation_rates = np.clip(inflation_rates, -0.05, 0.15)
+
         degradation_rates = samples.get(
             "degradation_rate",
             np.full(n_simulations, base_degradation_rate)
         )
+        # P1-3 FIX: Degradation must be in [0, 20%] (physical constraint)
+        degradation_rates = np.clip(degradation_rates, 0.0, 0.20)
+
         discount_rates = samples.get(
             "discount_rate",
             np.full(n_simulations, base_discount_rate)
         )
+        # Ensure discount rates > -99% (prevent division by near-zero)
+        discount_rates = np.maximum(discount_rates, -0.99)
 
         # Calculate investments (vectorized)
         investments = capacity * investment_costs

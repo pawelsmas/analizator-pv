@@ -8,18 +8,40 @@
 </head>
 <body>
 <div class="container">
-  <img src="logo.png" alt="Pagra" class="corner-logo">
-  <div class="header">
-    <div class="header-text">
-      <div class="header-tagline"><span class="highlight">PRODUCE.</span> <span class="highlight">STORE.</span> <span class="highlight">PERFORM.</span></div>
-      <div class="header-title">ENERGY Studio</div>
+  <!-- Collapsible Header -->
+  <div id="mainHeader" class="main-header">
+    <img src="logo.png" alt="Pagra" class="corner-logo">
+    <div class="header">
+      <div class="header-text">
+        <div class="header-tagline"><span class="highlight">PRODUCE.</span> <span class="highlight">STORE.</span> <span class="highlight">PERFORM.</span></div>
+        <div class="header-title">ENERGY Studio</div>
+      </div>
+      <div id="servicesStatus" style="font-size:11px;opacity:0.5;margin-top:4px"></div>
     </div>
-    <div id="servicesStatus" style="font-size:11px;opacity:0.5;margin-top:8px"></div>
   </div>
 
+  <!-- Sticky Navigation Bar (always visible) -->
+  <div id="stickyNav" class="sticky-nav">
+    <!-- Compact logo (shown when header collapsed) -->
+    <div class="compact-logo" onclick="toggleHeader()">
+      <img src="logo.png" alt="Pagra">
+      <span class="compact-title">ENERGY Studio</span>
+    </div>
+
+    <!-- Project Bar (Draft/Saved status) - inline -->
+    <div id="projectBar" class="project-bar draft">
+      <span class="project-status">📝 Ładowanie...</span>
+    </div>
+
+    <!-- Expand/Collapse toggle -->
+    <button class="header-toggle" onclick="toggleHeader()" title="Rozwiń/Zwiń nagłówek">
+      <span id="toggleIcon">▲</span>
+    </button>
+  </div>
+
+  <!-- Navigation Tabs -->
   <div class="main-tabs">
     <button class="main-tab" onclick="loadModule('hub', event)" style="background:#ff5722;color:white">🎯 HUB</button>
-    <!-- <button class="main-tab" onclick="loadModule('projects', event)">📁 PROJEKTY</button> -->
     <button class="main-tab" onclick="loadModule('settings', event)">⚙️ USTAWIENIA</button>
     <button class="main-tab active" onclick="loadModule('config', event)">📋 KONFIGURACJA</button>
     <button class="main-tab" onclick="loadModule('consumption', event)">📊 ZUŻYCIE</button>
@@ -33,6 +55,7 @@
     <button class="main-tab" onclick="loadModule('energyprices', event)">💹 CENY ENERGII</button>
     <button class="main-tab" onclick="loadModule('reports', event)">📑 RAPORT</button>
     <button class="main-tab" onclick="loadModule('estimator', event)" style="background:#9c27b0;color:white">🧮 SZYBKA WYCENA</button>
+    <button class="main-tab" onclick="loadModule('siteassessment', event)" style="background:#00bcd4;color:white">🗺️ OCENA TERENU</button>
   </div>
 
   <!-- Micro-frontend container -->
@@ -41,7 +64,92 @@
   </div>
 </div>
 
+<!-- Save Project Modal -->
+<div id="saveProjectModal" class="modal-overlay" style="display:none">
+  <div class="modal-content save-modal">
+    <div class="modal-header">
+      <h3>💾 Zapisz projekt</h3>
+      <button class="modal-close" onclick="closeSaveProjectModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:12px 16px;max-height:70vh;overflow-y:auto;">
+      <div class="form-group" style="margin-bottom:10px;">
+        <label for="projectNameInput" style="font-size:11px;margin-bottom:2px;display:block;">Nazwa projektu *</label>
+        <input type="text" id="projectNameInput" placeholder="np. Analiza PV+BESS dla ABC Sp. z o.o." autofocus style="padding:6px 8px;font-size:13px;">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div>
+          <label for="projectLocationInput" style="font-size:11px;margin-bottom:2px;display:block;">Lokalizacja</label>
+          <input type="text" id="projectLocationInput" placeholder="Warszawa" style="padding:6px 8px;font-size:13px;">
+        </div>
+        <div>
+          <label for="projectInstallationType" style="font-size:11px;margin-bottom:2px;display:block;">Typ instalacji</label>
+          <select id="projectInstallationType" style="padding:6px 8px;font-size:12px;">
+            <option value="ground_s">Grunt Południe</option>
+            <option value="roof_ew">Dach Wschód-Zachód</option>
+            <option value="ground_ew">Grunt Wschód-Zachód</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label for="projectDescriptionInput" style="font-size:11px;margin-bottom:2px;display:block;">Opis</label>
+        <textarea id="projectDescriptionInput" rows="2" placeholder="Dodatkowe informacje..." style="padding:6px 8px;font-size:13px;"></textarea>
+      </div>
+
+      <!-- Dane Klienta -->
+      <div style="background:rgba(76,175,80,0.06);border:1px solid rgba(76,175,80,0.25);border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#4CAF50;font-size:11px;font-weight:600;margin-bottom:8px;">🏢 Dane Klienta (wymagane dla Customer Portal)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div>
+            <label for="clientCompanyNameInput" style="font-size:10px;color:#81C784;margin-bottom:2px;display:block;">Firma *</label>
+            <input type="text" id="clientCompanyNameInput" placeholder="ABC Sp. z o.o." style="padding:5px 8px;font-size:12px;">
+          </div>
+          <div>
+            <label for="clientNipInput" style="font-size:10px;color:#81C784;margin-bottom:2px;display:block;">NIP *</label>
+            <input type="text" id="clientNipInput" placeholder="1234567890" maxlength="13" style="padding:5px 8px;font-size:12px;">
+          </div>
+        </div>
+      </div>
+
+      <!-- Integracja CRM -->
+      <div style="background:rgba(33,150,243,0.05);border:1px solid rgba(33,150,243,0.2);border-radius:6px;padding:10px;">
+        <div style="color:#2196F3;font-size:11px;font-weight:600;margin-bottom:8px;">🔗 Integracja CRM (opcjonalnie)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <div>
+            <label for="hubspotDealIdInput" style="font-size:10px;color:#90CAF9;margin-bottom:2px;display:block;">HubSpot Deal ID</label>
+            <input type="text" id="hubspotDealIdInput" placeholder="12345678" style="padding:5px 8px;font-size:12px;">
+          </div>
+          <div>
+            <label for="hubspotCompanyIdInput" style="font-size:10px;color:#90CAF9;margin-bottom:2px;display:block;">HubSpot Company ID</label>
+            <input type="text" id="hubspotCompanyIdInput" placeholder="87654321" style="padding:5px 8px;font-size:12px;">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div>
+            <label for="offerVariantSelect" style="font-size:10px;color:#90CAF9;margin-bottom:2px;display:block;">Wariant oferty</label>
+            <select id="offerVariantSelect" style="padding:5px 8px;font-size:12px;">
+              <option value="">-- Wybierz --</option>
+              <option value="A">Wariant A</option>
+              <option value="B">Wariant B</option>
+              <option value="C">Wariant C</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <label style="font-size:11px;color:#90CAF9;display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="publishOfferCheckbox" style="width:14px;height:14px;">
+              Publikuj do Portal
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeSaveProjectModal()">Anuluj</button>
+      <button class="btn btn-primary" onclick="saveProject()">💾 Zapisz</button>
+    </div>
+  </div>
+</div>
+
 <script src="api.js"></script>
-<script src="shell.js?v=20251211-DIRECT-CONSUMPTION"></script>
+<script src="shell.js?v=20260113-COMPACT-HEADER"></script>
 </body>
 </html>

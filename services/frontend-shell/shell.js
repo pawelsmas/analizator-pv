@@ -1,5 +1,38 @@
 // Micro-Frontend Shell - Routes to individual modules
 
+// ===========================================
+// COLLAPSIBLE HEADER TOGGLE
+// ===========================================
+let headerCollapsed = localStorage.getItem('headerCollapsed') === 'true';
+
+function toggleHeader() {
+  const header = document.getElementById('mainHeader');
+  const toggleIcon = document.getElementById('toggleIcon');
+
+  headerCollapsed = !headerCollapsed;
+
+  if (headerCollapsed) {
+    header.classList.add('collapsed');
+    toggleIcon.textContent = '▼';
+  } else {
+    header.classList.remove('collapsed');
+    toggleIcon.textContent = '▲';
+  }
+
+  // Save preference
+  localStorage.setItem('headerCollapsed', headerCollapsed);
+}
+
+// Initialize header state on page load
+document.addEventListener('DOMContentLoaded', () => {
+  if (headerCollapsed) {
+    const header = document.getElementById('mainHeader');
+    const toggleIcon = document.getElementById('toggleIcon');
+    if (header) header.classList.add('collapsed');
+    if (toggleIcon) toggleIcon.textContent = '▼';
+  }
+});
+
 // Proxy mode: use path-based routing via nginx reverse proxy
 // When USE_PROXY=true, all URLs use /modules/* and /api/* paths
 // When USE_PROXY=false, direct port access for development
@@ -22,7 +55,8 @@ const MODULES = USE_PROXY ? {
   energyprices: '/modules/energyprices/',
   reports: '/modules/reports/',
   projects: '/modules/projects/',
-  estimator: '/modules/estimator/'
+  estimator: '/modules/estimator/',
+  siteassessment: '/modules/siteassessment/'
 } : {
   hub: 'http://localhost:9015',
   admin: 'http://localhost:9001',
@@ -39,7 +73,8 @@ const MODULES = USE_PROXY ? {
   energyprices: 'http://localhost:9009',
   reports: 'http://localhost:9010',
   projects: 'http://localhost:9011',
-  estimator: 'http://localhost:9012'
+  estimator: 'http://localhost:9012',
+  siteassessment: 'http://localhost:9017'
 };
 
 // Backend API URLs
@@ -262,7 +297,7 @@ const DraftProjectManager = {
   },
 
   // Finalize draft (convert to real project)
-  async finalize(name, companyId, description, locationName) {
+  async finalize(name, companyId, description, locationName, installationType) {
     if (!this.draftProject?.id) {
       console.error('No draft project to finalize');
       return null;
@@ -273,6 +308,7 @@ const DraftProjectManager = {
       if (companyId) params.append('company_id', companyId);
       if (description) params.append('description', description);
       if (locationName) params.append('location_name', locationName);
+      if (installationType) params.append('installation_type', installationType);
 
       const response = await fetch(`${BACKEND.databaseApi}/projects/${this.draftProject.id}/finalize?${params}`, {
         method: 'PUT'
@@ -370,8 +406,56 @@ function openSaveProjectModal() {
     modal.style.display = 'flex';
     // Load companies for dropdown
     loadCompaniesForModal();
+    // Clear integration fields
+    clearIntegrationFields();
+    // Load current installation type from pvConfig
+    loadInstallationTypeForModal();
+    // Load location (city) from settings
+    loadLocationForModal();
     // Focus on name input
     document.getElementById('projectNameInput')?.focus();
+  }
+}
+
+// Load current installation type into modal dropdown
+function loadInstallationTypeForModal() {
+  const select = document.getElementById('projectInstallationType');
+  if (!select) return;
+
+  // Try to get from sharedData.pvConfig first, then localStorage
+  let pvType = sharedData?.pvConfig?.pvType || localStorage.getItem('pvType') || 'ground_s';
+  select.value = pvType;
+}
+
+// Load location (city) from settings into modal input
+function loadLocationForModal() {
+  const input = document.getElementById('projectLocationInput');
+  if (!input) return;
+
+  // Try to get city from sharedData.settings first, then localStorage
+  let city = '';
+
+  // 1. Check sharedData.settings.locationCity
+  if (sharedData?.settings?.locationCity) {
+    city = sharedData.settings.locationCity;
+  }
+
+  // 2. Fallback to localStorage pv_system_settings
+  if (!city) {
+    try {
+      const savedSettings = localStorage.getItem('pv_system_settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        city = parsed.locationCity || '';
+      }
+    } catch (e) {
+      console.warn('Could not parse pv_system_settings from localStorage');
+    }
+  }
+
+  // 3. Set value if found and input is empty (don't overwrite user edits)
+  if (city && !input.value.trim()) {
+    input.value = city;
   }
 }
 
@@ -380,7 +464,22 @@ function closeSaveProjectModal() {
   const modal = document.getElementById('saveProjectModal');
   if (modal) {
     modal.style.display = 'none';
+    // Clear integration fields
+    clearIntegrationFields();
   }
+}
+
+// Clear integration fields in save modal
+function clearIntegrationFields() {
+  const hubspotDealId = document.getElementById('hubspotDealIdInput');
+  const hubspotCompanyId = document.getElementById('hubspotCompanyIdInput');
+  const offerVariant = document.getElementById('offerVariantSelect');
+  const publishCheckbox = document.getElementById('publishOfferCheckbox');
+
+  if (hubspotDealId) hubspotDealId.value = '';
+  if (hubspotCompanyId) hubspotCompanyId.value = '';
+  if (offerVariant) offerVariant.value = '';
+  if (publishCheckbox) publishCheckbox.checked = false;
 }
 
 // Load companies for the dropdown in save modal
@@ -408,15 +507,148 @@ async function saveProject() {
   const companyId = document.getElementById('projectCompanySelect')?.value || null;
   const description = document.getElementById('projectDescriptionInput')?.value?.trim() || null;
   const location = document.getElementById('projectLocationInput')?.value?.trim() || null;
+  const installationType = document.getElementById('projectInstallationType')?.value || 'ground_s';
+
+  // Client data fields (required for Customer Portal)
+  const clientCompanyName = document.getElementById('clientCompanyNameInput')?.value?.trim() || null;
+  const clientNip = document.getElementById('clientNipInput')?.value?.trim() || null;
+
+  // Integration fields
+  const hubspotDealId = document.getElementById('hubspotDealIdInput')?.value?.trim() || null;
+  const hubspotCompanyId = document.getElementById('hubspotCompanyIdInput')?.value?.trim() || null;
+  const offerVariant = document.getElementById('offerVariantSelect')?.value || null;
+  const publishToPortal = document.getElementById('publishOfferCheckbox')?.checked || false;
 
   if (!name) {
     alert('Podaj nazwę projektu');
     return;
   }
 
-  const result = await DraftProjectManager.finalize(name, companyId, description, location);
+  const result = await DraftProjectManager.finalize(name, companyId, description, location, installationType);
   if (result) {
+    // Save client data (NIP, company name) if provided
+    if (clientCompanyName || clientNip) {
+      await saveClientData(result.id, {
+        name: clientCompanyName,
+        nip: clientNip
+      });
+    }
+
+    // Save integration data if any fields filled
+    if (hubspotDealId || hubspotCompanyId || offerVariant) {
+      await saveIntegrationData(result.id, {
+        hubspot_deal_id: hubspotDealId,
+        hubspot_company_id: hubspotCompanyId,
+        selected_option_key: offerVariant
+      });
+    }
+
+    // Publish to Customer Portal if checkbox checked
+    if (publishToPortal && offerVariant) {
+      await publishOfferToPortal(result.id, offerVariant);
+    }
+
     closeSaveProjectModal();
+  }
+}
+
+// Save integration data (HubSpot, variant selection)
+async function saveIntegrationData(projectId, integrationData) {
+  try {
+    const response = await fetch(`${BACKEND.databaseApi}/projects/${projectId}/integration`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer admin_energy_studio'
+      },
+      body: JSON.stringify(integrationData)
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Failed to save integration data:', error);
+      return false;
+    }
+
+    console.log('✅ Integration data saved');
+    return true;
+  } catch (error) {
+    console.error('Error saving integration data:', error);
+    return false;
+  }
+}
+
+// Save client data (NIP, company name) - required for Customer Portal versioning
+async function saveClientData(projectId, clientData) {
+  try {
+    const response = await fetch(`${BACKEND.databaseApi}/projects/${projectId}/company`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(clientData)
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Failed to save client data:', error);
+      return false;
+    }
+
+    console.log('✅ Client data saved (NIP, company name)');
+    return true;
+  } catch (error) {
+    console.error('Error saving client data:', error);
+    return false;
+  }
+}
+
+// Publish offer to Customer Portal
+async function publishOfferToPortal(projectId, optionKey) {
+  try {
+    // First, get latest economics snapshot for this project
+    const snapshotsRes = await fetch(`${BACKEND.databaseApi}/projects/${projectId}/economics-snapshot`);
+    if (!snapshotsRes.ok) {
+      console.warn('No economics snapshots found for publishing');
+      return false;
+    }
+
+    const snapshots = await snapshotsRes.json();
+    if (!snapshots || snapshots.length === 0) {
+      console.warn('No economics snapshots available for publishing');
+      alert('Brak snapshotów ekonomicznych do publikacji. Najpierw przelicz ekonomię.');
+      return false;
+    }
+
+    // Use the latest snapshot
+    const latestSnapshot = snapshots[0];
+
+    const response = await fetch(`${BACKEND.databaseApi}/projects/${projectId}/publish-to-customer-portal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer admin_energy_studio'
+      },
+      body: JSON.stringify({
+        snapshot_id: latestSnapshot.id,
+        option_key: optionKey
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Failed to publish offer:', error);
+      alert(`Błąd publikacji: ${error.detail || 'Nieznany błąd'}`);
+      return false;
+    }
+
+    const result = await response.json();
+    console.log(`✅ Offer published: ${result.offer_id} ${result.offer_version}`);
+    alert(`Oferta opublikowana!\n\nOffer ID: ${result.offer_id}\nWersja: ${result.offer_version}`);
+    return true;
+  } catch (error) {
+    console.error('Error publishing offer:', error);
+    return false;
   }
 }
 
@@ -769,6 +1001,15 @@ function buildEconomicsSnapshotPayloadV2() {
   const masterVariant = sharedData.masterVariant;
   const pvConfig = sharedData.pvConfig || {};
 
+  console.log('🔧 buildEconomicsSnapshotPayloadV2: DEBUG');
+  console.log('  - economics exists:', !!economics);
+  console.log('  - economics.fullInvestorModel:', economics?.fullInvestorModel);
+  if (economics?.fullInvestorModel) {
+    console.log('  - fullInvestorModel.projectIrr:', economics.fullInvestorModel.projectIrr);
+    console.log('  - fullInvestorModel.targetIrr:', economics.fullInvestorModel.targetIrr);
+    console.log('  - fullInvestorModel.subscriptionAnnual:', economics.fullInvestorModel.subscriptionAnnual);
+  }
+
   if (!economics || !masterVariant) {
     console.warn('⚠️ Cannot build Economics Snapshot V2 - missing economics or masterVariant data');
     return null;
@@ -1093,8 +1334,8 @@ function buildEconomicsSnapshotPayloadV2() {
       : 2.5,
 
     // CAPEX Client (investor buying the system)
-    // NPV from economics.js, with fallback to cashflow-calculated value for consistency
-    capex_client_npv25: economics.capexNPV || capexClientNpvFromCf || null,
+    // NPV over analysis_period_years, with fallback to cashflow-calculated value
+    capex_client_npv: economics.capexNPV || capexClientNpvFromCf || null,
     capex_client_irr: economics.capexIRR || null,
     capex_client_irr_mode: economics.irrMode || settings.irrMode || 'real',
     capex_client_simple_payback: economics.capexPayback || null,
@@ -1108,15 +1349,45 @@ function buildEconomicsSnapshotPayloadV2() {
     capex_deal_gross_margin_pln: grossMarginPln,
 
     // EaaS Client (subscription model for client)
-    // NPV from economics.js, with fallback to cashflow-calculated value for consistency
-    eaas_client_npv25: economics.cumulativeNPV || eaasClientNpvFromCf || null,
+    // NPV over eaas_client_duration_years, with fallback to cashflow-calculated value
+    eaas_client_npv: economics.cumulativeNPV || eaasClientNpvFromCf || null,
     eaas_client_duration_years: eaasDuration, // Uses calculated value (capped at MAX_EAAS_DURATION=25)
-    eaas_client_subscription_annual: sourceEaasCashFlows[0]?.eaasCost || null,
+    eaas_client_subscription_annual: economics.fullInvestorModel?.subscriptionAnnual || sourceEaasCashFlows[0]?.eaasCost || null,
+    eaas_client_subscription_monthly: economics.fullInvestorModel?.subscriptionMonthly || null,
+    eaas_client_price_per_mwh: economics.fullInvestorModel?.pricePerMwh || null,
 
-    // EaaS Investor (reverse view - developer's perspective)
-    eaas_investor_npv25: eaasInvestorNpv,
-    eaas_investor_irr: eaasInvestorIrr,
-    eaas_investor_capex0_pln: directCostPln, // Developer pays cost, not sale price
+    // EaaS Investor - Full Model (perspektywa inwestora)
+    // IRR metrics - ONLY use values from fullInvestorModel (not cashflow-based IRR which is different!)
+    eaas_investor_target_irr: economics.fullInvestorModel?.targetIrr || null,
+    eaas_investor_project_irr: economics.fullInvestorModel?.projectIrr || null,  // Do NOT use eaasInvestorIrr as fallback!
+    eaas_investor_equity_irr: economics.fullInvestorModel?.equityIrr || null,
+    eaas_investor_irr_driver: economics.fullInvestorModel?.irrDriver || 'PLN',
+
+    // Capital structure
+    eaas_investor_capex_pln: economics.fullInvestorModel?.capexPln || directCostPln,
+    eaas_investor_debt_pln: economics.fullInvestorModel?.debtPln || 0,
+    eaas_investor_equity_pln: economics.fullInvestorModel?.equityPln || directCostPln,
+    eaas_investor_leverage_pct: economics.fullInvestorModel?.leveragePct || 0,
+
+    // Contract financials
+    eaas_investor_contract_revenue_pln: economics.fullInvestorModel?.contractRevenuePln || null,
+    eaas_investor_contract_opex_pln: economics.fullInvestorModel?.contractOpexPln || null,
+    eaas_investor_contract_tax_pln: economics.fullInvestorModel?.contractTaxPln || null,
+    eaas_investor_contract_interest_pln: economics.fullInvestorModel?.contractInterestPln || 0,
+
+    // Model parameters
+    eaas_investor_cit_rate_pct: economics.fullInvestorModel?.citRatePct || 9,
+    eaas_investor_depreciation_years: economics.fullInvestorModel?.depreciationYears || 15,
+    eaas_investor_indexation_type: economics.fullInvestorModel?.indexationType === 'cpi' ? 'Inflacja' : 'Stała',
+    eaas_investor_project_life_years: economics.fullInvestorModel?.projectLifeYears || 30,
+
+    // Residual value
+    eaas_investor_residual_value_pln: economics.fullInvestorModel?.residualValuePln || capacityKwp,
+    eaas_investor_residual_per_kwp: economics.fullInvestorModel?.residualPerKwp || 1,
+
+    // Legacy fields (backward compatibility)
+    eaas_investor_npv: eaasInvestorNpv,
+    eaas_investor_capex0_pln: directCostPln,
     eaas_investor_revenue_annual: eaasInvestorRevenueAnnual,
     eaas_investor_opex_annual: eaasInvestorOpexAnnual,
 
@@ -1174,7 +1445,7 @@ function buildEconomicsSnapshotPayloadV2() {
     variantKey: payload.variant_key,
     capacityKwp: payload.pv_capacity_kwp,
     pvType: payload.pv_type,
-    capexNpv: payload.capex_client_npv25,
+    capexNpv: payload.capex_client_npv,
     capexIrr: payload.capex_client_irr,
     sellPrice: payload.capex_deal_sell_price_pln,
     grossMargin: payload.capex_deal_gross_margin_pln,

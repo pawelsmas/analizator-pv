@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Analiza Ekonomiczna</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260111-portal">
 </head>
 <body>
 <div class="economics-container">
@@ -67,6 +67,75 @@
       </div>
       <div class="header-info" id="bessInfoLine" style="display:none;margin-top:6px;color:#00e676;font-size:14px;font-weight:600;">
         <span>🔋 <span id="bessInfoText">-</span></span>
+      </div>
+    </div>
+
+    <!-- INTEGRATION & STATUS BANNER -->
+    <div id="integrationStatusBanner" class="integration-banner" style="display:flex !important;background:linear-gradient(135deg,#1a237e 0%,#283593 100%);border-radius:12px;padding:16px 20px;margin-bottom:20px;">
+      <div class="banner-section" style="flex:1;min-width:180px;padding:0 16px;border-right:1px solid rgba(255,255,255,0.15);">
+        <div class="banner-title" style="color:#90caf9;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">🔗 INTEGRACJA</div>
+        <div class="banner-items" style="display:flex;flex-direction:column;gap:6px;">
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">HubSpot Deal:</span>
+            <span class="item-value" id="bannerHubspotDeal" style="color:white;font-size:13px;font-weight:600;">-</span>
+          </div>
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">Offer ID:</span>
+            <span class="item-value offer-id" id="bannerOfferId" style="color:#ffc107;font-family:monospace;font-size:12px;">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner-section selected-section" style="flex:1;min-width:180px;padding:0 16px;border-right:1px solid rgba(255,255,255,0.15);background:rgba(76,175,80,0.1);">
+        <div class="banner-title" style="color:#a5d6a7;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">✅ WYBRANA OPCJA</div>
+        <div class="banner-items" style="display:flex;flex-direction:column;gap:6px;">
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">Wariant:</span>
+            <span class="item-value selected-variant" id="bannerSelectedOption" style="color:white;font-size:13px;font-weight:600;">-</span>
+          </div>
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">Snapshot:</span>
+            <span class="item-value" id="bannerSnapshotId" style="color:white;font-size:13px;font-weight:600;">-</span>
+          </div>
+          <div class="banner-item drift-warning" id="bannerDriftWarning" style="display:none;color:#ff9800;font-size:12px;font-weight:600;">
+            ⚠️ Snapshot nieaktualny
+          </div>
+        </div>
+      </div>
+
+      <div class="banner-section credit-section" style="flex:1;min-width:180px;padding:0 16px;border-right:1px solid rgba(255,255,255,0.15);background:rgba(33,150,243,0.1);">
+        <div class="banner-title" style="color:#81d4fa;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">📊 WARUNKI KREDYTOWE</div>
+        <div class="banner-items" style="display:flex;flex-direction:column;gap:6px;">
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">Max EaaS:</span>
+            <span class="item-value" id="bannerMaxDuration" style="color:white;font-size:13px;font-weight:600;">- lat</span>
+          </div>
+          <div class="banner-item" style="display:flex;align-items:center;gap:8px;">
+            <span class="item-label" style="color:rgba(255,255,255,0.7);font-size:12px;">Depozyt:</span>
+            <span class="item-value" id="bannerDeposit" style="color:white;font-size:13px;font-weight:600;">-</span>
+          </div>
+          <div class="banner-item" id="bannerApprovalItem" style="display:none;color:#ff9800;font-size:12px;font-weight:600;">
+            <span class="item-label">⚠️ Wymaga akceptacji</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="banner-section status-section" style="flex:1;min-width:200px;padding:0 16px;display:flex;flex-direction:column;align-items:flex-end;gap:12px;">
+        <div class="banner-badges" style="display:flex;gap:8px;">
+          <span class="status-badge" id="bannerReadyBadge" style="padding:6px 12px;border-radius:16px;font-size:11px;font-weight:700;text-transform:uppercase;background:#f44336;color:white;">NOT READY</span>
+          <span class="status-badge published" id="bannerPublishedBadge" style="display:none;padding:6px 12px;border-radius:16px;font-size:11px;font-weight:700;text-transform:uppercase;background:#4caf50;color:white;">PUBLISHED v1</span>
+        </div>
+        <div class="banner-actions" style="display:flex;gap:8px;">
+          <button class="banner-btn preview-btn" onclick="openCustomerPreview()" id="btnCustomerPreview" style="padding:8px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#2196f3;color:white;">
+            👁️ Podgląd
+          </button>
+          <button class="banner-btn publish-btn" onclick="openPublishModal()" id="btnPublishOffer" data-admin-only="true" disabled style="padding:8px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#4caf50;color:white;opacity:0.5;">
+            📤 Publikuj
+          </button>
+          <button class="banner-btn history-btn" onclick="openPublicationHistory()" id="btnPublicationHistory" data-internal-only="true" style="padding:8px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:rgba(255,255,255,0.15);color:white;">
+            📋 Historia
+          </button>
+        </div>
       </div>
     </div>
 
@@ -164,6 +233,22 @@
       </div>
     </div>
 
+    <!-- ================================================================== -->
+    <!-- SEKCJA 1: ANALIZA CAPEX - PERSPEKTYWA INWESTORA                   -->
+    <!-- ================================================================== -->
+    <div class="major-section-header" style="background:linear-gradient(135deg,#1565c0 0%,#0d47a1 100%);color:white;padding:20px 24px;border-radius:12px;margin:24px 0 16px 0;box-shadow:0 4px 12px rgba(21,101,192,0.3);">
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div style="font-size:32px;">💰</div>
+        <div>
+          <h2 style="margin:0;font-size:22px;font-weight:700;">ANALIZA CAPEX - Perspektywa Inwestora</h2>
+          <p style="margin:6px 0 0 0;font-size:13px;opacity:0.9;">
+            Model własności: Klient wykłada kapitał, jest właścicielem instalacji, czerpie korzyści z oszczędności.
+            Kluczowe metryki: NPV, IRR, Payback, LCOE.
+          </p>
+        </div>
+      </div>
+    </div>
+
     <!-- Wskaźniki kluczowe -->
     <div class="stats-section">
       <h2>Kluczowe Wskaźniki Ekonomiczne</h2>
@@ -243,7 +328,10 @@
                 <th>Eksport<br/><span class="unit">MWh</span></th>
                 <th>NPV<br/><span class="unit">mln PLN</span></th>
                 <th>Payback<br/><span class="unit">lat</span></th>
-                <th>LCOE<br/><span class="unit">PLN/MWh</span></th>
+                <th title="LCOE Standardowe - koszt produkcji 1 MWh (owner perspective)">LCOE Std<br/><span class="unit">PLN/MWh</span></th>
+                <th title="LCOE Efektywne - koszt 1 MWh autokonsumowanej (owner perspective)" class="lcoe-eff-header">LCOE Eff<br/><span class="unit">PLN/MWh</span></th>
+                <th title="Aktualna cena zakupu energii z sieci (ToU + opłaty stałe)" class="lcoe-grid-header">Cena Sieci<br/><span class="unit">PLN/MWh</span></th>
+                <th title="Oszczędność vs sieć: Cena Sieci - LCOE Eff" class="delta-header">Δ Oszcz.<br/><span class="unit">PLN/MWh</span></th>
               </tr>
             </thead>
             <tbody id="variantScanTableBody">
@@ -260,6 +348,22 @@
         <button class="btn btn-export" onclick="exportVariantScanToExcel()" title="Eksportuj do Excel">
           📥 Eksport Excel
         </button>
+      </div>
+    </div>
+
+    <!-- WYKRES LCOE - Analiza kosztow energii -->
+    <div class="chart-section full-width lcoe-analysis-section">
+      <h2>LCOE - Analiza Kosztu Energii</h2>
+      <div class="chart-info">
+        <strong>LCOE Standardowe</strong> = koszt produkcji 1 MWh |
+        <strong>LCOE Efektywne</strong> = realny koszt 1 MWh autokonsumowanej energii |
+        <strong>Cena sieci</strong> = benchmark zakupu z sieci
+      </div>
+      <div class="lcoe-chart-container" id="lcoeChartContent" style="height: 350px;">
+        <canvas id="lcoeAnalysisChart"></canvas>
+      </div>
+      <div class="lcoe-observation">
+        <strong>Interpretacja:</strong> <span id="lcoeObservation">Im nizsza autokonsumpcja, tym wyzsze LCOE Efektywne - dlatego przewymiarowanie instalacji zwieksza realny koszt energii mimo nizszego LCOE standardowego.</span>
       </div>
     </div>
 
@@ -302,6 +406,22 @@
             <!-- Wypełnione dynamicznie przez JavaScript -->
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- SEKCJA 2: ANALIZA EaaS - MODEL ESCO                               -->
+    <!-- ================================================================== -->
+    <div class="major-section-header" style="background:linear-gradient(135deg,#2e7d32 0%,#1b5e20 100%);color:white;padding:20px 24px;border-radius:12px;margin:32px 0 16px 0;box-shadow:0 4px 12px rgba(46,125,50,0.3);">
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div style="font-size:32px;">🏢</div>
+        <div>
+          <h2 style="margin:0;font-size:22px;font-weight:700;">ANALIZA EaaS - Model ESCO</h2>
+          <p style="margin:6px 0 0 0;font-size:13px;opacity:0.9;">
+            Model usługowy: ESCO (my) inwestuje kapitał, Klient płaci abonament za energię.
+            Kluczowe metryki: Project IRR, Equity IRR, Abonament, DSCR.
+          </p>
+        </div>
       </div>
     </div>
 
@@ -446,9 +566,31 @@
         <button class="btn" onclick="calculateEaaS()" style="width:auto;padding:10px 24px">
           PRZELICZ EaaS
         </button>
-        <button class="btn btn-secondary" onclick="exportEaaSToExcel()" style="width:auto;padding:10px 24px;margin-left:12px">
-          📥 EKSPORT DO EXCEL
-        </button>
+        <div class="dropdown" style="display:inline-block;margin-left:12px;position:relative">
+          <button class="btn btn-secondary dropdown-toggle" onclick="toggleExportDropdown()" style="width:auto;padding:10px 24px">
+            📥 EKSPORT DO EXCEL ▼
+          </button>
+          <div id="exportDropdownMenu" class="dropdown-menu" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100;min-width:220px">
+            <a href="#" onclick="exportEaaSToExcelWithFormulas();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
+              📊 Z formułami (audyt CFO)
+            </a>
+            <a href="#" onclick="exportEaaSToExcel();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+              ⚡ Szybki (wartości)
+            </a>
+          </div>
+        </div>
+        <script>
+          function toggleExportDropdown() {
+            const menu = document.getElementById('exportDropdownMenu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+          }
+          function hideExportDropdown() {
+            document.getElementById('exportDropdownMenu').style.display = 'none';
+          }
+          document.addEventListener('click', function(e) {
+            if (!e.target.closest('.dropdown')) hideExportDropdown();
+          });
+        </script>
         <span style="margin-left:16px;font-size:12px;color:#666">Scenariusz: <strong id="eaasCurrentScenario" style="color:#3f51b5">P50</strong></span>
       </div>
 
@@ -590,8 +732,173 @@
       <canvas id="sensitivityAnalysis"></canvas>
     </div>
 
+    <!-- ============== BANKABILITY METRICS SECTION ============== -->
+    <div class="chart-section full-width" id="bankabilitySection" style="display:none;border-top:3px solid #1565c0;padding-top:20px;margin-top:32px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span style="background:#e3f2fd;padding:2px 8px;border-radius:4px;font-size:11px;color:#1565c0;font-weight:600;">SEKCJA CAPEX</span>
+        <span style="font-size:11px;color:#666;">Analiza bankowa dla modelu inwestorskiego</span>
+      </div>
+      <h2>🏦 BANKABILITY METRICS</h2>
+      <div class="chart-info">
+        Analiza zdolności obsługi długu i pokrycia zobowiązań kontraktowych
+      </div>
+
+      <!-- Description Panel -->
+      <div class="bankability-description" style="background:linear-gradient(135deg,rgba(33,150,243,0.08),rgba(30,136,229,0.04));border:1px solid rgba(33,150,243,0.2);border-radius:8px;padding:16px;margin:12px 0;font-size:13px;line-height:1.5;">
+        <div style="display:flex;gap:20px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:280px;">
+            <div style="font-weight:600;color:#1976D2;margin-bottom:8px;">Co to jest DSCR?</div>
+            <p style="margin:0;color:#555;">
+              <strong>DSCR (Debt Service Coverage Ratio)</strong> = CFADS / Rata kredytu<br>
+              Pokazuje ile razy przychody projektu pokrywaja rate kredytu.
+            </p>
+            <ul style="margin:8px 0 0 0;padding-left:20px;color:#666;">
+              <li><span style="color:#2e7d32;font-weight:600;">DSCR > 1.20x</span> - Bank chetnie sfinansuje</li>
+              <li><span style="color:#f57c00;font-weight:600;">DSCR = 1.00x</span> - Projekt ledwo obsluzy dlug</li>
+              <li><span style="color:#c62828;font-weight:600;">DSCR < 1.00x</span> - Niewystarczajace przychody</li>
+            </ul>
+          </div>
+          <div style="flex:1;min-width:280px;">
+            <div style="font-weight:600;color:#1976D2;margin-bottom:8px;">Jak wykorzystac?</div>
+            <ul style="margin:0;padding-left:20px;color:#666;">
+              <li><strong>Optymalizacja leverage</strong> - zwieksz dlug az DSCR spadnie do ~1.25x</li>
+              <li><strong>Due diligence</strong> - wymagany wskaznik dla bankow/inwestorow</li>
+              <li><strong>Stress testing</strong> - P90/P97 pokazuje scenariusz konserwatywny</li>
+              <li><strong>Negocjacje</strong> - Headroom to bufor powyzej wymaganego covenant</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mode Indicator -->
+      <div id="bankabilityModeIndicator" class="bankability-mode-indicator">
+        <span class="mode-badge dscr-mode">📊 CAPEX + DEBT → DSCR Analysis</span>
+      </div>
+
+      <!-- Financing Assumptions Panel -->
+      <div class="bankability-assumptions" id="bankabilityAssumptions">
+        <div class="assumptions-header">
+          <span>⚙️ Parametry finansowania</span>
+          <button class="toggle-assumptions" onclick="toggleBankabilityAssumptions()">▼</button>
+        </div>
+        <div class="assumptions-body" id="assumptionsBody">
+          <div class="assumptions-grid">
+            <div class="assumption-field">
+              <label>Kwota długu [PLN]</label>
+              <input type="number" id="bankDebtAmount" value="0" min="0" step="100000" onchange="recalculateBankability()">
+            </div>
+            <div class="assumption-field">
+              <label>Tenor [lat]</label>
+              <input type="number" id="bankTenor" value="15" min="1" max="30" onchange="recalculateBankability()">
+            </div>
+            <div class="assumption-field">
+              <label>Oprocentowanie [%]</label>
+              <input type="number" id="bankInterestRate" value="6.5" min="0" max="20" step="0.1" onchange="recalculateBankability()">
+            </div>
+            <div class="assumption-field">
+              <label>Typ spłaty</label>
+              <select id="bankRepaymentType" onchange="recalculateBankability()">
+                <option value="annuity">Annuity (raty równe)</option>
+                <option value="linear">Linear (kapitał równy)</option>
+                <option value="bullet">Bullet (kapitał na końcu)</option>
+              </select>
+            </div>
+            <div class="assumption-field">
+              <label>Grace period [lat]</label>
+              <input type="number" id="bankGraceYears" value="0" min="0" max="5" onchange="recalculateBankability()">
+            </div>
+            <div class="assumption-field">
+              <label>Covenant Min DSCR</label>
+              <input type="number" id="bankCovenant" value="1.20" min="1.0" max="2.0" step="0.05" onchange="recalculateBankability()">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scenario Toggle -->
+      <div class="bankability-scenario-toggle">
+        <span>Scenariusz:</span>
+        <button class="scenario-btn" data-scenario="P50" onclick="setBankabilityScenario('P50')">P50</button>
+        <button class="scenario-btn active" data-scenario="P90" onclick="setBankabilityScenario('P90')">P90</button>
+        <button class="scenario-btn" data-scenario="P97" onclick="setBankabilityScenario('P97')">P97</button>
+      </div>
+
+      <!-- KPI Cards -->
+      <div class="bankability-kpis" id="bankabilityKPIs">
+        <div class="bankability-kpi-card" id="kpiMinDSCR">
+          <div class="kpi-icon">📉</div>
+          <div class="kpi-content">
+            <div class="kpi-label">Min DSCR @P90</div>
+            <div class="kpi-value" id="kpiMinDSCRValue">-</div>
+            <div class="kpi-status" id="kpiMinDSCRStatus">-</div>
+          </div>
+        </div>
+        <div class="bankability-kpi-card" id="kpiAvgDSCR">
+          <div class="kpi-icon">📊</div>
+          <div class="kpi-content">
+            <div class="kpi-label">Avg DSCR (weighted)</div>
+            <div class="kpi-value" id="kpiAvgDSCRValue">-</div>
+            <div class="kpi-sublabel">ważona DebtService</div>
+          </div>
+        </div>
+        <div class="bankability-kpi-card" id="kpiWorstYear">
+          <div class="kpi-icon">⚠️</div>
+          <div class="kpi-content">
+            <div class="kpi-label">Worst Year</div>
+            <div class="kpi-value" id="kpiWorstYearValue">-</div>
+            <div class="kpi-sublabel">najniższy DSCR</div>
+          </div>
+        </div>
+        <div class="bankability-kpi-card" id="kpiHeadroom">
+          <div class="kpi-icon">🛡️</div>
+          <div class="kpi-content">
+            <div class="kpi-label">Headroom vs Covenant</div>
+            <div class="kpi-value" id="kpiHeadroomValue">-</div>
+            <div class="kpi-sublabel">= (MinDSCR/Covenant) - 1</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alerts -->
+      <div class="bankability-alerts" id="bankabilityAlerts">
+        <!-- Dynamic alerts will be inserted here -->
+      </div>
+
+      <!-- Yearly DSCR Table -->
+      <div class="bankability-table-container">
+        <table class="bankability-table" id="bankabilityTable">
+          <thead>
+            <tr>
+              <th>Rok</th>
+              <th>Revenue [PLN]</th>
+              <th>OPEX [PLN]</th>
+              <th>CFADS [PLN]</th>
+              <th>Debt Service [PLN]</th>
+              <th>DSCR</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="bankabilityTableBody">
+            <!-- Dynamic rows -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Formula Tooltip -->
+      <div class="bankability-formula-tooltip">
+        <strong>Metodologia:</strong><br>
+        CFADS = Revenue - OPEX - Taxes - MaintCapex ± ΔWC<br>
+        DSCR = CFADS / DebtService<br>
+        Avg DSCR (weighted) = Σ(CFADS) / Σ(DebtService) dla lat z DS>0
+      </div>
+    </div>
+
     <!-- ============== MONTE CARLO SIMULATION SECTION ============== -->
-    <div class="chart-section full-width" id="monteCarloSection">
+    <div class="chart-section full-width" id="monteCarloSection" style="border-top:3px solid #1565c0;padding-top:20px;margin-top:32px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span style="background:#e3f2fd;padding:2px 8px;border-radius:4px;font-size:11px;color:#1565c0;font-weight:600;">SEKCJA CAPEX</span>
+        <span style="font-size:11px;color:#666;">Analiza ryzyka dla modelu inwestorskiego (NPV CAPEX)</span>
+      </div>
       <h2>🎲 Analiza Monte Carlo - Symulacja Ryzyka Finansowego</h2>
       <div class="chart-info">
         Symulacja stochastyczna z uwzględnieniem niepewności parametrów i korelacji
@@ -638,11 +945,48 @@
           </div>
         </div>
 
+        <!-- Second row: CAPEX and Inflation -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px">
+          <!-- CAPEX uncertainty -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Niepewność CAPEX [%]</label>
+            <input type="number" id="mcCapexUncertainty" value="8" min="0" max="20" step="1"
+                   style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px"
+                   title="Post-EPC bid: 5-8%">
+          </div>
+
+          <!-- Inflation uncertainty -->
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Niepewność inflacji [pp]</label>
+            <input type="number" id="mcInflationUncertainty" value="1.5" min="0" max="15" step="0.5"
+                   style="width:100%;padding:8px;border:1px solid #ced4da;border-radius:4px"
+                   title="NBP target ±1pp, max 15pp (Polska 2022: 17.9%)">
+          </div>
+
+          <!-- Empty cells for alignment -->
+          <div></div>
+          <div></div>
+        </div>
+
         <div style="display:flex;gap:12px;align-items:center">
           <button class="btn" onclick="runMonteCarlo()" id="mcRunButton">
             🎲 URUCHOM SYMULACJĘ MONTE CARLO
           </button>
           <span id="mcStatus" style="font-size:13px;color:#666"></span>
+        </div>
+
+        <!-- Constraints info box -->
+        <div style="margin-top:16px;padding:12px 16px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#856404">
+          <strong>⚠️ Ograniczenia analizy Monte Carlo:</strong>
+          <ul style="margin:8px 0 0 0;padding-left:20px;line-height:1.6">
+            <li><strong>Cena energii:</strong> max 30% niepewności (standard bankowy: 12%, źródło: FfE/IMF 2024)</li>
+            <li><strong>Produkcja PV:</strong> max 20% niepewności (standard NREL P50/P90: 8%)</li>
+            <li><strong>CAPEX:</strong> max 20% niepewności (post-EPC bid: 5-8%)</li>
+            <li><strong>Inflacja:</strong> max 15pp niepewności, zakres [-5%, 25%] (Polska 2022: 17.9%)</li>
+          </ul>
+          <div style="margin-top:8px;font-style:italic;color:#6c757d">
+            Limity oparte na standardach branżowych dla analiz "bankable". Przekroczenie limitów skutkuje błędem walidacji (HTTP 422).
+          </div>
         </div>
       </div>
 
@@ -922,10 +1266,43 @@
     </div>
 
     <!-- Tabela zwrotu inwestycji CAPEX -->
-    <div class="table-section full-width">
-      <h2>Analiza CAPEX Rok po Roku z NPV</h2>
-      <div class="chart-info">
-        Szczegółowy przebieg cash flow z uwzględnieniem degradacji i inflacji
+    <div class="table-section full-width" style="border-top:3px solid #1565c0;padding-top:20px;margin-top:32px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="font-size:24px;">💰</span>
+          <div>
+            <h2 style="margin:0;color:#1565c0;">Analiza CAPEX Rok po Roku z NPV</h2>
+            <div class="chart-info" style="margin-top:4px;">
+              <span style="background:#e3f2fd;padding:2px 8px;border-radius:4px;font-size:11px;color:#1565c0;font-weight:600;">SEKCJA CAPEX</span>
+              Szczegółowy przebieg cash flow z perspektywy inwestora - degradacja, inflacja, oszczędności
+            </div>
+          </div>
+        </div>
+        <div class="dropdown" style="position:relative;flex-shrink:0;">
+          <button class="btn" onclick="toggleCapexExportDropdown()" style="background:#1565c0;color:#fff;padding:10px 24px;border:none;border-radius:4px;cursor:pointer;font-weight:600;white-space:nowrap;">
+            📥 EKSPORT DO EXCEL ▼
+          </button>
+          <div id="capexExportDropdownMenu" class="dropdown-menu" style="display:none;position:absolute;top:100%;right:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100;min-width:220px">
+            <a href="#" onclick="exportCapexToExcelWithFormulas();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
+              📊 Z formułami (audyt CFO)
+            </a>
+            <a href="#" onclick="exportCapexToExcel();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+              ⚡ Szybki (wartości)
+            </a>
+          </div>
+        </div>
+        <script>
+          function toggleCapexExportDropdown() {
+            const menu = document.getElementById('capexExportDropdownMenu');
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+          }
+          function hideCapexExportDropdown() {
+            document.getElementById('capexExportDropdownMenu').style.display = 'none';
+          }
+          document.addEventListener('click', function(e) {
+            if (!e.target.closest('.dropdown')) hideCapexExportDropdown();
+          });
+        </script>
       </div>
       <div class="table-wrapper">
         <table id="paybackTable" class="payback-table">
@@ -967,9 +1344,107 @@
   </div>
 </div>
 
+<!-- CUSTOMER PREVIEW MODAL -->
+<div id="customerPreviewModal" class="modal-overlay" style="display:none;">
+  <div class="modal-content modal-large">
+    <div class="modal-header">
+      <h3>👁️ Podgląd oferty dla klienta (CUSTOMER_SAFE)</h3>
+      <button class="modal-close" onclick="closeCustomerPreview()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="previewGuardStatus" class="guard-status">
+        <span class="guard-icon">🛡️</span>
+        <span class="guard-text">Sprawdzanie bezpieczeństwa danych...</span>
+      </div>
+      <div id="customerPreviewContent" class="preview-content">
+        <div class="loading">Ładowanie podglądu...</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span class="footer-info" id="previewOfferInfo">-</span>
+      <button class="btn btn-secondary" onclick="closeCustomerPreview()">Zamknij</button>
+    </div>
+  </div>
+</div>
+
+<!-- PUBLISH CONFIRMATION MODAL -->
+<div id="publishModal" class="modal-overlay" style="display:none;">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>📤 Publikuj ofertę do Customer Portal</h3>
+      <button class="modal-close" onclick="closePublishModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="publish-summary">
+        <h4>Co publikujesz:</h4>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span class="summary-label">Wybrana opcja:</span>
+            <span class="summary-value" id="publishSelectedOption">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Offer ID:</span>
+            <span class="summary-value" id="publishOfferId">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Nowa wersja:</span>
+            <span class="summary-value" id="publishNewVersion">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Snapshot ID:</span>
+            <span class="summary-value" id="publishSnapshotId">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Warunki kredytowe:</span>
+            <span class="summary-value" id="publishCreditTerms">-</span>
+          </div>
+        </div>
+      </div>
+      <div id="publishBlockers" class="publish-blockers" style="display:none;">
+        <h4>⚠️ Blokady publikacji:</h4>
+        <ul id="publishBlockersList"></ul>
+      </div>
+      <div id="publishWarnings" class="publish-warnings" style="display:none;">
+        <h4>⚠️ Ostrzeżenia:</h4>
+        <ul id="publishWarningsList"></ul>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closePublishModal()">Anuluj</button>
+      <button class="btn btn-primary" onclick="confirmPublish()" id="btnConfirmPublish">
+        📤 Potwierdź publikację
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- PUBLICATION HISTORY MODAL -->
+<div id="publicationHistoryModal" class="modal-overlay" style="display:none;">
+  <div class="modal-content modal-large">
+    <div class="modal-header">
+      <h3>📋 Historia publikacji</h3>
+      <button class="modal-close" onclick="closePublicationHistory()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="publicationHistoryList" class="history-list">
+        <div class="loading">Ładowanie historii...</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closePublicationHistory()">Zamknij</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="economics.js?v=20251227-B1"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="bankability.js?v=20260113-DSCR-v1"></script>
+<script src="economics.js?v=20260115-v4"></script>
+<script src="capex-export.js?v=20260116-v23-eng-charts"></script>
 <script src="monte-carlo.js?v=20251224"></script>
+<script src="customer-portal.js?v=20260111-v2"></script>
 </body>
 </html>
