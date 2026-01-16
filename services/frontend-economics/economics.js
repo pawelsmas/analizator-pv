@@ -3280,6 +3280,33 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     };
   }
 
+
+  // Calculate Simple Payback
+  let simplePayback = analysisPeriod;
+  let cumulativeSavings = 0;
+  for (let i = 0; i < capexCashFlows.length; i++) {
+    cumulativeSavings += capexCashFlows[i].net_cash_flow;
+    if (cumulativeSavings >= capex) {
+      const prevCumulative = cumulativeSavings - capexCashFlows[i].net_cash_flow;
+      const remaining = capex - prevCumulative;
+      simplePayback = (i + 1) + (remaining / capexCashFlows[i].net_cash_flow);
+      break;
+    }
+  }
+
+  // Calculate LCOE (Levelized Cost of Energy) = Total Discounted Costs / Total Discounted Production
+  let lcoeDiscountedCosts = capex;
+  let lcoeDiscountedProduction = 0;
+  for (let yr = 1; yr <= analysisPeriod; yr++) {
+    // Use degradationRate for years 2+ (same as main cash flow calculation)
+    const pvDeg = yr === 1 ? (1 - pvDegradationYear1) : (1 - pvDegradationYear1) * Math.pow(1 - degradationRate, yr - 1);
+    const inflFactor = useInflation ? Math.pow(1 + inflationRate, yr) : 1;
+    const yrOpex = (capacityKwp * params.opex_per_kwp + opexBESS) * inflFactor;
+    lcoeDiscountedCosts += yrOpex / Math.pow(1 + discountRate, yr);
+    lcoeDiscountedProduction += (productionMwh * pvDeg) / Math.pow(1 + discountRate, yr);
+  }
+  const lcoe = lcoeDiscountedProduction > 0 ? lcoeDiscountedCosts / lcoeDiscountedProduction : 0; // PLN/MWh
+
   return {
     capex: {
       npv: capexNPV,
@@ -3288,7 +3315,9 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       irrStatus: 'converged',  // Local calculation status (always converged or error)
       cashFlows: capexCashFlows,
       investment: capex,
-      capexPerKwp: capexPerKwp
+      capexPerKwp: capexPerKwp,
+      simplePayback: simplePayback,
+      lcoe: lcoe
     },
     eaas: eaasMetrics,
     common: {
@@ -3571,7 +3600,7 @@ async function performEconomicAnalysis() {
       // P0-3: Rate mode for backend reference
       rate_mode: window.economicsSettings?.rateMode || 'nominal',
       // P0-1: BESS replacement parameters
-      bess_replacement_schedule: bessReplacementSchedule,
+      bess_replacement_schedule: reinvestmentSchedule,
       // P0-2: Residual value
       residual_value: residualValue
     };
