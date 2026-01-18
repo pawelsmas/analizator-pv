@@ -1,4 +1,4 @@
-console.log('🚀 economics.js LOADED v=20260113-P1-FIX - timestamp:', new Date().toISOString());
+console.log('🚀 economics.js LOADED v=20260118-PULS-DNIA-DEBUG-v7 - timestamp:', new Date().toISOString());
 
 // DEBUG flag - set to true for verbose logging (or via URL ?debug_economics=1)
 const DEBUG_ECONOMICS = window.location?.search?.includes('debug_economics=1') || false;
@@ -69,6 +69,11 @@ window.formatWithUnitEU = formatWithUnitEU;
 let capexChart, opexChart, cashFlowChart, revenueChart, sensitivityChart;
 let sensitivityEnergyChart, sensitivityDiscountChart;
 let variantScanChart = null;
+// PULS DNIA charts
+let pulsDniaProductionChart = null;
+let pulsDniaGridChart = null;
+let pulsDniaBessChart = null;
+let pulsDniaCostsChart = null;
 
 // Data storage
 let economicData = null;
@@ -77,6 +82,7 @@ let analysisResults = null;
 let variants = {};
 let currentVariant = 'A'; // Default variant
 let consumptionData = null;
+let productionData = null; // Hourly PV production data from backend
 let systemSettings = null; // Settings from Settings module
 let hourlyData = null; // Hourly consumption/production data
 // BESS data now comes exclusively from analysisResults (pv-calculation)
@@ -758,6 +764,13 @@ function regenerateAllChartsAndTables() {
     }
   }
 
+  // Update PULS DNIA chart (async - fetches real data)
+  if (typeof generatePulsDniaChart === 'function') {
+    generatePulsDniaChart().catch(e => {
+      console.log('PULS DNIA update skipped:', e.message);
+    });
+  }
+
   console.log('✅ Charts and tables regenerated for scenario');
 }
 
@@ -1410,8 +1423,14 @@ function calculateTotalEnergyPrice(params) {
   // - cogeneration_fee: opłata kogeneracyjna
   // - capacity_fee: opłata mocowa (rynkowa)
   // - excise_tax: akcyza
-  return params.energy_active + params.distribution + params.quality_fee +
-         params.oze_fee + params.cogeneration_fee + params.capacity_fee + params.excise_tax;
+  const total = (params.energy_active || 510) +
+                (params.distribution || 200) +
+                (params.quality_fee || 10) +
+                (params.oze_fee || 7) +
+                (params.cogeneration_fee || 10) +
+                (params.capacity_fee || 219) +
+                (params.excise_tax || 5);
+  return isNaN(total) ? 961 : total; // Default 961 PLN/MWh if calculation fails
 }
 
 // Calculate capacity fee - returns capacity fee to add to base energy price
@@ -3710,6 +3729,19 @@ async function performEconomicAnalysis() {
     generateVariantScanSection();
     console.log('📊 generateVariantScanSection() completed');
 
+    // Generate PULS DNIA chart (async - fetches real data from API)
+    console.log('📈 About to call generatePulsDniaChart()...');
+    // Ensure calendar is initialized before generating chart
+    if (typeof initializePulsDniaCalendar === 'function') {
+      initializePulsDniaCalendar();
+    }
+    // Note: async function, but we don't await to avoid blocking
+    generatePulsDniaChart().then(() => {
+      console.log('📈 generatePulsDniaChart() completed');
+    }).catch(err => {
+      console.warn('📈 generatePulsDniaChart() error:', err.message);
+    });
+
   } catch (error) {
     console.error('❌ Error performing economic analysis:', error);
     showNoData();
@@ -4159,6 +4191,1248 @@ function generateRevenueChart() {
     }
   });
 }
+
+// ============================================
+// PULS DNIA - 24h Energy Profile Visualization
+// ============================================
+
+// Cache for real hourly data from API
+let cachedHourlyConsumption = null; // {timestamps: [], values: []}
+let cachedHourlyProduction = null;  // {timestamps: [], values: []}
+let pulsDniaDataLoading = false;
+
+/**
+ * Fetch real hourly data from data-analysis API
+ * Returns data for the entire year, which we then filter by selected day
+ */
+async function fetchRealHourlyData() {
+  // Return cached data if available
+  if (cachedHourlyConsumption) {
+    console.log('📊 Using cached hourly consumption data');
+    return { consumption: cachedHourlyConsumption, production: cachedHourlyProduction };
+  }
+
+  if (pulsDniaDataLoading) {
+    console.log('📊 Data already loading, waiting...');
+    // Wait for loading to complete
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return { consumption: cachedHourlyConsumption, production: cachedHourlyProduction };
+  }
+
+  pulsDniaDataLoading = true;
+
+  // Determine API base URL - handle iframe context
+  const apiBaseUrl = window.location.origin;
+  const apiUrl = `${apiBaseUrl}/api/data/hourly-data`;
+  console.log('📊 PULS DNIA: ============================================');
+  console.log('📊 PULS DNIA: FETCHING REAL HOURLY DATA');
+  console.log('📊 PULS DNIA: API URL:', apiUrl);
+  console.log('📊 PULS DNIA: window.location.origin:', window.location.origin);
+  console.log('📊 PULS DNIA: ============================================');
+
+  try {
+    // Fetch consumption data from data-analysis API
+    const consResponse = await fetch(apiUrl);
+    console.log('📊 PULS DNIA: API response status:', consResponse.status);
+
+    if (consResponse.ok) {
+      cachedHourlyConsumption = await consResponse.json();
+      console.log(`📊 PULS DNIA: Loaded ${cachedHourlyConsumption.values?.length || 0} hourly consumption points`);
+      console.log(`📊 PULS DNIA: Sample timestamps:`, cachedHourlyConsumption.timestamps?.slice(0, 3));
+    } else {
+      console.warn('📊 PULS DNIA: Could not fetch consumption data:', consResponse.status);
+      pulsDniaDataLoading = false;
+      return null;
+    }
+
+    // Try to get production data from various sources
+    if (productionData?.hourlyProduction) {
+      cachedHourlyProduction = {
+        timestamps: cachedHourlyConsumption?.timestamps || [],
+        values: productionData.hourlyProduction
+      };
+      console.log(`📊 PULS DNIA: Using productionData.hourlyProduction (${cachedHourlyProduction.values?.length || 0} points)`);
+    } else if (analysisResults?.hourly_production) {
+      cachedHourlyProduction = {
+        timestamps: cachedHourlyConsumption?.timestamps || [],
+        values: analysisResults.hourly_production
+      };
+      console.log(`📊 PULS DNIA: Using analysisResults.hourly_production (${cachedHourlyProduction.values?.length || 0} points)`);
+    } else {
+      console.log('📊 PULS DNIA: No hourly production data available - will use synthetic profile');
+      // Production will be calculated synthetically in generateTypicalDayProfiles
+      cachedHourlyProduction = null;
+    }
+
+    pulsDniaDataLoading = false;
+    return { consumption: cachedHourlyConsumption, production: cachedHourlyProduction };
+  } catch (error) {
+    console.error('📊 PULS DNIA: Error fetching hourly data:', error);
+    pulsDniaDataLoading = false;
+    return null;
+  }
+}
+
+/**
+ * Get real hourly data for a specific day
+ * Returns 24 data points for the selected date
+ */
+function getRealDayData(month, day, consumption, production) {
+  if (!consumption?.timestamps || !consumption?.values) {
+    console.log('📊 No consumption data available');
+    return null;
+  }
+
+  // DEBUG: Log input data structure
+  console.log('📊 getRealDayData DEBUG:');
+  console.log('  - consumption.timestamps length:', consumption.timestamps?.length);
+  console.log('  - consumption.values length:', consumption.values?.length);
+  console.log('  - First 3 timestamps:', consumption.timestamps?.slice(0, 3));
+  console.log('  - First 3 values:', consumption.values?.slice(0, 3));
+  console.log('  - Max value in consumption.values:', Math.max(...(consumption.values || [0])));
+  console.log('  - Min value in consumption.values:', Math.min(...(consumption.values || [0])));
+
+  // Build target date string (assuming data is from current or recent year)
+  // We'll match by month and day regardless of year
+  const targetMonth = String(month).padStart(2, '0');
+  const targetDay = String(day).padStart(2, '0');
+
+  const dayData = [];
+  const hourlyAggregation = {}; // Aggregate multiple measurements per hour
+
+  for (let i = 0; i < consumption.timestamps.length; i++) {
+    const ts = consumption.timestamps[i];
+    const date = new Date(ts);
+    const tsMonth = String(date.getMonth() + 1).padStart(2, '0');
+    const tsDay = String(date.getDate()).padStart(2, '0');
+
+    if (tsMonth === targetMonth && tsDay === targetDay) {
+      const hour = date.getHours();
+      const consValue = consumption.values[i] || 0;
+      const prodValue = production?.values?.[i] || 0;
+
+      // Aggregate by hour (in case of 15-min or sub-hourly data)
+      if (!hourlyAggregation[hour]) {
+        hourlyAggregation[hour] = { consumption: 0, production: 0, count: 0 };
+      }
+      hourlyAggregation[hour].consumption += consValue;
+      hourlyAggregation[hour].production += prodValue;
+      hourlyAggregation[hour].count += 1;
+    }
+  }
+
+  // Convert aggregated data to array, averaging if multiple points per hour
+  for (const hour of Object.keys(hourlyAggregation).map(Number).sort((a, b) => a - b)) {
+    const agg = hourlyAggregation[hour];
+    dayData.push({
+      hour: hour,
+      timestamp: `${targetMonth}-${targetDay} ${hour}:00`,
+      consumption: agg.consumption / agg.count, // Average if multiple points
+      production: agg.production / agg.count
+    });
+  }
+
+  console.log(`📊 Found ${dayData.length} data points for ${day}/${month}`);
+  if (dayData.length > 0) {
+    console.log('📊 Sample data points:');
+    dayData.slice(0, 3).forEach(d => {
+      console.log(`  Hour ${d.hour}: consumption=${d.consumption.toFixed(2)} kW, production=${d.production.toFixed(2)} kW`);
+    });
+    const totalDayCons = dayData.reduce((sum, d) => sum + d.consumption, 0);
+    console.log(`📊 Total day consumption: ${totalDayCons.toFixed(2)} kWh`);
+  }
+  return dayData.length > 0 ? dayData : null;
+}
+
+/**
+ * Update calendar day selector based on selected month
+ */
+function updatePulsDniaCalendar() {
+  const monthSelect = document.getElementById('pulsDniaMonth');
+  const daySelect = document.getElementById('pulsDniaDay');
+  if (!monthSelect || !daySelect) return;
+
+  const month = parseInt(monthSelect.value);
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const numDays = daysInMonth[month - 1];
+
+  // Remember current selection if valid
+  const currentDay = parseInt(daySelect.value) || 15;
+
+  // Populate days
+  daySelect.innerHTML = '';
+  for (let d = 1; d <= numDays; d++) {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = d;
+    if (d === Math.min(currentDay, numDays)) opt.selected = true;
+    daySelect.appendChild(opt);
+  }
+
+  // Regenerate chart (async)
+  generatePulsDniaChart().catch(err => console.warn('📈 Chart error:', err.message));
+}
+
+/**
+ * Get solar parameters for a specific day of year
+ * Returns dayLength, production factor, consumption factor
+ */
+function getSolarParametersForDay(month, day) {
+  // Day of year calculation (approximate)
+  const daysInMonth = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  const dayOfYear = daysInMonth[month - 1] + day;
+
+  // Day length calculation based on latitude ~52°N (Poland)
+  // Varies from ~8h (Dec 21) to ~16.5h (Jun 21)
+  const summerSolstice = 172; // June 21
+  const dayAngle = 2 * Math.PI * (dayOfYear - summerSolstice) / 365;
+  const dayLength = 12.25 + 4.25 * Math.cos(dayAngle); // 8h to 16.5h
+
+  // Production factor - solar irradiance varies through year
+  // Peak in June, minimum in December
+  const productionFactor = 0.5 + 0.5 * Math.cos(dayAngle); // 0 (winter) to 1 (summer)
+
+  // Consumption factor - slightly higher in winter (heating, lighting)
+  const consumptionFactor = 1.0 + 0.15 * Math.cos(dayAngle + Math.PI); // Higher in winter
+
+  return { dayLength, productionFactor, consumptionFactor, dayOfYear };
+}
+
+/**
+ * Generate daily profiles using REAL data from API
+ * If real data is not available, falls back to synthetic profiles
+ *
+ * @param {number|string} monthOrDayType - Month (1-12) or legacy dayType string
+ * @param {number} day - Day of month (1-31)
+ * @param {object} realDayData - Optional pre-fetched real day data
+ * @returns {object} Day profile data with hourlyData and summary
+ */
+function generateTypicalDayProfiles(monthOrDayType = 6, day = 15, realDayData = null) {
+  const variant = variants[currentVariant];
+  if (!variant) return null;
+
+  // Handle legacy dayType strings for backward compatibility
+  let month = monthOrDayType;
+  if (typeof monthOrDayType === 'string') {
+    const legacyMap = { summer: 6, winter: 12, spring: 4 };
+    month = legacyMap[monthOrDayType] || 6;
+    day = 15;
+  }
+
+  // BESS parameters
+  const bessEnergyKwh = bessSizingData?.energy_kwh || variant.bess_energy_kwh || 0;
+  const bessPowerKw = bessSizingData?.power_kw || variant.bess_power_kw || 0;
+  const hasBess = bessEnergyKwh > 0 && bessPowerKw > 0;
+
+  // Get economic parameters
+  const params = getEconomicParameters();
+  const totalPricePerMwh = calculateTotalEnergyPrice(params); // PLN/MWh
+  const energyPricePerKwh = totalPricePerMwh / 1000; // PLN/kWh
+
+  // ============================================
+  // USE REAL DATA IF AVAILABLE
+  // ============================================
+  let useRealData = false;
+  let hourlyConsumptionKw = new Array(24).fill(0);
+  let hourlyProductionKw = new Array(24).fill(0);
+
+  if (realDayData && realDayData.length > 0) {
+    useRealData = true;
+    console.log(`📊 PULS DNIA: Using REAL consumption data for ${day}/${month} (${realDayData.length} points)`);
+
+    // Fill consumption array with real data
+    let hasRealProduction = false;
+    for (const point of realDayData) {
+      const h = point.hour;
+      if (h >= 0 && h < 24) {
+        hourlyConsumptionKw[h] = point.consumption || 0; // kW
+        if (point.production > 0) {
+          hourlyProductionKw[h] = point.production;
+          hasRealProduction = true;
+        }
+      }
+    }
+
+    // DEBUG: Log filled arrays
+    console.log('📊 PULS DNIA DEBUG - hourlyConsumptionKw after filling:');
+    console.log('  - Non-zero values:', hourlyConsumptionKw.filter(v => v > 0).length);
+    console.log('  - Max consumption:', Math.max(...hourlyConsumptionKw).toFixed(2), 'kW');
+    console.log('  - Sum (daily total):', hourlyConsumptionKw.reduce((a,b) => a+b, 0).toFixed(2), 'kWh');
+    console.log('  - First 6 hours:', hourlyConsumptionKw.slice(0, 6).map(v => v.toFixed(1)).join(', '));
+
+    // If no real production data, generate synthetic production based on variant
+    if (!hasRealProduction) {
+      console.log(`📊 PULS DNIA: No real production data - generating synthetic PV profile for ${day}/${month}`);
+      const annualProductionKwh = variant.production || 0;
+      const solar = getSolarParametersForDay(month, day);
+      const dailyProductionKwh = (annualProductionKwh / 365) * (1 + solar.productionFactor) / 1.5;
+
+      // Generate PV bell curve
+      const pvProfile = [];
+      const sunriseHour = 12 - solar.dayLength / 2;
+      const sunsetHour = 12 + solar.dayLength / 2;
+      for (let h = 0; h < 24; h++) {
+        if (h >= sunriseHour && h <= sunsetHour) {
+          const sigma = solar.dayLength / 4;
+          pvProfile.push(Math.exp(-Math.pow(h - 12, 2) / (2 * sigma * sigma)));
+        } else {
+          pvProfile.push(0);
+        }
+      }
+      const pvSum = pvProfile.reduce((a, b) => a + b, 0) || 1;
+      for (let h = 0; h < 24; h++) {
+        hourlyProductionKw[h] = dailyProductionKwh * pvProfile[h] / pvSum;
+      }
+    }
+  } else {
+    // ============================================
+    // FALLBACK: SYNTHETIC DATA
+    // ============================================
+    console.log(`📊 PULS DNIA: No real data for ${day}/${month}, using synthetic profile`);
+
+    // Get annual values for synthetic calculation
+    const annualProductionKwh = variant.production || 0;
+    const annualConsumptionKwh = getAnnualConsumptionKwh();
+
+    // Get solar parameters for selected day
+    const solar = getSolarParametersForDay(month, day);
+
+    // Calculate daily totals
+    const dailyProductionKwh = (annualProductionKwh / 365) * (1 + solar.productionFactor) / 1.5;
+    const dailyConsumptionKwh = (annualConsumptionKwh / 365) * solar.consumptionFactor;
+
+    // PV production profile (bell curve centered at noon)
+    const pvProfile = [];
+    const sunriseHour = 12 - solar.dayLength / 2;
+    const sunsetHour = 12 + solar.dayLength / 2;
+
+    for (let h = 0; h < 24; h++) {
+      if (h >= sunriseHour && h <= sunsetHour) {
+        const midday = 12;
+        const sigma = solar.dayLength / 4;
+        const pvFactor = Math.exp(-Math.pow(h - midday, 2) / (2 * sigma * sigma));
+        pvProfile.push(pvFactor);
+      } else {
+        pvProfile.push(0);
+      }
+    }
+    const pvSum = pvProfile.reduce((a, b) => a + b, 0) || 1;
+    const normalizedPv = pvProfile.map(v => v / pvSum);
+
+    // Consumption profile (typical industrial/commercial)
+    const consumptionProfile = [
+      0.02, 0.02, 0.02, 0.02, 0.03, 0.04, // 0-5: Night
+      0.05, 0.06, 0.07, 0.07, 0.07, 0.06, // 6-11: Morning
+      0.05, 0.06, 0.07, 0.07, 0.07, 0.06, // 12-17: Afternoon
+      0.05, 0.04, 0.04, 0.03, 0.02, 0.02  // 18-23: Evening
+    ];
+    const consSum = consumptionProfile.reduce((a, b) => a + b, 0);
+    const normalizedCons = consumptionProfile.map(v => v / consSum);
+
+    // Generate hourly values in kWh (for 1 hour, kWh = kW average)
+    for (let h = 0; h < 24; h++) {
+      hourlyProductionKw[h] = dailyProductionKwh * normalizedPv[h];
+      hourlyConsumptionKw[h] = dailyConsumptionKwh * normalizedCons[h];
+    }
+  }
+
+  // ============================================
+  // GENERATE HOURLY DATA WITH ENERGY BALANCE
+  // ============================================
+  const hourlyData = [];
+  let bessSOC = hasBess ? bessEnergyKwh * 0.2 : 0; // Start at 20% SOC
+  const bessMinSOC = bessEnergyKwh * 0.1; // 10% minimum
+  const bessMaxSOC = bessEnergyKwh * 0.9; // 90% maximum
+  const bessEfficiency = 0.92;
+
+  let totalSelfConsumed = 0;
+  let totalGridImport = 0;
+  let totalGridExport = 0;
+  let totalSavings = 0;
+  let totalCost = 0;
+  let totalBessCharge = 0;
+  let totalBessDischarge = 0;
+
+  for (let h = 0; h < 24; h++) {
+    // Use hourly arrays (from real or synthetic data)
+    const production = hourlyProductionKw[h];  // kWh (for 1h interval)
+    const consumption = hourlyConsumptionKw[h]; // kWh (for 1h interval)
+
+    let selfConsumed = 0;
+    let gridImport = 0;
+    let gridExport = 0;
+    let bessCharge = 0;
+    let bessDischarge = 0;
+    let newSOC = bessSOC;
+
+    // Energy balance
+    const netEnergy = production - consumption;
+
+    if (netEnergy >= 0) {
+      // Production >= Consumption: self-consume all consumption
+      selfConsumed = consumption;
+      const surplus = netEnergy;
+
+      if (hasBess && surplus > 0) {
+        // Try to charge battery with surplus
+        const maxCharge = Math.min(surplus, bessPowerKw, (bessMaxSOC - bessSOC) / bessEfficiency);
+        bessCharge = maxCharge;
+        newSOC = bessSOC + bessCharge * bessEfficiency;
+        gridExport = surplus - bessCharge;
+      } else {
+        gridExport = surplus;
+      }
+    } else {
+      // Consumption > Production: need to import
+      selfConsumed = production;
+      let deficit = -netEnergy;
+
+      if (hasBess && deficit > 0 && bessSOC > bessMinSOC) {
+        // Try to discharge battery
+        const maxDischarge = Math.min(deficit, bessPowerKw, (bessSOC - bessMinSOC));
+        bessDischarge = maxDischarge * bessEfficiency;
+        newSOC = bessSOC - maxDischarge;
+        deficit = deficit - bessDischarge;
+      }
+
+      gridImport = deficit;
+    }
+
+    bessSOC = newSOC;
+
+    // Cost/savings calculation
+    // Capacity fee applies 7-21 (peak hours)
+    const isPeakHour = h >= 7 && h < 21;
+    const capacityFeePerKwh = (params.capacity_fee || 0) / 1000; // PLN/MWh -> PLN/kWh
+    const hourlyRate = isPeakHour
+      ? energyPricePerKwh + capacityFeePerKwh
+      : energyPricePerKwh;
+
+    const hourlySavings = selfConsumed * hourlyRate + (bessDischarge * hourlyRate);
+    const hourlyCost = gridImport * hourlyRate;
+
+    hourlyData.push({
+      hour: h,
+      production: production,
+      consumption: consumption,
+      selfConsumed: selfConsumed,
+      gridImport: gridImport,
+      gridExport: gridExport,
+      bessCharge: bessCharge,
+      bessDischarge: bessDischarge,
+      bessSOC: bessSOC,
+      bessSOCPercent: hasBess ? (bessSOC / bessEnergyKwh) * 100 : 0,
+      savings: hourlySavings,
+      cost: hourlyCost,
+      isPeakHour: isPeakHour
+    });
+
+    totalSelfConsumed += selfConsumed;
+    totalGridImport += gridImport;
+    totalGridExport += gridExport;
+    totalSavings += hourlySavings;
+    totalCost += hourlyCost;
+    totalBessCharge += bessCharge;
+    totalBessDischarge += bessDischarge;
+  }
+
+  // Calculate daily totals from hourly arrays
+  const dailyProductionTotal = hourlyProductionKw.reduce((a, b) => a + b, 0);
+  const dailyConsumptionTotal = hourlyConsumptionKw.reduce((a, b) => a + b, 0);
+
+  // Get solar parameters for metadata (even when using real data)
+  const solar = getSolarParametersForDay(month, day);
+
+  // Determine data source type for UI display
+  let dataSourceType = 'synthetic'; // Default: all synthetic
+  if (useRealData) {
+    // Check if we have real production data (sum > 0 and came from API)
+    const hasRealProd = hourlyProductionKw.some(v => v > 0) &&
+                        realDayData?.some(p => p.production > 0);
+    dataSourceType = hasRealProd ? 'real_full' : 'real_consumption';
+  }
+
+  return {
+    month,
+    day,
+    dayOfYear: solar.dayOfYear,
+    dayLength: solar.dayLength,
+    useRealData, // Flag indicating if real consumption data was used
+    dataSourceType, // 'real_full', 'real_consumption', or 'synthetic'
+    hourlyData,
+    summary: {
+      dailyProduction: dailyProductionTotal,
+      dailyConsumption: dailyConsumptionTotal,
+      dailySelfConsumed: totalSelfConsumed,
+      dailyGridImport: totalGridImport,
+      dailyGridExport: totalGridExport,
+      dailySavings: totalSavings,
+      dailyCost: totalCost,
+      dailyBessCharge: totalBessCharge,
+      dailyBessDischarge: totalBessDischarge,
+      hasBess,
+      bessEnergyKwh,
+      bessPowerKw
+    }
+  };
+}
+
+/**
+ * Generate PULS DNIA - Premium Canvas Visualization
+ * Dark theme with smooth curves like the reference image
+ * Now fetches REAL data from API for accurate daily profiles!
+ */
+async function generatePulsDniaChart() {
+  console.log('📈 ============================================');
+  console.log('📈 generatePulsDniaChart() STARTED');
+  console.log('📈 ============================================');
+
+  const variant = variants[currentVariant];
+  const noDataEl = document.getElementById('pulsDniaNoData');
+  const contentEl = document.getElementById('pulsDniaContent');
+
+  if (!variant || !contentEl) {
+    console.log('📈 PULS DNIA - No variant, showing placeholder');
+    if (noDataEl) noDataEl.style.display = 'flex';
+    if (contentEl) contentEl.style.display = 'none';
+    return;
+  }
+
+  // Get selected month and day from calendar
+  const monthSelect = document.getElementById('pulsDniaMonth');
+  const daySelect = document.getElementById('pulsDniaDay');
+
+  // Initialize day selector if empty
+  if (daySelect && daySelect.options.length === 0) {
+    updatePulsDniaCalendar();
+    return; // Will be called again after calendar is populated
+  }
+
+  const month = monthSelect ? parseInt(monthSelect.value) : 6;
+  const day = daySelect ? parseInt(daySelect.value) || 15 : 15;
+
+  console.log(`📈 PULS DNIA - Generating for ${day}/${month}`);
+
+  // ============================================
+  // FETCH REAL DATA FROM API
+  // ============================================
+  let realDayData = null;
+  try {
+    const apiData = await fetchRealHourlyData();
+    if (apiData) {
+      realDayData = getRealDayData(month, day, apiData.consumption, apiData.production);
+    }
+  } catch (err) {
+    console.warn('📈 Could not fetch real data:', err.message);
+  }
+
+  // Generate data for selected date (using real data if available)
+  const dayData = generateTypicalDayProfiles(month, day, realDayData);
+  if (!dayData) {
+    console.log('📈 PULS DNIA - No data generated');
+    if (noDataEl) noDataEl.style.display = 'flex';
+    if (contentEl) contentEl.style.display = 'none';
+    return;
+  }
+
+  console.log(`📈 PULS DNIA - Data: prod=${dayData.summary.dailyProduction.toFixed(0)}kWh, cons=${dayData.summary.dailyConsumption.toFixed(0)}kWh`);
+
+  // Show canvas
+  if (noDataEl) noDataEl.style.display = 'none';
+  contentEl.style.display = 'block';
+
+  const canvas = document.getElementById('pulsDniaCanvas');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  // Clear canvas before redrawing
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Set canvas size - fits on one screen
+  const containerWidth = canvas.parentElement.offsetWidth || 900;
+  const hasBess = dayData.summary.hasBess;
+  // Fixed height for one-screen view (reduced by ~12%)
+  const canvasHeight = hasBess ? 750 : 570;
+
+  canvas.width = containerWidth * dpr;
+  canvas.height = canvasHeight * dpr;
+  canvas.style.width = containerWidth + 'px';
+  canvas.style.height = canvasHeight + 'px';
+  ctx.scale(dpr, dpr);
+
+  const W = containerWidth;
+  const H = canvasHeight;
+
+  // Colors
+  const colors = {
+    bg1: '#0a1628',
+    bg2: '#1a2744',
+    text: '#ffffff',
+    textMuted: '#8899aa',
+    yellow: '#ffc107',
+    yellowGlow: 'rgba(255, 193, 7, 0.3)',
+    green: '#4caf50',
+    greenGlow: 'rgba(76, 175, 80, 0.2)',
+    red: '#ef5350',
+    redGlow: 'rgba(239, 83, 80, 0.5)',
+    blue: '#42a5f5',
+    orange: '#ff9800',
+    purple: '#ab47bc',
+    gridLine: 'rgba(255,255,255,0.1)',
+    accent: '#4a9eff'
+  };
+
+  // Background gradient
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, colors.bg1);
+  bgGrad.addColorStop(1, colors.bg2);
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Layout - generous space for panels
+  const margin = { top: 85, right: 70, bottom: 100, left: 75 };
+  const chartW = W - margin.left - margin.right;
+  const panelGap = 25;
+  const numPanels = hasBess ? 4 : 3;
+  const panelH = (H - margin.top - margin.bottom - (numPanels - 1) * panelGap) / numPanels;
+
+  // Data
+  const hourlyData = dayData.hourlyData;
+
+  // Better max calculations with minimum values to avoid flat charts
+  const maxProd = Math.max(10, Math.max(...hourlyData.map(d => Math.max(d.production || 0, d.consumption || 0)))) * 1.2;
+  const maxGrid = Math.max(5, Math.max(...hourlyData.map(d => Math.max(d.gridImport || 0, d.gridExport || 0)))) * 1.2;
+  const maxBessCharge = Math.max(5, Math.max(...hourlyData.map(d => Math.max(d.bessCharge || 0, d.bessDischarge || 0)))) * 1.2;
+  const maxCost = Math.max(0.5, Math.max(...hourlyData.map(d => Math.max(d.cost || 0, d.savings || 0)))) * 1.2;
+
+  // Helper: x position for hour
+  const xForHour = (h) => margin.left + (h / 23) * chartW;
+  const barW = Math.max(12, Math.min(25, chartW / 26)); // Better bar width
+
+  // Helper: Draw smooth curve
+  function drawSmoothCurve(points, color, lineWidth = 2) {
+    if (points.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const xc = (points[i].x + points[i + 1].x) / 2;
+      const yc = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+  }
+
+  // Helper: Draw filled area under curve
+  function drawFilledCurve(points, baseY, gradientColors) {
+    if (points.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, baseY);
+    ctx.lineTo(points[0].x, points[0].y);
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const xc = (points[i].x + points[i + 1].x) / 2;
+      const yc = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+    ctx.lineTo(points[points.length - 1].x, baseY);
+    ctx.closePath();
+
+    const minY = Math.min(...points.map(p => p.y));
+    const grad = ctx.createLinearGradient(0, minY, 0, baseY);
+    grad.addColorStop(0, gradientColors[0]);
+    grad.addColorStop(1, gradientColors[1]);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  // Helper: Draw Y axis labels for a panel
+  function drawYAxis(panelTop, panelBottom, maxVal, unit, steps = 4) {
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'right';
+
+    for (let i = 0; i <= steps; i++) {
+      const val = (maxVal * i / steps);
+      const y = panelBottom - (i / steps) * (panelBottom - panelTop - 25);
+      const label = val >= 100 ? val.toFixed(0) : val.toFixed(1);
+      ctx.fillText(`${label}${unit}`, margin.left - 8, y + 3);
+
+      // Grid line
+      if (i > 0 && i < steps) {
+        ctx.strokeStyle = colors.gridLine;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(margin.left, y);
+        ctx.lineTo(W - margin.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  // === TITLE ===
+  ctx.fillStyle = colors.text;
+  ctx.font = 'bold 24px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('PULS DNIA', W / 2, 38);
+
+  // Data source indicator - show what type of data is being used
+  ctx.font = '11px Arial';
+  const sourceType = dayData.dataSourceType || 'synthetic';
+  if (sourceType === 'real_full') {
+    ctx.fillStyle = '#4ade80'; // Green for fully real data
+    ctx.fillText('📊 DANE RZECZYWISTE (Zużycie + Produkcja)', W / 2, 54);
+  } else if (sourceType === 'real_consumption') {
+    ctx.fillStyle = '#60a5fa'; // Blue for real consumption + synthetic production
+    ctx.fillText('📊 ZUŻYCIE RZECZYWISTE | ☀️ PRODUKCJA MODELOWANA', W / 2, 54);
+  } else {
+    ctx.fillStyle = '#fbbf24'; // Yellow/orange for synthetic
+    ctx.fillText('⚠️ PROFIL SYNTETYCZNY (brak danych)', W / 2, 54);
+  }
+
+  // Decorative lines
+  ctx.strokeStyle = colors.accent;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 140, 62);
+  ctx.lineTo(W/2 - 70, 62);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(W/2 + 70, 62);
+  ctx.lineTo(W/2 + 140, 62);
+  ctx.stroke();
+
+  // === TIME AXIS (top) ===
+  ctx.fillStyle = colors.textMuted;
+  ctx.font = '10px Arial';
+  ctx.textAlign = 'center';
+  // Fewer time labels to avoid overlap (every 6 hours)
+  for (let h = 0; h <= 24; h += 6) {
+    const x = h === 24 ? xForHour(23) + 10 : xForHour(h);
+    ctx.fillText(h === 24 ? '24h' : `${h}:00`, x, margin.top - 8);
+  }
+
+  // Time axis line
+  ctx.strokeStyle = colors.gridLine;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top - 2);
+  ctx.lineTo(W - margin.right, margin.top - 2);
+  ctx.stroke();
+
+  // ============ PANEL 1: PV Production vs Consumption ============
+  let panelY = margin.top;
+  const chartAreaH = panelH - 35; // Usable chart height per panel
+
+  // Panel background (subtle)
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(margin.left, panelY, chartW, panelH);
+
+  // Panel label
+  ctx.fillStyle = colors.yellow;
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('▶ PRODUKCJA PV', margin.left + 5, panelY + 20);
+  ctx.fillStyle = colors.green;
+  ctx.fillText('    / ZAPOTRZEBOWANIE', margin.left + 120, panelY + 20);
+
+  // Y axis
+  const panel1BaseY = panelY + panelH - 12;
+  drawYAxis(panelY + 25, panel1BaseY, maxProd, ' kWh');
+
+  // Build curve points with better scaling
+  const prodPoints = hourlyData.map((d, i) => ({
+    x: xForHour(i),
+    y: panel1BaseY - ((d.production || 0) / maxProd) * chartAreaH
+  }));
+  const consPoints = hourlyData.map((d, i) => ({
+    x: xForHour(i),
+    y: panel1BaseY - ((d.consumption || 0) / maxProd) * chartAreaH
+  }));
+
+  // Fill under consumption curve first (so production overlays it)
+  drawFilledCurve(consPoints, panel1BaseY, ['rgba(76, 175, 80, 0.5)', 'rgba(76, 175, 80, 0.05)']);
+
+  // Fill under production curve (yellow glow)
+  drawFilledCurve(prodPoints, panel1BaseY, ['rgba(255, 193, 7, 0.6)', 'rgba(255, 193, 7, 0.05)']);
+
+  // Consumption curve (green solid, thicker) - drawn first so production is on top
+  drawSmoothCurve(consPoints, colors.green, 3);
+
+  // Production curve (yellow)
+  drawSmoothCurve(prodPoints, colors.yellow, 3);
+
+  // Legend for panel 1 - positioned inside right margin with proper spacing
+  const legendX = W - margin.right + 5;
+  ctx.fillStyle = colors.yellow;
+  ctx.fillRect(legendX, panelY + 8, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.font = '9px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('PV', legendX + 12, panelY + 16);
+  ctx.fillStyle = colors.green;
+  ctx.fillRect(legendX, panelY + 24, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.fillText('Zużycie', legendX + 12, panelY + 32);
+
+  // ============ PANEL 2: Grid Import ============
+  panelY += panelH + panelGap;
+  const panel2BaseY = panelY + panelH - 12;
+
+  // Panel background
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(margin.left, panelY, chartW, panelH);
+
+  ctx.fillStyle = colors.blue;
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('▶ IMPORT Z SIECI / EKSPORT DO SIECI', margin.left + 5, panelY + 20);
+
+  // Y axis
+  drawYAxis(panelY + 25, panel2BaseY, maxGrid, ' kWh');
+
+  // Legend - positioned inside right margin with proper spacing
+  const legend2X = W - margin.right + 5;
+  ctx.fillStyle = '#6a9aca';
+  ctx.fillRect(legend2X, panelY + 8, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.font = '9px Arial';
+  ctx.fillText('Import', legend2X + 12, panelY + 16);
+  ctx.fillStyle = '#90caf9';
+  ctx.fillRect(legend2X, panelY + 24, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.fillText('Eksport', legend2X + 12, panelY + 32);
+
+  // Grid import/export bars
+  hourlyData.forEach((d, i) => {
+    const x = xForHour(i);
+    const importVal = d.gridImport || 0;
+    const exportVal = d.gridExport || 0;
+    const importH = (importVal / maxGrid) * chartAreaH;
+    const exportH = (exportVal / maxGrid) * chartAreaH;
+
+    if (importVal > 0) {
+      const barGrad = ctx.createLinearGradient(x, panel2BaseY, x, panel2BaseY - importH);
+      barGrad.addColorStop(0, '#3a5a8a');
+      barGrad.addColorStop(1, '#6a9aca');
+      ctx.fillStyle = barGrad;
+      ctx.fillRect(x - barW/2, panel2BaseY - importH, barW, importH);
+    }
+
+    if (exportVal > 0) {
+      const barGrad = ctx.createLinearGradient(x, panel2BaseY, x, panel2BaseY - exportH);
+      barGrad.addColorStop(0, '#5080b0');
+      barGrad.addColorStop(1, '#90caf9');
+      ctx.fillStyle = barGrad;
+      ctx.fillRect(x - barW/2, panel2BaseY - exportH, barW, exportH);
+    }
+  });
+
+  // ============ PANEL 3: BESS (if available) ============
+  if (hasBess) {
+    panelY += panelH + panelGap;
+    const panel3BaseY = panelY + panelH - 12;
+
+    // Panel background
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(margin.left, panelY, chartW, panelH);
+
+    ctx.fillStyle = colors.purple;
+    ctx.font = 'bold 13px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('▶ MAGAZYN ENERGII (BESS)', margin.left + 5, panelY + 20);
+
+    // Y axis for BESS charge/discharge
+    drawYAxis(panelY + 25, panel3BaseY, maxBessCharge, ' kWh');
+
+    // Legend - positioned inside right margin with proper spacing
+    const legend3X = W - margin.right + 5;
+    ctx.fillStyle = colors.green;
+    ctx.fillRect(legend3X, panelY + 8, 8, 8);
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = '9px Arial';
+    ctx.fillText('Ładow.', legend3X + 12, panelY + 16);
+    ctx.fillStyle = colors.orange;
+    ctx.fillRect(legend3X, panelY + 24, 8, 8);
+    ctx.fillStyle = colors.textMuted;
+    ctx.fillText('Rozład.', legend3X + 12, panelY + 32);
+
+    // BESS bars
+    hourlyData.forEach((d, i) => {
+      const x = xForHour(i);
+      const chargeVal = d.bessCharge || 0;
+      const dischargeVal = d.bessDischarge || 0;
+      const chargeH = (chargeVal / maxBessCharge) * chartAreaH;
+      const dischargeH = (dischargeVal / maxBessCharge) * chartAreaH;
+
+      if (chargeVal > 0) {
+        const grad = ctx.createLinearGradient(x, panel3BaseY, x, panel3BaseY - chargeH);
+        grad.addColorStop(0, '#1b5e20');
+        grad.addColorStop(1, '#66bb6a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - barW/2 - 3, panel3BaseY - chargeH, barW, chargeH);
+      }
+
+      if (dischargeVal > 0) {
+        const grad = ctx.createLinearGradient(x, panel3BaseY, x, panel3BaseY - dischargeH);
+        grad.addColorStop(0, '#e65100');
+        grad.addColorStop(1, '#ffb74d');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - barW/2 + 3, panel3BaseY - dischargeH, barW, dischargeH);
+      }
+    });
+
+    // SOC line overlay
+    const socAreaTop = panelY + 30;
+    const socAreaBottom = panel3BaseY;
+    const socPoints = hourlyData.map((d, i) => ({
+      x: xForHour(i),
+      y: socAreaBottom - ((d.bessSOCPercent || 0) / 100) * (socAreaBottom - socAreaTop)
+    }));
+
+    // SOC filled area
+    ctx.beginPath();
+    ctx.moveTo(socPoints[0].x, socAreaBottom);
+    socPoints.forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.lineTo(socPoints[socPoints.length - 1].x, socAreaBottom);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(156, 39, 176, 0.15)';
+    ctx.fill();
+
+    // SOC line
+    ctx.setLineDash([5, 3]);
+    drawSmoothCurve(socPoints, 'rgba(206, 147, 216, 0.8)', 2);
+    ctx.setLineDash([]);
+
+    // SOC % labels on right
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = '9px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('100%', W - margin.right + 5, socAreaTop + 3);
+    ctx.fillText('0%', W - margin.right + 5, socAreaBottom + 3);
+  }
+
+  // ============ PANEL 4: Costs / Savings ============
+  panelY += panelH + panelGap;
+  const panel4BaseY = panelY + panelH - 12;
+
+  // Panel background
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.fillRect(margin.left, panelY, chartW, panelH);
+
+  // Title
+  ctx.fillStyle = colors.yellow;
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('▶ KOSZTY / OSZCZĘDNOŚCI', margin.left + 5, panelY + 20);
+
+  // Y axis
+  drawYAxis(panelY + 25, panel4BaseY, maxCost, ' PLN');
+
+  // Legend - positioned inside right margin with proper spacing
+  const legend4X = W - margin.right + 5;
+  ctx.fillStyle = colors.green;
+  ctx.fillRect(legend4X, panelY + 8, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.font = '9px Arial';
+  ctx.fillText('Oszczędn.', legend4X + 12, panelY + 16);
+  ctx.fillStyle = colors.red;
+  ctx.fillRect(legend4X, panelY + 24, 8, 8);
+  ctx.fillStyle = colors.textMuted;
+  ctx.fillText('Koszty', legend4X + 12, panelY + 32);
+
+  // Cost/savings bars - draw taller bar first (behind), then shorter bar (front) with transparency
+  hourlyData.forEach((d, i) => {
+    const x = xForHour(i);
+    const costVal = d.cost || 0;
+    const savVal = d.savings || 0;
+    const costH = (costVal / maxCost) * chartAreaH;
+    const savH = (savVal / maxCost) * chartAreaH;
+
+    // Determine which bar is taller (draw it first, behind)
+    const savTaller = savH >= costH;
+
+    // First pass: draw the TALLER bar (background)
+    if (savTaller && savVal > 0) {
+      // Savings is taller - draw it first (solid)
+      const grad = ctx.createLinearGradient(x, panel4BaseY, x, panel4BaseY - savH);
+      grad.addColorStop(0, '#1b5e20');
+      grad.addColorStop(1, '#4caf50');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - barW/2, panel4BaseY - savH, barW, savH);
+    } else if (!savTaller && costVal > 0) {
+      // Cost is taller - draw it first (solid)
+      const grad = ctx.createLinearGradient(x, panel4BaseY, x, panel4BaseY - costH);
+      grad.addColorStop(0, '#b71c1c');
+      grad.addColorStop(1, '#ef5350');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - barW/2, panel4BaseY - costH, barW, costH);
+    }
+
+    // Second pass: draw the SHORTER bar (foreground with semi-transparency)
+    ctx.globalAlpha = 0.85;
+    if (!savTaller && savVal > 0) {
+      // Savings is shorter - draw in front
+      const grad = ctx.createLinearGradient(x, panel4BaseY, x, panel4BaseY - savH);
+      grad.addColorStop(0, '#2e7d32');
+      grad.addColorStop(1, '#81c784');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - barW/2, panel4BaseY - savH, barW, savH);
+    } else if (savTaller && costVal > 0) {
+      // Cost is shorter - draw in front
+      const grad = ctx.createLinearGradient(x, panel4BaseY, x, panel4BaseY - costH);
+      grad.addColorStop(0, '#c62828');
+      grad.addColorStop(1, '#ff8a80');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - barW/2, panel4BaseY - costH, barW, costH);
+    }
+    ctx.globalAlpha = 1.0;
+  });
+
+  // ============ SUMMARY STATS (bottom) ============
+  const statsY = H - 35;
+  const monthNames = ['', 'STY', 'LUT', 'MAR', 'KWI', 'MAJ', 'CZE', 'LIP', 'SIE', 'WRZ', 'PAŹ', 'LIS', 'GRU'];
+  const dateLabel = `${dayData.day} ${monthNames[dayData.month]}`;
+
+  // Safe number formatting helper
+  const safeNum = (val) => (val && !isNaN(val)) ? val.toFixed(0) : '0';
+  const safeNum1 = (val) => (val && !isNaN(val)) ? val.toFixed(1) : '0.0';
+
+  // Calculate daily savings properly (avoid NaN)
+  const dailySavings = dayData.summary.dailySavings || 0;
+  const dailyCost = dayData.summary.dailyCost || 0;
+  const netSavings = dailySavings - dailyCost;
+
+  // Stats background
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(20, statsY - 30, W - 40, 55);
+
+  const stats = [
+    { label: 'DZIEŃ', value: dateLabel, unit: '', color: colors.accent },
+    { label: 'PRODUKCJA', value: safeNum(dayData.summary.dailyProduction), unit: 'kWh', color: colors.yellow },
+    { label: 'KONSUMPCJA', value: safeNum(dayData.summary.dailyConsumption), unit: 'kWh', color: colors.text },
+    { label: 'AUTOKONS.', value: safeNum(dayData.summary.dailySelfConsumed), unit: 'kWh', color: colors.green },
+    { label: 'Z SIECI', value: safeNum1(dayData.summary.dailyGridImport), unit: 'kWh', color: colors.blue },
+    { label: 'BILANS', value: (netSavings >= 0 ? '+' : '') + safeNum1(netSavings), unit: 'PLN', color: netSavings >= 0 ? colors.green : colors.red }
+  ];
+
+  const statWidth = (W - 60) / stats.length;
+  stats.forEach((s, i) => {
+    const x = 30 + i * statWidth + statWidth / 2;
+    ctx.fillStyle = colors.textMuted;
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(s.label, x, statsY - 12);
+    ctx.fillStyle = s.color;
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText(`${s.value} ${s.unit}`, x, statsY + 10);
+  });
+
+  console.log('📈 PULS DNIA premium chart rendered:', `${day}/${month}`, dayData.summary);
+}
+
+/**
+ * Export PULS DNIA data to Excel
+ */
+function exportPulsDniaToExcel() {
+  const monthSelect = document.getElementById('pulsDniaMonth');
+  const daySelect = document.getElementById('pulsDniaDay');
+  const month = monthSelect ? parseInt(monthSelect.value) : 6;
+  const day = daySelect ? parseInt(daySelect.value) : 15;
+  const dayData = generateTypicalDayProfiles(month, day);
+
+  if (!dayData) {
+    alert('Brak danych do eksportu');
+    return;
+  }
+
+  const monthNames = ['', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec', 'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+  const variant = variants[currentVariant];
+
+  // Build CSV with Polish formatting
+  const lines = [];
+  lines.push('PULS DNIA - Profil Energetyczny 24h');
+  lines.push(`Data: ${day} ${monthNames[month]}`);
+  lines.push(`Wariant: ${currentVariant} - ${(variant?.capacity || 0).toFixed(0)} kWp`);
+  lines.push(`Data eksportu: ${new Date().toLocaleDateString('pl-PL')}`);
+  lines.push('');
+  lines.push('PODSUMOWANIE DNIA');
+  lines.push(`Produkcja PV [kWh];${dayData.summary.dailyProduction.toFixed(1).replace('.', ',')}`);
+  lines.push(`Konsumpcja [kWh];${dayData.summary.dailyConsumption.toFixed(1).replace('.', ',')}`);
+  lines.push(`Autokonsumpcja [kWh];${dayData.summary.dailySelfConsumed.toFixed(1).replace('.', ',')}`);
+  lines.push(`Pobor z sieci [kWh];${dayData.summary.dailyGridImport.toFixed(1).replace('.', ',')}`);
+  lines.push(`Nadwyzka do sieci [kWh];${dayData.summary.dailyGridExport.toFixed(1).replace('.', ',')}`);
+  lines.push(`Oszczednosc [PLN];${dayData.summary.dailySavings.toFixed(2).replace('.', ',')}`);
+  if (dayData.summary.hasBess) {
+    lines.push(`BESS Ladowanie [kWh];${dayData.summary.dailyBessCharge.toFixed(1).replace('.', ',')}`);
+    lines.push(`BESS Rozladowanie [kWh];${dayData.summary.dailyBessDischarge.toFixed(1).replace('.', ',')}`);
+  }
+  lines.push('');
+  lines.push('DANE GODZINOWE');
+
+  // Header
+  let header = 'Godzina;Produkcja PV [kWh];Konsumpcja [kWh];Autokonsumpcja [kWh];Pobor z sieci [kWh];Nadwyzka [kWh];Oszczednosc [PLN];Koszt [PLN]';
+  if (dayData.summary.hasBess) {
+    header += ';BESS Ladowanie [kWh];BESS Rozladowanie [kWh];BESS SOC [%]';
+  }
+  lines.push(header);
+
+  // Data rows
+  for (const h of dayData.hourlyData) {
+    let row = [
+      `${h.hour}:00`,
+      h.production.toFixed(2).replace('.', ','),
+      h.consumption.toFixed(2).replace('.', ','),
+      h.selfConsumed.toFixed(2).replace('.', ','),
+      h.gridImport.toFixed(2).replace('.', ','),
+      h.gridExport.toFixed(2).replace('.', ','),
+      h.savings.toFixed(2).replace('.', ','),
+      h.cost.toFixed(2).replace('.', ',')
+    ];
+    if (dayData.summary.hasBess) {
+      row.push(
+        h.bessCharge.toFixed(2).replace('.', ','),
+        h.bessDischarge.toFixed(2).replace('.', ','),
+        h.bessSOCPercent.toFixed(1).replace('.', ',')
+      );
+    }
+    lines.push(row.join(';'));
+  }
+
+  // Download
+  const csv = lines.join('\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `PULS_DNIA_${month}-${day}_${currentVariant}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  console.log('📥 PULS DNIA exported to CSV');
+}
+
+// Expose PULS DNIA functions globally
+window.generatePulsDniaChart = generatePulsDniaChart;
+window.exportPulsDniaToExcel = exportPulsDniaToExcel;
+window.updatePulsDniaCalendar = updatePulsDniaCalendar;
+
+// Initialize PULS DNIA calendar and event listeners
+let pulsDniaCalendarInitialized = false;
+
+function initializePulsDniaCalendar() {
+  if (pulsDniaCalendarInitialized) {
+    console.log('📅 PULS DNIA calendar already initialized');
+    return;
+  }
+
+  console.log('📅 Initializing PULS DNIA calendar...');
+
+  const monthSelect = document.getElementById('pulsDniaMonth');
+  const daySelect = document.getElementById('pulsDniaDay');
+
+  if (!monthSelect || !daySelect) {
+    console.log('📅 PULS DNIA calendar elements not found, retrying in 500ms...');
+    setTimeout(initializePulsDniaCalendar, 500);
+    return;
+  }
+
+  console.log('📅 PULS DNIA calendar elements found, attaching event listeners');
+
+  // Mark as initialized to prevent duplicate event listeners
+  pulsDniaCalendarInitialized = true;
+
+  // Remove inline handlers and add proper event listeners
+  monthSelect.removeAttribute('onchange');
+  daySelect.removeAttribute('onchange');
+
+  // Find export button
+  const exportBtn = document.querySelector('#pulsDniaContent button');
+  if (exportBtn) {
+    exportBtn.removeAttribute('onclick');
+    exportBtn.addEventListener('click', function() {
+      console.log('📥 Export button clicked');
+      exportPulsDniaToExcel();
+    });
+  }
+
+  monthSelect.addEventListener('change', function() {
+    console.log('📅 Month changed to:', this.value);
+    updatePulsDniaCalendar();
+  });
+
+  daySelect.addEventListener('change', function() {
+    console.log('📅 Day changed to:', this.value);
+    generatePulsDniaChart().catch(err => console.warn('📈 Chart error:', err.message));
+  });
+
+  // Initialize day options if empty
+  if (daySelect.options.length === 0) {
+    console.log('📅 Populating day options...');
+    updatePulsDniaCalendar();
+  }
+
+  console.log('📅 PULS DNIA calendar initialized successfully');
+}
+
+// Expose initialization function globally (after definition)
+window.initializePulsDniaCalendar = initializePulsDniaCalendar;
+
+// Call initialization when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializePulsDniaCalendar);
+} else {
+  // DOM already loaded, initialize after short delay to ensure elements exist
+  setTimeout(initializePulsDniaCalendar, 100);
+}
+
+// ============================================
+// INDEPENDENT PULS DNIA TRIGGER
+// This ensures the chart renders even if performEconomicAnalysis has errors
+// ============================================
+(function initPulsDniaIndependent() {
+  console.log('📈 PULS DNIA Independent Trigger: Setting up...');
+
+  // Wait for DOM and data to be ready
+  const checkAndRender = () => {
+    const canvas = document.getElementById('pulsDniaCanvas');
+    const monthSelect = document.getElementById('pulsDniaMonth');
+
+    if (!canvas || !monthSelect) {
+      console.log('📈 PULS DNIA: Elements not ready, retrying in 1s...');
+      setTimeout(checkAndRender, 1000);
+      return;
+    }
+
+    // Check if we have variant data
+    if (!variants || Object.keys(variants).length === 0) {
+      console.log('📈 PULS DNIA: No variants yet, retrying in 2s...');
+      setTimeout(checkAndRender, 2000);
+      return;
+    }
+
+    console.log('📈 PULS DNIA Independent Trigger: Rendering chart...');
+    generatePulsDniaChart()
+      .then(() => console.log('📈 PULS DNIA Independent: Chart rendered successfully'))
+      .catch(err => console.error('📈 PULS DNIA Independent: Error:', err));
+  };
+
+  // Start checking after page load
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(checkAndRender, 2000));
+  } else {
+    setTimeout(checkAndRender, 2000);
+  }
+})();
 
 // Generate sensitivity analysis chart
 function generateSensitivityChart() {
@@ -5184,6 +6458,291 @@ function calculateEaaSFinancialMetrics(params) {
 }
 
 /**
+ * Calculate EaaS metrics with BESS savings (arbitrage, peak-shaving, capacity fee)
+ *
+ * This function extends the basic EaaS calculation by incorporating BESS benefits:
+ * - Net subscription after BESS savings
+ * - Net effective EaaS price (accounting for BESS revenues)
+ * - BESS discount percentage
+ * - BESS-specific payback period
+ *
+ * @param {object} params - Input parameters
+ * @param {number} params.eaasSubscriptionPLNperYear - Annual EaaS subscription [PLN]
+ * @param {number} params.pvSelfConsumedKWh - Annual PV self-consumption [kWh]
+ * @param {number} params.gridPricePLNperMWh - Grid energy price [PLN/MWh]
+ * @param {object} params.savingsBreakdown - BESS savings breakdown from pv-calculation
+ * @param {number} params.bessCapexPLN - BESS CAPEX [PLN]
+ * @returns {object} Extended EaaS metrics with BESS
+ */
+function calculateEaaSWithBessSavings(params) {
+  const {
+    eaasSubscriptionPLNperYear,
+    pvSelfConsumedKWh,
+    gridPricePLNperMWh,
+    savingsBreakdown,
+    bessCapexPLN
+  } = params;
+
+  // Base metrics (without BESS savings)
+  const baseEaasPricePLNperMWh = pvSelfConsumedKWh > 0
+    ? (eaasSubscriptionPLNperYear / pvSelfConsumedKWh) * 1000
+    : null;
+
+  // No BESS savings available - return base metrics only
+  if (!savingsBreakdown || !savingsBreakdown.net_savings_pln) {
+    return {
+      hasBessSavings: false,
+      baseSubscriptionPLN: eaasSubscriptionPLNperYear,
+      baseEaasPricePLNperMWh: baseEaasPricePLNperMWh,
+      netSubscriptionPLN: null,
+      netEaasPricePLNperMWh: null,
+      bessDiscountPct: null,
+      bessAnnualSavingsPLN: null,
+      premiumVsGridPct: null,
+      bessPaybackYears: null,
+      savingsBreakdownDetail: null
+    };
+  }
+
+  // Extract BESS savings components
+  const energySavings = savingsBreakdown.energy_savings_pln || 0;
+  const arbitrageSavings = savingsBreakdown.arbitrage_savings_pln || 0;
+  const capacityFeeSavings = savingsBreakdown.capacity_fee_savings_pln || 0;
+  const demandChargeSavings = savingsBreakdown.demand_charge_savings_pln || 0;
+  const degradationCost = savingsBreakdown.degradation_cost_pln || 0;
+  const netSavings = savingsBreakdown.net_savings_pln || 0;
+
+  // Net subscription = Subscription - BESS savings (client's effective cost)
+  const netSubscriptionPLN = eaasSubscriptionPLNperYear - netSavings;
+
+  // Net effective EaaS price (what client actually pays per kWh)
+  const netEaasPricePLNperMWh = pvSelfConsumedKWh > 0
+    ? (netSubscriptionPLN / pvSelfConsumedKWh) * 1000
+    : null;
+
+  // BESS discount = how much of subscription is "returned" via BESS savings
+  const bessDiscountPct = eaasSubscriptionPLNperYear > 0
+    ? (netSavings / eaasSubscriptionPLNperYear) * 100
+    : null;
+
+  // Premium vs grid = how much cheaper than grid after BESS savings
+  const premiumVsGridPct = gridPricePLNperMWh > 0 && netEaasPricePLNperMWh !== null
+    ? ((gridPricePLNperMWh - netEaasPricePLNperMWh) / gridPricePLNperMWh) * 100
+    : null;
+
+  // BESS-only payback (how fast BESS pays for itself via savings)
+  const bessPaybackYears = (bessCapexPLN > 0 && netSavings > 0)
+    ? bessCapexPLN / netSavings
+    : null;
+
+  console.log(`📊 calculateEaaSWithBessSavings:`, {
+    baseSubscription: eaasSubscriptionPLNperYear,
+    netSavings: netSavings,
+    netSubscription: netSubscriptionPLN,
+    basePrice: baseEaasPricePLNperMWh?.toFixed(2),
+    netPrice: netEaasPricePLNperMWh?.toFixed(2),
+    bessDiscount: bessDiscountPct?.toFixed(1) + '%',
+    premiumVsGrid: premiumVsGridPct?.toFixed(1) + '%',
+    bessPayback: bessPaybackYears?.toFixed(1) + ' lat'
+  });
+
+  return {
+    hasBessSavings: true,
+    // Base metrics (without BESS savings)
+    baseSubscriptionPLN: eaasSubscriptionPLNperYear,
+    baseEaasPricePLNperMWh: baseEaasPricePLNperMWh,
+    // Net metrics (with BESS savings applied)
+    netSubscriptionPLN: netSubscriptionPLN,
+    netEaasPricePLNperMWh: netEaasPricePLNperMWh,
+    // BESS-specific metrics
+    bessDiscountPct: bessDiscountPct,
+    bessAnnualSavingsPLN: netSavings,
+    premiumVsGridPct: premiumVsGridPct,
+    bessPaybackYears: bessPaybackYears,
+    // Detailed breakdown
+    savingsBreakdownDetail: {
+      energySavings: energySavings,
+      arbitrageSavings: arbitrageSavings,
+      capacityFeeSavings: capacityFeeSavings,
+      demandChargeSavings: demandChargeSavings,
+      degradationCost: degradationCost,
+      netSavings: netSavings
+    }
+  };
+}
+
+/**
+ * Display EaaS + BESS Synergy section
+ *
+ * Shows extended EaaS metrics incorporating BESS savings:
+ * - Net subscription and price after BESS savings
+ * - BESS discount percentage
+ * - Premium vs grid price
+ * - Detailed BESS economics (arbitrage, peak-shaving)
+ *
+ * @param {object} variant - Current variant data with BESS info
+ * @param {number} eaasSubscriptionPLN - Annual EaaS subscription [PLN]
+ * @param {number} annualEnergyMWh - Annual self-consumed energy [MWh]
+ * @param {object} params - Economic parameters
+ */
+function displayEaasBessSynergy(variant, eaasSubscriptionPLN, annualEnergyMWh, params) {
+  const section = document.getElementById('eaasBessSynergySection');
+  if (!section) {
+    console.warn('EaaS BESS Synergy section not found in DOM');
+    return;
+  }
+
+  // Check if we have BESS data
+  const hasBess = variant && variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  const hasSavingsBreakdown = variant?.savings_breakdown;
+
+  console.log('📊 EaaS BESS Synergy check:', {
+    hasBess: hasBess,
+    bess_power_kw: variant?.bess_power_kw,
+    bess_energy_kwh: variant?.bess_energy_kwh,
+    hasSavingsBreakdown: !!hasSavingsBreakdown,
+    savings_breakdown: hasSavingsBreakdown
+  });
+
+  if (!hasBess || !hasSavingsBreakdown) {
+    section.style.display = 'none';
+    console.log('📊 EaaS BESS Synergy: HIDDEN (no BESS or no savings_breakdown)');
+    return;
+  }
+
+  // Show section
+  section.style.display = 'block';
+  console.log(`📊 EaaS BESS Synergy: SHOWING for BESS ${variant.bess_power_kw} kW / ${variant.bess_energy_kwh} kWh`);
+
+  // Get grid price [PLN/MWh]
+  const gridPricePLNperMWh = calculateTotalEnergyPrice(params);
+
+  // Calculate BESS CAPEX
+  const settings = systemSettings || {};
+  const bessCapexPerKwh = settings.bessCapexPerKwh || 1500;
+  const bessCapexPerKw = settings.bessCapexPerKw || 300;
+  const bessCapexPLN = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
+
+  // Calculate extended EaaS metrics with BESS savings
+  const bessSynergyMetrics = calculateEaaSWithBessSavings({
+    eaasSubscriptionPLNperYear: eaasSubscriptionPLN,
+    pvSelfConsumedKWh: annualEnergyMWh * 1000, // MWh -> kWh
+    gridPricePLNperMWh: gridPricePLNperMWh,
+    savingsBreakdown: variant.savings_breakdown,
+    bessCapexPLN: bessCapexPLN
+  });
+
+  console.log('📊 EaaS BESS Synergy metrics:', bessSynergyMetrics);
+
+  // Helper for formatting
+  const fmt = (val, decimals = 1) => {
+    if (val === null || val === undefined || isNaN(val)) return '–';
+    return val.toLocaleString('pl-PL', { maximumFractionDigits: decimals });
+  };
+
+  // ========== UPDATE DISPLAY ==========
+
+  // Row 1: Price comparison
+  const gridPriceEl = document.getElementById('eaasBessGridPrice');
+  if (gridPriceEl) gridPriceEl.textContent = fmt(gridPricePLNperMWh, 0);
+
+  const basePriceEl = document.getElementById('eaasBessBasePrice');
+  if (basePriceEl) basePriceEl.textContent = fmt(bessSynergyMetrics.baseEaasPricePLNperMWh, 2);
+
+  const netPriceEl = document.getElementById('eaasBessNetPrice');
+  if (netPriceEl) {
+    netPriceEl.textContent = fmt(bessSynergyMetrics.netEaasPricePLNperMWh, 2);
+    // Color based on value vs grid
+    if (bessSynergyMetrics.netEaasPricePLNperMWh < gridPricePLNperMWh * 0.7) {
+      netPriceEl.style.color = '#1b5e20'; // Dark green for excellent
+    } else if (bessSynergyMetrics.netEaasPricePLNperMWh < gridPricePLNperMWh) {
+      netPriceEl.style.color = '#2e7d32'; // Green for good
+    } else {
+      netPriceEl.style.color = '#e65100'; // Orange if higher than grid
+    }
+  }
+
+  const premiumEl = document.getElementById('eaasBessPremium');
+  if (premiumEl) {
+    const premiumVal = bessSynergyMetrics.premiumVsGridPct;
+    premiumEl.textContent = premiumVal !== null ? fmt(premiumVal, 1) : '–';
+    // Color based on premium
+    if (premiumVal > 30) {
+      premiumEl.style.color = '#1b5e20'; // Dark green for excellent
+    } else if (premiumVal > 15) {
+      premiumEl.style.color = '#2e7d32'; // Green for good
+    } else if (premiumVal > 0) {
+      premiumEl.style.color = '#f57c00'; // Orange for moderate
+    } else {
+      premiumEl.style.color = '#c62828'; // Red if negative
+    }
+  }
+
+  // Row 2: Subscription and BESS metrics
+  const baseSubEl = document.getElementById('eaasBessBaseSub');
+  if (baseSubEl) baseSubEl.textContent = fmt(bessSynergyMetrics.baseSubscriptionPLN / 1000, 1);
+
+  const savingsEl = document.getElementById('eaasBessSavings');
+  if (savingsEl) savingsEl.textContent = fmt(bessSynergyMetrics.bessAnnualSavingsPLN / 1000, 1);
+
+  const netSubEl = document.getElementById('eaasBessNetSub');
+  if (netSubEl) netSubEl.textContent = fmt(bessSynergyMetrics.netSubscriptionPLN / 1000, 1);
+
+  const discountEl = document.getElementById('eaasBessDiscount');
+  if (discountEl) {
+    discountEl.textContent = fmt(bessSynergyMetrics.bessDiscountPct, 1);
+    // Color based on discount
+    if (bessSynergyMetrics.bessDiscountPct > 20) {
+      discountEl.style.color = '#1b5e20';
+    } else if (bessSynergyMetrics.bessDiscountPct > 10) {
+      discountEl.style.color = '#00897b';
+    } else {
+      discountEl.style.color = '#666';
+    }
+  }
+
+  // Row 3: BESS economics
+  const capexEl = document.getElementById('eaasBessCapex');
+  if (capexEl) capexEl.textContent = fmt(bessCapexPLN / 1000, 0);
+
+  const paybackEl = document.getElementById('eaasBessPayback');
+  if (paybackEl) {
+    paybackEl.textContent = fmt(bessSynergyMetrics.bessPaybackYears, 1);
+    // Color based on payback
+    if (bessSynergyMetrics.bessPaybackYears && bessSynergyMetrics.bessPaybackYears < 5) {
+      paybackEl.style.color = '#1b5e20';
+    } else if (bessSynergyMetrics.bessPaybackYears && bessSynergyMetrics.bessPaybackYears < 8) {
+      paybackEl.style.color = '#0288d1';
+    } else if (bessSynergyMetrics.bessPaybackYears && bessSynergyMetrics.bessPaybackYears < 12) {
+      paybackEl.style.color = '#f57c00';
+    } else {
+      paybackEl.style.color = '#c62828';
+    }
+  }
+
+  // Detailed breakdown
+  const detail = bessSynergyMetrics.savingsBreakdownDetail;
+  const arbitrageEl = document.getElementById('eaasBessArbitrage');
+  if (arbitrageEl) arbitrageEl.textContent = fmt((detail?.arbitrageSavings || 0) / 1000, 1);
+
+  // Peak shaving = demand charge + capacity fee savings combined
+  const peakShavingTotal = (detail?.demandChargeSavings || 0) + (detail?.capacityFeeSavings || 0);
+  const peakShavingEl = document.getElementById('eaasBessPeakShaving');
+  if (peakShavingEl) peakShavingEl.textContent = fmt(peakShavingTotal / 1000, 1);
+
+  // Store for potential export
+  window.eaasBessSynergyMetrics = bessSynergyMetrics;
+
+  console.log('📊 EaaS BESS Synergy section UPDATED:', {
+    gridPrice: gridPricePLNperMWh,
+    basePrice: bessSynergyMetrics.baseEaasPricePLNperMWh,
+    netPrice: bessSynergyMetrics.netEaasPricePLNperMWh,
+    premium: bessSynergyMetrics.premiumVsGridPct,
+    bessPayback: bessSynergyMetrics.bessPaybackYears
+  });
+}
+
+/**
  * Format EaaS results for display
  * Cards with ID prefixes "eaasCard_" are updated by selectProductionScenario()
  */
@@ -5643,6 +7202,10 @@ async function calculateEaaS() {
   }
 
   console.log('EaaS analysis completed:', result);
+
+  // ========== NEW: EaaS + BESS SYNERGY SECTION ==========
+  // Calculate and display extended metrics with BESS savings (arbitrage, peak-shaving, capacity fee)
+  displayEaasBessSynergy(variant, eaasSubscriptionPLN, annualEnergyMWh, params);
 
   // Initialize Bankability metrics after EaaS calculation
   if (typeof initializeBankability === 'function') {
