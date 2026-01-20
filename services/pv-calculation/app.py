@@ -33,8 +33,9 @@ optimization_progress = {
 }
 
 # BESS Dispatch Service URL (for PRO mode with LP/MIP solver)
-# Note: bess-dispatch exposes API at /api/bess-dispatch/ prefix
-BESS_DISPATCH_URL = "http://bess-dispatch:8031/api/bess-dispatch"  # Docker network name
+# Note: bess-dispatch exposes main endpoints at root level (e.g., /sizing, /dispatch)
+# Only auth/admin/audit/projects routers have /api/bess-dispatch prefix
+BESS_DISPATCH_URL = "http://bess-dispatch:8031"  # Docker network name - endpoints at root level
 
 # Legacy - keep for backwards compatibility but prefer BESS_DISPATCH_URL
 BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name (deprecated)
@@ -2322,17 +2323,17 @@ def call_bess_dispatch_sizing(
         "soc_min": bess_settings.get('soc_min', 0.10),
         "soc_max": bess_settings.get('soc_max', 0.90),
 
-        # EOL (End-of-Life) degradation sizing
-        # eol_capacity_factor: if set (e.g., 0.70), battery will be oversized so EOL capacity is 70% of BOL
-        "eol_capacity_factor": bess_settings.get('eol_capacity_factor', 0.70),  # Default: size for 70% at EOL
-        "annual_degradation_pct": bess_settings.get('annual_degradation_pct', 2.0),  # 2%/year default
+        # Degradation - supports year 1 and years 2+ separately (from Settings)
+        "bess_degradation_year1_pct": bess_settings.get('bess_degradation_year1_pct', 3.0),  # Year 1 default 3%
+        "annual_degradation_pct": bess_settings.get('annual_degradation_pct', 2.0),  # Years 2+ default 2%/year
 
-        # Economics
-        "capex_per_kwh": bess_settings.get('capex_per_kwh', 750.0),
-        "capex_per_kw": bess_settings.get('capex_per_kw', 150.0),
+        # Economics - defaults match Settings module defaults
+        "capex_per_kwh": bess_settings.get('capex_per_kwh', 1500.0),  # PLN/kWh from Settings
+        "capex_per_kw": bess_settings.get('capex_per_kw', 300.0),     # PLN/kW from Settings
         "opex_pct_per_year": bess_settings.get('opex_pct_per_year', 0.015),
-        "discount_rate": bess_settings.get('discount_rate', 0.07),
-        "analysis_years": bess_settings.get('analysis_years', 15),
+        "discount_rate": bess_settings.get('discount_rate', 0.07),   # 7% from Settings.discountRate
+        # BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+        "analysis_years": min(bess_settings.get('analysis_years', 15), 10),
 
         # Prices
         "import_price_pln_mwh": bess_settings.get('import_price_pln_mwh', 800.0),
@@ -2358,14 +2359,37 @@ def call_bess_dispatch_sizing(
         payload['prices']['capacity_fee_som_pln_kwh'] = cf.get('som_rate_pln_kw', 0.2194)
         print(f"   📊 Capacity fee: SOM={cf.get('som_rate_pln_kw', 0.2194)} PLN/kW/month")
 
+    # Add arbitrage_config if ToU pricing is configured (enables price arbitrage in sizing)
+    # This is CRITICAL for proper sizing with ToU tariffs - without it, sizing ignores price spreads
+    if bess_settings.get('prices') and bess_settings['prices'].get('type') in ['two_zone', 'three_zone']:
+        prices = bess_settings['prices']
+        # Generate tariff_id that matches bess-dispatch presets (e.g., pge_c12a_2026)
+        # Use simple format: operator_group_year
+        tariff_id = f"pge_c12a_{2026}"  # Default to PGE C12a 2026
+
+        day_rate = prices.get('day_rate_pln_mwh', 800) / 1000  # Convert to PLN/kWh
+        night_rate = prices.get('night_rate_pln_mwh', 400) / 1000
+
+        payload['arbitrage_config'] = {
+            'enabled': True,
+            'tariff_id': tariff_id,
+            'strategy': 'zone_based',
+            'charge_below_percentile': 30,
+            'discharge_above_percentile': 70,
+            'degradation_cost_pln_kwh': 0.02,  # Default degradation cost
+        }
+        # start_date is required when arbitrage is enabled (for ToU zone assignment)
+        payload['start_date'] = bess_settings.get('start_date', '2024-01-01')
+        print(f"   📊 Arbitrage enabled: tariff_id={tariff_id}, day={day_rate:.3f}/night={night_rate:.3f} PLN/kWh, start_date={payload['start_date']}")
+
     try:
-        print(f"🚀 Calling bess-dispatch /sizing at {BESS_DISPATCH_URL}/sizing")
+        print(f"🚀 Calling bess-dispatch /sizing at {BESS_DISPATCH_URL}/sizing?compat=clean")
         print(f"   Mode: {mode}, Topology: {topology}, dispatch_mode from settings: {bess_settings.get('dispatch_mode', 'NOT_SET')}")
         print(f"   Load points: {len(load_kw)}, PV points: {len(pv_generation_kw)}")
         print(f"   demand_charge: {bess_settings.get('demand_charge_pln_kw_month', 0)} PLN/kW/month, peak_limit: {peak_limit_kw} kW")
 
         response = requests.post(
-            f"{BESS_DISPATCH_URL}/sizing",
+            f"{BESS_DISPATCH_URL}/sizing?compat=clean",
             json=payload,
             timeout=300  # 5 minutes timeout for optimization
         )

@@ -1,4 +1,4 @@
-console.log('[BESS] bess.js LOADED v=3.35 - timestamp:', new Date().toISOString());
+console.log('[BESS] bess.js LOADED v=4.0.0 (Multi-Engine) - timestamp:', new Date().toISOString());
 
 // ============================================
 // v2.7.0 COMPAT MODE + DEPRECATION TRACKING
@@ -310,6 +310,238 @@ let analysisResults = null;
 let lastSizingResult = null; // Store last sizing result for Excel export
 
 // ============================================
+// v4.0.0: MULTI-ENGINE CALCULATION MODES
+// ============================================
+
+/**
+ * Calculation mode configuration
+ * - standard: Native engine only (fastest)
+ * - verified: Native + REopt MILP validation
+ * - diagnostic: All engines (full comparison with SOC traces)
+ */
+let currentCalculationMode = 'standard';
+
+const CALCULATION_MODES = {
+  standard: {
+    engines: ['native'],
+    description: 'Szybka kalkulacja z rodzimym silnikiem',
+    showConfidence: false,
+  },
+  verified: {
+    engines: ['native', 'reopt'],
+    description: 'Weryfikacja MILP (REopt) + rodzimy silnik',
+    showConfidence: true,
+  },
+  diagnostic: {
+    engines: ['native', 'reopt', 'pysam'],
+    description: 'Pełna diagnostyka: 3 silniki + porównanie SOC',
+    showConfidence: true,
+  },
+};
+
+/**
+ * Set calculation mode and update UI
+ * @param {string} mode - 'standard', 'verified', or 'diagnostic'
+ */
+function setCalculationMode(mode) {
+  if (!CALCULATION_MODES[mode]) {
+    console.warn(`[BESS] Unknown calculation mode: ${mode}`);
+    return;
+  }
+
+  currentCalculationMode = mode;
+  console.log(`[BESS] Calculation mode set to: ${mode}`);
+
+  // Update button states
+  const buttons = document.querySelectorAll('.mode-btn');
+  buttons.forEach(btn => {
+    const btnMode = btn.getAttribute('data-mode');
+    if (btnMode === mode) {
+      btn.classList.add('active');
+      btn.style.background = '#1565c0';
+      btn.style.color = 'white';
+    } else {
+      btn.classList.remove('active');
+      btn.style.background = 'white';
+      btn.style.color = '#1565c0';
+    }
+  });
+
+  // Update description
+  const descEl = document.getElementById('modeDescription');
+  if (descEl) {
+    descEl.textContent = CALCULATION_MODES[mode].description;
+  }
+
+  // Show/hide confidence indicator
+  const confEl = document.getElementById('confidenceIndicator');
+  if (confEl) {
+    confEl.style.display = CALCULATION_MODES[mode].showConfidence ? 'block' : 'none';
+  }
+
+  // Store preference
+  localStorage.setItem('bessCalculationMode', mode);
+
+  // If we have data, re-run comparison for verified/diagnostic modes
+  if (mode !== 'standard' && lastSizingResult) {
+    runMultiEngineComparison();
+  }
+}
+
+/**
+ * Run multi-engine comparison using the /advisor/compare endpoint
+ */
+async function runMultiEngineComparison() {
+  if (currentCalculationMode === 'standard') {
+    return; // No comparison needed
+  }
+
+  const modeConfig = CALCULATION_MODES[currentCalculationMode];
+  console.log(`[BESS] Running multi-engine comparison with engines: ${modeConfig.engines.join(', ')}`);
+
+  // Show loading state
+  const confBadge = document.getElementById('confidenceBadge');
+  if (confBadge) {
+    confBadge.textContent = 'Obliczanie...';
+    confBadge.style.background = '#9e9e9e';
+  }
+
+  try {
+    // Get current data
+    const variant = variants[currentVariant];
+    if (!variant || !variant.analysis) {
+      console.warn('[BESS] No variant data for comparison');
+      return;
+    }
+
+    const analysis = variant.analysis;
+    const settings = systemSettings || {};
+
+    // Build comparison request
+    const compareRequest = {
+      pv_kw: analysis.hourly_pv_generation_kwh || analysis.profiles?.pv_kw || [],
+      load_kw: analysis.hourly_load_kwh || analysis.profiles?.load_kw || [],
+      interval_minutes: 60,
+      mode: settings.bessDispatchMode || 'pv_surplus',
+      engines: modeConfig.engines,
+      comparison_mode: 'sizing',
+      // Economics from settings
+      capex_per_kwh: settings.bessCapexPerKwh || 1500,
+      capex_per_kw: settings.bessCapexPerKw || 300,
+      discount_rate: settings.bessDiscountRate || 0.08,
+    };
+
+    // Add peak limit if stacked mode
+    if (settings.bessDispatchMode === 'stacked' || settings.bessOsdArbitrageEnabled) {
+      const loadData = compareRequest.load_kw;
+      const sortedLoad = [...loadData].sort((a, b) => b - a);
+      const p95Index = Math.floor(loadData.length * 0.05);
+      compareRequest.peak_limit_kw = settings.bessPeakLimitKw || sortedLoad[p95Index] || 100;
+      compareRequest.arbitrage_enabled = settings.bessOsdArbitrageEnabled || false;
+    }
+
+    // Call comparison API
+    const response = await fetch('/api/bess-dispatch/advisor/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(compareRequest),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Comparison API returned ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log('[BESS] Multi-engine comparison result:', result);
+
+    // Update confidence indicator
+    updateConfidenceIndicator(result);
+
+  } catch (error) {
+    console.error('[BESS] Multi-engine comparison failed:', error);
+
+    // Show error state
+    const confBadge = document.getElementById('confidenceBadge');
+    if (confBadge) {
+      confBadge.textContent = 'Błąd';
+      confBadge.style.background = '#f44336';
+    }
+  }
+}
+
+/**
+ * Update confidence indicator UI with comparison results
+ * @param {object} result - Comparison result from API
+ */
+function updateConfidenceIndicator(result) {
+  const confBadge = document.getElementById('confidenceBadge');
+  const confScore = document.getElementById('confidenceScore');
+  const enginesUsed = document.getElementById('enginesUsed');
+  const confIssues = document.getElementById('confidenceIssues');
+
+  if (!confBadge) return;
+
+  // Set confidence badge color
+  const confidenceColors = {
+    high: '#4caf50',
+    medium: '#ff9800',
+    low: '#f44336',
+    single: '#9e9e9e',
+  };
+  const confidenceLabels = {
+    high: 'WYSOKI',
+    medium: 'ŚREDNI',
+    low: 'NISKI',
+    single: 'BRAK',
+  };
+
+  const level = result.confidence_level || 'single';
+  confBadge.textContent = confidenceLabels[level] || level.toUpperCase();
+  confBadge.style.background = confidenceColors[level] || '#9e9e9e';
+
+  // Score
+  if (confScore) {
+    confScore.textContent = result.confidence_score ? `${result.confidence_score.toFixed(0)}%` : '';
+  }
+
+  // Engines used
+  if (enginesUsed && result.engines_used) {
+    enginesUsed.textContent = `Silniki: ${result.engines_used.join(', ')}`;
+  }
+
+  // Issues
+  if (confIssues) {
+    if (result.n_issues_warning > 0 || result.n_issues_error > 0) {
+      confIssues.style.display = 'block';
+      const warnings = result.issues?.filter(i => i.severity === 'warning') || [];
+      confIssues.innerHTML = warnings.map(w => `⚠️ ${w.message}`).join('<br>');
+    } else {
+      confIssues.style.display = 'none';
+    }
+  }
+
+  // Log sizing differences if available
+  if (result.sizing_comparison) {
+    const sizing = result.sizing_comparison;
+    console.log('[BESS] Sizing comparison:', {
+      power_spread: `${sizing.power_spread_pct?.toFixed(1)}%`,
+      energy_spread: `${sizing.energy_spread_pct?.toFixed(1)}%`,
+      npv_spread: `${sizing.npv_spread_pct?.toFixed(1)}%`,
+    });
+  }
+}
+
+/**
+ * Initialize calculation mode from localStorage
+ */
+function initCalculationMode() {
+  const savedMode = localStorage.getItem('bessCalculationMode');
+  if (savedMode && CALCULATION_MODES[savedMode]) {
+    setCalculationMode(savedMode);
+  }
+}
+
+// ============================================
 // INITIALIZATION
 // ============================================
 
@@ -322,6 +554,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Setup sticky variant selector
   setupStickyVariantSelector();
+
+  // v4.0.0: Initialize calculation mode from localStorage
+  initCalculationMode();
 
   // v3.15: Arbitrage settings are now in Settings module (no local restore needed)
 
@@ -478,7 +713,17 @@ function handleSharedData(data) {
     btn.classList.toggle('active', btn.dataset.variant === currentVariant);
   });
 
+  // Store sharedData on window for animation access
+  window.sharedData = data;
+
   updateDisplay();
+
+  // Reinitialize animation with new hourly data if available
+  if (data.hourlyData || data.pvData) {
+    console.log('🎬 Hourly data received from shell - reinitializing animation');
+    bessAnimHourlyData = []; // Force reinit
+    setTimeout(initBessAnimation, 300); // Small delay to let display update first
+  }
 }
 
 function resolveSavingsBreakdown(sourceObj) {
@@ -725,16 +970,35 @@ function updateDisplay() {
     return;
   }
 
-  // Check if BESS is enabled
-  const hasBess = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+  // Check if BESS is enabled in variant data
+  const hasBessInVariant = variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0;
+
+  // Check if BESS is enabled in system settings (user wants BESS)
+  const settings = window.systemSettings || systemSettings || {};
+  const bessEnabledInSettings = settings.bessMode && settings.bessMode !== 'off';
+
   console.log('🔋 BESS check:', {
     power: variant.bess_power_kw,
     energy: variant.bess_energy_kwh,
-    hasBess: hasBess,
+    hasBessInVariant: hasBessInVariant,
+    bessMode: settings.bessMode,
+    bessEnabledInSettings: bessEnabledInSettings,
     monthly_data_length: variant.bess_monthly_data?.length || 0
   });
 
-  if (!hasBess) {
+  // If BESS is enabled in settings but variant has no BESS data, try to fetch sizing
+  if (!hasBessInVariant && bessEnabledInSettings) {
+    console.log('🔋 BESS enabled in settings but no data in variant - attempting to fetch sizing...');
+    // Show content area with loading state instead of disabled banner
+    hideNoData();
+    document.getElementById('bessDisabledBanner').style.display = 'none';
+    document.getElementById('bessContent').style.display = 'grid';
+    // Try to fetch sizing variants (will use settings to configure BESS)
+    tryFetchSizingVariantsWithSettings(variant);
+    return;
+  }
+
+  if (!hasBessInVariant) {
     console.log('⚠️ BESS disabled - showing banner');
     showBessDisabled();
     return;
@@ -847,6 +1111,103 @@ function updateEnergyFlow(variant) {
   document.getElementById('bessFromBattery').textContent = `${formatNumberEU(dischargedMWh, 1)} MWh`;
   document.getElementById('bessCurtailed').textContent = `${formatNumberEU(curtailedMWh, 1)} MWh`;
   document.getElementById('bessEfficiency').textContent = `${formatNumberEU(efficiency, 1)} %`;
+}
+
+/**
+ * Update main BESS metrics from sizing result when variant has no BESS data
+ * This is called after fetchSizingVariants completes successfully
+ */
+function updateMainMetricsFromSizing(recommended, sizingResult) {
+  console.log('📊 Updating main metrics from sizing result:', recommended);
+
+  const powerKw = recommended.power_kw || 0;
+  const energyKwh = recommended.energy_kwh || 0;
+  const duration = powerKw > 0 ? energyKwh / powerKw : 0;
+
+  // Update main card
+  const configMain = document.getElementById('bessConfigMain');
+  if (configMain) {
+    configMain.textContent = `${formatNumberEU(powerKw, 0)} kW / ${formatNumberEU(energyKwh, 0)} kWh`;
+  }
+  const durationMain = document.getElementById('bessDurationMain');
+  if (durationMain) {
+    durationMain.textContent = `Duration: ${formatNumberEU(duration, 1)}h`;
+  }
+
+  // Update header subtitle
+  const mainCard = document.querySelector('.bess-main-card');
+  if (mainCard) {
+    const subtitle = mainCard.querySelector('.bess-subtitle');
+    if (subtitle) {
+      const modeInfo = sizingResult.mode === 'stacked' ? 'Stacked Mode (Peak Shaving + Arbitraż)' : '0-Export Mode';
+      subtitle.textContent = modeInfo;
+      subtitle.style.color = '#27ae60';  // Green for success
+    }
+  }
+
+  // Extract metrics from savings_breakdown if available
+  const sb = recommended.savings_breakdown || {};
+  const dischargedMWh = (sb.bess_discharged_kwh || recommended.bess_discharged_kwh || 0) / 1000;
+  const cyclesYear = recommended.cycles_per_year || sb.cycles_per_year || (dischargedMWh > 0 && energyKwh > 0 ? dischargedMWh * 1000 / energyKwh : 0);
+
+  // Update energy metrics
+  const autoIncrease = document.getElementById('bessAutoIncrease');
+  if (autoIncrease) {
+    const autoPct = recommended.self_consumption_increase_pct || sb.self_consumption_increase_pct || 0;
+    autoIncrease.textContent = `+${formatNumberEU(autoPct, 1)}%`;
+  }
+  const autoCompare = document.getElementById('bessAutoCompare');
+  if (autoCompare) {
+    autoCompare.textContent = `Sizing: ${recommended.variant_label || recommended.variant}`;
+  }
+
+  // Energy from battery
+  const energyFromBattery = document.getElementById('bessEnergyFromBattery');
+  if (energyFromBattery) {
+    energyFromBattery.textContent = formatNumberEU(dischargedMWh, 1);
+  }
+  const cyclesInfo = document.getElementById('bessCyclesInfo');
+  if (cyclesInfo) {
+    cyclesInfo.textContent = `${formatNumberEU(cyclesYear, 0)} cykli ekw./rok`;
+  }
+
+  // Curtailment - show 0 for stacked mode (no curtailment in this mode)
+  const curtailmentTotal = document.getElementById('bessCurtailmentTotal');
+  if (curtailmentTotal) {
+    const curtailedMWh = (sb.curtailment_kwh || 0) / 1000;
+    curtailmentTotal.textContent = formatNumberEU(curtailedMWh, 1);
+  }
+  const curtailmentPct = document.getElementById('bessCurtailmentPct');
+  if (curtailmentPct) {
+    curtailmentPct.textContent = sizingResult.mode === 'stacked' ? 'N/A (stacked mode)' : '0% produkcji PV';
+  }
+
+  // Cycles
+  const cyclesYear2 = document.getElementById('bessCyclesYear');
+  if (cyclesYear2) {
+    cyclesYear2.textContent = formatNumberEU(cyclesYear, 0);
+  }
+
+  // Update energy flow
+  const chargedMWh = dischargedMWh / 0.9;  // Estimate from efficiency
+  const bessToBattery = document.getElementById('bessToBattery');
+  if (bessToBattery) {
+    bessToBattery.textContent = `${formatNumberEU(chargedMWh, 1)} MWh`;
+  }
+  const bessFromBattery = document.getElementById('bessFromBattery');
+  if (bessFromBattery) {
+    bessFromBattery.textContent = `${formatNumberEU(dischargedMWh, 1)} MWh`;
+  }
+  const bessCurtailed = document.getElementById('bessCurtailed');
+  if (bessCurtailed) {
+    bessCurtailed.textContent = `0 MWh`;
+  }
+  const bessEfficiency = document.getElementById('bessEfficiency');
+  if (bessEfficiency) {
+    bessEfficiency.textContent = `90 %`;
+  }
+
+  console.log('✅ Main metrics updated from sizing result');
 }
 
 // ============================================
@@ -1910,116 +2271,344 @@ let bessAnimCurrentHour = 0;
 let bessAnimSpeed = 500; // ms per hour
 let bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
 
-// Simulated hourly data (will be generated from variant data)
+// Real hourly data for animation (from actual calculations)
 let bessAnimHourlyData = [];
 
 /**
- * Initialize BESS animation with current variant data
+ * Initialize BESS animation with REAL data from calculations
+ * Uses: hourlyData (consumption), pvData/analysisResults (PV), currentBatteryTrace (BESS states)
  */
 function initBessAnimation() {
   const variant = variants[currentVariant];
   if (!variant) {
-    console.log('BESS Animation: No variant data');
+    console.log('🎬 BESS Animation: No variant data');
     return;
   }
 
-  // Generate simulated hourly data for 8760 hours
-  bessAnimHourlyData = generateHourlyBessData(variant);
+  // Try to get real data sources
+  const hourlyConsumption = window.sharedData?.hourlyData?.values ||
+                            window.sharedData?.hourlyData ||
+                            window.hourlyData?.values ||
+                            window.hourlyData;
+
+  // Get PV production data from analysis results
+  // Priority: 1) pre-calculated pvData, 2) calculate from pv_profile * capacity, 3) hourly_production fallback
+  let pvHourlyData = window.sharedData?.pvData;
+
+  // CRITICAL FALLBACK: Calculate from pv_profile if pvData not available
+  if (!pvHourlyData && window.sharedData?.analysisResults?.pv_profile?.length > 0) {
+    const capacity = window.sharedData?.masterVariant?.capacity;
+    if (capacity) {
+      pvHourlyData = window.sharedData.analysisResults.pv_profile.map(v => v * capacity);
+      window.sharedData.pvData = pvHourlyData; // Store for future use
+      console.log(`🎬 Animation: pvData calculated from pv_profile: ${pvHourlyData.length} values`);
+    }
+  }
+
+  // Last resort fallbacks
+  if (!pvHourlyData) {
+    pvHourlyData = window.sharedData?.analysisResults?.hourly_production || window.pvData;
+  }
+
+  // Get battery trace from sizing result (currentBatteryTrace is set by updateDispatchTraceDisplay)
+  const batteryTrace = currentBatteryTrace || window.currentBatteryTrace;
+
+  console.log('🎬 BESS Animation - Data sources:', {
+    hasConsumption: !!hourlyConsumption && Array.isArray(hourlyConsumption),
+    consumptionLength: hourlyConsumption?.length || 0,
+    hasPV: !!pvHourlyData,
+    pvLength: Array.isArray(pvHourlyData) ? pvHourlyData.length : 0,
+    hasBatteryTrace: !!batteryTrace,
+    batteryTraceSteps: batteryTrace?.steps || 0
+  });
+
+  // Generate animation data from real sources
+  bessAnimHourlyData = generateRealHourlyBessData(variant, hourlyConsumption, pvHourlyData, batteryTrace);
   bessAnimCurrentHour = 0;
   bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
 
   // Update initial display
   updateBessAnimDisplay(0);
 
-  console.log('BESS Animation initialized with', bessAnimHourlyData.length, 'hours of data');
+  console.log('🎬 BESS Animation initialized with', bessAnimHourlyData.length, 'hours of REAL data');
 }
 
 /**
- * Generate simulated hourly BESS data from variant statistics
+ * Generate hourly BESS data from REAL calculation results
+ * Priority: battery_trace > hourly consumption/PV > fallback simulation
  */
-function generateHourlyBessData(variant) {
-  const hours = 8760;
-  const data = [];
-
-  const totalProduction = variant.production || 0; // kWh/year
-  const totalLoad = variant.consumption || variant.load || totalProduction * 1.5;
+function generateRealHourlyBessData(variant, hourlyConsumption, pvHourlyData, batteryTrace) {
   const bessEnergyKwh = variant.bess_energy_kwh || 100;
   const bessPowerKw = variant.bess_power_kw || 50;
-  const bessCharged = variant.bess_charged_kwh || 0;
-  const bessDischargedTotal = variant.bess_discharged_kwh || 0;
-  const bessCurtailed = variant.bess_curtailed_kwh || 0;
+  const data = [];
 
-  // Calculate average hourly values
-  const avgPvPerHour = totalProduction / hours;
-  const avgLoadPerHour = totalLoad / hours;
+  // CASE 1: We have real battery_trace from API - use it directly (most accurate)
+  if (batteryTrace && batteryTrace.soc_kwh && batteryTrace.soc_kwh.length > 0) {
+    console.log('🎬 Using REAL battery_trace data from API');
+    const steps = batteryTrace.steps || batteryTrace.soc_kwh.length;
 
-  // SOC tracking
-  let soc = 20; // Start at 20%
-  const socMin = 10;
-  const socMax = 90;
+    for (let h = 0; h < steps; h++) {
+      const hourOfDay = h % 24;
+      const dayOfYear = Math.floor(h / 24);
+      const month = Math.floor(dayOfYear / 30.4);
 
-  for (let h = 0; h < hours; h++) {
-    const hourOfDay = h % 24;
-    const dayOfYear = Math.floor(h / 24);
-    const month = Math.floor(dayOfYear / 30.4);
+      // Get real values from battery trace
+      const socKwh = batteryTrace.soc_kwh[h] || 0;
+      const charging = batteryTrace.charge_kw?.[h] || 0;
+      const discharging = batteryTrace.discharge_kw?.[h] || 0;
+      const chargeFromPv = batteryTrace.charge_from_pv_kw?.[h] || 0;
+      const chargeFromGrid = batteryTrace.charge_from_grid_kw?.[h] || 0;
+      const dischargeToLoad = batteryTrace.discharge_to_load_kw?.[h] || 0;
+      const dischargeToGrid = batteryTrace.discharge_to_grid_kw?.[h] || 0;
 
-    // Simulate PV production (peak at noon, seasonal variation)
-    const solarFactor = Math.max(0, Math.sin((hourOfDay - 6) * Math.PI / 12));
-    const seasonFactor = 0.5 + 0.5 * Math.sin((dayOfYear - 80) * 2 * Math.PI / 365);
-    const pvPower = avgPvPerHour * 3 * solarFactor * (0.7 + 0.6 * seasonFactor);
+      // Get consumption and PV from hourly data if available
+      const loadPower = hourlyConsumption?.[h] || 0;
+      const pvPower = Array.isArray(pvHourlyData) ? (pvHourlyData[h] || 0) : 0;
 
-    // Simulate load (higher during day, some variation)
-    const loadFactor = 0.6 + 0.4 * Math.sin((hourOfDay - 14) * Math.PI / 12);
-    const loadPower = avgLoadPerHour * (0.8 + 0.4 * loadFactor);
+      // Calculate grid import: load - pv - discharge + charge_from_grid
+      const gridImport = Math.max(0, loadPower - pvPower - dischargeToLoad + chargeFromGrid);
 
-    // Energy balance
-    const surplus = pvPower - loadPower;
-    let charging = 0;
-    let discharging = 0;
-    let gridImport = 0;
-    let curtailment = 0;
+      // Calculate curtailment: PV - load - charge_from_pv (when positive)
+      const curtailment = Math.max(0, pvPower - loadPower - chargeFromPv);
 
-    if (surplus > 0) {
-      // Excess PV - try to charge battery
-      const canCharge = Math.min(surplus, bessPowerKw, (socMax - soc) * bessEnergyKwh / 100);
-      if (canCharge > 0) {
-        charging = canCharge;
-        soc += (charging / bessEnergyKwh) * 100;
-      }
-      // Any remaining surplus is curtailed (0-export mode)
-      curtailment = surplus - charging;
-    } else {
-      // Deficit - try to discharge battery
-      const deficit = -surplus;
-      const canDischarge = Math.min(deficit, bessPowerKw, (soc - socMin) * bessEnergyKwh / 100);
-      if (canDischarge > 0) {
-        discharging = canDischarge;
-        soc -= (discharging / bessEnergyKwh) * 100;
-      }
-      // Remaining deficit from grid
-      gridImport = deficit - discharging;
+      // Get ToU price for this hour (from tariff or estimate)
+      const touPrice = getHourlyTouPrice(hourOfDay, dayOfYear, batteryTrace);
+      const priceZone = getPriceZone(touPrice);
+
+      data.push({
+        hour: h,
+        hourOfDay,
+        dayOfYear,
+        month,
+        pvPower: Math.round(pvPower * 10) / 10,
+        loadPower: Math.round(loadPower * 10) / 10,
+        charging: Math.round(charging * 10) / 10,
+        discharging: Math.round(discharging * 10) / 10,
+        chargeFromPv: Math.round(chargeFromPv * 10) / 10,
+        chargeFromGrid: Math.round(chargeFromGrid * 10) / 10,
+        dischargeToLoad: Math.round(dischargeToLoad * 10) / 10,
+        dischargeToGrid: Math.round(dischargeToGrid * 10) / 10,
+        gridImport: Math.round(gridImport * 10) / 10,
+        curtailment: Math.round(curtailment * 10) / 10,
+        soc: bessEnergyKwh > 0 ? Math.round((socKwh / bessEnergyKwh) * 100 * 10) / 10 : 0,
+        batteryKwh: Math.round(socKwh * 10) / 10,
+        // NEW: Arbitrage data
+        touPrice: touPrice,
+        priceZone: priceZone,
+        isArbitrageCharge: chargeFromGrid > 0 && priceZone === 'low',
+        isArbitrageDischarge: dischargeToLoad > 0 && priceZone === 'high'
+      });
     }
-
-    // Clamp SOC
-    soc = Math.max(socMin, Math.min(socMax, soc));
-
-    data.push({
-      hour: h,
-      hourOfDay,
-      dayOfYear,
-      month,
-      pvPower: Math.round(pvPower * 10) / 10,
-      loadPower: Math.round(loadPower * 10) / 10,
-      charging: Math.round(charging * 10) / 10,
-      discharging: Math.round(discharging * 10) / 10,
-      gridImport: Math.round(gridImport * 10) / 10,
-      curtailment: Math.round(curtailment * 10) / 10,
-      soc: Math.round(soc * 10) / 10,
-      batteryKwh: Math.round(soc * bessEnergyKwh / 100)
-    });
+    return data;
   }
 
-  return data;
+  // CASE 2: We have real consumption and PV data - simulate BESS dispatch
+  if (hourlyConsumption && Array.isArray(hourlyConsumption) && hourlyConsumption.length >= 24) {
+    const hasPvData = Array.isArray(pvHourlyData) && pvHourlyData.length > 0;
+    console.log(`🎬 Using REAL consumption data (${hourlyConsumption.length}h) with ${hasPvData ? 'REAL PV data' : 'ESTIMATED PV (no pvData available)'}`);
+    if (!hasPvData) {
+      console.warn('⚠️ PV data not available - using seasonal estimation. For accurate animation, ensure PV profile is loaded.');
+    }
+    const hours = hourlyConsumption.length;
+
+    // SOC tracking for simulation
+    let socKwh = bessEnergyKwh * 0.2; // Start at 20%
+    const socMin = bessEnergyKwh * 0.1;
+    const socMax = bessEnergyKwh * 0.9;
+
+    for (let h = 0; h < hours; h++) {
+      const hourOfDay = h % 24;
+      const dayOfYear = Math.floor(h / 24);
+      const month = Math.floor(dayOfYear / 30.4);
+
+      // REAL consumption data
+      const loadPower = hourlyConsumption[h] || 0;
+
+      // REAL or estimated PV data
+      let pvPower = 0;
+      if (Array.isArray(pvHourlyData) && pvHourlyData[h] !== undefined) {
+        pvPower = pvHourlyData[h];
+      } else {
+        // Estimate PV from variant annual production with REALISTIC solar curve
+        // Poland PV: ~900-1100 kWh/kWp/year, most production May-Aug
+        const annualPv = variant.production || 0;
+        const installedCapacity = variant.capacity || (annualPv / 1000); // Estimate capacity
+
+        // Daily solar pattern: sunrise ~6:00, sunset ~18:00 (varies by season)
+        // Winter: shorter days, sunrise ~8:00, sunset ~16:00
+        const winterSunrise = 8;
+        const winterSunset = 16;
+        const summerSunrise = 5;
+        const summerSunset = 21;
+
+        // Season factor: dayOfYear 0 = Jan 1, 172 = Jun 21 (summer solstice)
+        // January (day 0-30): factor ~0.15-0.25
+        // July (day 180-210): factor ~1.0
+        const seasonAngle = (dayOfYear - 172) * 2 * Math.PI / 365;
+        const seasonFactor = 0.55 + 0.45 * Math.cos(seasonAngle); // 0.1 in Dec, 1.0 in Jun
+
+        // Adjust sunrise/sunset by season
+        const sunrise = winterSunrise + (summerSunrise - winterSunrise) * seasonFactor;
+        const sunset = winterSunset + (summerSunset - winterSunset) * seasonFactor;
+        const dayLength = sunset - sunrise;
+
+        // Solar curve: bell-shaped during daylight hours
+        let solarFactor = 0;
+        if (hourOfDay > sunrise && hourOfDay < sunset) {
+          const dayProgress = (hourOfDay - sunrise) / dayLength;
+          solarFactor = Math.sin(dayProgress * Math.PI); // Peak at solar noon
+        }
+
+        // Peak capacity factor (how much of installed capacity is reached)
+        // Poland winter: ~20-40% of peak, summer: ~70-90% of peak
+        const peakCapacityFactor = 0.3 + 0.5 * seasonFactor;
+
+        // Calculate PV power
+        pvPower = installedCapacity * solarFactor * peakCapacityFactor;
+
+        // Add some realistic variation (clouds, weather)
+        const cloudFactor = 0.7 + 0.3 * Math.sin(h * 0.1); // Slight variation
+        pvPower *= cloudFactor;
+      }
+
+      // Energy balance calculation (simulated BESS dispatch)
+      const surplus = pvPower - loadPower;
+      let charging = 0;
+      let discharging = 0;
+      let chargeFromPv = 0;
+      let dischargeToLoad = 0;
+      let chargeFromGrid = 0;
+      let gridImport = 0;
+      let curtailment = 0;
+
+      // Get ToU price for arbitrage simulation
+      const touPrice = getHourlyTouPrice(hourOfDay, dayOfYear, null);
+      const priceZone = getPriceZone(touPrice);
+
+      if (surplus > 0) {
+        // Excess PV - charge battery
+        const canCharge = Math.min(surplus, bessPowerKw, socMax - socKwh);
+        if (canCharge > 0) {
+          charging = canCharge;
+          chargeFromPv = canCharge;
+          socKwh += canCharge;
+        }
+        curtailment = surplus - charging;
+      } else {
+        // Deficit - discharge battery
+        const deficit = -surplus;
+        const canDischarge = Math.min(deficit, bessPowerKw, socKwh - socMin);
+        if (canDischarge > 0) {
+          discharging = canDischarge;
+          dischargeToLoad = canDischarge;
+          socKwh -= canDischarge;
+        }
+        gridImport = deficit - discharging;
+
+        // Simulate arbitrage charging during low price periods (when battery not full)
+        if (priceZone === 'low' && socKwh < socMax * 0.8) {
+          const arbitrageCharge = Math.min(bessPowerKw * 0.5, socMax - socKwh);
+          if (arbitrageCharge > 0) {
+            chargeFromGrid = arbitrageCharge;
+            charging += arbitrageCharge;
+            socKwh += arbitrageCharge;
+            gridImport += arbitrageCharge;
+          }
+        }
+      }
+
+      // Clamp SOC
+      socKwh = Math.max(socMin, Math.min(socMax, socKwh));
+
+      data.push({
+        hour: h,
+        hourOfDay,
+        dayOfYear,
+        month,
+        pvPower: Math.round(pvPower * 10) / 10,
+        loadPower: Math.round(loadPower * 10) / 10,
+        charging: Math.round(charging * 10) / 10,
+        discharging: Math.round(discharging * 10) / 10,
+        chargeFromPv: Math.round(chargeFromPv * 10) / 10,
+        chargeFromGrid: Math.round(chargeFromGrid * 10) / 10,
+        dischargeToLoad: Math.round(dischargeToLoad * 10) / 10,
+        dischargeToGrid: 0,
+        gridImport: Math.round(gridImport * 10) / 10,
+        curtailment: Math.round(curtailment * 10) / 10,
+        soc: bessEnergyKwh > 0 ? Math.round((socKwh / bessEnergyKwh) * 100 * 10) / 10 : 0,
+        batteryKwh: Math.round(socKwh * 10) / 10,
+        // Arbitrage data
+        touPrice: touPrice,
+        priceZone: priceZone,
+        isArbitrageCharge: chargeFromGrid > 0 && priceZone === 'low',
+        isArbitrageDischarge: dischargeToLoad > 0 && priceZone === 'high'
+      });
+    }
+    return data;
+  }
+
+  // CASE 3: Fallback - no real data available, generate placeholder
+  console.warn('🎬 No real data available - animation will show placeholder');
+  // Return empty array - animation will show "no data" state
+  return [];
+}
+
+/**
+ * Get ToU price for specific hour
+ * Uses tariff data if available, otherwise estimates based on typical Polish ToU patterns
+ */
+function getHourlyTouPrice(hourOfDay, dayOfYear, batteryTrace) {
+  // Try to get from tariff prices if available
+  if (batteryTrace?.prices_pln_mwh) {
+    const hourIndex = dayOfYear * 24 + hourOfDay;
+    if (batteryTrace.prices_pln_mwh[hourIndex] !== undefined) {
+      return batteryTrace.prices_pln_mwh[hourIndex];
+    }
+  }
+
+  // Try to get from stored tariff config
+  const tariffConfig = window.currentTariffConfig || window.sharedData?.tariffConfig;
+  if (tariffConfig?.schedule) {
+    // Use schedule-based pricing
+    const dayOfWeek = new Date(2024, 0, dayOfYear).getDay(); // 0=Sunday
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const scheduleType = isWeekend ? 'weekend' : 'weekday';
+    const schedule = tariffConfig.schedule[scheduleType] || tariffConfig.schedule.weekday;
+    if (schedule) {
+      for (const period of schedule) {
+        if (hourOfDay >= period.start && hourOfDay < period.end) {
+          return period.price_pln_mwh || 600;
+        }
+      }
+    }
+  }
+
+  // Fallback: Estimate typical Polish G12/G13 ToU pattern
+  // Night (22:00 - 06:00): Low price ~350 PLN/MWh
+  // Day (06:00 - 13:00): Normal price ~550 PLN/MWh
+  // Peak (13:00 - 15:00): High price ~800 PLN/MWh
+  // Afternoon (15:00 - 22:00): Normal price ~550 PLN/MWh
+  // Evening peak (17:00 - 21:00): Peak price ~750 PLN/MWh
+
+  if (hourOfDay >= 22 || hourOfDay < 6) {
+    return 350; // Night - cheap
+  } else if (hourOfDay >= 13 && hourOfDay < 15) {
+    return 800; // Afternoon peak
+  } else if (hourOfDay >= 17 && hourOfDay < 21) {
+    return 750; // Evening peak
+  } else {
+    return 550; // Normal
+  }
+}
+
+/**
+ * Determine price zone based on price value
+ */
+function getPriceZone(pricePlnMwh) {
+  if (pricePlnMwh <= 400) return 'low';
+  if (pricePlnMwh >= 700) return 'high';
+  if (pricePlnMwh >= 600) return 'peak';
+  return 'normal';
 }
 
 /**
@@ -2042,9 +2631,19 @@ function startBessAnimation() {
   }
 
   if (bessAnimHourlyData.length === 0) {
-    console.warn('BESS Animation: No data to animate');
+    console.warn('🎬 BESS Animation: No data to animate - need hourlyData or battery_trace');
+    // Show user-friendly message
+    const statusEl = document.getElementById('bessAnimNoDataMsg');
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = '⚠️ Brak danych godzinowych. Wgraj profil zużycia lub uruchom sizing BESS.';
+    }
     return;
   }
+
+  // Hide no-data message if it exists
+  const statusEl = document.getElementById('bessAnimNoDataMsg');
+  if (statusEl) statusEl.style.display = 'none';
 
   bessAnimIsPlaying = true;
 
@@ -2106,6 +2705,303 @@ function resetBessAnimation() {
 }
 
 /**
+ * Export animation data to Excel-compatible CSV
+ * Full energy flows for verification: PV, Load, Battery charging/discharging, Grid import/export
+ * Uses Polish number format (comma as decimal separator) and text prefixes to prevent date interpretation
+ */
+function exportAnimationDataToExcel() {
+  if (!bessAnimHourlyData || bessAnimHourlyData.length === 0) {
+    alert('Brak danych animacji do eksportu. Najpierw uruchom sizing BESS lub wgraj profil zużycia.');
+    return;
+  }
+
+  console.log('📊 Exporting animation data to Excel CSV...', bessAnimHourlyData.length, 'hours');
+
+  // Determine data source for header info
+  const dataSource = currentBatteryTrace ? 'REAL (battery_trace z API)' : 'SYMULACJA (fallback)';
+  const variant = variants[currentVariant] || {};
+
+  // Helper: format number with Polish locale (comma as decimal separator)
+  const fmtPL = (val, decimals = 1) => {
+    return val.toFixed(decimals).replace('.', ',');
+  };
+
+  // CSV Header with BOM for Excel to recognize UTF-8
+  const BOM = '\uFEFF';
+  let csv = BOM;
+
+  // Metadata header
+  csv += '# BESS Animation Data Export\n';
+  csv += `# Data source: ${dataSource}\n`;
+  csv += `# BESS Power: ${variant.bess_power_kw || 'N/A'} kW\n`;
+  csv += `# BESS Energy: ${variant.bess_energy_kwh || 'N/A'} kWh\n`;
+  csv += `# Export date: ${new Date().toISOString()}\n`;
+  csv += '# Format: Polski (przecinek jako separator dziesietny)\n';
+  csv += '#\n';
+
+  // Column headers
+  csv += 'hour;data;godzina;dzien_roku;miesiac;';
+  csv += 'PV_kW;zuzycie_kW;SOC_pct;SOC_kWh;';
+  csv += 'ladowanie_kW;rozladowanie_kW;';
+  csv += 'ladowanie_z_PV_kW;ladowanie_z_sieci_kW;';
+  csv += 'rozladowanie_do_zuzycia_kW;rozladowanie_do_sieci_kW;';
+  csv += 'import_z_sieci_kW;curtailment_kW;';
+  csv += 'cena_PLN_MWh;strefa_cenowa;';
+  csv += 'bilans_netto_kW;komentarz\n';
+
+  // Data rows
+  // Use full month names to avoid Excel date interpretation (Styczen instead of Sty)
+  const monthNamesFull = ['Styczen', 'Luty', 'Marzec', 'Kwiecien', 'Maj', 'Czerwiec',
+                          'Lipiec', 'Sierpien', 'Wrzesien', 'Pazdziernik', 'Listopad', 'Grudzien'];
+
+  // Helper: convert dayOfYear (0-364) to proper date
+  // Uses 2024 as reference year (leap year with 366 days)
+  function dayOfYearToDate(dayOfYear) {
+    const date = new Date(2024, 0, 1); // Jan 1, 2024
+    date.setDate(1 + dayOfYear); // Add days (setDate handles month overflow correctly)
+    return date;
+  }
+
+  for (let i = 0; i < bessAnimHourlyData.length; i++) {
+    const d = bessAnimHourlyData[i];
+    const hourOfDay = d.hourOfDay || (i % 24);
+    const dayOfYear = d.dayOfYear || Math.floor(i / 24);
+
+    // Get proper date from dayOfYear
+    const date = dayOfYearToDate(dayOfYear);
+    const month = date.getMonth();
+    const dayOfMonth = date.getDate();
+
+    // Format date as "DD Miesiac" (e.g., "01 Styczen") - won't be interpreted as date
+    const dateStr = `${dayOfMonth.toString().padStart(2, '0')} ${monthNamesFull[month]}`;
+
+    // Calculate net balance: PV - Load - Charge + Discharge
+    const netBalance = (d.pvPower || 0) - (d.loadPower || 0) - (d.charging || 0) + (d.discharging || 0);
+
+    // Generate comment for notable events
+    let comment = '';
+    if ((d.chargeFromPv || 0) > 0 && (d.chargeFromGrid || 0) === 0) {
+      comment = 'ladowanie tylko z PV';
+    } else if ((d.chargeFromGrid || 0) > 0 && (d.chargeFromPv || 0) === 0) {
+      comment = 'ladowanie tylko z sieci (arbitraz)';
+    } else if ((d.chargeFromPv || 0) > 0 && (d.chargeFromGrid || 0) > 0) {
+      comment = 'ladowanie mieszane PV+siec';
+    } else if ((d.dischargeToLoad || 0) > 0) {
+      comment = 'rozladowanie do zuzycia';
+    } else if ((d.dischargeToGrid || 0) > 0) {
+      comment = 'rozladowanie do sieci (arbitraz)';
+    }
+
+    // Check for suspicious data (PV in night hours for winter)
+    if (month <= 1 || month >= 11) { // Jan, Feb, Nov, Dec
+      if (hourOfDay < 7 || hourOfDay > 16) {
+        if ((d.pvPower || 0) > 1) {
+          comment = 'UWAGA: PV w nocy zimowa!';
+        }
+      }
+    }
+
+    // Use Polish number format (comma as decimal separator)
+    csv += `${i};${dateStr};${hourOfDay}:00;${dayOfYear + 1};${monthNamesFull[month]};`;
+    csv += `${fmtPL(d.pvPower || 0)};${fmtPL(d.loadPower || 0)};`;
+    csv += `${fmtPL(d.soc || 0)};${fmtPL(d.batteryKwh || 0)};`;
+    csv += `${fmtPL(d.charging || 0)};${fmtPL(d.discharging || 0)};`;
+    csv += `${fmtPL(d.chargeFromPv || 0)};${fmtPL(d.chargeFromGrid || 0)};`;
+    csv += `${fmtPL(d.dischargeToLoad || 0)};${fmtPL(d.dischargeToGrid || 0)};`;
+    csv += `${fmtPL(d.gridImport || 0)};${fmtPL(d.curtailment || 0)};`;
+    csv += `${fmtPL(d.touPrice || 0, 0)};${d.priceZone || 'N/A'};`;
+    csv += `${fmtPL(netBalance)};${comment}\n`;
+  }
+
+  // Summary section
+  csv += '\n# PODSUMOWANIE\n';
+
+  // Monthly aggregates
+  csv += '\n# Agregaty miesieczne\n';
+  csv += 'miesiac;PV_suma_kWh;zuzycie_suma_kWh;ladowanie_z_PV_kWh;ladowanie_z_sieci_kWh;rozladowanie_kWh;import_sieci_kWh\n';
+
+  const monthlyData = {};
+  for (let m = 0; m < 12; m++) {
+    monthlyData[m] = { pv: 0, load: 0, chargeFromPv: 0, chargeFromGrid: 0, discharge: 0, gridImport: 0 };
+  }
+
+  for (const d of bessAnimHourlyData) {
+    const m = d.month || 0;
+    if (monthlyData[m]) {
+      monthlyData[m].pv += d.pvPower || 0;
+      monthlyData[m].load += d.loadPower || 0;
+      monthlyData[m].chargeFromPv += d.chargeFromPv || 0;
+      monthlyData[m].chargeFromGrid += d.chargeFromGrid || 0;
+      monthlyData[m].discharge += d.discharging || 0;
+      monthlyData[m].gridImport += d.gridImport || 0;
+    }
+  }
+
+  for (let m = 0; m < 12; m++) {
+    const md = monthlyData[m];
+    csv += `${monthNamesFull[m]};${fmtPL(md.pv, 0)};${fmtPL(md.load, 0)};`;
+    csv += `${fmtPL(md.chargeFromPv, 0)};${fmtPL(md.chargeFromGrid, 0)};`;
+    csv += `${fmtPL(md.discharge, 0)};${fmtPL(md.gridImport, 0)}\n`;
+  }
+
+  // Download
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `bess_animation_flows_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  console.log('📊 Animation data exported successfully');
+  alert(`Wyeksportowano ${bessAnimHourlyData.length} godzin danych.\n\nŹródło danych: ${dataSource}\n\nFormat: Polski (przecinek jako separator dziesiętny)\nSeparator kolumn: średnik (;)`);
+}
+
+/**
+ * Export specific sizing variant (S/M/L) to Excel CSV
+ * Includes full battery_trace data if available
+ * @param {string} variantLabel - Variant label (e.g., "S", "M", "L")
+ */
+function exportVariantToExcel(variantLabel) {
+  if (!lastSizingResult || !lastSizingResult.variants) {
+    alert('Brak danych wariantów. Najpierw uruchom sizing BESS.');
+    return;
+  }
+
+  // Find the variant
+  const variant = lastSizingResult.variants.find(v => v.variant_label === variantLabel);
+  if (!variant) {
+    alert(`Nie znaleziono wariantu ${variantLabel}`);
+    return;
+  }
+
+  console.log(`📊 Exporting variant ${variantLabel} to Excel...`, variant);
+
+  // Helper: format number with Polish locale
+  const fmtPL = (val, decimals = 1) => {
+    if (val === null || val === undefined) return '';
+    return Number(val).toFixed(decimals).replace('.', ',');
+  };
+
+  // CSV Header with BOM
+  const BOM = '\uFEFF';
+  let csv = BOM;
+
+  // Metadata header
+  csv += `# BESS Sizing Variant Export: ${variantLabel}\n`;
+  csv += `# Export date: ${new Date().toISOString()}\n`;
+  csv += '# Format: Polski (przecinek jako separator dziesietny)\n';
+  csv += '#\n';
+
+  // ===== SECTION 1: Variant Summary =====
+  csv += '# === PODSUMOWANIE WARIANTU ===\n';
+  csv += 'parametr;wartosc;jednostka\n';
+  csv += `Wariant;${variantLabel};\n`;
+  csv += `Moc BESS;${fmtPL(variant.power_kw, 0)};kW\n`;
+  csv += `Pojemnosc BESS;${fmtPL(variant.energy_kwh, 0)};kWh\n`;
+  csv += `Czas trwania;${fmtPL(variant.duration_h, 1)};h\n`;
+  csv += `CAPEX;${fmtPL(variant.capex_pln, 0)};PLN\n`;
+  csv += `Oszczednosci roczne;${fmtPL(variant.annual_savings_pln, 0)};PLN/rok\n`;
+  csv += `NPV;${fmtPL(variant.npv_pln, 0)};PLN\n`;
+  csv += `Payback;${fmtPL(variant.simple_payback_years, 2)};lat\n`;
+  csv += `Rekomendowany;${variant.is_recommended ? 'TAK' : 'NIE'};\n`;
+  csv += `Status degradacji;${variant.degradation_status || 'N/A'};\n`;
+  csv += '\n';
+
+  // ===== SECTION 2: Savings Breakdown =====
+  if (variant.savings_breakdown) {
+    const sb = variant.savings_breakdown;
+    csv += '# === ROZKLAD OSZCZEDNOSCI (roczny) ===\n';
+    csv += 'kategoria;wartosc_PLN\n';
+    csv += `Oszczednosci energetyczne;${fmtPL(sb.energy_savings_pln, 0)}\n`;
+    csv += `Oszczednosci peak shaving;${fmtPL(sb.demand_charge_savings_pln, 0)}\n`;
+    csv += `Oszczednosci oplata mocowa;${fmtPL(sb.capacity_fee_savings_pln, 0)}\n`;
+    csv += `Arbitraz ToU;${fmtPL(sb.arbitrage_savings_pln, 0)}\n`;
+    csv += `Przychod z eksportu;${fmtPL(sb.export_revenue_pln, 0)}\n`;
+    csv += `Koszt degradacji;${fmtPL(-sb.degradation_cost_pln, 0)}\n`;
+    csv += `Kara nieobsluzony load;${fmtPL(-(sb.unserved_load_penalty_pln || 0), 0)}\n`;
+    csv += `SUMA netto;${fmtPL(sb.net_savings_pln, 0)}\n`;
+    csv += '\n';
+  }
+
+  // ===== SECTION 3: Degradation Metrics =====
+  if (variant.degradation) {
+    const deg = variant.degradation;
+    csv += '# === METRYKI DEGRADACJI (roczne) ===\n';
+    csv += 'metryka;wartosc;jednostka\n';
+    csv += `Throughput calkowity;${fmtPL(deg.throughput_total_mwh, 1)};MWh/rok\n`;
+    csv += `EFC calkowite;${fmtPL(deg.efc_total, 0)};cykli/rok\n`;
+    csv += `EFC z PV;${fmtPL(deg.efc_pv || 0, 0)};cykli\n`;
+    csv += `EFC peak shaving;${fmtPL(deg.efc_peak || 0, 0)};cykli\n`;
+    csv += `Ladowanie z PV;${fmtPL((deg.charge_from_pv_kwh || 0) / 1000, 1)};MWh\n`;
+    csv += `Ladowanie z sieci;${fmtPL((deg.charge_from_grid_kwh || 0) / 1000, 1)};MWh\n`;
+    csv += `% ladowania z PV;${fmtPL(deg.charge_pv_pct || 0, 0)};%\n`;
+    csv += `Peak events;${fmtPL(deg.peak_events_count || 0, 0)};h/rok\n`;
+    csv += '\n';
+  }
+
+  // ===== SECTION 4: Money Ledger =====
+  if (variant.money_ledger) {
+    const ml = variant.money_ledger;
+    csv += '# === MONEY LEDGER (roczny) ===\n';
+    csv += 'kategoria;baseline_PLN;projekt_PLN;delta_PLN\n';
+    csv += `Import energii;${fmtPL(ml.baseline_annual.import_energy_cost_pln, 0)};${fmtPL(ml.project_annual.import_energy_cost_pln, 0)};${fmtPL(ml.delta_annual_pln.import_energy_cost_pln, 0)}\n`;
+    csv += `Eksport do sieci;${fmtPL(ml.baseline_annual.export_revenue_pln, 0)};${fmtPL(ml.project_annual.export_revenue_pln, 0)};${fmtPL(ml.delta_annual_pln.export_revenue_pln, 0)}\n`;
+    csv += `Oplata mocowa;${fmtPL(ml.baseline_annual.capacity_fee_pln, 0)};${fmtPL(ml.project_annual.capacity_fee_pln, 0)};${fmtPL(ml.delta_annual_pln.capacity_fee_pln, 0)}\n`;
+    csv += `Oplata za moc;${fmtPL(ml.baseline_annual.demand_charge_pln, 0)};${fmtPL(ml.project_annual.demand_charge_pln, 0)};${fmtPL(ml.delta_annual_pln.demand_charge_pln, 0)}\n`;
+    csv += `Degradacja;0;${fmtPL(ml.project_annual.degradation_cost_pln, 0)};${fmtPL(-ml.delta_annual_pln.degradation_cost_pln, 0)}\n`;
+    csv += `SUMA;${fmtPL(ml.baseline_annual.total_cost_pln, 0)};${fmtPL(ml.project_annual.total_cost_pln, 0)};${fmtPL(ml.delta_annual_pln.total_cost_pln, 0)}\n`;
+    csv += '\n';
+  }
+
+  // ===== SECTION 5: Battery Trace (if available) =====
+  const batteryTrace = variant.battery_trace || variant.dispatch_summary?.battery_trace;
+  if (batteryTrace && batteryTrace.soc_kwh && batteryTrace.soc_kwh.length > 0) {
+    csv += '# === BATTERY TRACE (godzinowy) ===\n';
+    csv += 'hour;dzien_roku;godzina;SOC_kWh;ladowanie_kW;rozladowanie_kW;';
+    csv += 'ladowanie_z_PV_kW;ladowanie_z_sieci_kW;rozladowanie_do_zuzycia_kW;rozladowanie_do_sieci_kW\n';
+
+    const steps = batteryTrace.steps || batteryTrace.soc_kwh.length;
+    for (let h = 0; h < steps; h++) {
+      const dayOfYear = Math.floor(h / 24) + 1;
+      const hourOfDay = h % 24;
+
+      csv += `${h};${dayOfYear};${hourOfDay}:00;`;
+      csv += `${fmtPL(batteryTrace.soc_kwh[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.charge_kw?.[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.discharge_kw?.[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.charge_from_pv_kw?.[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.charge_from_grid_kw?.[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.discharge_to_load_kw?.[h] || 0)};`;
+      csv += `${fmtPL(batteryTrace.discharge_to_grid_kw?.[h] || 0)}\n`;
+    }
+  } else {
+    csv += '# === BATTERY TRACE ===\n';
+    csv += '# Brak danych battery_trace dla tego wariantu.\n';
+    csv += '# Aby uzyskac pelne dane godzinowe, uruchom sizing z parametrem include_battery_trace=true\n';
+  }
+
+  // Download
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `bess_variant_${variantLabel}_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+
+  console.log(`📊 Variant ${variantLabel} exported successfully`);
+
+  const hasTrace = batteryTrace && batteryTrace.soc_kwh && batteryTrace.soc_kwh.length > 0;
+  alert(`Wyeksportowano wariant ${variantLabel}:\n\n` +
+        `• Moc: ${fmtPL(variant.power_kw, 0)} kW\n` +
+        `• Pojemność: ${fmtPL(variant.energy_kwh, 0)} kWh\n` +
+        `• NPV: ${fmtPL(variant.npv_pln / 1000, 0)} tys. PLN\n\n` +
+        `Battery trace: ${hasTrace ? 'TAK (' + batteryTrace.soc_kwh.length + ' godzin)' : 'BRAK'}\n\n` +
+        `Format: Polski (przecinek jako separator dziesiętny)`);
+}
+
+/**
  * Jump to specific position in animation
  */
 function bessAnimJump(direction) {
@@ -2148,7 +3044,12 @@ function updateBessAnimSpeed() {
  * Recalculate daily stats when jumping
  */
 function recalculateDailyStats() {
-  bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+  bessAnimDailyStats = {
+    pv: 0, load: 0, fromBess: 0, cycles: 0,
+    // Arbitrage stats
+    gridCharge: 0, peakDischarge: 0, arbitrageSavings: 0,
+    lowPriceSum: 0, highPriceSum: 0, lowPriceHours: 0, highPriceHours: 0
+  };
   const dayStart = Math.floor(bessAnimCurrentHour / 24) * 24;
   const dayEnd = Math.min(dayStart + 24, bessAnimCurrentHour + 1);
 
@@ -2158,6 +3059,18 @@ function recalculateDailyStats() {
       bessAnimDailyStats.pv += hourData.pvPower;
       bessAnimDailyStats.load += hourData.loadPower;
       bessAnimDailyStats.fromBess += hourData.discharging;
+
+      // Track arbitrage stats
+      if (hourData.chargeFromGrid > 0) {
+        bessAnimDailyStats.gridCharge += hourData.chargeFromGrid;
+        bessAnimDailyStats.lowPriceSum += hourData.touPrice || 350;
+        bessAnimDailyStats.lowPriceHours++;
+      }
+      if (hourData.isArbitrageDischarge || (hourData.dischargeToLoad > 0 && hourData.priceZone === 'high')) {
+        bessAnimDailyStats.peakDischarge += hourData.dischargeToLoad;
+        bessAnimDailyStats.highPriceSum += hourData.touPrice || 750;
+        bessAnimDailyStats.highPriceHours++;
+      }
     }
   }
 
@@ -2165,10 +3078,331 @@ function recalculateDailyStats() {
   const variant = variants[currentVariant];
   const bessEnergyKwh = variant?.bess_energy_kwh || 100;
   bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
+
+  // Calculate arbitrage savings
+  const avgLowPrice = bessAnimDailyStats.lowPriceHours > 0
+    ? bessAnimDailyStats.lowPriceSum / bessAnimDailyStats.lowPriceHours : 350;
+  const avgHighPrice = bessAnimDailyStats.highPriceHours > 0
+    ? bessAnimDailyStats.highPriceSum / bessAnimDailyStats.highPriceHours : 750;
+  const spread = avgHighPrice - avgLowPrice;
+  const arbitrageEnergy = Math.min(bessAnimDailyStats.gridCharge, bessAnimDailyStats.peakDischarge);
+  bessAnimDailyStats.arbitrageSavings = (arbitrageEnergy / 1000) * spread;
+}
+
+// ============================================
+// SVG ENERGY FLOW ANIMATION ENGINE
+// ============================================
+
+// Active particles tracking
+let svgParticles = [];
+let svgAnimationFrame = null;
+
+/**
+ * Initialize SVG particle animation system
+ */
+function initSvgFlowAnimation() {
+  const particlesGroup = document.getElementById('particlesGroup');
+  if (!particlesGroup) return;
+
+  // Clear existing particles
+  particlesGroup.innerHTML = '';
+  svgParticles = [];
 }
 
 /**
- * Update BESS animation display
+ * Get particle filter and color based on type
+ */
+function getParticleStyle(colorType) {
+  const styles = {
+    pv: { filter: 'url(#particleGlowYellow)', fill: '#fcd34d', core: '#fbbf24' },
+    battery: { filter: 'url(#particleGlowGreen)', fill: '#6ee7b7', core: '#34d399' },
+    grid: { filter: 'url(#particleGlowRed)', fill: '#fca5a5', core: '#f87171' },
+    arbitrage: { filter: 'url(#particleGlowBlue)', fill: '#93c5fd', core: '#60a5fa' }
+  };
+  return styles[colorType] || styles.pv;
+}
+
+/**
+ * Create animated energy particles along a path with trail effect
+ */
+function createFlowParticles(pathId, colorType, powerValue) {
+  const path = document.getElementById(pathId);
+  const particlesGroup = document.getElementById('particlesGroup');
+  if (!path || !particlesGroup) return [];
+
+  const pathLength = path.getTotalLength();
+  const particles = [];
+  const style = getParticleStyle(colorType);
+
+  // More particles for higher power, min 4, max 8
+  const particleCount = Math.min(8, Math.max(4, Math.floor(powerValue / 30) + 4));
+  // Particle size based on power
+  const baseRadius = Math.min(10, Math.max(5, 4 + powerValue / 80));
+
+  for (let i = 0; i < particleCount; i++) {
+    // Create particle group for trail effect
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', `particle-group ${colorType}`);
+
+    // Trail circles (3 trailing, getting smaller and more transparent)
+    for (let t = 2; t >= 0; t--) {
+      const trail = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      trail.setAttribute('r', baseRadius * (1 - t * 0.25));
+      trail.setAttribute('fill', style.fill);
+      trail.setAttribute('opacity', (0.3 - t * 0.08).toString());
+      trail.dataset.trailIndex = t;
+      g.appendChild(trail);
+    }
+
+    // Main particle (core)
+    const core = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    core.setAttribute('r', baseRadius);
+    core.setAttribute('fill', style.core);
+    core.setAttribute('filter', style.filter);
+    core.dataset.isCore = 'true';
+    g.appendChild(core);
+
+    // Inner bright center
+    const center = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    center.setAttribute('r', baseRadius * 0.4);
+    center.setAttribute('fill', '#ffffff');
+    center.setAttribute('opacity', '0.9');
+    g.appendChild(center);
+
+    // Stagger initial positions evenly
+    const initialOffset = i / particleCount;
+    g.dataset.offset = initialOffset;
+    g.dataset.pathId = pathId;
+    g.dataset.pathLength = pathLength;
+    g.dataset.speed = (0.006 + Math.random() * 0.004).toString(); // Varied speeds
+
+    particlesGroup.appendChild(g);
+    particles.push(g);
+  }
+
+  return particles;
+}
+
+/**
+ * Update SVG flow paths and particles
+ */
+function updateSvgFlowPaths(hourData) {
+  // Path configurations with glow paths
+  const flowConfig = {
+    'pathPvBattery': {
+      active: hourData.chargeFromPv > 0,
+      colorType: 'pv',
+      value: hourData.chargeFromPv,
+      labelGroupId: 'labelGroupPvBattery',
+      labelId: 'labelPvBattery',
+      glowId: 'glowPvBattery'
+    },
+    'pathPvLoad': {
+      active: hourData.pvPower > 0 && hourData.loadPower > 0,
+      colorType: 'pv',
+      value: Math.min(hourData.pvPower, hourData.loadPower),
+      labelGroupId: 'labelGroupPvLoad',
+      labelId: 'labelPvLoad',
+      glowId: 'glowPvLoad'
+    },
+    'pathBatteryLoad': {
+      active: hourData.discharging > 0,
+      colorType: 'battery',
+      value: hourData.discharging,
+      labelGroupId: 'labelGroupBatteryLoad',
+      labelId: 'labelBatteryLoad',
+      glowId: 'glowBatteryLoad'
+    },
+    'pathGridLoad': {
+      active: hourData.gridImport > 0,
+      colorType: 'grid',
+      value: hourData.gridImport,
+      labelGroupId: 'labelGroupGridLoad',
+      labelId: 'labelGridLoad',
+      glowId: 'glowGridLoad'
+    },
+    'pathGridBattery': {
+      active: hourData.chargeFromGrid > 0,
+      colorType: 'arbitrage',
+      value: hourData.chargeFromGrid,
+      labelGroupId: 'labelGroupGridBattery',
+      labelId: 'labelGridBattery',
+      glowId: 'glowGridBattery'
+    },
+    'pathBatteryGrid': {
+      active: hourData.dischargeToGrid > 0,
+      colorType: 'battery',
+      value: hourData.dischargeToGrid,
+      labelGroupId: 'labelGroupBatteryGrid',
+      labelId: 'labelBatteryGrid',
+      glowId: 'glowBatteryGrid'
+    }
+  };
+
+  // Clear existing particles
+  const particlesGroup = document.getElementById('particlesGroup');
+  if (particlesGroup) {
+    particlesGroup.innerHTML = '';
+  }
+  svgParticles = [];
+
+  // Update each path
+  for (const [pathId, config] of Object.entries(flowConfig)) {
+    const path = document.getElementById(pathId);
+    const glowPath = document.getElementById(config.glowId);
+    const labelGroup = document.getElementById(config.labelGroupId);
+    const label = document.getElementById(config.labelId);
+
+    if (path) {
+      if (config.active) {
+        // Calculate thickness based on power (min 4, max 10)
+        const thickness = Math.min(10, Math.max(4, 3 + (config.value / 40)));
+        const glowThickness = thickness * 2.5;
+
+        path.setAttribute('stroke-width', thickness);
+        path.classList.add('active');
+
+        // Activate glow path
+        if (glowPath) {
+          glowPath.setAttribute('stroke-width', glowThickness);
+        }
+
+        // Create particles with trail
+        const newParticles = createFlowParticles(pathId, config.colorType, config.value);
+        svgParticles.push(...newParticles);
+      } else {
+        path.setAttribute('stroke-width', '0');
+        path.classList.remove('active');
+
+        if (glowPath) {
+          glowPath.setAttribute('stroke-width', '0');
+        }
+      }
+    }
+
+    // Update labels
+    if (labelGroup) {
+      labelGroup.setAttribute('opacity', config.active && config.value > 0 ? '1' : '0');
+    }
+    if (label && config.active && config.value > 0) {
+      label.textContent = `${formatNumberEU(config.value, 0)} kW`;
+    }
+  }
+
+  // Start particle animation
+  if (svgParticles.length > 0) {
+    animateSvgParticles();
+  }
+}
+
+/**
+ * Animate particles along their paths with trail effect
+ */
+function animateSvgParticles() {
+  if (svgAnimationFrame) {
+    cancelAnimationFrame(svgAnimationFrame);
+  }
+
+  // Store trail positions for each particle
+  const trailHistory = new Map();
+
+  function animate() {
+    svgParticles.forEach(particleGroup => {
+      const pathId = particleGroup.dataset.pathId;
+      const path = document.getElementById(pathId);
+      if (!path) return;
+
+      const pathLength = parseFloat(particleGroup.dataset.pathLength);
+      const speed = parseFloat(particleGroup.dataset.speed);
+      let offset = parseFloat(particleGroup.dataset.offset);
+
+      // Update offset
+      offset += speed;
+      if (offset > 1) offset -= 1;
+      particleGroup.dataset.offset = offset;
+
+      // Get current point on path
+      const point = path.getPointAtLength(offset * pathLength);
+
+      // Initialize or get trail history
+      if (!trailHistory.has(particleGroup)) {
+        trailHistory.set(particleGroup, []);
+      }
+      const history = trailHistory.get(particleGroup);
+
+      // Add current position to history
+      history.unshift({ x: point.x, y: point.y });
+
+      // Keep only last 4 positions for trails
+      while (history.length > 4) {
+        history.pop();
+      }
+
+      // Update all circles in the group
+      const circles = particleGroup.querySelectorAll('circle');
+      circles.forEach((circle, idx) => {
+        const trailIdx = circle.dataset.trailIndex;
+        const isCore = circle.dataset.isCore;
+
+        if (isCore || idx === circles.length - 1) {
+          // Main particle and center - current position
+          circle.setAttribute('cx', point.x);
+          circle.setAttribute('cy', point.y);
+        } else if (trailIdx !== undefined) {
+          // Trail circles - use historical positions
+          const histIdx = parseInt(trailIdx) + 1;
+          const trailPoint = history[histIdx] || history[history.length - 1] || point;
+          circle.setAttribute('cx', trailPoint.x);
+          circle.setAttribute('cy', trailPoint.y);
+        } else {
+          // Fallback
+          circle.setAttribute('cx', point.x);
+          circle.setAttribute('cy', point.y);
+        }
+      });
+
+      // Pulse opacity based on position
+      const pulseOpacity = 0.7 + 0.3 * Math.sin(offset * Math.PI * 2);
+      particleGroup.style.opacity = pulseOpacity;
+    });
+
+    svgAnimationFrame = requestAnimationFrame(animate);
+  }
+
+  animate();
+}
+
+/**
+ * Update node glow effects
+ */
+function updateNodeGlows(hourData) {
+  // PV node glow when producing
+  const pvNode = document.getElementById('nodePv');
+  if (pvNode) {
+    pvNode.classList.toggle('active', hourData.pvPower > 5);
+  }
+
+  // Battery node glow when active
+  const batteryNode = document.getElementById('nodeBattery');
+  if (batteryNode) {
+    batteryNode.classList.toggle('active', hourData.charging > 0 || hourData.discharging > 0);
+  }
+
+  // Load node glow
+  const loadNode = document.getElementById('nodeLoad');
+  if (loadNode) {
+    loadNode.classList.toggle('active', hourData.loadPower > 10);
+  }
+
+  // Grid node glow when importing
+  const gridNode = document.getElementById('nodeGrid');
+  if (gridNode) {
+    gridNode.classList.toggle('active', hourData.gridImport > 5 || hourData.chargeFromGrid > 0);
+  }
+}
+
+/**
+ * Update BESS animation display - REFACTORED for SVG
  */
 function updateBessAnimDisplay(hourIndex) {
   if (hourIndex < 0 || hourIndex >= bessAnimHourlyData.length) return;
@@ -2178,11 +3412,15 @@ function updateBessAnimDisplay(hourIndex) {
 
   // Update time display
   const hourOfDay = hourData.hourOfDay;
-  const dayOfYear = hourData.dayOfYear + 1;
+  const dayOfYear = hourData.dayOfYear; // 0-indexed (0 = Jan 1)
   const monthNames = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
                       'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
-  const dayInMonth = (dayOfYear - 1) % 30 + 1;
-  const monthIndex = Math.min(11, Math.floor((dayOfYear - 1) / 30.4));
+
+  // Proper date calculation using Date object (2024 is leap year)
+  const date = new Date(2024, 0, 1); // Jan 1, 2024
+  date.setDate(1 + dayOfYear); // Add days - handles month overflow correctly
+  const dayInMonth = date.getDate();
+  const monthIndex = date.getMonth();
 
   document.getElementById('animDate').textContent = `${dayInMonth} ${monthNames[monthIndex]}`;
   document.getElementById('animTime').textContent =
@@ -2190,48 +3428,47 @@ function updateBessAnimDisplay(hourIndex) {
 
   // Day/night indicator
   const dayNightEl = document.getElementById('animDayNight');
-  if (hourOfDay >= 6 && hourOfDay < 20) {
-    dayNightEl.textContent = '☀️';
-    dayNightEl.className = 'anim-daynight day';
-  } else {
-    dayNightEl.textContent = '🌙';
-    dayNightEl.className = 'anim-daynight night';
+  if (dayNightEl) {
+    if (hourOfDay >= 6 && hourOfDay < 20) {
+      dayNightEl.textContent = '☀️';
+      dayNightEl.className = 'anim-daynight day';
+    } else {
+      dayNightEl.textContent = '🌙';
+      dayNightEl.className = 'anim-daynight night';
+    }
   }
 
-  // Update node values
-  document.getElementById('animPvPower').textContent = `${formatNumberEU(hourData.pvPower, 1)} kW`;
-  document.getElementById('animLoadPower').textContent = `${formatNumberEU(hourData.loadPower, 1)} kW`;
-  document.getElementById('animBatteryKwh').textContent = `${formatNumberEU(hourData.batteryKwh, 0)} kWh`;
-  document.getElementById('animGridPower').textContent = `${formatNumberEU(hourData.gridImport, 1)} kW`;
-  document.getElementById('animCurtailment').textContent = `${formatNumberEU(hourData.curtailment, 1)} kW`;
+  // Update node values (new element IDs)
+  const animPvPower = document.getElementById('animPvPower');
+  const animLoadPower = document.getElementById('animLoadPower');
+  const animBatteryKwh = document.getElementById('animBatteryKwh');
+  const animGridPower = document.getElementById('animGridPower');
+  const animCurtailment = document.getElementById('animCurtailment');
 
-  // Update battery fill level
+  if (animPvPower) animPvPower.textContent = `${formatNumberEU(hourData.pvPower, 1)}  kW`;
+  if (animLoadPower) animLoadPower.textContent = `${formatNumberEU(hourData.loadPower, 1)}  kW`;
+  if (animBatteryKwh) animBatteryKwh.textContent = `${formatNumberEU(hourData.batteryKwh, 0)}  kWh`;
+  if (animGridPower) animGridPower.textContent = `${formatNumberEU(hourData.gridImport, 0)}  kW`;
+  if (animCurtailment) animCurtailment.textContent = `${formatNumberEU(hourData.curtailment, 1)} kW`;
+
+  // Update battery fill level (new 3D battery)
   const batteryFill = document.getElementById('batteryFill');
   const batteryLevel = document.getElementById('batteryLevel');
   if (batteryFill) {
     batteryFill.style.height = `${hourData.soc}%`;
     // Add charging/discharging animation class
-    batteryFill.classList.remove('charging', 'discharging');
+    batteryFill.classList.remove('charging', 'discharging', 'low');
     if (hourData.charging > 0) batteryFill.classList.add('charging');
     else if (hourData.discharging > 0) batteryFill.classList.add('discharging');
+    if (hourData.soc < 20) batteryFill.classList.add('low');
   }
   if (batteryLevel) {
     batteryLevel.textContent = `${Math.round(hourData.soc)}%`;
   }
 
-  // Update flow arrows
-  updateFlowArrow('arrowPvBattery', hourData.charging > 0);
-  updateFlowArrow('arrowPvLoad', hourData.pvPower > 0 && hourData.loadPower > 0);
-  updateFlowArrow('arrowBatteryLoad', hourData.discharging > 0);
-  updateFlowArrow('arrowGridLoad', hourData.gridImport > 0);
-  updateFlowArrow('arrowCurtailment', hourData.curtailment > 0);
-
-  // Update flow values
-  document.getElementById('flowPvBattery').textContent = hourData.charging > 0 ? `${formatNumberEU(hourData.charging, 0)} kW` : '';
-  document.getElementById('flowPvLoad').textContent = hourData.pvPower > 0 ? `${formatNumberEU(Math.min(hourData.pvPower, hourData.loadPower), 0)} kW` : '';
-  document.getElementById('flowBatteryLoad').textContent = hourData.discharging > 0 ? `${formatNumberEU(hourData.discharging, 0)} kW` : '';
-  document.getElementById('flowGridLoad').textContent = hourData.gridImport > 0 ? `${formatNumberEU(hourData.gridImport, 0)} kW` : '';
-  document.getElementById('flowCurtailment').textContent = hourData.curtailment > 0 ? `${formatNumberEU(hourData.curtailment, 0)} kW` : '';
+  // === SVG FLOW ANIMATION ===
+  updateSvgFlowPaths(hourData);
+  updateNodeGlows(hourData);
 
   // Show/hide curtailment node
   const curtailmentNode = document.getElementById('curtailmentNode');
@@ -2239,27 +3476,67 @@ function updateBessAnimDisplay(hourIndex) {
     curtailmentNode.style.display = hourData.curtailment > 0 ? 'flex' : 'none';
   }
 
+  // Update energy price indicator
+  updateEnergyPriceIndicator(hourData);
+
+  // Update arbitrage status indicator
+  updateArbitrageIndicator(hourData);
+
   // Update daily stats
   if (hourOfDay === 0) {
-    bessAnimDailyStats = { pv: 0, load: 0, fromBess: 0, cycles: 0 };
+    bessAnimDailyStats = {
+      pv: 0, load: 0, fromBess: 0, cycles: 0,
+      gridCharge: 0, peakDischarge: 0, arbitrageSavings: 0,
+      lowPriceSum: 0, highPriceSum: 0, lowPriceHours: 0, highPriceHours: 0
+    };
   }
   bessAnimDailyStats.pv += hourData.pvPower;
   bessAnimDailyStats.load += hourData.loadPower;
   bessAnimDailyStats.fromBess += hourData.discharging;
 
+  // Track arbitrage stats
+  if (hourData.chargeFromGrid > 0) {
+    bessAnimDailyStats.gridCharge += hourData.chargeFromGrid;
+    bessAnimDailyStats.lowPriceSum += hourData.touPrice || 350;
+    bessAnimDailyStats.lowPriceHours++;
+  }
+  if (hourData.isArbitrageDischarge || (hourData.dischargeToLoad > 0 && hourData.priceZone === 'high')) {
+    bessAnimDailyStats.peakDischarge += hourData.dischargeToLoad;
+    bessAnimDailyStats.highPriceSum += hourData.touPrice || 750;
+    bessAnimDailyStats.highPriceHours++;
+  }
+
+  // Calculate arbitrage savings: energy shifted * price spread
+  const avgLowPrice = bessAnimDailyStats.lowPriceHours > 0
+    ? bessAnimDailyStats.lowPriceSum / bessAnimDailyStats.lowPriceHours : 350;
+  const avgHighPrice = bessAnimDailyStats.highPriceHours > 0
+    ? bessAnimDailyStats.highPriceSum / bessAnimDailyStats.highPriceHours : 750;
+  const spread = avgHighPrice - avgLowPrice;
+  const arbitrageEnergy = Math.min(bessAnimDailyStats.gridCharge, bessAnimDailyStats.peakDischarge);
+  bessAnimDailyStats.arbitrageSavings = (arbitrageEnergy / 1000) * spread;
+
   const bessEnergyKwh = variant?.bess_energy_kwh || 100;
   bessAnimDailyStats.cycles = bessAnimDailyStats.fromBess / bessEnergyKwh;
 
-  document.getElementById('animDailyPv').textContent = `${formatNumberEU(bessAnimDailyStats.pv, 0)} kWh`;
-  document.getElementById('animDailyLoad').textContent = `${formatNumberEU(bessAnimDailyStats.load, 0)} kWh`;
-  document.getElementById('animDailyFromBess').textContent = `${formatNumberEU(bessAnimDailyStats.fromBess, 0)} kWh`;
-  document.getElementById('animDailyCycles').textContent = formatNumberEU(bessAnimDailyStats.cycles, 2);
+  const animDailyPv = document.getElementById('animDailyPv');
+  const animDailyLoad = document.getElementById('animDailyLoad');
+  const animDailyFromBess = document.getElementById('animDailyFromBess');
+  const animDailyCycles = document.getElementById('animDailyCycles');
 
-  // Update year progress
-  document.getElementById('animDayOfYear').textContent = `${dayOfYear} / 365`;
+  if (animDailyPv) animDailyPv.textContent = `${formatNumberEU(bessAnimDailyStats.pv, 0)} kWh`;
+  if (animDailyLoad) animDailyLoad.textContent = `${formatNumberEU(bessAnimDailyStats.load, 0)} kWh`;
+  if (animDailyFromBess) animDailyFromBess.textContent = `${formatNumberEU(bessAnimDailyStats.fromBess, 0)} kWh`;
+  if (animDailyCycles) animDailyCycles.textContent = formatNumberEU(bessAnimDailyStats.cycles, 2);
+
+  // Update arbitrage stats display
+  updateArbitrageStatsDisplay(bessAnimDailyStats, spread);
+
+  // Update year progress (dayOfYear is 0-indexed, display as 1-indexed)
+  const animDayOfYear = document.getElementById('animDayOfYear');
+  if (animDayOfYear) animDayOfYear.textContent = `${dayOfYear + 1} / 365`;
   const yearProgressEl = document.getElementById('animYearProgress');
   if (yearProgressEl) {
-    yearProgressEl.style.width = `${(dayOfYear / 365) * 100}%`;
+    yearProgressEl.style.width = `${((dayOfYear + 1) / 365) * 100}%`;
   }
 }
 
@@ -2276,6 +3553,110 @@ function updateFlowArrow(arrowId, active) {
     }
   }
 }
+
+/**
+ * Update energy price indicator based on current hour data
+ */
+function updateEnergyPriceIndicator(hourData) {
+  const priceBadge = document.getElementById('priceBadge');
+  const priceIcon = document.getElementById('priceIcon');
+  const priceLabel = document.getElementById('priceLabel');
+  const priceValue = document.getElementById('priceValue');
+
+  if (!priceBadge || !priceIcon || !priceLabel || !priceValue) return;
+
+  const touPrice = hourData.touPrice || 550;
+  const priceZone = hourData.priceZone || 'normal';
+
+  // Update badge class and content based on price zone
+  priceBadge.className = 'price-badge ' + priceZone;
+
+  switch (priceZone) {
+    case 'low':
+      priceIcon.textContent = '💚';
+      priceLabel.textContent = 'Tania';
+      break;
+    case 'high':
+      priceIcon.textContent = '🔴';
+      priceLabel.textContent = 'Droga';
+      break;
+    case 'peak':
+      priceIcon.textContent = '🔥';
+      priceLabel.textContent = 'Szczyt';
+      break;
+    default:
+      priceIcon.textContent = '💰';
+      priceLabel.textContent = 'Normalna';
+  }
+
+  priceValue.textContent = `${formatNumberEU(touPrice, 0)} PLN/MWh`;
+}
+
+/**
+ * Update arbitrage status indicator
+ */
+function updateArbitrageIndicator(hourData) {
+  const indicator = document.getElementById('arbitrageIndicator');
+  const badge = document.getElementById('arbitrageBadge');
+  const text = document.getElementById('arbitrageText');
+
+  if (!indicator || !badge || !text) return;
+
+  const isCharging = hourData.chargeFromGrid > 0;
+  const isDischarging = hourData.isArbitrageDischarge;
+
+  if (isCharging) {
+    indicator.style.display = 'block';
+    badge.className = 'arbitrage-badge charging';
+    text.textContent = `Arbitraż: ładowanie ${formatNumberEU(hourData.chargeFromGrid, 0)} kW`;
+  } else if (isDischarging) {
+    indicator.style.display = 'block';
+    badge.className = 'arbitrage-badge discharging';
+    text.textContent = `Arbitraż: rozładowanie ${formatNumberEU(hourData.dischargeToLoad, 0)} kW`;
+  } else {
+    indicator.style.display = 'none';
+  }
+}
+
+/**
+ * Update arbitrage stats display section
+ */
+function updateArbitrageStatsDisplay(stats, spread) {
+  const gridChargeEl = document.getElementById('animDailyGridCharge');
+  const peakDischargeEl = document.getElementById('animDailyPeakDischarge');
+  const spreadEl = document.getElementById('animDailySpread');
+  const savingsEl = document.getElementById('animDailyArbitrageSavings');
+
+  if (gridChargeEl) {
+    gridChargeEl.textContent = `${formatNumberEU(stats.gridCharge, 1)} kWh`;
+  }
+  if (peakDischargeEl) {
+    peakDischargeEl.textContent = `${formatNumberEU(stats.peakDischarge, 1)} kWh`;
+  }
+  if (spreadEl) {
+    spreadEl.textContent = `${formatNumberEU(spread, 0)} PLN/MWh`;
+  }
+  if (savingsEl) {
+    savingsEl.textContent = `${formatNumberEU(stats.arbitrageSavings, 2)} PLN`;
+  }
+}
+
+/**
+ * Toggle arbitrage stats section visibility
+ */
+function toggleArbitrageStats() {
+  const grid = document.getElementById('arbitrageStatsGrid');
+  const toggle = document.getElementById('arbitrageStatsToggle');
+
+  if (grid && toggle) {
+    const isCollapsed = grid.style.display === 'none';
+    grid.style.display = isCollapsed ? 'grid' : 'none';
+    toggle.classList.toggle('collapsed', !isCollapsed);
+  }
+}
+
+// Expose new functions globally
+window.toggleArbitrageStats = toggleArbitrageStats;
 
 // Expose functions globally
 window.selectVariant = selectVariant;
@@ -2572,6 +3953,12 @@ function displaySizingVariants(sizingResult) {
         <div class="variant-status ${statusClass}">
           ${statusIcon} ${statusLabel}
         </div>
+
+        <div class="variant-actions">
+          <button class="btn btn-small btn-secondary" onclick="exportVariantToExcel('${v.variant_label}')" title="Eksportuj pełne dane wariantu do Excel">
+            📊 Export Excel
+          </button>
+        </div>
       </div>
     `;
   }
@@ -2638,6 +4025,167 @@ function displayDegradationBudget(degradation, budget) {
     setElementText('budgetBreakdownDetail', `Total: ${formatNumberEU(degradation.throughput_total_mwh, 1)} MWh`);
   }
 }
+
+/**
+ * v3.1.0: Display Stacked Decomposition - breakdown of BESS into Peak Shaving + Arbitrage components
+ * @param {Object} decomposition - StackedDecompositionModel from backend
+ */
+function displayStackedDecomposition(decomposition) {
+  // Find or create the decomposition section
+  let section = document.getElementById('stackedDecompositionSection');
+
+  if (!section) {
+    // Create new section if it doesn't exist - insert after stackedModeInfo banner
+    const banner = document.getElementById('stackedModeInfo');
+    if (banner) {
+      section = document.createElement('div');
+      section.id = 'stackedDecompositionSection';
+      section.className = 'stacked-decomposition-section';
+      banner.parentNode.insertBefore(section, banner.nextSibling);
+    } else {
+      // Fallback: create in results container
+      const resultsContainer = document.querySelector('.sizing-results, .bess-results, #bessResults');
+      if (resultsContainer) {
+        section = document.createElement('div');
+        section.id = 'stackedDecompositionSection';
+        section.className = 'stacked-decomposition-section';
+        resultsContainer.insertBefore(section, resultsContainer.firstChild);
+      } else {
+        console.warn('Cannot find container for Stacked Decomposition section');
+        return;
+      }
+    }
+  }
+
+  if (!decomposition) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+
+  const peak = decomposition.peak_shaving;
+  const arb = decomposition.arbitrage;
+
+  // Calculate percentages for visual bar
+  const totalPower = decomposition.total_power_kw;
+  const peakPct = totalPower > 0 ? (peak.power_kw / totalPower * 100) : 0;
+  const arbPct = totalPower > 0 ? (arb.power_kw / totalPower * 100) : 0;
+
+  section.innerHTML = `
+    <div class="decomposition-header">
+      <h4>🔋 Rozbicie BESS Stacked Mode</h4>
+      <span class="decomposition-subtitle">BESS = Peak Shaving + Arbitraż</span>
+    </div>
+
+    <div class="decomposition-visual">
+      <div class="power-bar">
+        <div class="bar-segment peak" style="width: ${peakPct}%">
+          <span class="segment-label">Peak: ${formatNumberEU(peak.power_kw, 0)} kW</span>
+        </div>
+        <div class="bar-segment arbitrage" style="width: ${arbPct}%">
+          <span class="segment-label">Arb: ${formatNumberEU(arb.power_kw, 0)} kW</span>
+        </div>
+      </div>
+      <div class="bar-total">
+        <strong>SUMA: ${formatNumberEU(totalPower, 0)} kW / ${formatNumberEU(decomposition.total_energy_kwh, 0)} kWh</strong>
+      </div>
+    </div>
+
+    <div class="decomposition-cards">
+      <div class="decomp-card peak-shaving">
+        <div class="card-header">
+          <span class="card-icon">⚡</span>
+          <span class="card-title">Peak Shaving</span>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <span class="label">Moc</span>
+            <span class="value">${formatNumberEU(peak.power_kw, 0)} kW</span>
+          </div>
+          <div class="metric">
+            <span class="label">Pojemność</span>
+            <span class="value">${formatNumberEU(peak.energy_kwh, 0)} kWh</span>
+          </div>
+          <div class="metric">
+            <span class="label">CAPEX</span>
+            <span class="value">${formatNumberEU(peak.capex_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="metric highlight">
+            <span class="label">Oszczędności/rok</span>
+            <span class="value">${formatNumberEU(peak.annual_savings_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="metric ${peak.npv_pln >= 0 ? 'positive' : 'negative'}">
+            <span class="label">NPV</span>
+            <span class="value">${formatNumberEU(peak.npv_pln / 1000, 1)} tys. PLN</span>
+          </div>
+        </div>
+        <div class="card-description">${peak.description}</div>
+      </div>
+
+      <div class="decomp-card arbitrage">
+        <div class="card-header">
+          <span class="card-icon">📈</span>
+          <span class="card-title">Arbitraż (ToU + PV)</span>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <span class="label">Moc</span>
+            <span class="value">${formatNumberEU(arb.power_kw, 0)} kW</span>
+          </div>
+          <div class="metric">
+            <span class="label">Pojemność</span>
+            <span class="value">${formatNumberEU(arb.energy_kwh, 0)} kWh</span>
+          </div>
+          <div class="metric">
+            <span class="label">CAPEX</span>
+            <span class="value">${formatNumberEU(arb.capex_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="metric highlight">
+            <span class="label">Oszczędności/rok</span>
+            <span class="value">${formatNumberEU(arb.annual_savings_pln / 1000, 1)} tys. PLN</span>
+          </div>
+          <div class="metric ${arb.npv_pln >= 0 ? 'positive' : 'negative'}">
+            <span class="label">NPV</span>
+            <span class="value">${formatNumberEU(arb.npv_pln / 1000, 1)} tys. PLN</span>
+          </div>
+        </div>
+        <div class="card-description">${arb.description}</div>
+      </div>
+    </div>
+
+    <div class="decomposition-summary">
+      <div class="summary-row">
+        <span class="summary-label">Total CAPEX:</span>
+        <span class="summary-value">${formatNumberEU(decomposition.total_capex_pln / 1000, 1)} tys. PLN</span>
+      </div>
+      <div class="summary-row">
+        <span class="summary-label">Total Oszczędności/rok:</span>
+        <span class="summary-value">${formatNumberEU(decomposition.total_annual_savings_pln / 1000, 1)} tys. PLN</span>
+      </div>
+      <div class="summary-row highlight">
+        <span class="summary-label">Total NPV:</span>
+        <span class="summary-value ${decomposition.total_npv_pln >= 0 ? 'positive' : 'negative'}">${formatNumberEU(decomposition.total_npv_pln / 1000, 1)} tys. PLN</span>
+      </div>
+    </div>
+
+    <div class="decomposition-rationale">
+      <details>
+        <summary>📋 Uzasadnienie wymiarowania</summary>
+        <p>${decomposition.sizing_rationale}</p>
+      </details>
+    </div>
+  `;
+
+  console.log('✅ Stacked Decomposition displayed:', {
+    peak: `${peak.power_kw} kW / ${peak.energy_kwh} kWh`,
+    arb: `${arb.power_kw} kW / ${arb.energy_kwh} kWh`,
+    total: `${totalPower} kW / ${decomposition.total_energy_kwh} kWh`
+  });
+}
+
+// Export for global access
+window.displayStackedDecomposition = displayStackedDecomposition;
 
 /**
  * Display STACKED mode info banner
@@ -2738,6 +4286,9 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
     return;
   }
 
+  // Get settings from systemSettings (global) or sharedData
+  const settings = window.systemSettings || systemSettings || {};
+
   // Use relative URL to go through nginx proxy
   const bessDispatchUrl = '/api/bess-dispatch';
 
@@ -2766,8 +4317,8 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
         max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
       };
 
-      // Add arbitrage if enabled
-      if (arbitrageConfig && bessConfig.stacked_mode) {
+      // Add arbitrage if enabled (no longer requires stacked_mode)
+      if (arbitrageConfig) {
         overrides.arbitrage_config = {
           enabled: true,
           tariff_id: arbitrageConfig.tariff_id,
@@ -2776,7 +4327,19 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
           discharge_above_percentile: arbitrageConfig.discharge_above_percentile,
           arbitrage_soc_min: arbitrageConfig.arbitrage_soc_min,
         };
-        console.log('⚡ Arbitrage enabled for sizing:', arbitrageConfig);
+        // Force stacked mode when arbitrage is enabled
+        overrides.mode = 'stacked';
+        // Calculate P95 peak limit from load for stacked mode (backend requires peak_limit_kw)
+        const sortedLoad = [...loadData].sort((a, b) => b - a);
+        const p95Index = Math.floor(loadData.length * 0.05);
+        const p95Load = sortedLoad[p95Index] || sortedLoad[0];
+        overrides.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        overrides.reserve_fraction = bessConfig.reserve_fraction || 0.3;
+        overrides.start_date = arbitrageConfig.start_date;
+        console.log('⚡ Arbitrage enabled for sizing (forcing stacked mode):', {
+          ...arbitrageConfig,
+          peak_limit_kw: overrides.peak_limit_kw,
+        });
       }
 
       requestBody = parentWindow.buildBessRequest({
@@ -2799,17 +4362,21 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
       requestBody._isWhatIf = true;
 
       // v0.6.0: Finance config with lifecycle features
+      // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+      const bessHorizonYears = Math.min(settings.analysisPeriod || 15, 10);
+      const discountRateDecimal = (settings.discountRate || 7) / 100;
       requestBody.finance_config = {
-        horizon_years: 15,
-        discount_rate: 0.08,
+        horizon_years: bessHorizonYears,
+        discount_rate: discountRateDecimal,
         include_cashflow_timeseries: true,
         discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
         // v0.6.0 PR2: Battery replacement (optional)
         replacement_year: bessConfig.replacement_year || null,
         replacement_capex_pln: bessConfig.replacement_capex_pln || null,
-        // v0.6.0 PR3: Performance degradation
-        bess_degradation_pct_per_year: bessConfig.bess_degradation_pct_per_year || 0.0,
-        pv_degradation_pct_per_year: bessConfig.pv_degradation_pct_per_year || 0.0,
+        // v0.6.0 PR3: Performance degradation (from Settings)
+        bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,
+        bess_degradation_pct_per_year: settings.bessDegradationPctPerYear || 2.0,
+        pv_degradation_pct_per_year: settings.degradationRate || 0.4,
         // v0.6.0 PR4: Price/CAPEX sensitivity sweeps
         energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
         capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
@@ -2836,8 +4403,8 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
         max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
       };
 
-      // Add arbitrage config if enabled
-      if (arbitrageConfig && bessConfig.stacked_mode) {
+      // Add arbitrage config if enabled (no longer requires stacked_mode)
+      if (arbitrageConfig) {
         requestBody.arbitrage_config = {
           enabled: true,
           tariff_id: arbitrageConfig.tariff_id,
@@ -2847,28 +4414,51 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
           arbitrage_soc_min: arbitrageConfig.arbitrage_soc_min,
         };
         requestBody.start_date = arbitrageConfig.start_date;
-        console.log('⚡ Arbitrage enabled for sizing:', arbitrageConfig);
+        // Force stacked mode when arbitrage is enabled (arbitrage is 3rd priority after peak shaving and PV shifting)
+        requestBody.mode = 'stacked';
+        // Calculate P95 peak limit from load for stacked mode (backend requires peak_limit_kw)
+        const sortedLoad = [...loadData].sort((a, b) => b - a);
+        const p95Index = Math.floor(loadData.length * 0.05);
+        const p95Load = sortedLoad[p95Index] || sortedLoad[0];
+        requestBody.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        requestBody.reserve_fraction = bessConfig.reserve_fraction || 0.3;
+        console.log('⚡ Arbitrage enabled for sizing (forcing stacked mode):', {
+          ...arbitrageConfig,
+          peak_limit_kw: requestBody.peak_limit_kw,
+        });
       }
     }
 
     // v0.6.0: Finance config with lifecycle features
+    // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+    const bessHorizonYears = Math.min(settings.analysisPeriod || 15, 10);
+    const discountRateDecimal = (settings.discountRate || 7) / 100;
     requestBody.finance_config = {
-      horizon_years: 15,
-      discount_rate: 0.08,
+      horizon_years: bessHorizonYears,
+      discount_rate: discountRateDecimal,
       include_cashflow_timeseries: true,
       // v0.5.0: Discount rate sensitivity
       discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
       // v0.6.0 PR2: Battery replacement (optional - from bessConfig)
       replacement_year: bessConfig.replacement_year || null,
       replacement_capex_pln: bessConfig.replacement_capex_pln || null,
-      // v0.6.0 PR3: Performance degradation (from bessConfig)
-      bess_degradation_pct_per_year: bessConfig.bess_degradation_pct_per_year || 0.0,
-      pv_degradation_pct_per_year: bessConfig.pv_degradation_pct_per_year || 0.0,
+      // v0.6.0 PR3: Performance degradation (from Settings)
+      bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,
+      bess_degradation_pct_per_year: settings.bessDegradationPctPerYear || 2.0,
+      pv_degradation_pct_per_year: settings.degradationRate || 0.4,
       // v0.6.0 PR4: Price/CAPEX sensitivity sweeps
       energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
       capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
     };
     console.log('[BESS] Finance config with lifecycle features:', requestBody.finance_config);
+
+    // *** DEBUG: Log PV data in requestBody before sending ***
+    const pvInRequest = requestBody.pv_generation_kw || [];
+    const pvSumInRequest = pvInRequest.length > 0 ? pvInRequest.reduce((a, b) => a + b, 0) / 1000 : 0;
+    console.log(`📊 DEBUG fetchSizingVariants: pv_generation_kw in request = ${pvInRequest.length} values, sum = ${pvSumInRequest.toFixed(2)} MWh`);
+    if (pvInRequest.length === 0) {
+      console.error('❌ CRITICAL: pv_generation_kw is EMPTY in requestBody! Backend will return total_pv_mwh=0!');
+    }
 
     // v2.7.0: Use compat=clean for new API contract
     const response = await fetch(buildBessApiUrl('/sizing'), {
@@ -2891,6 +4481,11 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
     // Display results
     displaySizingVariants(result);
 
+    // v3.0: Display BESS Advisor response (if available)
+    if (result.advisor_response) {
+      displayAdvisorResponse(result.advisor_response);
+    }
+
     // v0.5.0: Display finance section (cashflow + sensitivity)
     displayFinanceSection(result);
 
@@ -2903,6 +4498,9 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
           max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year,
         });
       }
+
+      // Update main metrics from sizing result (when variant had no BESS data)
+      updateMainMetricsFromSizing(recommended, result);
     }
 
     // Display STACKED mode info if active
@@ -2941,10 +4539,25 @@ async function tryFetchSizingVariants(variant) {
     return;
   }
 
-  // Try to get hourly data from shell
-  const hourlyData = window.sharedData?.hourlyData || window.hourlyData;
+  // Try to get hourly data from shell (check both iframe local and parent window)
+  const parentWindow = window.parent !== window ? window.parent : window;
+  const sharedData = parentWindow.sharedData || window.sharedData;
+
+  const hourlyData = sharedData?.hourlyData || window.hourlyData;
   const consumptionValues = hourlyData?.values || hourlyData;
-  const pvData = window.sharedData?.pvData;
+  let pvData = sharedData?.pvData;
+
+  console.log(`📊 tryFetchSizingVariants: checking pvData from sharedData, isParent=${parentWindow !== window}`);
+
+  // *** CRITICAL FALLBACK: Calculate pvData if not available but pv_profile exists ***
+  if (!pvData && sharedData?.analysisResults?.pv_profile?.length > 0) {
+    const capacity = sharedData?.masterVariant?.capacity;
+    if (capacity) {
+      pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
+      sharedData.pvData = pvData;
+      console.log(`📊 tryFetchSizingVariants: pvData calculated from pv_profile: ${pvData.length} values`);
+    }
+  }
 
   if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
     console.log('⚠️ No hourly data available for S/M/L sizing. Use "Zastosuj konfigurację" button to run sizing manually.');
@@ -2976,12 +4589,339 @@ async function tryFetchSizingVariants(variant) {
     max_efc_per_year: settings.bessMaxEfcPerYear || null,
   };
 
+  // *** DEBUG: Log what we're about to send ***
+  const pvDataToSend = pvData || [];
+  const pvSumMWh = pvDataToSend.length > 0 ? pvDataToSend.reduce((a, b) => a + b, 0) / 1000 : 0;
   console.log('🔋 Calling fetchSizingVariants for S/M/L grid...');
+  console.log(`📊 DEBUG tryFetchSizingVariants: pvData=${pvDataToSend.length} values, sum=${pvSumMWh.toFixed(2)} MWh`);
+  console.log(`📊 DEBUG tryFetchSizingVariants: consumptionValues=${consumptionValues?.length} values`);
+  if (pvDataToSend.length === 0) {
+    console.error('❌ CRITICAL: pvData is EMPTY! This will cause total_pv_mwh=0 in backend!');
+    console.log('📊 DEBUG: window.sharedData.pvData =', window.sharedData?.pvData);
+    console.log('📊 DEBUG: window.sharedData.analysisResults.pv_profile =', window.sharedData?.analysisResults?.pv_profile?.length);
+    console.log('📊 DEBUG: window.sharedData.masterVariant.capacity =', window.sharedData?.masterVariant?.capacity);
+  }
   try {
-    await fetchSizingVariants(pvData || [], consumptionValues, bessConfig);
+    await fetchSizingVariants(pvDataToSend, consumptionValues, bessConfig);
   } catch (error) {
     console.error('❌ tryFetchSizingVariants error:', error);
   }
+}
+
+/**
+ * Try to fetch sizing variants when BESS is enabled in settings but variant has no BESS data
+ * This allows automatic BESS sizing when user enables Arbitrage scenario
+ */
+async function tryFetchSizingVariantsWithSettings(variant) {
+  console.log('🔋 tryFetchSizingVariantsWithSettings: fetching sizing based on settings...');
+
+  // *** CRITICAL: Get sharedData from parent window (BESS runs in iframe) ***
+  const parentWindow = window.parent !== window ? window.parent : window;
+  const sharedData = parentWindow.sharedData || window.sharedData;
+  console.log(`📊 tryFetchSizingVariantsWithSettings: isParent=${parentWindow !== window}, sharedData exists=${!!sharedData}`);
+
+  // Try to get hourly data from shell or localStorage
+  let consumptionValues = sharedData?.hourlyData?.values || sharedData?.hourlyData || window.hourlyData?.values || window.hourlyData;
+  let pvData = sharedData?.pvData;
+
+  // *** CRITICAL FALLBACK: Calculate pvData if not available but pv_profile exists ***
+  // This handles the case where shell.js hasn't been updated yet
+  if (!pvData && sharedData?.analysisResults?.pv_profile?.length > 0) {
+    const capacity = sharedData?.masterVariant?.capacity;
+    if (capacity) {
+      pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
+      console.log(`📊 BESS: pvData calculated from pv_profile: ${pvData.length} values, capacity: ${capacity} kWp`);
+      const totalMWh = pvData.reduce((a, b) => a + b, 0) / 1000;
+      console.log(`📊 BESS: Total PV production: ${totalMWh.toFixed(2)} MWh`);
+      // Also store in sharedData for future use
+      sharedData.pvData = pvData;
+    } else {
+      console.warn('⚠️ BESS: Cannot calculate pvData - no masterVariant.capacity available');
+    }
+  }
+
+  // Try localStorage if not available
+  if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
+    try {
+      const storedResults = localStorage.getItem('pv_analysis_results') || localStorage.getItem('analysisResults');
+      if (storedResults) {
+        const results = JSON.parse(storedResults);
+        // Try to extract hourly data from results
+        if (results.hourly_data) {
+          consumptionValues = results.hourly_data.consumption || results.hourly_data.load;
+          pvData = results.hourly_data.pv_generation;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load hourly data from localStorage:', e);
+    }
+  }
+
+  if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
+    console.log('⚠️ No hourly data available for sizing. Please run analysis in KONFIGURACJA first.');
+    // Show message in the UI
+    const mainCard = document.querySelector('.bess-main-card');
+    if (mainCard) {
+      mainCard.innerHTML = `
+        <div class="bess-header">
+          <div class="bess-icon-box">🔋</div>
+          <div class="bess-title">
+            <h2>Magazyn Energii BESS</h2>
+            <div class="bess-subtitle" style="color: #e67e22;">⏳ Ładowanie danych...</div>
+          </div>
+        </div>
+        <div style="padding: 20px; text-align: center; color: #666;">
+          <p>BESS jest włączony w ustawieniach, ale brak danych do analizy.</p>
+          <p>Przejdź do <strong>KONFIGURACJA</strong> i uruchom analizę, aby obliczyć optymalny dobór magazynu.</p>
+        </div>
+      `;
+    }
+    return;
+  }
+
+  // Build BESS config from settings (not from variant which has no BESS data)
+  const settings = window.systemSettings || systemSettings || {};
+  const bessConfig = {
+    enabled: true,
+    // No power/energy from variant - let the optimizer find optimal
+    power_kw: null,
+    energy_kwh: null,
+    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.90,
+    soc_min: settings.bessSocMin || 0.10,
+    soc_max: settings.bessSocMax || 0.90,
+    durations_h: [1, 2, 4],  // S/M/L grid
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    discount_rate: (settings.discountRate || 7) / 100,
+    analysis_years: settings.analysisYears || 15,
+    stacked_mode: settings.bessPeakShavingEnabled || false,
+    peak_limit_kw: settings.bessPeakShavingTargetKw || null,
+    reserve_fraction: settings.bessReserveFraction || 0.30,
+    max_efc_per_year: settings.bessMaxEfcPerYear || null,
+  };
+
+  // Show loading indicator
+  const mainCard = document.querySelector('.bess-main-card');
+  if (mainCard) {
+    mainCard.innerHTML = `
+      <div class="bess-header">
+        <div class="bess-icon-box">🔋</div>
+        <div class="bess-title">
+          <h2>Magazyn Energii BESS</h2>
+          <div class="bess-subtitle" style="color: #3498db;">⏳ Obliczanie optymalnej konfiguracji...</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // *** DEBUG: Log what we're about to send ***
+  const pvDataToSend = pvData || [];
+  const pvSumMWh = pvDataToSend.length > 0 ? pvDataToSend.reduce((a, b) => a + b, 0) / 1000 : 0;
+  console.log('🔋 Calling fetchSizingVariants with settings-based config...');
+  console.log(`📊 DEBUG tryFetchSizingVariantsWithSettings: pvData=${pvDataToSend.length} values, sum=${pvSumMWh.toFixed(2)} MWh`);
+  console.log(`📊 DEBUG tryFetchSizingVariantsWithSettings: consumptionValues=${consumptionValues?.length} values`);
+  if (pvDataToSend.length === 0) {
+    console.error('❌ CRITICAL: pvData is EMPTY in tryFetchSizingVariantsWithSettings! This will cause total_pv_mwh=0!');
+    console.log('📊 DEBUG: window.sharedData.pvData =', window.sharedData?.pvData);
+    console.log('📊 DEBUG: window.sharedData.analysisResults.pv_profile =', window.sharedData?.analysisResults?.pv_profile?.length);
+    console.log('📊 DEBUG: window.sharedData.masterVariant.capacity =', window.sharedData?.masterVariant?.capacity);
+  }
+  try {
+    await fetchSizingVariants(pvDataToSend, consumptionValues, bessConfig);
+  } catch (error) {
+    console.error('❌ tryFetchSizingVariantsWithSettings error:', error);
+    // Show error in UI
+    if (mainCard) {
+      mainCard.innerHTML = `
+        <div class="bess-header">
+          <div class="bess-icon-box">🔋</div>
+          <div class="bess-title">
+            <h2>Magazyn Energii BESS</h2>
+            <div class="bess-subtitle" style="color: #e74c3c;">❌ Błąd podczas obliczania</div>
+          </div>
+        </div>
+        <div style="padding: 20px; text-align: center; color: #e74c3c;">
+          <p>${error.message || 'Nieznany błąd'}</p>
+        </div>
+      `;
+    }
+  }
+}
+
+// ============================================
+// v3.0: BESS ADVISOR DISPLAY
+// ============================================
+
+/**
+ * Helper function to safely set text content of an element by ID
+ * @param {string} id - Element ID
+ * @param {string} text - Text to set
+ */
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.textContent = text;
+  }
+}
+
+/**
+ * Display BESS Advisor response from API
+ * Shows SKU recommendations, alternatives, savings comparison, tariff advice
+ * @param {object} advisorResponse - advisor_response from /sizing endpoint
+ */
+function displayAdvisorResponse(advisorResponse) {
+  const section = document.getElementById('advisorSection');
+  if (!section) {
+    console.log('⚠️ Advisor section not found in DOM');
+    return;
+  }
+
+  if (!advisorResponse) {
+    section.style.display = 'none';
+    return;
+  }
+
+  console.log('🤖 Displaying BESS Advisor response:', advisorResponse);
+  section.style.display = 'block';
+
+  // === 1. Recommended SKU Summary ===
+  const rv = advisorResponse.recommended_variant || {};
+  const sku = rv.sku || {};
+
+  setText('advisorSkuPower', `${sku.power_kw || 0} kW`);
+  setText('advisorSkuEnergy', `${sku.energy_kwh || 0} kWh`);
+  setText('advisorVariantLabel', rv.variant_label || rv.variant || '-');
+
+  // Economics
+  const econ = advisorResponse.economics || {};
+  setText('advisorCapex', formatNumber(sku.power_kw * 300 + sku.energy_kwh * 1500));
+  setText('advisorNpv', formatNumber(econ.npv_pln || 0));
+  setText('advisorIrr', econ.irr_pct ? `IRR: ${econ.irr_pct.toFixed(1)}%` : 'IRR: N/A');
+
+  // Re-evaluated economics delta
+  const reEval = advisorResponse.re_evaluated_economics;
+  if (reEval) {
+    const delta = reEval.delta || {};
+    const capexDelta = delta.capex_increase_pln || 0;
+    const sign = capexDelta >= 0 ? '+' : '';
+    setText('advisorCapexDelta', `${sign}${formatNumber(capexDelta)} PLN vs opt.`);
+  } else {
+    setText('advisorCapexDelta', '-');
+  }
+
+  // === 2. SKU Snap Status ===
+  const statusCard = document.getElementById('advisorStatusCard');
+  const statusIcon = document.getElementById('advisorStatusIcon');
+  const isSnapped = rv.is_sku_snapped;
+
+  if (isSnapped) {
+    statusCard.className = 'stat-card bess-orange';
+    statusIcon.textContent = '⚠️';
+    setText('advisorSnapStatus', 'SKU-snapped');
+    setText('advisorSnapDetail', 'Parametry dostosowane do rynku');
+  } else {
+    statusCard.className = 'stat-card bess-green';
+    statusIcon.textContent = '✅';
+    setText('advisorSnapStatus', 'Dopasowany');
+    setText('advisorSnapDetail', 'SKU zgodne z optymalizacją');
+  }
+
+  // === 3. Alternatives Table ===
+  const alternatives = advisorResponse.alternatives || [];
+  const tbody = document.getElementById('advisorAlternativesBody');
+  if (tbody) {
+    tbody.innerHTML = alternatives.map(alt => `
+      <tr>
+        <td>${alt.pcs_model || '-'}</td>
+        <td>${alt.power_kw || 0}</td>
+        <td>${alt.energy_kwh || 0}</td>
+        <td>${(alt.duration_h || 0).toFixed(1)}h</td>
+        <td>${alt.battery_config || '-'}</td>
+      </tr>
+    `).join('');
+  }
+
+  // === 4. Savings Comparison ===
+  const sc = advisorResponse.savings_comparison;
+  const savingsGrid = document.getElementById('savingsComparisonGrid');
+  if (sc && savingsGrid) {
+    savingsGrid.innerHTML = `
+      <div class="savings-card pv-only">
+        <div class="savings-icon">☀️</div>
+        <div class="savings-label">PV-only</div>
+        <div class="savings-value">${formatNumber(sc.pv_only?.savings_pln || 0)} PLN/rok</div>
+        <div class="savings-detail">Self-consumption: ${(sc.pv_only?.self_consumption_pct || 0).toFixed(0)}%</div>
+      </div>
+      <div class="savings-card pv-bess">
+        <div class="savings-icon">🔋</div>
+        <div class="savings-label">PV + BESS</div>
+        <div class="savings-value">${formatNumber(sc.pv_bess?.savings_pln || 0)} PLN/rok</div>
+        <div class="savings-detail">+${formatNumber(sc.pv_bess?.additional_savings_pln || 0)} vs PV-only</div>
+      </div>
+      <div class="savings-card pv-bess-arb ${sc.summary?.best_scenario === 'pv_bess_arbitrage' ? 'best' : ''}">
+        <div class="savings-icon">💹</div>
+        <div class="savings-label">PV + BESS + Arb</div>
+        <div class="savings-value">${formatNumber(sc.pv_bess_arbitrage?.savings_pln || 0)} PLN/rok</div>
+        <div class="savings-detail">Arb: +${formatNumber(sc.pv_bess_arbitrage?.arbitrage_revenue_pln || 0)} PLN</div>
+      </div>
+    `;
+  }
+
+  // === 5. Tariff Recommendation (only if present) ===
+  const tariffSection = document.getElementById('advisorTariff');
+  const tariffContent = document.getElementById('advisorTariffContent');
+  const tr = advisorResponse.tariff_recommendation;
+
+  if (tr && tariffSection && tariffContent) {
+    tariffSection.style.display = 'block';
+    const confidenceEmoji = tr.confidence === 'high' ? '✅' : tr.confidence === 'medium' ? '⚡' : '❓';
+    tariffContent.innerHTML = `
+      <div class="tariff-recommendation">
+        <p><strong>Aktualna taryfa:</strong> ${tr.current_tariff}</p>
+        <p><strong>Rekomendowana:</strong> ${tr.recommended_tariff}</p>
+        <p>${confidenceEmoji} ${tr.recommendation}</p>
+        <p><em>Potencjalne oszczędności: ~${formatNumber(tr.annual_savings_delta_pln || 0)} PLN/rok</em></p>
+      </div>
+    `;
+  } else if (tariffSection) {
+    tariffSection.style.display = 'none';
+  }
+
+  // === 6. Warnings ===
+  const warnings = advisorResponse.warnings || [];
+  const warningsSection = document.getElementById('advisorWarnings');
+  const warningsList = document.getElementById('advisorWarningsList');
+
+  if (warnings.length > 0 && warningsSection && warningsList) {
+    warningsSection.style.display = 'block';
+    warningsList.innerHTML = warnings.map(w => `<li>${w}</li>`).join('');
+  } else if (warningsSection) {
+    warningsSection.style.display = 'none';
+  }
+
+  // === 7. Assumptions (collapsible) ===
+  const assumptions = advisorResponse.assumptions;
+  const assumptionsContent = document.getElementById('advisorAssumptionsContent');
+
+  if (assumptions && assumptionsContent) {
+    assumptionsContent.innerHTML = `
+      <ul class="assumptions-list">
+        <li>Stopa dyskontowa: ${(assumptions.discount_rate * 100).toFixed(1)}%</li>
+        <li>Horyzont analizy: ${assumptions.analysis_years} lat</li>
+        <li>CAPEX: ${assumptions.capex_per_kwh} PLN/kWh + ${assumptions.capex_per_kw} PLN/kW</li>
+        <li>Sprawność roundtrip: ${(assumptions.roundtrip_efficiency * 100).toFixed(0)}%</li>
+        <li>Degradacja roczna: ${assumptions.annual_degradation_pct}%</li>
+        <li>SOC window: ${assumptions.soc_window}</li>
+        <li>EOL capacity: ${(assumptions.eol_capacity_factor * 100).toFixed(0)}%</li>
+      </ul>
+    `;
+  }
+}
+
+// Helper to format numbers with thousands separator
+function formatNumber(num) {
+  if (num === null || num === undefined) return '-';
+  return Math.round(num).toLocaleString('pl-PL');
 }
 
 // Export new functions
@@ -2990,6 +4930,7 @@ window.displayDegradationBudget = displayDegradationBudget;
 window.displayStackedModeInfo = displayStackedModeInfo;
 window.fetchSizingVariants = fetchSizingVariants;
 window.tryFetchSizingVariants = tryFetchSizingVariants;
+window.displayAdvisorResponse = displayAdvisorResponse;
 
 // ============================================
 // SENSITIVITY ANALYSIS (TORNADO CHART)
@@ -3065,7 +5006,9 @@ async function runSensitivityAnalysis() {
 
     console.log('📊 Sensitivity: Generated profiles - PV sum:', pvData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh, Load sum:', loadData.reduce((a, b) => a + b, 0).toFixed(0), 'kWh');
 
-    // Build request
+    // Build request with params from Settings
+    // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+    const bessAnalysisYears = Math.min(settings.analysisPeriod || 15, 10);
     const request = {
       pv_generation_kw: pvData,
       load_kw: loadData,
@@ -3078,10 +5021,13 @@ async function runSensitivityAnalysis() {
       mode: settings.bessPeakShavingEnabled ? 'stacked' : 'pv_surplus',
       capex_per_kwh: settings.bessCapexPerKwh || 1500,
       capex_per_kw: settings.bessCapexPerKw || 300,
-      opex_pct_per_year: 0.015,
-      discount_rate: 0.07,
-      analysis_years: settings.bessLifetimeYears || 15,
+      opex_pct_per_year: (settings.bessOpexPctPerYear || 1.5) / 100,  // Convert % to decimal
+      discount_rate: (settings.discountRate || 7) / 100,
+      analysis_years: bessAnalysisYears,
       import_price_pln_mwh: settings.energyPurchasePrice || 800,
+      // Degradation params from Settings
+      bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,
+      bess_degradation_pct_per_year: settings.bessDegradationPctPerYear || 2.0,
     };
 
     // Call API via nginx proxy
@@ -3525,13 +5471,14 @@ function collectArbitrageConfig() {
     const group = settings.bessOsdTariffGroup || 'C12a';
     const year = new Date().getFullYear();
 
-    // Map operator to full name for tariff_id
+    // Map operator to tariff_id prefix (must match bess-dispatch tariff presets)
+    // Available presets: pge_c12a_2026, tauron_c12a_2026, energa_c12a_2026, etc.
     const operatorMap = {
-      'pge': 'pge_dystrybucja',
-      'tauron': 'tauron_dystrybucja',
-      'energa': 'energa-operator',
-      'enea': 'enea_operator',
-      'innogy': 'stoen_operator'
+      'pge': 'pge',
+      'tauron': 'tauron',
+      'energa': 'energa',
+      'enea': 'enea',
+      'innogy': 'stoen'
     };
 
     const tariffId = `${operatorMap[operator] || operator}_${group.toLowerCase()}_${year}`;
@@ -3547,7 +5494,7 @@ function collectArbitrageConfig() {
       enabled: true,
       type: 'osd_tariff',
       tariff_id: tariffId,
-      strategy: 'tou_zones',  // Time-of-Use zones strategy
+      strategy: 'zone_based',  // Time-of-Use zones strategy (matches backend ArbitrageStrategy.ZONE_BASED)
       peak_rate_pln_kwh: settings.bessOsdPeakRate || 0.75,
       offpeak_rate_pln_kwh: settings.bessOsdOffPeakRate || 0.45,
       min_spread_pln_kwh: settings.bessOsdMinSpread || 0.15,
@@ -3704,6 +5651,14 @@ async function applyAdvancedConfig() {
       throw new Error('Nie można zbudować żądania - brak danych');
     }
 
+    // DEBUG: Log mode and peak shaving setting
+    console.log('🔧 DEBUG buildSizingRequest:', {
+      mode: request.mode,
+      bessPeakShavingEnabled: systemSettings?.bessPeakShavingEnabled,
+      topology: advancedConfig?.topology,
+      hasStackedParams: !!request.stacked_params
+    });
+
     // Call bess-dispatch service via nginx proxy (v2.7.0: use compat=clean)
     const response = await fetch(buildBessApiUrl('/sizing'), {
       method: 'POST',
@@ -3721,6 +5676,12 @@ async function applyAdvancedConfig() {
 
     const result = await response.json();
     console.log('📊 Sizing result with new config:', result);
+
+    // DEBUG: Log stacked_decomposition presence
+    console.log('🔧 DEBUG stacked_decomposition:', {
+      hasStackedDecomposition: !!result.stacked_decomposition,
+      decomposition: result.stacked_decomposition
+    });
 
     // Update display with new results
     updateDisplayWithSizingResult(result);
@@ -3834,9 +5795,26 @@ function buildSizingRequest(variantData) {
   const totalProduction = variantData.production || 0; // For LOAD_ONLY, production is 0
   const totalLoad = variantData.consumption || variantData.load || 500000; // Default 500 MWh
 
+  // *** FALLBACK: Try to get hourly load data from localStorage if not in variantData ***
+  let hourlyLoadSource = variantData.hourlyLoad;
+  if (!hourlyLoadSource || !Array.isArray(hourlyLoadSource) || hourlyLoadSource.length === 0) {
+    try {
+      const consumptionDataStr = localStorage.getItem('consumptionData');
+      if (consumptionDataStr) {
+        const consumptionData = JSON.parse(consumptionDataStr);
+        hourlyLoadSource = consumptionData.hourlyData?.values || consumptionData.values || null;
+        if (hourlyLoadSource) {
+          console.log('📊 buildSizingRequest - Loaded hourly load from localStorage:', hourlyLoadSource.length, 'points');
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load consumptionData from localStorage:', e);
+    }
+  }
+
   // Check if we have real hourly load data (from consumption module)
-  if (variantData.hourlyLoad && Array.isArray(variantData.hourlyLoad) && variantData.hourlyLoad.length > 0) {
-    const rawData = variantData.hourlyLoad;
+  if (hourlyLoadSource && Array.isArray(hourlyLoadSource) && hourlyLoadSource.length > 0) {
+    const rawData = hourlyLoadSource;
 
     if (rawData.length >= 35040) {
       // 15-min data (35040 points/year) - aggregate to hourly by summing groups of 4
@@ -3906,23 +5884,63 @@ function buildSizingRequest(variantData) {
     pvData = new Array(hours).fill(0);
     console.log('📊 LOAD_ONLY mode: PV array set to zeros');
   } else {
-    // Generate PV profile for PV+BESS mode
-    const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
-
-    for (let h = 0; h < hours; h++) {
-      const hourOfDay = h % 24;
-      const dayOfYear = Math.floor(h / 24);
-
-      // PV: realistic profile with daytime production and seasonal variation
-      let pvPower = 0;
-      if (hourOfDay >= 6 && hourOfDay <= 18) {
-        const solarFactor = Math.sin((hourOfDay - 6) * Math.PI / 12);
-        // Seasonal: peak in June (day 172), min in December
-        const seasonFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos((dayOfYear - 172) * 2 * Math.PI / 365));
-        // Peak power for 1 MWp ~800-1000 kW
-        pvPower = 900 * solarFactor * seasonFactor * pvScaleFactor;
+    // *** FALLBACK: Try to get real PV data from localStorage ***
+    let realPvData = null;
+    try {
+      const productionDataStr = localStorage.getItem('productionData');
+      if (productionDataStr) {
+        const productionData = JSON.parse(productionDataStr);
+        realPvData = productionData.hourlyData || productionData.values || null;
+        if (realPvData && realPvData.length >= 8760) {
+          pvData = realPvData.slice(0, 8760);
+          console.log('📊 buildSizingRequest - Using REAL PV data from localStorage:', pvData.length, 'points, sum:', (pvData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+        } else {
+          realPvData = null;
+        }
       }
-      pvData.push(Math.max(0, pvPower));
+    } catch (e) {
+      console.warn('Failed to load productionData from localStorage:', e);
+    }
+
+    // Also try analysisResults for pv_profile
+    if (!realPvData || pvData.length === 0) {
+      try {
+        const analysisStr = localStorage.getItem('analysisResults');
+        if (analysisStr) {
+          const analysisResults = JSON.parse(analysisStr);
+          const currentVar = localStorage.getItem('currentVariant') || 'D';
+          const variant = analysisResults.key_variants?.[currentVar];
+          if (variant?.hourly_production?.length >= 8760) {
+            pvData = variant.hourly_production.slice(0, 8760);
+            console.log('📊 buildSizingRequest - Using PVGIS hourly_production from analysisResults:', pvData.length, 'points, sum:', (pvData.reduce((a,b) => a+b, 0)/1000).toFixed(0), 'MWh');
+            realPvData = pvData;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load analysisResults for PV data:', e);
+      }
+    }
+
+    // Generate synthetic PV profile only if no real data available
+    if (!realPvData || pvData.length === 0) {
+      const pvScaleFactor = totalProduction / 1127000; // Base 1 MWp production ~1127 MWh
+      console.log('📊 buildSizingRequest - Generating synthetic PV profile:', { totalProduction, pvScaleFactor });
+
+      for (let h = 0; h < hours; h++) {
+        const hourOfDay = h % 24;
+        const dayOfYear = Math.floor(h / 24);
+
+        // PV: realistic profile with daytime production and seasonal variation
+        let pvPower = 0;
+        if (hourOfDay >= 6 && hourOfDay <= 18) {
+          const solarFactor = Math.sin((hourOfDay - 6) * Math.PI / 12);
+          // Seasonal: peak in June (day 172), min in December
+          const seasonFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos((dayOfYear - 172) * 2 * Math.PI / 365));
+          // Peak power for 1 MWp ~800-1000 kW
+          pvPower = 900 * solarFactor * seasonFactor * pvScaleFactor;
+        }
+        pvData.push(Math.max(0, pvPower));
+      }
     }
   }
 
@@ -3939,6 +5957,8 @@ function buildSizingRequest(variantData) {
     mode = 'stacked';
   }
 
+  // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+  const bessAnalysisYears = Math.min(settings.analysisPeriod || 15, 10);
   const request = {
     pv_generation_kw: effectivePv,
     load_kw: loadData,
@@ -3951,17 +5971,21 @@ function buildSizingRequest(variantData) {
     power_steps: 15,
     durations_h: [1.0, 2.0, 4.0],
 
-    // Battery params
+    // Battery params from Settings
     roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.9,
     soc_min: settings.bessSocMin || 0.1,
     soc_max: settings.bessSocMax || 0.9,
 
-    // Economics
+    // Economics from Settings
     capex_per_kwh: settings.bessCapexPerKwh || 1500,
     capex_per_kw: settings.bessCapexPerKw || 300,
-    opex_pct_per_year: 0.015,
-    discount_rate: 0.07,
-    analysis_years: settings.bessLifetimeYears || 15,
+    opex_pct_per_year: (settings.bessOpexPctPerYear || 1.5) / 100,  // Convert % to decimal
+    discount_rate: (settings.discountRate || 7) / 100,
+    analysis_years: bessAnalysisYears,
+
+    // Degradation from Settings
+    bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,
+    bess_degradation_pct_per_year: settings.bessDegradationPctPerYear || 2.0,
 
     // Pricing - check if ToU tariff is configured
     prices: buildPriceConfig(settings),
@@ -4036,6 +6060,19 @@ function buildSizingRequest(variantData) {
   request.include_battery_trace = true;
   request.include_invariants = true;
 
+  // v3.1.0: Add finance_config for cashflow/sensitivity analysis
+  request.finance_config = {
+    horizon_years: bessAnalysisYears,
+    discount_rate: (settings.discountRate || 7) / 100,
+    include_cashflow_timeseries: true,
+    discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+    bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,
+    bess_degradation_pct_per_year: settings.bessDegradationPctPerYear || 2.0,
+    pv_degradation_pct_per_year: settings.degradationRate || 0.4,
+    energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+    capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+  };
+
   return request;
 }
 
@@ -4079,6 +6116,21 @@ function updateDisplayWithSizingResult(result) {
   // Display sizing variants
   displaySizingVariants(result);
 
+  // v3.0: Display BESS Advisor response (if available)
+  if (result.advisor_response) {
+    displayAdvisorResponse(result.advisor_response);
+  }
+
+  // v3.1.0: Display finance section (cashflow, IRR, sensitivity)
+  displayFinanceSection(result);
+
+  // v3.1.0: Display Stacked Decomposition (Peak Shaving + Arbitrage breakdown)
+  console.log('🔧 DEBUG updateDisplayWithSizingResult - checking stacked_decomposition:', !!result.stacked_decomposition);
+  if (result.stacked_decomposition) {
+    console.log('🔧 DEBUG calling displayStackedDecomposition with:', result.stacked_decomposition);
+    displayStackedDecomposition(result.stacked_decomposition);
+  }
+
   // Update recommended variant info
   if (result.recommended_variant) {
     console.log('📊 Recommended variant:', result.recommended_variant);
@@ -4095,11 +6147,180 @@ function updateDisplayWithSizingResult(result) {
   // v2.2.0: Update dispatch trace display
   const recommended = result.variants?.find(v => v.is_recommended) || result.variants?.[0];
   if (recommended) {
-    const batteryTrace = recommended.battery_trace || null;
+    const batteryTrace = recommended.battery_trace || recommended.dispatch_summary?.battery_trace || null;
     const cycleSummary = recommended.cycle_summary || recommended.dispatch_summary?.cycle_summary || null;
     const invariants = recommended.invariants || recommended.dispatch_summary?.invariants || null;
     updateDispatchTraceDisplay(batteryTrace, cycleSummary, invariants);
+
+    // NEW: Update BESS vs Load comparison section
+    updateBessLoadComparison(recommended, result);
   }
+}
+
+/**
+ * Update BESS vs Load Comparison section
+ * Shows visual comparison of BESS power/energy vs factory load profile
+ *
+ * @param {object} recommended - Recommended BESS variant
+ * @param {object} sizingResult - Full sizing result from API
+ */
+function updateBessLoadComparison(recommended, sizingResult) {
+  const section = document.getElementById('bessLoadComparisonSection');
+  if (!section) return;
+
+  // Get BESS parameters
+  const bessPowerKw = recommended.power_kw || 0;
+  const bessEnergyKwh = recommended.energy_kwh || 0;
+
+  // Get load profile data from various sources
+  let loadProfile = [];
+  let totalLoadKwh = 0;
+  let peakLoadKw = 0;
+  let avgLoadKw = 0;
+
+  // Try to get load data from sizing result
+  if (sizingResult.request_summary?.load_kw && sizingResult.request_summary.load_kw.length > 0) {
+    loadProfile = sizingResult.request_summary.load_kw;
+  } else if (window.loadOnlyConsumptionData?.hourlyData?.values) {
+    loadProfile = window.loadOnlyConsumptionData.hourlyData.values;
+  } else if (lastSizingResult?.request_summary?.load_kw) {
+    loadProfile = lastSizingResult.request_summary.load_kw;
+  }
+
+  // Calculate load statistics
+  if (loadProfile.length > 0) {
+    peakLoadKw = Math.max(...loadProfile);
+    avgLoadKw = loadProfile.reduce((a, b) => a + b, 0) / loadProfile.length;
+    totalLoadKwh = loadProfile.reduce((a, b) => a + b, 0); // Assuming hourly data
+  } else {
+    // Fallback to dispatch summary
+    totalLoadKwh = recommended.dispatch_summary?.total_load_kwh ||
+                   sizingResult.total_load_mwh * 1000 || 0;
+    avgLoadKw = totalLoadKwh / 8760; // Approximate average
+    peakLoadKw = avgLoadKw * 2.5; // Rough estimate
+  }
+
+  // Get PV power if available
+  const pvPowerKwp = sizingResult.request_summary?.pv_power_kwp ||
+                     window.currentData?.pvConfig?.power_kwp || 0;
+
+  // Calculate daily consumption
+  const dailyConsumptionKwh = totalLoadKwh / 365;
+
+  // Show section if we have data
+  if (bessPowerKw > 0 && (peakLoadKw > 0 || totalLoadKwh > 0)) {
+    section.style.display = 'block';
+  } else {
+    section.style.display = 'none';
+    return;
+  }
+
+  // Calculate comparison metrics
+  const peakCoveragePct = peakLoadKw > 0 ? (bessPowerKw / peakLoadKw) * 100 : 0;
+  const peakAutonomyHours = peakLoadKw > 0 ? bessEnergyKwh / peakLoadKw : 0;
+  const energyVsDailyPct = dailyConsumptionKwh > 0 ? (bessEnergyKwh / dailyConsumptionKwh) * 100 : 0;
+
+  // Peak reduction potential (BESS can reduce peak by its power rating)
+  const peakReductionKw = Math.min(bessPowerKw, peakLoadKw * 0.3); // Max 30% reduction realistic
+
+  // Find max value for bar scaling
+  const maxValue = Math.max(bessPowerKw, peakLoadKw, avgLoadKw, pvPowerKwp);
+
+  // Update visual bars
+  const updateBar = (id, value, maxVal) => {
+    const bar = document.getElementById(id);
+    if (bar) {
+      const pct = maxVal > 0 ? Math.min(100, (value / maxVal) * 100) : 0;
+      bar.style.width = `${pct}%`;
+    }
+  };
+
+  const updateBarValue = (id, value, unit = 'kW') => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = `${formatNumberEU(value, 0)} ${unit}`;
+  };
+
+  updateBar('bessPowerBar', bessPowerKw, maxValue);
+  updateBarValue('bessPowerBarValue', bessPowerKw);
+
+  updateBar('peakLoadBar', peakLoadKw, maxValue);
+  updateBarValue('peakLoadBarValue', peakLoadKw);
+
+  updateBar('avgLoadBar', avgLoadKw, maxValue);
+  updateBarValue('avgLoadBarValue', avgLoadKw);
+
+  // PV row (show if PV exists)
+  const pvRow = document.getElementById('pvPowerRow');
+  if (pvRow) {
+    if (pvPowerKwp > 0) {
+      pvRow.style.display = 'grid';
+      updateBar('pvPowerBar', pvPowerKwp, maxValue);
+      updateBarValue('pvPowerBarValue', pvPowerKwp, 'kWp');
+    } else {
+      pvRow.style.display = 'none';
+    }
+  }
+
+  // Update metrics
+  setElementText('peakCoveragePercent', `${formatNumberEU(peakCoveragePct, 0)}%`);
+  setElementText('peakCoverageDetail', `${formatNumberEU(bessPowerKw, 0)} kW / ${formatNumberEU(peakLoadKw, 0)} kW`);
+
+  setElementText('peakAutonomy', `${formatNumberEU(peakAutonomyHours, 1)}h`);
+  setElementText('peakAutonomyDetail', `${formatNumberEU(bessEnergyKwh, 0)} kWh przy szczycie`);
+
+  setElementText('energyVsConsumption', `${formatNumberEU(energyVsDailyPct, 0)}%`);
+  setElementText('energyVsConsumptionDetail', `${formatNumberEU(bessEnergyKwh, 0)} kWh / ${formatNumberEU(dailyConsumptionKwh, 0)} kWh/dzień`);
+
+  setElementText('peakReductionKw', `${formatNumberEU(peakReductionKw, 0)} kW`);
+  setElementText('peakReductionDetail', `Do ${formatNumberEU(peakLoadKw - peakReductionKw, 0)} kW`);
+
+  // Determine sizing fit quality
+  const indicator = document.getElementById('sizingFitIndicator');
+  const badge = document.getElementById('sizingFitBadge');
+  const fitText = document.getElementById('sizingFitText');
+  const explanation = document.getElementById('sizingFitExplanation');
+
+  if (indicator && badge && fitText && explanation) {
+    indicator.classList.remove('warning', 'danger');
+
+    if (peakCoveragePct >= 80 && peakCoveragePct <= 150) {
+      // Optimal sizing
+      badge.querySelector('.fit-icon').textContent = '✓';
+      fitText.textContent = 'Dobór optymalny';
+      explanation.textContent = `BESS pokrywa ${formatNumberEU(peakCoveragePct, 0)}% mocy szczytowej. ` +
+        `Autonomia ${formatNumberEU(peakAutonomyHours, 1)}h przy pełnym obciążeniu.`;
+    } else if (peakCoveragePct >= 50 && peakCoveragePct < 80) {
+      // Undersized
+      indicator.classList.add('warning');
+      badge.querySelector('.fit-icon').textContent = '⚠';
+      fitText.textContent = 'BESS może być niedowymiarowany';
+      explanation.textContent = `BESS pokrywa tylko ${formatNumberEU(peakCoveragePct, 0)}% mocy szczytowej. ` +
+        `Rozważ większą moc dla efektywnego peak shavingu.`;
+    } else if (peakCoveragePct > 150) {
+      // Oversized
+      indicator.classList.add('warning');
+      badge.querySelector('.fit-icon').textContent = '⚠';
+      fitText.textContent = 'BESS może być przewymiarowany';
+      explanation.textContent = `BESS znacznie przekracza zapotrzebowanie (${formatNumberEU(peakCoveragePct, 0)}%). ` +
+        `Sprawdź czy strategia arbitrażu uzasadnia większy rozmiar.`;
+    } else {
+      // Significantly undersized
+      indicator.classList.add('danger');
+      badge.querySelector('.fit-icon').textContent = '✗';
+      fitText.textContent = 'BESS znacznie niedowymiarowany';
+      explanation.textContent = `BESS pokrywa tylko ${formatNumberEU(peakCoveragePct, 0)}% mocy szczytowej. ` +
+        `Potrzebna znacznie większa moc dla efektywnej pracy.`;
+    }
+  }
+
+  console.log('📊 BESS vs Load comparison updated:', {
+    bessPower: bessPowerKw,
+    bessEnergy: bessEnergyKwh,
+    peakLoad: peakLoadKw,
+    avgLoad: avgLoadKw,
+    peakCoverage: peakCoveragePct,
+    autonomy: peakAutonomyHours
+  });
 }
 
 /**
@@ -6105,7 +8326,7 @@ async function refreshRunList() {
       }
     }
 
-    const response = await fetch(`http://localhost:8031/runs?${params.toString()}`);
+    const response = await fetch(`/api/bess-dispatch/runs?${params.toString()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const data = await response.json();
@@ -6296,7 +8517,7 @@ async function selectRun(runId) {
 
   // Fetch full run details
   try {
-    const response = await fetch(`http://localhost:8031/runs/${runId}`);
+    const response = await fetch(`/api/bess-dispatch/runs/${runId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const run = await response.json();
@@ -6377,7 +8598,7 @@ async function saveRunMetadata() {
   try {
     showRunMetadataStatus('Zapisywanie...', 'info');
 
-    const response = await fetch(`http://localhost:8031/runs/${runExplorerState.selectedRunId}`, {
+    const response = await fetch(`/api/bess-dispatch/runs/${runExplorerState.selectedRunId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -6925,7 +9146,7 @@ async function runScenarioValidation() {
     };
 
     // Call validation endpoint (v2.7.0: use compat=clean)
-    const apiUrl = BESS_CONFIG?.apiBaseUrl || 'http://localhost:8031';
+    const apiUrl = BESS_CONFIG?.apiBaseUrl || '/api/bess-dispatch';
     const response = await fetch(`${apiUrl}/validate/sizing?compat=${BESS_API_CONFIG.compatMode}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7420,7 +9641,7 @@ async function downloadScenarioRepro() {
   }
 
   try {
-    const response = await fetch(`/runs/${runId}/repro.zip`);
+    const response = await fetch(`/api/bess-dispatch/runs/${runId}/repro.zip`);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -7759,7 +9980,7 @@ async function refreshTariffPresets() {
   select.innerHTML = '<option value="">Ladowanie...</option>';
 
   try {
-    const response = await fetch(getApiUrl('/api/bess-dispatch/tariffs'));
+    const response = await fetch('/api/bess-dispatch/tariffs');
     if (!response.ok) {
       throw new Error('Failed to fetch tariffs');
     }
@@ -7918,7 +10139,7 @@ async function previewPrices() {
       request.price_timeseries_override = priceOverrideData;
     }
 
-    const response = await fetch(getApiUrl('/api/bess-dispatch/pricing/preview'), {
+    const response = await fetch('/api/bess-dispatch/pricing/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -8099,11 +10320,18 @@ function updateDispatchTraceDisplay(batteryTrace, cycleSummary, invariants) {
   console.log('[DispatchTrace] Updating display:', { batteryTrace, cycleSummary, invariants });
 
   currentBatteryTrace = batteryTrace;
+  // Also set on window for animation access
+  window.currentBatteryTrace = batteryTrace;
 
   // Update SOC chart
   if (batteryTrace && batteryTrace.soc_kwh && batteryTrace.soc_kwh.length > 0) {
     updateSocChart(batteryTrace);
     updatePowerChart(batteryTrace);
+
+    // Reinitialize animation with real battery_trace data
+    console.log('🎬 Battery trace received - reinitializing animation with real data');
+    bessAnimHourlyData = []; // Force reinit
+    initBessAnimation();
 
     // Enable export button
     const exportBtn = document.getElementById('exportTraceBtn');
@@ -8471,7 +10699,7 @@ async function loadAvailableRuns() {
 
   try {
     // v3.7.0: Use project-scoped URL if available
-    let url = '/runs?limit=50';
+    let url = '/api/bess-dispatch/runs?limit=50';
     if (typeof getCurrentProjectId === 'function') {
       const projectId = getCurrentProjectId();
       if (projectId) {
