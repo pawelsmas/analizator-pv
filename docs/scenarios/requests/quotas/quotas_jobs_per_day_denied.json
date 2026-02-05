@@ -1,0 +1,23 @@
+{
+  "endpoint": "POST /api/bess-dispatch/sizing",
+  "description": "Sizing request when jobs_per_day quota exceeded",
+  "auth": {
+    "type": "jwt",
+    "role": "editor",
+    "tenant_id": "quota-test-tenant",
+    "plan_id": "free"
+  },
+  "setup": {
+    "usage": {
+      "jobs_per_day": 10
+    }
+  },
+  "body": {
+    "pv_profile_kwh": [1, 2, 3],
+    "load_profile_kwh": [2, 3, 4],
+    "tariff_config": {
+      "import_price_pln_mwh": 500,
+      "export_price_pln_mwh": 200
+    }
+  }
+}

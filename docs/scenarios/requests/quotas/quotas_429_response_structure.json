@@ -1,0 +1,19 @@
+{
+  "endpoint": "POST /api/bess-dispatch/sizing",
+  "description": "Verify 429 QUOTA_EXCEEDED response structure",
+  "auth": {
+    "type": "jwt",
+    "role": "editor",
+    "tenant_id": "429-test-tenant",
+    "plan_id": "free"
+  },
+  "setup": {
+    "usage": {
+      "jobs_per_day": 10
+    }
+  },
+  "body": {
+    "pv_profile_kwh": [1, 2, 3],
+    "load_profile_kwh": [2, 3, 4]
+  }
+}

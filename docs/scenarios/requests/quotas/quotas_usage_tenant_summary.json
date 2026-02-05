@@ -1,0 +1,9 @@
+{
+  "endpoint": "GET /api/bess-dispatch/usage",
+  "description": "Get tenant usage summary",
+  "auth": {
+    "type": "jwt",
+    "role": "admin",
+    "tenant_id": "usage-test-tenant"
+  }
+}

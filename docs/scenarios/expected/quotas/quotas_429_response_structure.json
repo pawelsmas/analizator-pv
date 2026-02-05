@@ -1,0 +1,27 @@
+{
+  "status": 429,
+  "response_shape": {
+    "detail": {
+      "code": "QUOTA_EXCEEDED",
+      "message": "string",
+      "quota_name": "string",
+      "limit": "integer",
+      "used": "integer",
+      "retry_after_seconds": "integer"
+    }
+  },
+  "headers": {
+    "Retry-After": "string"
+  },
+  "assertions": [
+    "response['detail']['code'] == 'QUOTA_EXCEEDED'",
+    "isinstance(response['detail']['message'], str)",
+    "isinstance(response['detail']['quota_name'], str)",
+    "isinstance(response['detail']['limit'], int)",
+    "isinstance(response['detail']['used'], int)",
+    "response['detail']['retry_after_seconds'] > 0",
+    "response['detail']['retry_after_seconds'] <= 86400",
+    "'Retry-After' in headers",
+    "int(headers['Retry-After']) > 0"
+  ]
+}

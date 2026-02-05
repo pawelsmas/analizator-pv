@@ -1,0 +1,24 @@
+{
+  "status": 429,
+  "response_shape": {
+    "detail": {
+      "code": "QUOTA_EXCEEDED",
+      "message": "string",
+      "quota_name": "jobs_per_day",
+      "limit": "integer",
+      "used": "integer",
+      "retry_after_seconds": "integer"
+    }
+  },
+  "headers": {
+    "Retry-After": "string"
+  },
+  "assertions": [
+    "response['detail']['code'] == 'QUOTA_EXCEEDED'",
+    "response['detail']['quota_name'] == 'jobs_per_day'",
+    "response['detail']['limit'] == 10",
+    "response['detail']['used'] == 10",
+    "response['detail']['retry_after_seconds'] > 0",
+    "'Retry-After' in headers"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "assertions": [
+    "response['status'] == 'ok' or 'run_id' in response",
+    "True"
+  ],
+  "description": "Request should succeed even with 1000 jobs used because override=0 means unlimited"
+}

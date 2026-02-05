@@ -1,0 +1,23 @@
+{
+  "status": 200,
+  "response_shape": {
+    "tenant_id": "string",
+    "plan_id": "string",
+    "quotas": [
+      {
+        "quota_name": "string",
+        "limit": "integer",
+        "used": "integer",
+        "usage_pct": "number|null"
+      }
+    ],
+    "reset_at": "string"
+  },
+  "assertions": [
+    "response['tenant_id'] == 'usage-test-tenant'",
+    "isinstance(response['quotas'], list)",
+    "len(response['quotas']) >= 4",
+    "'jobs_per_day' in [q['quota_name'] for q in response['quotas']]",
+    "'reset_at' in response"
+  ]
+}

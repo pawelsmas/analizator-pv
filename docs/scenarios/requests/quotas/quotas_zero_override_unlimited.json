@@ -1,0 +1,25 @@
+{
+  "endpoint": "POST /api/bess-dispatch/sizing",
+  "description": "Verify zero override means unlimited",
+  "auth": {
+    "type": "jwt",
+    "role": "editor",
+    "tenant_id": "unlimited-test-tenant",
+    "plan_id": "free",
+    "project_id": "unlimited-test-project"
+  },
+  "setup": {
+    "project_quota": {
+      "overrides": {
+        "jobs_per_day": 0
+      }
+    },
+    "usage": {
+      "jobs_per_day": 1000
+    }
+  },
+  "body": {
+    "pv_profile_kwh": [1, 2, 3],
+    "load_profile_kwh": [2, 3, 4]
+  }
+}
