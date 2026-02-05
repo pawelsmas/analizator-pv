@@ -263,6 +263,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Rate Limiting Middleware (v3.2.0)
+from rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
