@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend helm-lint helm-template helm-template-dev helm-package
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -232,3 +232,28 @@ guard-no-legacy: ## Check for legacy references in codebase
 	@echo "${BLUE}Checking for legacy references...${RESET}"
 	@python scripts/guards/check_no_legacy.py
 	@echo "${GREEN}✓ No legacy references found${RESET}"
+
+# ===== HELM (v3.5.0) =====
+
+helm-lint: ## Lint Helm chart (uses Docker, no local Helm required)
+	@echo "${BLUE}Linting Helm chart...${RESET}"
+	@docker run --rm -v "$(CURDIR)":/src -w /src alpine/helm:3.14.0 lint deploy/helm/pv-portal
+	@echo "${GREEN}✓ Helm lint passed${RESET}"
+
+helm-template: ## Render Helm chart templates (uses Docker)
+	@echo "${BLUE}Rendering Helm templates...${RESET}"
+	@docker run --rm -v "$(CURDIR)":/src -w /src alpine/helm:3.14.0 template pv-portal deploy/helm/pv-portal
+	@echo "${GREEN}✓ Helm template rendered${RESET}"
+
+helm-template-dev: ## Render Helm templates with dev values
+	@echo "${BLUE}Rendering Helm templates (dev mode)...${RESET}"
+	@docker run --rm -v "$(CURDIR)":/src -w /src alpine/helm:3.14.0 template pv-portal deploy/helm/pv-portal \
+		--set redis.enabled=true \
+		--set redis.embedded.enabled=true \
+		--set database.embedded.enabled=true
+	@echo "${GREEN}✓ Helm template (dev) rendered${RESET}"
+
+helm-package: ## Package Helm chart
+	@echo "${BLUE}Packaging Helm chart...${RESET}"
+	@docker run --rm -v "$(CURDIR)":/src -w /src alpine/helm:3.14.0 package deploy/helm/pv-portal -d dist/
+	@echo "${GREEN}✓ Helm chart packaged to dist/${RESET}"

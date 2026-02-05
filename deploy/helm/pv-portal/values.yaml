@@ -1,0 +1,231 @@
+# Default values for pv-portal
+# This is a YAML-formatted file.
+
+# -----------------------------------------------------------------------------
+# Global settings
+# -----------------------------------------------------------------------------
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# -----------------------------------------------------------------------------
+# API Deployment
+# -----------------------------------------------------------------------------
+api:
+  replicaCount: 1
+
+  image:
+    repository: bess-dispatch
+    tag: ""  # Defaults to appVersion
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8031
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  # Probes
+  livenessProbe:
+    httpGet:
+      path: /api/bess-dispatch/health/live
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /api/bess-dispatch/health/ready
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # Node selector, tolerations, affinity
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Additional environment variables
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# Worker Deployment
+# -----------------------------------------------------------------------------
+worker:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: bess-dispatch
+    tag: ""  # Defaults to appVersion
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+  # Worker-specific settings
+  pollIntervalSeconds: 1
+  lockTimeoutSeconds: 300
+  concurrency: 1
+
+  # Node selector, tolerations, affinity
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Additional environment variables
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+# Ingress
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: pv-portal.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: pv-portal-tls
+  #    hosts:
+  #      - pv-portal.local
+
+# -----------------------------------------------------------------------------
+# Database (PostgreSQL)
+# -----------------------------------------------------------------------------
+database:
+  # Use external database or embedded dev-mode
+  external: true
+  url: ""  # postgresql://user:pass@host:5432/dbname
+
+  # Dev-mode embedded postgres (NOT for production)
+  embedded:
+    enabled: false
+    image: postgres:15-alpine
+    storage: 1Gi
+
+# -----------------------------------------------------------------------------
+# Redis (for HA rate limiting)
+# -----------------------------------------------------------------------------
+redis:
+  enabled: false
+  url: redis://pv-portal-redis:6379/0
+
+  # Dev-mode embedded redis
+  embedded:
+    enabled: false
+    image: redis:7-alpine
+
+# -----------------------------------------------------------------------------
+# Artifact Store (for job artifacts)
+# -----------------------------------------------------------------------------
+artifactStore:
+  # local or s3
+  backend: local
+
+  # Local storage settings
+  local:
+    path: /data/artifacts
+
+  # S3/MinIO settings
+  s3:
+    endpointUrl: ""  # For MinIO: http://minio:9000
+    bucket: pv-portal
+    prefix: artifacts/
+    region: us-east-1
+    # Credentials from secret
+    existingSecret: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+
+# -----------------------------------------------------------------------------
+# MinIO (dev-mode S3-compatible storage)
+# -----------------------------------------------------------------------------
+minio:
+  enabled: false
+  image: minio/minio:latest
+  accessKey: pvoptimizer
+  secretKey: pvoptimizer123
+  bucket: pv-portal
+  storage: 5Gi
+
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
+auth:
+  mode: jwt  # disabled, jwt, api_key
+  jwtSecret: ""  # Generate with: openssl rand -base64 32
+  # Use existing secret for sensitive values
+  existingSecret: ""
+
+# -----------------------------------------------------------------------------
+# Rate Limiting
+# -----------------------------------------------------------------------------
+rateLimit:
+  backend: memory  # memory or redis
+  # Limits per bucket
+  login:
+    maxTokens: 5
+    refillPerSecond: 0.1
+  invite:
+    maxTokens: 10
+    refillPerSecond: 0.05
+  share:
+    maxTokens: 20
+    refillPerSecond: 0.2
+  global:
+    maxTokens: 100
+    refillPerSecond: 10
+
+# -----------------------------------------------------------------------------
+# Observability
+# -----------------------------------------------------------------------------
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# -----------------------------------------------------------------------------
+# Security Context
+# -----------------------------------------------------------------------------
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+# -----------------------------------------------------------------------------
+# Service Account
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

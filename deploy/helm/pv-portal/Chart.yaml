@@ -1,0 +1,21 @@
+apiVersion: v2
+name: pv-portal
+description: PV Portal - BESS Dispatch API and Worker Helm chart
+type: application
+version: 0.1.0
+appVersion: "3.5.0"
+
+maintainers:
+  - name: PV Portal Team
+    email: pvportal@example.com
+
+keywords:
+  - bess
+  - pv
+  - energy
+  - dispatch
+  - sizing
+
+home: https://github.com/pawelsmas/analizator-pv
+sources:
+  - https://github.com/pawelsmas/analizator-pv

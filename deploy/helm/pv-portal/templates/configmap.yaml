@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-config
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+data:
+  # API Configuration
+  API_PORT: "8031"
+  LOG_LEVEL: "INFO"
+
+  # Auth
+  AUTH_MODE: {{ .Values.auth.mode | quote }}
+
+  # Rate Limiting
+  RATE_LIMIT_BACKEND: {{ .Values.rateLimit.backend | quote }}
+  RATE_LIMIT_LOGIN_MAX_TOKENS: {{ .Values.rateLimit.login.maxTokens | quote }}
+  RATE_LIMIT_LOGIN_REFILL_PER_SECOND: {{ .Values.rateLimit.login.refillPerSecond | quote }}
+  RATE_LIMIT_INVITE_MAX_TOKENS: {{ .Values.rateLimit.invite.maxTokens | quote }}
+  RATE_LIMIT_INVITE_REFILL_PER_SECOND: {{ .Values.rateLimit.invite.refillPerSecond | quote }}
+  RATE_LIMIT_SHARE_MAX_TOKENS: {{ .Values.rateLimit.share.maxTokens | quote }}
+  RATE_LIMIT_SHARE_REFILL_PER_SECOND: {{ .Values.rateLimit.share.refillPerSecond | quote }}
+  RATE_LIMIT_GLOBAL_MAX_TOKENS: {{ .Values.rateLimit.global.maxTokens | quote }}
+  RATE_LIMIT_GLOBAL_REFILL_PER_SECOND: {{ .Values.rateLimit.global.refillPerSecond | quote }}
+
+  # Artifact Store
+  ARTIFACT_STORE: {{ include "pv-portal.artifactStoreBackend" . | quote }}
+  {{- if eq .Values.artifactStore.backend "local" }}
+  JOB_ARTIFACTS_DIR: {{ .Values.artifactStore.local.path | quote }}
+  {{- end }}
+  {{- if eq .Values.artifactStore.backend "s3" }}
+  S3_BUCKET: {{ .Values.artifactStore.s3.bucket | quote }}
+  S3_PREFIX: {{ .Values.artifactStore.s3.prefix | quote }}
+  S3_REGION: {{ .Values.artifactStore.s3.region | quote }}
+  {{- if .Values.artifactStore.s3.endpointUrl }}
+  S3_ENDPOINT_URL: {{ .Values.artifactStore.s3.endpointUrl | quote }}
+  {{- end }}
+  {{- end }}
+
+  # Metrics
+  {{- if .Values.metrics.enabled }}
+  METRICS_ENABLED: "true"
+  METRICS_PORT: {{ .Values.metrics.port | quote }}
+  {{- end }}
+
+  # Worker configuration (used by worker deployment)
+  WORKER_POLL_SECONDS: {{ .Values.worker.pollIntervalSeconds | quote }}
+  WORKER_LOCK_TIMEOUT_SECONDS: {{ .Values.worker.lockTimeoutSeconds | quote }}
+  WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
