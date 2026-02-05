@@ -263,13 +263,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# Security Headers Middleware (v3.2.0)
+from http_security import SecurityHeadersMiddleware, get_cors_config
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS (v3.2.0: tightened via environment)
+cors_config = get_cors_config()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_config["allow_origins"],
+    allow_credentials=cors_config["allow_credentials"],
+    allow_methods=cors_config["allow_methods"],
+    allow_headers=cors_config["allow_headers"],
 )
 
 # Request size limit middleware (v2.5.0)
