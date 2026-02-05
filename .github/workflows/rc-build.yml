@@ -32,6 +32,21 @@ jobs:
         run: |
           python -m pytest tests/unit -q --tb=short
 
+      - name: Run async jobs integration pack
+        env:
+          BESS_API_URL: http://localhost:8031
+          TEST_RUN_ID: test-run-for-validation
+        run: |
+          # Start services for integration test
+          docker-compose up -d bess-dispatch bess-dispatch-worker
+          # Wait for services
+          sleep 10
+          # Run jobs pack validation
+          pip install pyyaml
+          python scripts/validate_scenarios.py --pack docs/scenarios/packs/jobs_async_auth.yml
+          # Cleanup
+          docker-compose down
+
       - name: Run contract drift check
         run: |
           python scripts/contracts/export_contracts.py --check

@@ -1,0 +1,242 @@
+# Async Jobs Integration Pack (v3.4.0 PR5)
+# Tests POST /jobs workflow: submit → poll → artifacts
+# Requires worker service to be running
+name: jobs_async_auth
+description: "Async job submission and artifact retrieval integration tests"
+
+# Configuration for job execution
+config:
+  poll_interval_seconds: 1
+  timeout_seconds: 120
+  api_base_url: "${BESS_API_URL:-http://localhost:8031}"
+
+# Test scenarios for async job workflows
+scenarios:
+  # Test 1: Submit report_run job and wait for completion
+  - id: jobs_submit_report_run
+    description: "Submit report_run job and verify artifacts"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+            profile: executive
+            formats:
+              - pdf
+        expect:
+          status_code: 200
+          body:
+            status: queued
+            created: true
+        capture:
+          job_id: "$.job_id"
+
+      - action: wait_job
+        job_id: "${job_id}"
+        timeout_seconds: 60
+        expect:
+          status: succeeded
+
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs/${job_id}/artifacts
+        expect:
+          status_code: 200
+          body:
+            artifacts:
+              - name: report.pdf
+                content_type: application/pdf
+
+  # Test 2: Submit report_portfolio job
+  - id: jobs_submit_report_portfolio
+    description: "Submit report_portfolio job and verify artifacts"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_portfolio
+          payload:
+            run_ids:
+              - "${TEST_RUN_ID}"
+            formats:
+              - pdf
+        expect:
+          status_code: 200
+          body:
+            status: queued
+        capture:
+          job_id: "$.job_id"
+
+      - action: wait_job
+        job_id: "${job_id}"
+        timeout_seconds: 60
+        expect:
+          status: succeeded
+
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs/${job_id}/artifacts
+        expect:
+          status_code: 200
+
+  # Test 3: Cancel a queued job
+  - id: jobs_cancel_queued
+    description: "Submit job and cancel before completion"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+            profile: engineering
+            formats:
+              - pdf
+              - xlsx
+        expect:
+          status_code: 200
+          body:
+            status: queued
+        capture:
+          job_id: "$.job_id"
+
+      - action: http
+        method: POST
+        endpoint: /api/bess-dispatch/jobs/${job_id}/cancel
+        expect:
+          status_code: 200
+          body:
+            status: cancelled
+            cancelled: true
+
+  # Test 4: Get job status after completion
+  - id: jobs_get_status
+    description: "Submit job, wait, and verify status endpoint"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+            profile: executive
+            formats:
+              - pdf
+        capture:
+          job_id: "$.job_id"
+
+      - action: wait_job
+        job_id: "${job_id}"
+        timeout_seconds: 60
+        expect:
+          status: succeeded
+
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs/${job_id}
+        expect:
+          status_code: 200
+          body:
+            status: succeeded
+            result:
+              artifacts:
+                - report.pdf
+
+  # Test 5: List jobs with filter
+  - id: jobs_list_filter
+    description: "List jobs filtered by kind and status"
+    steps:
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs?kind=report_run&status=succeeded&limit=10
+        expect:
+          status_code: 200
+          body:
+            items: []  # At minimum an array
+            total: 0   # At minimum zero
+
+  # Test 6: Download artifact
+  - id: jobs_download_artifact
+    description: "Submit job, wait, and download PDF artifact"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+            profile: executive
+            formats:
+              - pdf
+        capture:
+          job_id: "$.job_id"
+
+      - action: wait_job
+        job_id: "${job_id}"
+        timeout_seconds: 60
+        expect:
+          status: succeeded
+
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs/${job_id}/artifacts/report.pdf
+        expect:
+          status_code: 200
+          headers:
+            Content-Type: application/pdf
+
+  # Test 7: Idempotency key prevents duplicate
+  - id: jobs_idempotency
+    description: "Submit job with idempotency key twice"
+    steps:
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+          idempotency_key: "test-idempotency-${RANDOM_SUFFIX}"
+        expect:
+          status_code: 200
+          body:
+            created: true
+        capture:
+          job_id: "$.job_id"
+
+      - action: submit_job
+        endpoint: /api/bess-dispatch/jobs
+        payload:
+          kind: report_run
+          payload:
+            run_id: "${TEST_RUN_ID}"
+          idempotency_key: "test-idempotency-${RANDOM_SUFFIX}"
+        expect:
+          status_code: 200
+          body:
+            job_id: "${job_id}"
+            created: false
+
+  # Test 8: Invalid job kind returns error
+  - id: jobs_invalid_kind
+    description: "Submit job with invalid kind"
+    steps:
+      - action: http
+        method: POST
+        endpoint: /api/bess-dispatch/jobs
+        body:
+          kind: invalid_kind
+          payload: {}
+        expect:
+          status_code: 400
+
+  # Test 9: Job not found returns 404
+  - id: jobs_not_found
+    description: "Get non-existent job returns 404"
+    steps:
+      - action: http
+        method: GET
+        endpoint: /api/bess-dispatch/jobs/00000000-0000-0000-0000-000000000000
+        expect:
+          status_code: 404
