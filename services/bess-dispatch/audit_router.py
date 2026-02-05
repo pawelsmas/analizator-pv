@@ -1,8 +1,10 @@
 """
-Audit API router for BESS API (v3.0.0 PR4).
+Audit API router for BESS API (v3.0.0 PR4, v3.2.0 chain verification).
 
 Endpoints:
 - GET /audit - Query audit log entries
+- GET /audit/verify - Verify audit chain integrity (v3.2.0)
+- GET /audit/stats - Get audit chain statistics (v3.2.0)
 - GET /audit/export/csv - Export audit log as CSV
 - GET /audit/export/json - Export audit log as JSON
 - GET /audit/export/zip - Export audit log as ZIP (CSV + JSON)
@@ -94,6 +96,65 @@ def query_audit_log(
         limit=result["limit"],
         offset=result["offset"],
     )
+
+
+# -------------------------------------------------------------------------
+# Chain Verification (v3.2.0)
+# -------------------------------------------------------------------------
+
+class ChainVerifyResponse(BaseModel):
+    """Response for chain verification."""
+    valid: bool
+    entries_checked: int
+    first_break_at: Optional[str] = None
+    first_break_reason: Optional[str] = None
+
+
+class ChainStatsResponse(BaseModel):
+    """Response for chain statistics."""
+    total_entries: int
+    entries_with_hash: int
+    first_entry_at: Optional[str] = None
+    last_entry_at: Optional[str] = None
+
+
+@router.get("/verify", response_model=ChainVerifyResponse)
+def verify_audit_chain(
+    limit: int = Query(10000, ge=1, le=100000, description="Max entries to verify"),
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Verify the integrity of the audit chain (v3.2.0).
+
+    Checks that each entry's prev_hash matches the previous entry's entry_hash,
+    and that each entry_hash is correctly computed from the entry data.
+
+    If tampering is detected, returns valid=false with details about the first break.
+
+    Requires admin role.
+    """
+    audit_store = get_audit_store()
+    result = audit_store.verify_chain(limit=limit)
+
+    return ChainVerifyResponse(**result)
+
+
+@router.get("/stats", response_model=ChainStatsResponse)
+def get_audit_stats(
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Get audit chain statistics (v3.2.0).
+
+    Returns information about the audit log including total entries
+    and how many have hash chain integrity.
+
+    Requires admin role.
+    """
+    audit_store = get_audit_store()
+    result = audit_store.get_chain_stats()
+
+    return ChainStatsResponse(**result)
 
 
 @router.get("/export/csv")

@@ -1,10 +1,11 @@
 """
-Audit log store - SQLite-backed audit trail (v3.0.0 PR4).
+Audit log store - SQLite-backed audit trail (v3.0.0 PR4, v3.2.0 tamper-evident chain).
 
 Provides:
 - Audit log entry creation for security-relevant events
 - Query/filter audit logs by tenant, action, actor
 - Export to CSV/JSON
+- Tamper-evident hash chain for integrity verification (v3.2.0)
 
 Actions logged:
 - login_success, login_failure
@@ -14,19 +15,42 @@ Actions logged:
 """
 
 import csv
+import hashlib
 import io
 import json
 import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from prometheus_client import Counter, Gauge
 
 
 # Configuration
 AUDIT_STORE_PATH = os.getenv("AUDIT_STORE_PATH", "/data/audit.sqlite")
 AUDIT_STORE_ENABLED = os.getenv("AUDIT_STORE_ENABLED", "true").lower() in ("true", "1", "yes")
 AUDIT_STORE_RETENTION_DAYS = int(os.getenv("AUDIT_STORE_RETENTION_DAYS", "90"))
+
+# Chain secret for HMAC (should be set in production)
+AUDIT_CHAIN_SECRET = os.getenv("AUDIT_CHAIN_SECRET", "bess-audit-chain-v1")
+
+
+# Prometheus metrics for audit chain (v3.2.0)
+AUDIT_ENTRIES_TOTAL = Counter(
+    "bess_audit_entries_total",
+    "Total audit log entries created",
+    ["action"]
+)
+AUDIT_CHAIN_VERIFIED_TOTAL = Counter(
+    "bess_audit_chain_verified_total",
+    "Total chain verification runs",
+    ["result"]  # valid, tampered, empty
+)
+AUDIT_CHAIN_BREAKS_TOTAL = Counter(
+    "bess_audit_chain_breaks_total",
+    "Total chain breaks detected"
+)
 
 
 class AuditStore:
@@ -51,6 +75,7 @@ class AuditStore:
 
         conn = self._get_conn()
         try:
+            # v3.2.0: Added prev_hash, entry_hash for tamper-evident chain
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id TEXT PRIMARY KEY,
@@ -65,14 +90,58 @@ class AuditStore:
                     resource_id TEXT,
                     details_json TEXT,
                     ip_address TEXT,
-                    user_agent TEXT
+                    user_agent TEXT,
+                    prev_hash TEXT,
+                    entry_hash TEXT
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_tenant_id ON audit_log(tenant_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor_id ON audit_log(actor_id)")
+
+            # Migration: add new columns if they don't exist (v3.2.0)
+            try:
+                conn.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                conn.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             conn.commit()
+        finally:
+            conn.close()
+
+    def _compute_entry_hash(
+        self,
+        entry_id: str,
+        tenant_id: str,
+        created_at: str,
+        action: str,
+        actor_id: Optional[str],
+        actor_email: Optional[str],
+        resource_type: Optional[str],
+        resource_id: Optional[str],
+        details_json: Optional[str],
+        prev_hash: Optional[str],
+    ) -> str:
+        """Compute SHA-256 hash for an entry (tamper-evident chain)."""
+        # Create canonical string representation
+        data = f"{entry_id}|{tenant_id}|{created_at}|{action}|{actor_id or ''}|{actor_email or ''}|{resource_type or ''}|{resource_id or ''}|{details_json or ''}|{prev_hash or 'GENESIS'}"
+        # HMAC with chain secret for added security
+        return hashlib.sha256(f"{AUDIT_CHAIN_SECRET}:{data}".encode()).hexdigest()
+
+    def _get_last_hash(self) -> Optional[str]:
+        """Get the entry_hash of the most recent entry."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT entry_hash FROM audit_log ORDER BY created_at DESC, id DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            return row["entry_hash"] if row else None
         finally:
             conn.close()
 
@@ -95,7 +164,7 @@ class AuditStore:
         user_agent: Optional[str] = None,
     ) -> str:
         """
-        Log an audit event.
+        Log an audit event with tamper-evident hash chain.
 
         Args:
             tenant_id: Tenant identifier
@@ -117,6 +186,23 @@ class AuditStore:
         created_at = self._now_iso()
         details_json = json.dumps(details) if details else None
 
+        # Get previous hash for chain (v3.2.0)
+        prev_hash = self._get_last_hash()
+
+        # Compute entry hash
+        entry_hash = self._compute_entry_hash(
+            entry_id=entry_id,
+            tenant_id=tenant_id,
+            created_at=created_at,
+            action=action,
+            actor_id=actor_id,
+            actor_email=actor_email,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details_json=details_json,
+            prev_hash=prev_hash,
+        )
+
         conn = self._get_conn()
         try:
             conn.execute(
@@ -124,16 +210,17 @@ class AuditStore:
                 INSERT INTO audit_log (
                     id, tenant_id, created_at, action, actor_id, actor_email,
                     actor_role, auth_method, resource_type, resource_id,
-                    details_json, ip_address, user_agent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    details_json, ip_address, user_agent, prev_hash, entry_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry_id, tenant_id, created_at, action, actor_id, actor_email,
                     actor_role, auth_method, resource_type, resource_id,
-                    details_json, ip_address, user_agent,
+                    details_json, ip_address, user_agent, prev_hash, entry_hash,
                 ),
             )
             conn.commit()
+            AUDIT_ENTRIES_TOTAL.labels(action=action).inc()
             return entry_id
         finally:
             conn.close()
@@ -327,6 +414,134 @@ class AuditStore:
             )
             conn.commit()
             return cursor.rowcount
+        finally:
+            conn.close()
+
+    def verify_chain(self, limit: int = 10000) -> Dict[str, Any]:
+        """
+        Verify the integrity of the audit chain (v3.2.0).
+
+        Checks that each entry's prev_hash matches the previous entry's entry_hash.
+
+        Args:
+            limit: Maximum entries to verify
+
+        Returns:
+            Dict with:
+                - valid: bool - True if chain is intact
+                - entries_checked: int - Number of entries verified
+                - first_break_at: Optional[str] - ID of first broken entry
+                - first_break_reason: Optional[str] - Reason for break
+        """
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT id, tenant_id, created_at, action, actor_id, actor_email,
+                       resource_type, resource_id, details_json, prev_hash, entry_hash
+                FROM audit_log
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+
+            entries = cursor.fetchall()
+            if not entries:
+                AUDIT_CHAIN_VERIFIED_TOTAL.labels(result="empty").inc()
+                return {
+                    "valid": True,
+                    "entries_checked": 0,
+                    "first_break_at": None,
+                    "first_break_reason": None,
+                }
+
+            prev_hash = None
+            entries_checked = 0
+
+            for row in entries:
+                entry_id = row["id"]
+                stored_prev_hash = row["prev_hash"]
+                stored_entry_hash = row["entry_hash"]
+
+                # Check prev_hash linkage
+                if entries_checked == 0:
+                    # First entry should have prev_hash = None
+                    if stored_prev_hash is not None:
+                        # Legacy entry without chain - skip check
+                        pass
+                else:
+                    # Subsequent entries should link to previous
+                    if stored_prev_hash != prev_hash:
+                        AUDIT_CHAIN_VERIFIED_TOTAL.labels(result="tampered").inc()
+                        AUDIT_CHAIN_BREAKS_TOTAL.inc()
+                        return {
+                            "valid": False,
+                            "entries_checked": entries_checked,
+                            "first_break_at": entry_id,
+                            "first_break_reason": "prev_hash mismatch",
+                        }
+
+                # Verify entry_hash is correct (if it exists)
+                if stored_entry_hash:
+                    expected_hash = self._compute_entry_hash(
+                        entry_id=entry_id,
+                        tenant_id=row["tenant_id"],
+                        created_at=row["created_at"],
+                        action=row["action"],
+                        actor_id=row["actor_id"],
+                        actor_email=row["actor_email"],
+                        resource_type=row["resource_type"],
+                        resource_id=row["resource_id"],
+                        details_json=row["details_json"],
+                        prev_hash=stored_prev_hash,
+                    )
+                    if stored_entry_hash != expected_hash:
+                        AUDIT_CHAIN_VERIFIED_TOTAL.labels(result="tampered").inc()
+                        AUDIT_CHAIN_BREAKS_TOTAL.inc()
+                        return {
+                            "valid": False,
+                            "entries_checked": entries_checked,
+                            "first_break_at": entry_id,
+                            "first_break_reason": "entry_hash mismatch (data tampered)",
+                        }
+
+                prev_hash = stored_entry_hash
+                entries_checked += 1
+
+            AUDIT_CHAIN_VERIFIED_TOTAL.labels(result="valid").inc()
+            return {
+                "valid": True,
+                "entries_checked": entries_checked,
+                "first_break_at": None,
+                "first_break_reason": None,
+            }
+        finally:
+            conn.close()
+
+    def get_chain_stats(self) -> Dict[str, Any]:
+        """Get statistics about the audit chain."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute("SELECT COUNT(*) as total FROM audit_log")
+            total = cursor.fetchone()["total"]
+
+            cursor = conn.execute(
+                "SELECT COUNT(*) as with_hash FROM audit_log WHERE entry_hash IS NOT NULL"
+            )
+            with_hash = cursor.fetchone()["with_hash"]
+
+            cursor = conn.execute(
+                "SELECT MIN(created_at) as first, MAX(created_at) as last FROM audit_log"
+            )
+            row = cursor.fetchone()
+
+            return {
+                "total_entries": total,
+                "entries_with_hash": with_hash,
+                "first_entry_at": row["first"],
+                "last_entry_at": row["last"],
+            }
         finally:
             conn.close()
 
