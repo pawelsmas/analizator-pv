@@ -448,15 +448,57 @@ ENERGA_G12_2025 = create_g12_template(
     valid_from=date(2025, 1, 1),
 )
 
+# =============================================================================
+# 2026 Tariffs (aktualizacja stawek na 2026)
+# =============================================================================
+
+# PGE Dystrybucja C12a 2026
+PGE_C12A_2026 = create_c12a_template(
+    osd="PGE Dystrybucja",
+    rate_peak=0.75,      # Szczyt (PLN/kWh) - zaktualizowane stawki
+    rate_offpeak=0.45,   # Pozaszczyt (PLN/kWh) - spread 300 PLN/MWh
+    valid_from=date(2026, 1, 1),
+)
+
+# PGE Dystrybucja C12b 2026 (trzy strefy)
+PGE_C12B_2026 = create_c12a_template(  # TODO: use create_c12b_template when available
+    osd="PGE Dystrybucja",
+    rate_peak=0.85,      # Szczyt
+    rate_offpeak=0.40,   # Noc - najniższa strefa
+    valid_from=date(2026, 1, 1),
+)
+
+# Tauron Dystrybucja C12a 2026
+TAURON_C12A_2026 = create_c12a_template(
+    osd="Tauron Dystrybucja",
+    rate_peak=0.72,
+    rate_offpeak=0.42,
+    valid_from=date(2026, 1, 1),
+)
+
+# Energa-Operator C12a 2026
+ENERGA_C12A_2026 = create_c12a_template(
+    osd="Energa-Operator",
+    rate_peak=0.70,
+    rate_offpeak=0.40,
+    valid_from=date(2026, 1, 1),
+)
+
 
 # =============================================================================
 # Preset registry
 # =============================================================================
 
 ALL_PRESETS: Dict[str, OsdTariff] = {
+    # 2025
     "pge_c12a_2025": PGE_C12A_2025,
     "tauron_c12a_2025": TAURON_C12A_2025,
     "energa_g12_2025": ENERGA_G12_2025,
+    # 2026
+    "pge_c12a_2026": PGE_C12A_2026,
+    "pge_c12b_2026": PGE_C12B_2026,
+    "tauron_c12a_2026": TAURON_C12A_2026,
+    "energa_c12a_2026": ENERGA_C12A_2026,
 }
 
 

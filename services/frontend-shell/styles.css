@@ -19,25 +19,112 @@ html, body {
   height: 100vh;
   max-width: 100%;
   margin: 0 auto;
-  padding: 10px 20px;
+  padding: 6px 15px;
   position: relative;
+}
+
+/* ===========================================
+   COLLAPSIBLE HEADER
+   =========================================== */
+.main-header {
+  position: relative;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+  max-height: 90px;
+  opacity: 1;
+  flex-shrink: 0;
+}
+
+.main-header.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding: 0;
+  margin: 0;
 }
 
 .header {
   text-align: center;
-  padding: 10px 0;
+  padding: 6px 0;
   border-bottom: 2px solid #00ff88;
-  margin-bottom: 10px;
+  margin-bottom: 0;
   flex-shrink: 0;
 }
 
 .corner-logo {
   position: absolute;
-  top: 15px;
-  left: 20px;
-  height: 60px;
+  top: 8px;
+  left: 10px;
+  height: 50px;
   width: auto;
   z-index: 100;
+}
+
+/* ===========================================
+   STICKY NAVIGATION BAR
+   =========================================== */
+.sticky-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  padding: 6px 15px;
+  background: linear-gradient(135deg, #0d1a2a, #1a2a3a);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.compact-logo {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.compact-logo:hover {
+  opacity: 0.8;
+}
+
+.compact-logo img {
+  height: 28px;
+  width: auto;
+}
+
+.compact-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #00ff88;
+  letter-spacing: 1px;
+}
+
+/* Show compact logo when header is collapsed */
+.main-header.collapsed ~ .sticky-nav .compact-logo {
+  display: flex;
+}
+
+.header-toggle {
+  position: absolute;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #888;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.header-toggle:hover {
+  background: rgba(0, 255, 136, 0.2);
+  border-color: #00ff88;
+  color: #00ff88;
 }
 
 .header-text {
@@ -47,9 +134,9 @@ html, body {
 }
 
 .header-tagline {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 3px;
+  letter-spacing: 2px;
   color: #888;
 }
 
@@ -58,10 +145,10 @@ html, body {
 }
 
 .header-title {
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 700;
   color: #fff;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
 }
 
 .header h1 span {
@@ -70,23 +157,23 @@ html, body {
 
 .main-tabs {
   display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 5px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
   justify-content: center;
   flex-shrink: 0;
 }
 
 .main-tab {
-  padding: 8px 16px;
+  padding: 6px 12px;
   background: #1a1a1a;
-  border: 2px solid #333;
+  border: 1px solid #333;
   color: #888;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   transition: all 0.3s;
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .main-tab:hover {
@@ -116,4 +203,330 @@ html, body {
   height: 100%;
   background: #0a0a0a;
   border: none;
+}
+
+/* ===========================================
+   PROJECT BAR (Draft/Saved status) - INLINE IN STICKY NAV
+   =========================================== */
+.project-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 5px 15px;
+  margin: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  transition: all 0.3s ease;
+  flex: 1;
+  max-width: 600px;
+}
+
+.project-bar.draft {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.12), rgba(255, 152, 0, 0.08));
+  border: 1px solid rgba(255, 193, 7, 0.25);
+}
+
+.project-bar.saved {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.12), rgba(56, 142, 60, 0.08));
+  border: 1px solid rgba(76, 175, 80, 0.25);
+}
+
+.project-bar .project-status {
+  font-weight: 500;
+}
+
+.project-bar.draft .project-status {
+  color: #FFC107;
+}
+
+.project-bar.saved .project-status {
+  color: #4CAF50;
+}
+
+.project-bar .project-name {
+  color: #fff;
+  font-weight: 600;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-bar .unsaved-indicator {
+  color: #ff5722;
+  font-size: 18px;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.save-project-btn,
+.new-project-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.save-project-btn {
+  background: linear-gradient(135deg, #4CAF50, #388E3C);
+  color: white;
+}
+
+.save-project-btn:hover {
+  background: linear-gradient(135deg, #66BB6A, #4CAF50);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(76, 175, 80, 0.4);
+}
+
+.new-project-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #888;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.new-project-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* ===========================================
+   SAVE PROJECT MODAL
+   =========================================== */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(5px);
+}
+
+.modal-content {
+  background: linear-gradient(135deg, #1a2a3a, #0d1a2a);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  border-radius: 16px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  animation: modalSlideIn 0.3s ease;
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-30px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 25px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-header h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.modal-close:hover {
+  color: #ff5722;
+}
+
+.modal-body {
+  padding: 25px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: #aaa;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 12px 15px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #00ff88;
+  background: rgba(0, 255, 136, 0.05);
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+  color: #555;
+}
+
+.form-group select option {
+  background: #1a2a3a;
+  color: #fff;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px 25px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.btn {
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.1);
+  color: #888;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #4CAF50, #388E3C);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #66BB6A, #4CAF50);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+}
+
+/* ===========================================
+   SAVE TOAST NOTIFICATION
+   =========================================== */
+.save-toast {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  background: linear-gradient(135deg, #4CAF50, #388E3C);
+  color: white;
+  padding: 15px 25px;
+  border-radius: 10px;
+  font-size: 14px;
+  box-shadow: 0 5px 20px rgba(76, 175, 80, 0.5);
+  z-index: 10001;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: all 0.3s ease;
+}
+
+.save-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ===========================================
+   INTEGRATION SECTION IN SAVE MODAL
+   =========================================== */
+.integration-section {
+  background: rgba(33, 150, 243, 0.1);
+  border: 1px solid rgba(33, 150, 243, 0.3);
+  border-radius: 10px;
+  padding: 15px;
+  margin-top: 20px;
+}
+
+.integration-section h4 {
+  color: #2196F3;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(33, 150, 243, 0.2);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 15px;
+  margin-bottom: 15px;
+}
+
+.form-row:last-child {
+  margin-bottom: 0;
+}
+
+.form-row .form-group {
+  margin-bottom: 0;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding-top: 28px;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #4CAF50;
+  cursor: pointer;
+}
+
+/* Make modal wider for integration section */
+.save-modal {
+  max-width: 600px;
 }

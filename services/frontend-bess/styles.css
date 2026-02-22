@@ -751,283 +751,416 @@ body {
   flex-wrap: wrap;
 }
 
-/* Flow Diagram */
+/* ============================================
+   PROFESSIONAL SVG ENERGY FLOW ANIMATION
+   ============================================ */
+
+/* Flow Diagram Container */
 .bess-flow-diagram {
   flex: 2;
   min-width: 500px;
   position: relative;
-  height: 480px;
-  background: rgba(255,255,255,0.05);
-  border-radius: 16px;
-  padding: 24px;
+  height: 420px;
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%);
+  border-radius: 20px;
+  padding: 16px;
+  overflow: hidden;
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-/* Flow Nodes */
-.flow-node {
+/* SVG Flow Layer */
+.flow-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Flow Paths - smooth Bezier curves */
+.flow-path {
+  transition: stroke-width 0.3s ease, opacity 0.3s ease;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.flow-path.active {
+  stroke-width: 4;
+  opacity: 1;
+}
+
+/* SVG Flow Labels */
+.flow-label-svg {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  text-anchor: middle;
+  transition: opacity 0.3s ease;
+}
+
+/* Energy Particles (animated circles along paths) */
+.energy-particle {
+  filter: url(#glowYellow);
+}
+
+.energy-particle.pv { fill: #fbbf24; filter: url(#glowYellow); }
+.energy-particle.battery { fill: #34d399; filter: url(#glowGreen); }
+.energy-particle.grid { fill: #f87171; filter: url(#glowRed); }
+.energy-particle.arbitrage { fill: #60a5fa; filter: url(#glowBlue); }
+
+/* ============================================
+   ENERGY NODES (PV, Battery, Load, Grid)
+   ============================================ */
+
+.energy-node {
   position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   z-index: 10;
-}
-
-.node-icon {
-  font-size: 48px;
-  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
   transition: transform 0.3s ease;
 }
 
-.node-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: white;
-  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+.energy-node:hover {
+  transform: scale(1.05);
 }
 
-.node-value {
-  font-size: 13px;
-  color: rgba(255,255,255,0.8);
-  font-family: 'Courier New', monospace;
-  background: rgba(0,0,0,0.3);
-  padding: 2px 8px;
-  border-radius: 4px;
+/* Node Glow Effects */
+.node-glow {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  z-index: -1;
 }
 
-/* Node Positions */
-.pv-node {
-  top: 20px;
-  left: 50%;
-  transform: translateX(-50%);
+.energy-node.active .node-glow {
+  opacity: 1;
 }
 
-.battery-node {
-  top: 50%;
-  left: 30px;
-  transform: translateY(-50%);
+.pv-glow {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.4) 0%, transparent 70%);
+  animation: pulseGlowYellow 2s ease-in-out infinite;
 }
 
-.load-node {
-  top: 38%;
-  right: 50px;
-  transform: translateY(-50%);
+.battery-glow {
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.4) 0%, transparent 70%);
+  width: 100px;
+  height: 140px;
+  border-radius: 16px;
+  top: -10px;
+  left: -10px;
 }
 
-.grid-node {
-  bottom: 20px;
-  right: 50px;
+.load-glow {
+  background: radial-gradient(circle, rgba(148, 163, 184, 0.3) 0%, transparent 70%);
 }
 
-.curtailment-node {
-  bottom: 20px;
-  left: 30px;
-  opacity: 0.6;
+.grid-glow {
+  background: radial-gradient(circle, rgba(248, 113, 113, 0.3) 0%, transparent 70%);
 }
 
-/* Battery Visual */
-.battery-visual {
+@keyframes pulseGlowYellow {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.1); }
+}
+
+/* Node Icon Wrapper */
+.node-icon-wrapper {
   display: flex;
   align-items: center;
-  margin-bottom: 8px;
+  justify-content: center;
+  transition: filter 0.3s ease;
 }
 
-.battery-body {
-  width: 80px;
-  height: 120px;
-  border: 4px solid #4caf50;
-  border-radius: 8px;
-  position: relative;
-  overflow: hidden;
-  background: rgba(0,0,0,0.3);
+.node-icon-svg {
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.4));
 }
 
-.battery-cap {
-  width: 30px;
-  height: 12px;
-  background: #4caf50;
-  border-radius: 4px 4px 0 0;
-  position: absolute;
-  top: -16px;
+/* Node Info */
+.node-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.node-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.node-power {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: #94a3b8;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 4px 10px;
+  border-radius: 6px;
+  min-width: 70px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ============================================
+   NODE POSITIONS
+   ============================================ */
+
+.node-pv {
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
 }
 
-.battery-fill {
+.node-battery {
+  top: 42%;
+  left: 20px;
+  transform: translateY(-50%);
+}
+
+.node-load {
+  top: 28%;
+  right: 30px;
+  transform: translateY(-50%);
+}
+
+.node-grid {
+  bottom: 20px;
+  right: 30px;
+}
+
+.node-curtailment {
+  bottom: 20px;
+  left: 20px;
+  opacity: 0.7;
+}
+
+/* ============================================
+   3D BATTERY VISUAL
+   ============================================ */
+
+.battery-3d {
+  perspective: 200px;
+}
+
+.battery-outer {
+  position: relative;
+  width: 70px;
+  height: 110px;
+  background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  transform: rotateX(5deg);
+}
+
+.battery-terminal {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 26px;
+  height: 10px;
+  background: linear-gradient(180deg, #475569 0%, #334155 100%);
+  border-radius: 4px 4px 0 0;
+  box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.battery-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 2px solid #334155;
+}
+
+.battery-charge {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   height: 0%;
-  background: linear-gradient(180deg, #81c784 0%, #4caf50 50%, #2e7d32 100%);
-  transition: height 0.3s ease;
-  box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+  background: linear-gradient(180deg,
+    #6ee7b7 0%,
+    #34d399 30%,
+    #10b981 60%,
+    #059669 100%
+  );
+  transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 0 0 4px 4px;
 }
 
-.battery-fill.charging {
-  animation: battery-pulse 1s ease-in-out infinite;
+.battery-charge-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, transparent 100%);
 }
 
-@keyframes battery-pulse {
-  0%, 100% { box-shadow: 0 0 20px rgba(76, 175, 80, 0.5); }
-  50% { box-shadow: 0 0 40px rgba(76, 175, 80, 0.8); }
+.battery-charge.charging {
+  animation: batteryChargePulse 1.2s ease-in-out infinite;
 }
 
-.battery-fill.discharging {
-  animation: battery-discharge 0.5s ease-in-out infinite;
+.battery-charge.discharging {
+  animation: batteryDischargePulse 0.8s ease-in-out infinite;
 }
 
-@keyframes battery-discharge {
+@keyframes batteryChargePulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(52, 211, 153, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(52, 211, 153, 0.7), 0 0 60px rgba(52, 211, 153, 0.3);
+  }
+}
+
+@keyframes batteryDischargePulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.8; }
+  50% { opacity: 0.85; }
 }
 
-.battery-level {
+.battery-percent {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
   color: white;
-  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
   z-index: 5;
 }
 
-/* Flow Arrows */
-.flow-arrows {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: none;
+/* Low battery warning */
+.battery-charge.low {
+  background: linear-gradient(180deg,
+    #fca5a5 0%,
+    #f87171 30%,
+    #ef4444 60%,
+    #dc2626 100%
+  );
 }
 
-.flow-arrow {
-  position: absolute;
-  display: none;
+/* ============================================
+   PRICE BADGE (Modern Design)
+   ============================================ */
+
+.price-badge-modern {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 6px 12px;
+  border-radius: 20px;
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
 }
 
-.flow-arrow.active {
-  display: block;
+.price-indicator {
+  font-size: 14px;
 }
 
-.arrow-line {
-  position: relative;
-  height: 4px;
-  background: rgba(255,255,255,0.2);
-  border-radius: 2px;
-  overflow: visible;
+.price-text {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #10b981;
 }
 
-.arrow-particles {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 100%;
-  height: 12px;
-}
+.price-badge-modern.high .price-text { color: #f87171; }
+.price-badge-modern.peak .price-text { color: #f59e0b; }
+.price-badge-modern.low .price-text { color: #10b981; }
 
-/* Particle animation */
-.arrow-particles::before,
-.arrow-particles::after {
-  content: '';
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  animation: particle-flow 1s linear infinite;
-}
-
-.arrow-particles::before {
-  left: 0;
-  animation-delay: 0s;
-}
-
-.arrow-particles::after {
-  left: 0;
-  animation-delay: 0.5s;
-}
-
-/* PV particles - yellow */
-#particlesPvBattery::before, #particlesPvBattery::after,
-#particlesPvLoad::before, #particlesPvLoad::after {
-  background: linear-gradient(135deg, #ffeb3b, #ff9800);
-  box-shadow: 0 0 10px #ff9800;
-}
-
-/* Battery particles - green */
-#particlesBatteryLoad::before, #particlesBatteryLoad::after {
-  background: linear-gradient(135deg, #81c784, #4caf50);
-  box-shadow: 0 0 10px #4caf50;
-}
-
-/* Grid particles - red */
-#particlesGridLoad::before, #particlesGridLoad::after {
-  background: linear-gradient(135deg, #ef5350, #e53935);
-  box-shadow: 0 0 10px #e53935;
-}
-
-/* Curtailment particles - gray */
-#particlesCurtailment::before, #particlesCurtailment::after {
-  background: linear-gradient(135deg, #9e9e9e, #616161);
-  box-shadow: 0 0 10px #616161;
-}
-
-@keyframes particle-flow {
-  0% { left: 0%; opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  100% { left: 100%; opacity: 0; }
-}
-
-/* Arrow positioning */
-.arrow-pv-battery {
-  top: 100px;
-  left: 150px;
-  width: 100px;
-  transform: rotate(135deg);
-}
-
-.arrow-pv-load {
-  top: 100px;
-  right: 150px;
-  width: 100px;
-  transform: rotate(45deg);
-}
-
-.arrow-battery-load {
-  top: 50%;
-  left: 150px;
-  width: calc(100% - 300px);
-  transform: translateY(-50%);
-}
-
-.arrow-grid-load {
-  bottom: 110px;
-  right: 95px;
-  width: 60px;
-  transform: rotate(-90deg);
-}
-
-/* Position value label for vertical grid arrow - on the left side */
-.arrow-grid-load .arrow-value {
-  top: 50%;
-  left: -28px;
-  right: auto;
-  transform: translateY(-50%) rotate(90deg);
-  font-size: 10px;
+.price-amount {
+  font-size: 11px;
   font-weight: 600;
-  color: #ef5350;
-  white-space: nowrap;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
 }
 
-.arrow-curtailment {
-  bottom: 80px;
-  left: 80px;
-  width: 60px;
-  transform: rotate(90deg);
+/* ============================================
+   ARBITRAGE STATUS INDICATOR
+   ============================================ */
+
+.arbitrage-status {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 20;
 }
+
+.arbitrage-badge-modern {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 24px;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(12px);
+  animation: arbitragePulse 2s ease-in-out infinite;
+}
+
+.arbitrage-badge-modern.charging {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.3) 0%, rgba(96, 165, 250, 0.2) 100%);
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  color: #93c5fd;
+}
+
+.arbitrage-badge-modern.discharging {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.3) 0%, rgba(251, 191, 36, 0.2) 100%);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  color: #fcd34d;
+}
+
+@keyframes arbitragePulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(96, 165, 250, 0.3); }
+  50% { box-shadow: 0 0 30px rgba(96, 165, 250, 0.5); }
+}
+
+.arbitrage-icon-modern {
+  font-size: 16px;
+}
+
+.arbitrage-text-modern {
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
+/* ============================================
+   LEGACY COMPATIBILITY (keep old class names working)
+   ============================================ */
+
+/* Map old classes to new structure for JS compatibility */
+.flow-node { display: none; } /* Hide old nodes */
+.flow-arrows { display: none; } /* Hide old arrows */
+.flow-arrow { display: none; }
+.arrow-line { display: none; }
+.arrow-particles { display: none; }
+.battery-visual { display: none; }
+.battery-body { display: none; }
+.battery-cap { display: none; }
 
 .arrow-value {
   position: absolute;
@@ -1417,6 +1550,174 @@ body {
 
 .variant-econ-value.negative {
   color: #e57373;
+}
+
+/* ==========================================
+   v3.0: BESS ADVISOR SECTION
+   ========================================== */
+
+.advisor-section {
+  background: linear-gradient(135deg, #1a2a1e 0%, #162e21 100%);
+  border-radius: 16px;
+  padding: 24px;
+  border-left: 4px solid #4caf50;
+}
+
+.advisor-section h2 {
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.advisor-section h3 {
+  color: #a5d6a7;
+  margin: 16px 0 12px 0;
+  font-size: 14px;
+}
+
+.advisor-section .chart-info {
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 20px;
+}
+
+/* Savings Comparison Grid */
+.savings-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.savings-card {
+  background: rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.savings-card:hover {
+  background: rgba(255,255,255,0.12);
+  transform: translateY(-2px);
+}
+
+.savings-card.best {
+  border: 2px solid #4caf50;
+  box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+}
+
+.savings-card .savings-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.savings-card .savings-label {
+  color: rgba(255,255,255,0.9);
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.savings-card .savings-value {
+  color: #a5d6a7;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.savings-card .savings-detail {
+  color: rgba(255,255,255,0.6);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+/* Tariff Recommendation */
+.tariff-recommendation {
+  background: rgba(255,193,7,0.15);
+  border-radius: 8px;
+  padding: 16px;
+  border-left: 3px solid #ffc107;
+}
+
+.tariff-recommendation p {
+  margin: 8px 0;
+  color: rgba(255,255,255,0.9);
+}
+
+/* Advisor Warnings */
+.advisor-warnings {
+  background: rgba(255,152,0,0.15);
+  border-radius: 8px;
+  padding: 16px;
+  border-left: 3px solid #ff9800;
+}
+
+.advisor-warnings h3 {
+  color: #ffcc80;
+}
+
+.advisor-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+  color: rgba(255,255,255,0.85);
+}
+
+.advisor-warnings li {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+/* Assumptions (collapsible) */
+.advisor-assumptions {
+  background: rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.advisor-assumptions summary {
+  cursor: pointer;
+  color: rgba(255,255,255,0.8);
+  font-weight: 500;
+}
+
+.advisor-assumptions summary:hover {
+  color: #fff;
+}
+
+.assumptions-list {
+  margin: 12px 0 0 0;
+  padding-left: 20px;
+  color: rgba(255,255,255,0.7);
+  font-size: 12px;
+}
+
+.assumptions-list li {
+  margin: 4px 0;
+}
+
+/* Alternatives Table */
+.advisor-alternatives .data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.advisor-alternatives .data-table th,
+.advisor-alternatives .data-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.advisor-alternatives .data-table th {
+  background: rgba(255,255,255,0.1);
+  color: #a5d6a7;
+  font-weight: 600;
+}
+
+.advisor-alternatives .data-table td {
+  color: rgba(255,255,255,0.85);
+}
+
+.advisor-alternatives .data-table tr:hover td {
+  background: rgba(255,255,255,0.05);
 }
 
 /* Savings Breakdown Section */
@@ -2888,6 +3189,268 @@ body {
 .arbitrage-savings-highlight {
   color: #2e7d32;
   font-weight: 600;
+}
+
+/* ============================================================================
+   STACKED DECOMPOSITION - Peak Shaving + Arbitrage breakdown (v3.1.0)
+   ============================================================================ */
+
+.stacked-decomposition-section {
+  background: linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%);
+  border: 2px solid #9c27b0;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 0;
+  box-shadow: 0 4px 12px rgba(156, 39, 176, 0.15);
+}
+
+.decomposition-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #9c27b0;
+}
+
+.decomposition-header h4 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #7b1fa2;
+  margin: 0;
+}
+
+.decomposition-subtitle {
+  font-size: 12px;
+  color: #666;
+  background: #f3e5f5;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+
+/* Visual power bar */
+.decomposition-visual {
+  margin-bottom: 20px;
+}
+
+.power-bar {
+  display: flex;
+  height: 40px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.bar-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.3s ease;
+  min-width: 80px;
+}
+
+.bar-segment.peak {
+  background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+}
+
+.bar-segment.arbitrage {
+  background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
+}
+
+.bar-segment:hover {
+  transform: scaleY(1.1);
+}
+
+.segment-label {
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.bar-total {
+  text-align: center;
+  margin-top: 8px;
+  font-size: 14px;
+  color: #333;
+}
+
+/* Component cards */
+.decomposition-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.decomp-card {
+  background: white;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  border-left: 4px solid transparent;
+}
+
+.decomp-card.peak-shaving {
+  border-left-color: #ff9800;
+}
+
+.decomp-card.arbitrage {
+  border-left-color: #2196f3;
+}
+
+.decomp-card .card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.decomp-card .card-icon {
+  font-size: 20px;
+}
+
+.decomp-card .card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+
+.card-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.card-metrics .metric {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  background: #f9f9f9;
+  border-radius: 6px;
+}
+
+.card-metrics .metric.highlight {
+  background: #e8f5e9;
+}
+
+.card-metrics .metric.positive .value {
+  color: #2e7d32;
+}
+
+.card-metrics .metric.negative .value {
+  color: #c62828;
+}
+
+.card-metrics .label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.card-metrics .value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.card-description {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+/* Summary section */
+.decomposition-summary {
+  background: #f3e5f5;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.decomposition-summary .summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(156, 39, 176, 0.1);
+}
+
+.decomposition-summary .summary-row:last-child {
+  border-bottom: none;
+}
+
+.decomposition-summary .summary-row.highlight {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.decomposition-summary .summary-label {
+  color: #666;
+}
+
+.decomposition-summary .summary-value {
+  font-weight: 600;
+  color: #333;
+}
+
+.decomposition-summary .summary-value.positive {
+  color: #2e7d32;
+}
+
+.decomposition-summary .summary-value.negative {
+  color: #c62828;
+}
+
+/* Rationale expandable */
+.decomposition-rationale {
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.decomposition-rationale summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #7b1fa2;
+  background: #faf5fc;
+  border-radius: 8px;
+}
+
+.decomposition-rationale summary:hover {
+  background: #f3e5f5;
+}
+
+.decomposition-rationale p {
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #555;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .decomposition-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .card-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .power-bar {
+    flex-direction: column;
+    height: auto;
+    border-radius: 8px;
+  }
+
+  .bar-segment {
+    min-height: 40px;
+    width: 100%;
+  }
 }
 
 /* ============================================================================
@@ -6583,4 +7146,502 @@ body {
   outline: none;
   border-color: #9c27b0;
   box-shadow: 0 0 0 3px rgba(156, 39, 176, 0.1);
+}
+
+/* ============================================================================
+   BESS vs LOAD COMPARISON SECTION
+   ============================================================================ */
+
+.bess-load-comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Visual comparison bars */
+.comparison-visual {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-radius: 12px;
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+}
+
+.comparison-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.comparison-row:last-child {
+  margin-bottom: 0;
+}
+
+.comparison-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.comparison-bar-container {
+  position: relative;
+  height: 32px;
+  background: #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.comparison-bar {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.6s ease-out;
+  position: relative;
+}
+
+.comparison-bar.bess-bar {
+  background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 100%);
+}
+
+.comparison-bar.load-bar {
+  background: linear-gradient(90deg, #ef4444 0%, #b91c1c 100%);
+}
+
+.comparison-bar.avg-bar {
+  background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+}
+
+.comparison-bar.pv-bar {
+  background: linear-gradient(90deg, #22c55e 0%, #15803d 100%);
+}
+
+.comparison-value {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+  text-shadow: 0 1px 2px rgba(255,255,255,0.8);
+  z-index: 1;
+}
+
+/* Metrics cards */
+.comparison-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.comparison-metrics .metric-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  transition: all 0.2s;
+}
+
+.comparison-metrics .metric-card:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+}
+
+.comparison-metrics .metric-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.comparison-metrics .metric-content {
+  flex: 1;
+}
+
+.comparison-metrics .metric-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.comparison-metrics .metric-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.2;
+}
+
+.comparison-metrics .metric-detail {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+/* Sizing fit indicator */
+.sizing-fit-indicator {
+  background: #f0fdf4;
+  border: 2px solid #22c55e;
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sizing-fit-indicator.warning {
+  background: #fefce8;
+  border-color: #eab308;
+}
+
+.sizing-fit-indicator.danger {
+  background: #fef2f2;
+  border-color: #ef4444;
+}
+
+.fit-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #22c55e;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.sizing-fit-indicator.warning .fit-badge {
+  background: #eab308;
+}
+
+.sizing-fit-indicator.danger .fit-badge {
+  background: #ef4444;
+}
+
+.fit-icon {
+  font-size: 16px;
+}
+
+.fit-text {
+  white-space: nowrap;
+}
+
+.fit-explanation {
+  flex: 1;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .comparison-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .sizing-fit-indicator {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+/* ==========================================
+   ARBITRAGE ANIMATION STYLES
+   ========================================== */
+
+/* Grid to Battery arrow (arbitrage charging) */
+.arrow-grid-battery {
+  position: absolute;
+  top: 55%;
+  left: 15%;
+  width: 35%;
+  transform: rotate(-25deg);
+  z-index: 5;
+}
+
+.arrow-grid-battery .arrow-line {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.5);
+}
+
+.arrow-grid-battery .arrow-particles,
+.grid-to-battery-particles {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    #3b82f6 40%,
+    #93c5fd 60%,
+    transparent 100%);
+}
+
+/* Battery to Grid arrow (export/V2G) */
+.arrow-battery-grid {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  width: 35%;
+  transform: rotate(25deg);
+  z-index: 5;
+}
+
+.arrow-battery-grid .arrow-line {
+  background: linear-gradient(90deg, #10b981, #34d399);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+}
+
+.arrow-battery-grid .arrow-particles,
+.battery-to-grid-particles {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    #10b981 40%,
+    #6ee7b7 60%,
+    transparent 100%);
+}
+
+/* Energy Price Indicator */
+.energy-price-indicator {
+  position: absolute;
+  bottom: -50px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 8px;
+  min-width: 120px;
+}
+
+.price-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: all 0.3s ease;
+}
+
+.price-badge.low {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.5);
+}
+
+.price-badge.normal {
+  background: linear-gradient(135deg, #6b7280, #4b5563);
+  color: white;
+}
+
+.price-badge.high {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+}
+
+.price-badge.peak {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.5);
+  animation: pricePulse 1s ease-in-out infinite;
+}
+
+@keyframes pricePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.price-icon {
+  font-size: 1rem;
+}
+
+.price-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.price-value {
+  color: #d1d5db;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Arbitrage Status Indicator */
+.arbitrage-indicator {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 10;
+}
+
+.arbitrage-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 25px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  animation: arbitragePulse 1.5s ease-in-out infinite;
+}
+
+.arbitrage-badge.charging {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: white;
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+}
+
+.arbitrage-badge.discharging {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.6);
+}
+
+@keyframes arbitragePulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+  }
+  50% {
+    transform: scale(1.03);
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.8);
+  }
+}
+
+.arbitrage-icon {
+  font-size: 1.2rem;
+}
+
+.arbitrage-text {
+  font-size: 0.85rem;
+}
+
+/* Arbitrage Stats Section */
+.anim-arbitrage-stats {
+  margin-top: 16px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 12px;
+}
+
+.arbitrage-stats-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+  margin-bottom: 12px;
+}
+
+.arbitrage-stats-title {
+  font-weight: 600;
+  color: #3b82f6;
+  font-size: 0.95rem;
+}
+
+.arbitrage-stats-toggle {
+  cursor: pointer;
+  color: #3b82f6;
+  font-size: 0.8rem;
+  transition: transform 0.3s ease;
+}
+
+.arbitrage-stats-toggle.collapsed {
+  transform: rotate(-90deg);
+}
+
+.arbitrage-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.arbitrage-stat {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.arbitrage-stat.highlight {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(59, 130, 246, 0.2));
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.arbitrage-stat .anim-stat-value {
+  color: #10b981;
+  font-weight: 700;
+}
+
+/* Flow arrow animations for arbitrage */
+.arrow-grid-battery.active .arrow-line {
+  animation: flowPulseBlue 0.8s ease-in-out infinite;
+}
+
+.arrow-battery-grid.active .arrow-line {
+  animation: flowPulseGreen 0.8s ease-in-out infinite;
+}
+
+@keyframes flowPulseBlue {
+  0%, 100% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.5); }
+  50% { box-shadow: 0 0 25px rgba(59, 130, 246, 0.9); }
+}
+
+@keyframes flowPulseGreen {
+  0%, 100% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.5); }
+  50% { box-shadow: 0 0 25px rgba(16, 185, 129, 0.9); }
+}
+
+/* Grid node highlight when arbitrage charging */
+.grid-node.arbitrage-charging {
+  box-shadow: 0 0 30px rgba(59, 130, 246, 0.7);
+}
+
+.grid-node.arbitrage-charging .node-icon {
+  animation: iconPulseBlue 1s ease-in-out infinite;
+}
+
+@keyframes iconPulseBlue {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+/* Battery node highlight when arbitrage discharging */
+.battery-node.arbitrage-discharging .battery-visual {
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.6);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .energy-price-indicator {
+    bottom: -40px;
+    min-width: 100px;
+    padding: 6px 10px;
+  }
+
+  .price-badge {
+    padding: 3px 8px;
+    font-size: 0.75rem;
+  }
+
+  .arbitrage-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .arbitrage-indicator {
+    top: 5px;
+    right: 5px;
+  }
+
+  .arbitrage-badge {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
 }

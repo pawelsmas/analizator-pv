@@ -39,6 +39,7 @@ class DataStatistics(BaseModel):
     # Data resolution info
     measurements: int = 0  # Total number of measurements (15-min intervals or hours)
     data_resolution: str = "hourly"  # "15-min" or "hourly"
+    detected_interval_minutes: int = 15  # Auto-detected from timestamps: 15, 30, or 60
     # Calculated metrics
     std_dev_mw: float
     variation_coef_pct: float
@@ -137,6 +138,8 @@ class DataStore:
         self.analytical_year: Optional[AnalyticalYear] = None
         self.start_date: Optional[datetime] = None
         self.end_date: Optional[datetime] = None
+        # Detected data interval (15, 30, or 60 minutes)
+        self.detected_interval_minutes: int = 15
 
 data_store = DataStore()
 
@@ -734,13 +737,41 @@ def process_uploaded_data(df: pd.DataFrame):
     df = df.dropna(subset=['parsed_time'])
     print(f"DEBUG: Rows after dropping null timestamps: {len(df)}")
 
+    # ============ AUTO-DETECT DATA INTERVAL FROM TIMESTAMPS ============
+    # Detect whether data is 15-min, 30-min, or 1-hour interval
+    detected_interval_minutes = 15  # default assumption
+    if len(df) >= 5:
+        df_sorted_tmp = df.sort_values('parsed_time')
+        time_diffs = df_sorted_tmp['parsed_time'].diff().dropna().dt.total_seconds()
+        # Use median to be robust against gaps/duplicates
+        median_diff_seconds = time_diffs.median()
+        if median_diff_seconds > 0:
+            median_diff_minutes = median_diff_seconds / 60
+            print(f"📊 INTERVAL DETECTION: median time diff = {median_diff_minutes:.1f} min")
+            if median_diff_minutes >= 50:      # ~60 min → hourly data
+                detected_interval_minutes = 60
+            elif median_diff_minutes >= 25:    # ~30 min
+                detected_interval_minutes = 30
+            else:                               # ~15 min (or less)
+                detected_interval_minutes = 15
+
+    # kWh-to-kW multiplier: intervals_per_hour
+    # 15-min data: 1 kWh per 15 min = 4 kW average → multiply by 4
+    # 30-min data: 1 kWh per 30 min = 2 kW average → multiply by 2
+    # 60-min data: 1 kWh per 60 min = 1 kW average → multiply by 1
+    kwh_to_kw_multiplier = 60 / detected_interval_minutes
+    print(f"📊 DETECTED INTERVAL: {detected_interval_minutes} min → kWh-to-kW multiplier = {kwh_to_kw_multiplier}")
+
+    # Store detected interval for later use
+    data_store.detected_interval_minutes = detected_interval_minutes
+
     # Parse power values
     # Try kWh first (often has data when kW is empty)
     if kwh_key:
         print(f"DEBUG: Trying kWh column '{kwh_key}' first")
         print(f"DEBUG: First 5 kWh raw values: {df[kwh_key].head(5).tolist()}")
-        df['kw'] = pd.to_numeric(df[kwh_key], errors='coerce') * 4  # 15-min kWh to kW
-        print(f"DEBUG: After kWh parse, valid values: {df['kw'].notna().sum()}")
+        df['kw'] = pd.to_numeric(df[kwh_key], errors='coerce') * kwh_to_kw_multiplier  # kWh to kW (interval-aware)
+        print(f"DEBUG: After kWh parse (×{kwh_to_kw_multiplier}), valid values: {df['kw'].notna().sum()}")
 
         # If kWh column is empty but kW exists, try kW instead
         if df['kw'].notna().sum() == 0 and kw_key:
@@ -990,6 +1021,7 @@ async def upload_csv(file: UploadFile = File(...)):
             "message": f"Data loaded successfully",
             "data_points": len(hourly_data),
             "year": pd.to_datetime(year_hours[0]).year,
+            "detected_interval_minutes": data_store.detected_interval_minutes,
             "analytical_year": {
                 "start_date": ay.start_date if ay else None,
                 "end_date": ay.end_date if ay else None,
@@ -1021,6 +1053,7 @@ async def upload_excel(file: UploadFile = File(...)):
             "message": f"Data loaded successfully",
             "data_points": len(hourly_data),
             "year": pd.to_datetime(year_hours[0]).year,
+            "detected_interval_minutes": data_store.detected_interval_minutes,
             "analytical_year": {
                 "start_date": ay.start_date if ay else None,
                 "end_date": ay.end_date if ay else None,
@@ -1148,6 +1181,7 @@ async def get_statistics():
         avg_daily_mwh=avg_daily / 1000,
         measurements=num_measurements,
         data_resolution=data_resolution,
+        detected_interval_minutes=data_store.detected_interval_minutes,
         std_dev_mw=std_dev_kw / 1000,
         variation_coef_pct=float(variation_coef),
         load_factor_pct=float(load_factor),

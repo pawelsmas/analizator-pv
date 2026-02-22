@@ -18,8 +18,8 @@
     <div class="settings-section">
       <div class="section-header">
         <span class="section-icon">💡</span>
-        <h2>Opłaty Stałe</h2>
-        <span class="section-info">Składniki ceny energii BEZ energii czynnej [PLN/MWh]</span>
+        <h2>Opłaty Zmienne Sieciowe</h2>
+        <span class="section-info">Składniki zmienne ceny energii [PLN/MWh] — naliczane od poboru z sieci</span>
       </div>
 
       <div class="info-box blue" style="margin-bottom:16px">
@@ -69,6 +69,55 @@
         <!-- Hidden field for backwards compatibility -->
         <input type="hidden" id="energyActive" value="0">
         <input type="hidden" id="totalEnergyPrice" value="451">
+      </div>
+    </div>
+
+    <!-- Fixed Monthly Fees Section -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📋</span>
+        <h2>Opłaty Stałe Miesięczne</h2>
+        <span class="section-info">Składniki niezależne od wolumenu energii [PLN/miesiąc]</span>
+      </div>
+
+      <div class="info-box blue" style="margin-bottom:16px">
+        <p style="margin:0;font-size:13px">
+          Opłaty naliczane co miesiąc niezależnie od ilości pobranej energii.<br>
+          <em style="color:#666">Dystrybucyjna stała = stawka [zł/kW/mies] × moc umowna [kW]</em>
+        </p>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-item">
+          <label>Moc umowna</label>
+          <input type="number" id="contractedPowerKw" value="50" step="1" min="1" oninput="updateFixedMonthlyTotal()">
+          <span class="setting-hint">kW — wartość z umowy z OSD</span>
+        </div>
+        <div class="setting-item">
+          <label>Stawka stała dystrybucji</label>
+          <input type="number" id="distFixedRatePerKw" value="9.14" step="0.01" min="0" oninput="updateFixedMonthlyTotal()">
+          <span class="setting-hint">zł/kW/miesiąc — C11: 8.04, C12: 9.14, C21: 32.02</span>
+        </div>
+        <div class="setting-item">
+          <label>Abonament OSD</label>
+          <input type="number" id="osdSubscriptionFee" value="5.54" step="0.01" min="0" oninput="updateFixedMonthlyTotal()">
+          <span class="setting-hint">PLN/miesiąc — opłata abonamentowa dystrybucyjna</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata przejściowa</label>
+          <input type="number" id="transitionFee" value="0" step="0.01" min="0" oninput="updateFixedMonthlyTotal()">
+          <span class="setting-hint">PLN/miesiąc — w 2026 = 0</span>
+        </div>
+        <div class="setting-item">
+          <label>Opłata handlowa sprzedawcy</label>
+          <input type="number" id="supplierTradeFee" value="0" step="0.01" min="0" oninput="updateFixedMonthlyTotal()">
+          <span class="setting-hint">PLN/miesiąc — opcjonalna, zależna od oferty</span>
+        </div>
+        <div class="setting-item highlight">
+          <label>SUMA miesięczna</label>
+          <input type="number" id="totalFixedMonthly" value="462.54" readonly>
+          <span class="setting-hint">= (stawka × moc) + abonament + przejściowa + handlowa</span>
+        </div>
       </div>
     </div>
 
@@ -1230,8 +1279,8 @@
         </div>
         <div class="setting-item">
           <label>Straty przez zabrudzenie [%]</label>
-          <input type="number" id="soilingLoss" value="2" step="0.5" min="0" max="10">
-          <span class="setting-hint">Typowo 2-3% dla Europy</span>
+          <input type="number" id="soilingLoss" value="2" step="0.5" min="0" max="25">
+          <span class="setting-hint">Typowo 2-3% dla Europy, do 15-20% w trudnych warunkach</span>
         </div>
       </div>
 
@@ -2070,6 +2119,88 @@
         </div>
         <div style="margin-top:12px;font-size:11px;color:#666">
           <strong>Uwaga:</strong> Zgodnie z URE, godziny szczytu to 7:00-21:00 w dni robocze (bez świąt).
+        </div>
+      </div>
+    </div>
+
+    <!-- RDN Dynamic Pricing (Day-Ahead Market) -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📊</span>
+        <h2>Ceny RDN (Rynek Dnia Następnego)</h2>
+        <span class="section-info">Dynamiczne ceny godzinowe z rynku spot</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item" style="grid-column: 1 / -1;">
+          <label>Włącz porównanie z cenami RDN</label>
+          <div style="display:flex;align-items:center;gap:12px">
+            <input type="checkbox" id="rdnPricingEnabled" style="width:auto;transform:scale(1.3)">
+            <span class="setting-hint">Aktywuj analizę ekonomiczną z dynamicznymi cenami godzinowymi RDN (obok taryfy stałej/ToU)</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="rdnPricingPanel" style="display:none">
+        <!-- Upload CSV/Excel -->
+        <div style="margin-top:16px;padding:16px;background:#f0f7ff;border-radius:8px;border:1px solid #c8ddf5">
+          <h3 style="margin:0 0 12px 0;font-size:14px;color:#1565c0">Wgraj plik z cenami RDN</h3>
+          <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:end;margin-bottom:12px">
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Nazwa scenariusza</label>
+              <input type="text" id="rdnScenarioName" placeholder="np. RDN 2025 historyczne" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px" value="">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Rok danych</label>
+              <input type="number" id="rdnScenarioYear" value="2025" min="2020" max="2030" style="width:90px;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Typ</label>
+              <select id="rdnScenarioType" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+                <option value="historical">Historyczne</option>
+                <option value="forecast">Prognoza</option>
+                <option value="custom">Własne</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="rdnFileInput" accept=".csv,.xlsx,.xls" style="display:none">
+            <button type="button" onclick="document.getElementById('rdnFileInput').click()" class="btn-action" style="background:#1565c0;color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px">
+              Wybierz plik CSV/Excel
+            </button>
+            <button type="button" onclick="downloadRdnTemplate()" style="background:transparent;color:#1565c0;padding:8px 12px;border:1px solid #1565c0;border-radius:6px;cursor:pointer;font-size:12px">
+              Pobierz szablon CSV
+            </button>
+            <span id="rdnUploadStatus" style="font-size:12px;color:#666"></span>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:#888">
+            Format: kolumna z datą/godziną + kolumna z ceną [PLN/MWh]. Obsługiwane: CSV TGE (Data;Godzina;Cena), CSV prosty (datetime,price), Excel.
+          </div>
+        </div>
+
+        <!-- Saved Scenarios -->
+        <div style="margin-top:16px;padding:16px;background:#f5f5f5;border-radius:8px;border:1px solid #e0e0e0">
+          <h3 style="margin:0 0 12px 0;font-size:14px;color:#333">Zapisane scenariusze cenowe</h3>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <select id="rdnScenarioSelect" style="flex:1;min-width:250px;padding:8px;border-radius:6px;border:1px solid #ccc;font-size:13px">
+              <option value="">-- Wybierz scenariusz --</option>
+            </select>
+            <button type="button" onclick="loadSavedRdnScenarios()" class="btn-action" style="background:#666;color:white;padding:8px 12px;border:none;border-radius:6px;cursor:pointer;font-size:12px">
+              Odśwież
+            </button>
+          </div>
+        </div>
+
+        <!-- Selected Scenario Info -->
+        <div id="rdnScenarioInfo" style="display:none;margin-top:16px;padding:16px;background:#e8f5e9;border-radius:8px;border:1px solid #a5d6a7">
+          <h3 style="margin:0 0 8px 0;font-size:14px;color:#2e7d32">Wybrany scenariusz RDN</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:13px">
+            <div><strong>Nazwa:</strong> <span id="rdnInfoName">-</span></div>
+            <div><strong>Rok:</strong> <span id="rdnInfoYear">-</span></div>
+            <div><strong>Punkty danych:</strong> <span id="rdnInfoPoints">-</span></div>
+            <div><strong>Śr. cena:</strong> <span id="rdnInfoAvg">-</span> PLN/MWh</div>
+            <div><strong>Min cena:</strong> <span id="rdnInfoMin">-</span> PLN/MWh</div>
+            <div><strong>Max cena:</strong> <span id="rdnInfoMax">-</span> PLN/MWh</div>
+          </div>
         </div>
       </div>
     </div>

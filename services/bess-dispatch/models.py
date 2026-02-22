@@ -246,6 +246,78 @@ class StackedModeParams(BaseModel):
                                        description="Allow using reserve in emergency (with warning)")
 
 
+# =============================================================================
+# STACKED DECOMPOSITION MODELS - Separate Peak Shaving & Arbitrage Components
+# =============================================================================
+
+class StackedComponentModel(BaseModel):
+    """
+    Single component of Stacked BESS sizing (Peak Shaving or Arbitrage).
+
+    This model represents one "service" that the BESS provides in Stacked mode.
+    The total BESS size is the SUM of all components.
+    """
+    name: str = Field(..., description="Component name: 'peak_shaving' or 'arbitrage'")
+    power_kw: float = Field(..., ge=0, description="Required power for this service [kW]")
+    energy_kwh: float = Field(..., ge=0, description="Required energy capacity for this service [kWh]")
+    duration_h: float = Field(..., ge=0, description="Effective duration for this component [h]")
+    capex_pln: float = Field(..., ge=0, description="CAPEX for this component [PLN]")
+    annual_savings_pln: float = Field(..., description="Annual savings from this service [PLN/rok]")
+    npv_pln: float = Field(..., description="NPV for this component standalone [PLN]")
+    description: str = Field(..., description="Human-readable description of sizing rationale")
+
+
+class StackedDecompositionModel(BaseModel):
+    """
+    Full decomposition of Stacked BESS into Peak Shaving and Arbitrage components.
+
+    KEY INSIGHT: For Stacked mode, BESS should be sized as SUM of services, not MAX.
+    This allows full utilization of both Peak Shaving (demand charge reduction) and
+    Arbitrage (ToU spread + PV surplus shifting).
+
+    Formula:
+        Total BESS = Peak Shaving component + Arbitrage component
+
+    Example:
+        Peak Shaving: 40 kW / 80 kWh (for demand charge reduction)
+        Arbitrage: 60 kW / 240 kWh (for ToU spread exploitation)
+        TOTAL: 100 kW / 320 kWh
+    """
+    peak_shaving: StackedComponentModel = Field(
+        ..., description="Peak Shaving component - sized to reduce demand charges"
+    )
+    arbitrage: StackedComponentModel = Field(
+        ..., description="Arbitrage component - sized for ToU spread + PV surplus shifting"
+    )
+
+    # Combined totals
+    total_power_kw: float = Field(..., ge=0, description="Total power = peak + arbitrage [kW]")
+    total_energy_kwh: float = Field(..., ge=0, description="Total energy = peak + arbitrage [kWh]")
+    total_capex_pln: float = Field(..., ge=0, description="Total CAPEX [PLN]")
+    total_annual_savings_pln: float = Field(..., description="Total annual savings [PLN/rok]")
+    total_npv_pln: float = Field(..., description="Combined NPV (with shared OPEX) [PLN]")
+
+    # Sizing rationale
+    sizing_rationale: str = Field(
+        ...,
+        description="Human-readable explanation of how BESS size was determined"
+    )
+
+    @property
+    def peak_fraction(self) -> float:
+        """Fraction of total power dedicated to peak shaving"""
+        if self.total_power_kw > 0:
+            return self.peak_shaving.power_kw / self.total_power_kw
+        return 0.0
+
+    @property
+    def arbitrage_fraction(self) -> float:
+        """Fraction of total power dedicated to arbitrage"""
+        if self.total_power_kw > 0:
+            return self.arbitrage.power_kw / self.total_power_kw
+        return 0.0
+
+
 class DegradationBudget(BaseModel):
     """Degradation budget constraints for battery lifecycle management.
 
@@ -2650,8 +2722,24 @@ class SizingResult(BaseModel):
                     "and truncated flag for each timeseries type (battery_trace, ledger, price)."
     )
 
+    # Stacked decomposition (v3.1.0) - separate Peak Shaving & Arbitrage components
+    stacked_decomposition: Optional[StackedDecompositionModel] = Field(
+        None,
+        description="For STACKED mode: decomposition into Peak Shaving and Arbitrage components. "
+                    "Shows how total BESS size = peak_shaving + arbitrage. "
+                    "Enables transparent sizing rationale for dual-service BESS."
+    )
+
     # Warnings
     warnings: List[str] = Field(default_factory=list)
+
+    # BESS Advisor response (v3.0.0) - intelligent recommendations
+    advisor_response: Optional[Dict[str, Any]] = Field(
+        None,
+        description="BESS Advisor generated response with markdown text, "
+                    "recommended SKU configuration, alternatives, and warnings. "
+                    "Includes snap-to-market adjustments for real products."
+    )
 
 
 # =============================================================================

@@ -65,11 +65,7 @@ groups:
 
       - alert: BessDeprecationSunsetApproaching
         expr: |
-          (
-            days_to_timestamp(vector(1740787200))
-            -
-            days_to_timestamp(time())
-          ) < 30
+          (vector(1772323200) - time()) < (30 * 24 * 3600) and (vector(1772323200) - time()) > 0
         for: 1h
         labels:
           severity: warning

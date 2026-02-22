@@ -59,6 +59,9 @@ from models import (
     Feasibility,
     ConstraintsReport,
     ParetoPoint,
+    # v3.1.0 Stacked Decomposition
+    StackedComponentModel,
+    StackedDecompositionModel,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -124,6 +127,10 @@ from ledger_timeseries_helper import (
     generate_ledger_timeseries,
 )
 from determinism_helper import select_best_variant_deterministic
+from advisor_response import (
+    generate_advisor_response,
+    advisor_response_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1458,6 +1465,291 @@ def run_sizing_for_variant(
     return result, capex, npv, savings_breakdown
 
 
+# =============================================================================
+# STACKED MODE DECOMPOSITION - Separate Peak Shaving & Arbitrage Sizing
+# =============================================================================
+
+@dataclass
+class StackedComponent:
+    """Single component of Stacked BESS sizing."""
+    name: str  # "peak_shaving" or "arbitrage"
+    power_kw: float
+    energy_kwh: float
+    duration_h: float
+    capex_pln: float
+    annual_savings_pln: float
+    npv_pln: float
+    description: str
+
+
+@dataclass
+class StackedDecomposition:
+    """
+    Full decomposition of Stacked BESS into Peak Shaving and Arbitrage components.
+
+    Total BESS = Peak Shaving component + Arbitrage component
+    """
+    peak_shaving: StackedComponent
+    arbitrage: StackedComponent
+
+    # Combined totals
+    total_power_kw: float
+    total_energy_kwh: float
+    total_capex_pln: float
+    total_annual_savings_pln: float
+    total_npv_pln: float
+
+    # Sizing rationale
+    sizing_rationale: str
+
+
+def calculate_stacked_decomposition(
+    pv_kw: np.ndarray,
+    load_kw: np.ndarray,
+    dt_hours: float,
+    request: SizingRequest,
+    duration_h: float = 4.0,
+    import_prices: Optional[np.ndarray] = None,
+) -> StackedDecomposition:
+    """
+    Calculate separate Peak Shaving and Arbitrage BESS components for Stacked mode.
+
+    The key insight is that Stacked mode should size BESS as SUM of:
+    1. Peak Shaving component - sized to shave peaks above threshold
+    2. Arbitrage component - sized to exploit ToU spread with PV surplus
+
+    NOT as MAX (which loses potential savings from one of the services).
+
+    Returns:
+    --------
+    StackedDecomposition with separate components and combined totals.
+    """
+    logger.info("=" * 60)
+    logger.info("🔋 STACKED DECOMPOSITION: Calculating separate components")
+    logger.info("=" * 60)
+
+    n_timesteps = len(pv_kw)
+    timesteps_per_day = int(24 * 60 / request.interval_minutes)
+    period_days = int(np.ceil(n_timesteps / timesteps_per_day))
+
+    # Get pricing parameters
+    capex_per_kwh = request.capex_per_kwh or 1500
+    capex_per_kw = request.capex_per_kw or 300
+
+    # =========================================================================
+    # COMPONENT 1: PEAK SHAVING
+    # =========================================================================
+    # Size based on excess over peak_limit_kw
+
+    peak_limit_kw = (
+        request.stacked_params.peak_limit_kw if request.stacked_params
+        else request.peak_limit_kw or np.percentile(load_kw, 90)
+    )
+
+    net_load = load_kw - pv_kw
+    peak_excess = np.maximum(net_load - peak_limit_kw, 0)
+
+    if np.any(peak_excess > 0):
+        # Power: P95 of excess determines discharge power needed
+        peak_power_kw = np.percentile(peak_excess[peak_excess > 0], 95)
+
+        # Energy: Analyze peak events to determine required capacity
+        max_peak_event_energy = 0.0
+        current_event_energy = 0.0
+        for i in range(len(peak_excess)):
+            if peak_excess[i] > 0:
+                current_event_energy += peak_excess[i] * dt_hours
+            else:
+                if current_event_energy > max_peak_event_energy:
+                    max_peak_event_energy = current_event_energy
+                current_event_energy = 0
+        if current_event_energy > max_peak_event_energy:
+            max_peak_event_energy = current_event_energy
+
+        # Energy should cover the largest peak event
+        peak_energy_kwh = max(max_peak_event_energy * 1.2, peak_power_kw * 1.0)  # At least 1h duration
+
+        # Calculate savings from demand charge reduction
+        demand_charge_rate = request.prices.annual_demand_charge_pln_kw if request.prices else 600
+        peak_reduction_kw = min(peak_power_kw, np.max(peak_excess))
+        peak_annual_savings = peak_reduction_kw * demand_charge_rate
+
+    else:
+        # No peak shaving needed
+        peak_power_kw = 0
+        peak_energy_kwh = 0
+        peak_annual_savings = 0
+        peak_reduction_kw = 0
+
+    peak_capex = peak_energy_kwh * capex_per_kwh + peak_power_kw * capex_per_kw
+    peak_npv = calculate_npv(
+        peak_annual_savings, peak_capex,
+        request.opex_pct_per_year or 0.015,
+        request.discount_rate or 0.07,
+        request.analysis_years or 15
+    )
+
+    logger.info(f"📊 PEAK SHAVING component:")
+    logger.info(f"   Peak limit: {peak_limit_kw:.0f} kW")
+    logger.info(f"   Peak reduction needed: {peak_reduction_kw:.0f} kW")
+    logger.info(f"   → Power: {peak_power_kw:.0f} kW")
+    logger.info(f"   → Energy: {peak_energy_kwh:.0f} kWh")
+    logger.info(f"   → CAPEX: {peak_capex:,.0f} PLN")
+    logger.info(f"   → Annual savings: {peak_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → NPV: {peak_npv:,.0f} PLN")
+
+    peak_component = StackedComponent(
+        name="peak_shaving",
+        power_kw=peak_power_kw,
+        energy_kwh=peak_energy_kwh,
+        duration_h=peak_energy_kwh / peak_power_kw if peak_power_kw > 0 else 0,
+        capex_pln=peak_capex,
+        annual_savings_pln=peak_annual_savings,
+        npv_pln=peak_npv,
+        description=f"Redukcja szczytów ponad {peak_limit_kw:.0f} kW"
+    )
+
+    # =========================================================================
+    # COMPONENT 2: ARBITRAGE (ToU spread + PV surplus)
+    # =========================================================================
+    # Size based on:
+    # - Daily PV surplus that can be stored and shifted
+    # - ToU price spread for grid charging arbitrage
+
+    pv_surplus = np.maximum(pv_kw - load_kw, 0)
+
+    # Calculate daily PV surplus
+    daily_surplus_kwh = np.zeros(period_days)
+    for day in range(period_days):
+        start_idx = day * timesteps_per_day
+        end_idx = min(start_idx + timesteps_per_day, n_timesteps)
+        if start_idx < n_timesteps:
+            daily_surplus_kwh[day] = np.sum(pv_surplus[start_idx:end_idx]) * dt_hours
+
+    if np.any(daily_surplus_kwh > 0):
+        # P75 of daily surplus - don't oversize for occasional high days
+        p75_daily_surplus = np.percentile(daily_surplus_kwh[daily_surplus_kwh > 0], 75)
+
+        # Power based on peak surplus rate
+        arb_power_kw = np.percentile(pv_surplus[pv_surplus > 0], 90) if np.any(pv_surplus > 0) else 0
+
+        # Energy: sized for target duration (typically 4h for arbitrage)
+        arb_energy_kwh = arb_power_kw * duration_h
+
+        # Also consider: energy should be able to store daily surplus
+        arb_energy_kwh = max(arb_energy_kwh, p75_daily_surplus)
+
+        # Recalculate power if energy was increased
+        if arb_energy_kwh > arb_power_kw * duration_h:
+            arb_power_kw = arb_energy_kwh / duration_h
+
+        # Calculate arbitrage savings
+        # Estimate ToU spread savings
+        if import_prices is not None and len(import_prices) > 0:
+            price_spread = np.percentile(import_prices, 75) - np.percentile(import_prices, 25)
+        else:
+            # Default spread estimate for C12a tariff (~400 PLN/MWh)
+            price_spread = 400  # PLN/MWh
+
+        # Annual throughput estimate: ~300 cycles at 80% DoD
+        annual_cycles = 300
+        usable_capacity = arb_energy_kwh * 0.8  # 80% DoD
+        annual_throughput_mwh = (usable_capacity * annual_cycles) / 1000
+
+        # Arbitrage savings = throughput × spread × efficiency
+        efficiency = request.roundtrip_efficiency or 0.90
+        arb_annual_savings = annual_throughput_mwh * price_spread * efficiency * 1000 / 1000  # Back to PLN
+
+        # Also add PV surplus self-consumption value
+        # Avoided export = import price (assuming net metering disadvantage)
+        import_price = request.prices.import_price_pln_mwh if request.prices else 900
+        export_price = request.prices.export_price_pln_mwh if request.prices else 400
+        pv_surplus_value_per_kwh = (import_price - export_price) / 1000  # PLN/kWh
+
+        # Estimate how much surplus we can actually shift (limited by battery)
+        shiftable_surplus_kwh_day = min(p75_daily_surplus, arb_energy_kwh * 0.8)
+        annual_shifted_kwh = shiftable_surplus_kwh_day * 365 * 0.7  # 70% utilization
+        pv_shifting_savings = annual_shifted_kwh * pv_surplus_value_per_kwh
+
+        arb_annual_savings += pv_shifting_savings
+
+    else:
+        arb_power_kw = 0
+        arb_energy_kwh = 0
+        arb_annual_savings = 0
+        p75_daily_surplus = 0
+
+    arb_capex = arb_energy_kwh * capex_per_kwh + arb_power_kw * capex_per_kw
+    arb_npv = calculate_npv(
+        arb_annual_savings, arb_capex,
+        request.opex_pct_per_year or 0.015,
+        request.discount_rate or 0.07,
+        request.analysis_years or 15
+    )
+
+    logger.info(f"📊 ARBITRAGE component:")
+    logger.info(f"   P75 daily surplus: {p75_daily_surplus:.0f} kWh")
+    logger.info(f"   → Power: {arb_power_kw:.0f} kW")
+    logger.info(f"   → Energy: {arb_energy_kwh:.0f} kWh ({duration_h}h duration)")
+    logger.info(f"   → CAPEX: {arb_capex:,.0f} PLN")
+    logger.info(f"   → Annual savings: {arb_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → NPV: {arb_npv:,.0f} PLN")
+
+    arb_component = StackedComponent(
+        name="arbitrage",
+        power_kw=arb_power_kw,
+        energy_kwh=arb_energy_kwh,
+        duration_h=duration_h,
+        capex_pln=arb_capex,
+        annual_savings_pln=arb_annual_savings,
+        npv_pln=arb_npv,
+        description=f"Arbitraż ToU + PV surplus shifting"
+    )
+
+    # =========================================================================
+    # COMBINED TOTALS
+    # =========================================================================
+    total_power_kw = peak_power_kw + arb_power_kw
+    total_energy_kwh = peak_energy_kwh + arb_energy_kwh
+    total_capex = peak_capex + arb_capex
+    total_annual_savings = peak_annual_savings + arb_annual_savings
+
+    # Recalculate combined NPV (not just sum due to shared OPEX base)
+    total_npv = calculate_npv(
+        total_annual_savings, total_capex,
+        request.opex_pct_per_year or 0.015,
+        request.discount_rate or 0.07,
+        request.analysis_years or 15
+    )
+
+    logger.info("=" * 60)
+    logger.info(f"🔋 STACKED TOTAL (Peak + Arbitrage):")
+    logger.info(f"   → Total Power: {total_power_kw:.0f} kW = {peak_power_kw:.0f} + {arb_power_kw:.0f}")
+    logger.info(f"   → Total Energy: {total_energy_kwh:.0f} kWh = {peak_energy_kwh:.0f} + {arb_energy_kwh:.0f}")
+    logger.info(f"   → Total CAPEX: {total_capex:,.0f} PLN")
+    logger.info(f"   → Total Savings: {total_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → Total NPV: {total_npv:,.0f} PLN")
+    logger.info("=" * 60)
+
+    sizing_rationale = (
+        f"BESS Stacked = Peak Shaving ({peak_power_kw:.0f}kW/{peak_energy_kwh:.0f}kWh) "
+        f"+ Arbitrage ({arb_power_kw:.0f}kW/{arb_energy_kwh:.0f}kWh). "
+        f"Peak shaving redukuje szczyt o {peak_reduction_kw:.0f}kW (oszcz. {peak_annual_savings:,.0f} PLN/rok). "
+        f"Arbitrage wykorzystuje spread ToU + PV surplus (oszcz. {arb_annual_savings:,.0f} PLN/rok)."
+    )
+
+    return StackedDecomposition(
+        peak_shaving=peak_component,
+        arbitrage=arb_component,
+        total_power_kw=total_power_kw,
+        total_energy_kwh=total_energy_kwh,
+        total_capex_pln=total_capex,
+        total_annual_savings_pln=total_annual_savings,
+        total_npv_pln=total_npv,
+        sizing_rationale=sizing_rationale,
+    )
+
+
 def find_optimal_power_for_duration(
     pv_kw: np.ndarray,
     load_kw: np.ndarray,
@@ -2439,6 +2731,134 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             dominated_count=dominated_count,
         )
 
+    # =========================================================================
+    # Generate BESS Advisor Response (v3.0.0)
+    # =========================================================================
+    # Build intermediate result dict for advisor (before SizingResult construction)
+    advisor_input = {
+        "variants": [
+            {
+                "variant": v.variant.value if v.variant else "unknown",
+                "variant_label": v.variant_label,
+                "duration_h": v.duration_h,
+                "power_kw": v.power_kw,
+                "energy_kwh": v.energy_kwh,
+                "c_rate": v.c_rate,
+                "capex_pln": v.capex_pln,
+                "annual_opex_pln": v.annual_opex_pln,
+                "annual_savings_pln": v.annual_savings_pln,
+                "npv_pln": v.npv_pln,
+                "simple_payback_years": v.simple_payback_years,
+                "irr_pct": v.irr_pct,
+                "is_recommended": v.is_recommended,
+                "savings_breakdown": {
+                    "energy_savings_pln": v.savings_breakdown.energy_savings_pln if v.savings_breakdown else 0,
+                    "arbitrage_savings_pln": v.savings_breakdown.arbitrage_savings_pln if v.savings_breakdown else 0,
+                    "capacity_fee_savings_pln": v.savings_breakdown.capacity_fee_savings_pln if v.savings_breakdown else 0,
+                    "demand_charge_savings_pln": v.savings_breakdown.demand_charge_savings_pln if v.savings_breakdown else 0,
+                    "degradation_cost_pln": v.savings_breakdown.degradation_cost_pln if v.savings_breakdown else 0,
+                    "net_savings_pln": v.savings_breakdown.net_savings_pln if v.savings_breakdown else 0,
+                } if v.savings_breakdown else {},
+            }
+            for v in variants
+        ],
+        "total_pv_mwh": total_pv_mwh,
+        "total_load_mwh": total_load_mwh,
+        "annual_surplus_mwh": annual_surplus_mwh,
+        "applied_parameters": {
+            "discount_rate": request.discount_rate,
+            "analysis_years": request.analysis_years,
+            "roundtrip_efficiency": request.roundtrip_efficiency,
+            "annual_degradation_pct": request.annual_degradation_pct,
+            "soc_min": request.soc_min,
+            "soc_max": request.soc_max,
+            "eol_capacity_factor": request.eol_capacity_factor,
+        },
+        "warnings": warnings,
+    }
+
+    try:
+        # Get prices from request.prices (PriceConfig)
+        import_price_kwh = 0.80  # default
+        export_price_kwh = 0.30  # default
+        if request.prices:
+            if request.prices.import_price_pln_mwh:
+                import_price_kwh = request.prices.import_price_pln_mwh / 1000
+            if request.prices.export_price_pln_mwh:
+                export_price_kwh = request.prices.export_price_pln_mwh / 1000
+
+        # Generate BESS Advisor response with all v2.0.0 features
+        # Detect if arbitrage is enabled from request
+        arbitrage_is_enabled = bool(
+            request.arbitrage_config and request.arbitrage_config.enabled
+        )
+
+        advisor_resp = generate_advisor_response(
+            sizing_result=advisor_input,
+            capex_per_kwh=request.capex_per_kwh,
+            capex_per_kw=request.capex_per_kw,
+            include_tariff_recommendation=False,  # OUTPUT CONTRACT: only when arbitrage/user asks
+            current_tariff='C11',  # Default tariff
+            include_savings_comparison=True,
+            include_re_evaluation=True,
+            energy_price_pln_kwh=import_price_kwh,
+            export_price_pln_kwh=export_price_kwh,
+            arbitrage_enabled=arbitrage_is_enabled,  # OUTPUT CONTRACT: triggers tariff recommendation
+        )
+        advisor_response_dict = advisor_response_to_dict(advisor_resp)
+        logger.info(f"✅ BESS Advisor v2.0.0 response generated successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to generate BESS Advisor response: {e}", exc_info=True)
+        advisor_response_dict = None
+
+    # =========================================================================
+    # Calculate Stacked Decomposition for STACKED mode (v3.1.0)
+    # =========================================================================
+    stacked_decomposition_model = None
+    if request.mode == DispatchMode.STACKED:
+        try:
+            decomposition = calculate_stacked_decomposition(
+                pv_kw=pv_kw,
+                load_kw=load_kw,
+                dt_hours=dt_hours,
+                request=request,
+                duration_h=4.0,  # Default to 4h for arbitrage component
+                import_prices=import_prices,
+            )
+            # Convert dataclass to Pydantic model
+            stacked_decomposition_model = StackedDecompositionModel(
+                peak_shaving=StackedComponentModel(
+                    name=decomposition.peak_shaving.name,
+                    power_kw=decomposition.peak_shaving.power_kw,
+                    energy_kwh=decomposition.peak_shaving.energy_kwh,
+                    duration_h=decomposition.peak_shaving.duration_h,
+                    capex_pln=decomposition.peak_shaving.capex_pln,
+                    annual_savings_pln=decomposition.peak_shaving.annual_savings_pln,
+                    npv_pln=decomposition.peak_shaving.npv_pln,
+                    description=decomposition.peak_shaving.description,
+                ),
+                arbitrage=StackedComponentModel(
+                    name=decomposition.arbitrage.name,
+                    power_kw=decomposition.arbitrage.power_kw,
+                    energy_kwh=decomposition.arbitrage.energy_kwh,
+                    duration_h=decomposition.arbitrage.duration_h,
+                    capex_pln=decomposition.arbitrage.capex_pln,
+                    annual_savings_pln=decomposition.arbitrage.annual_savings_pln,
+                    npv_pln=decomposition.arbitrage.npv_pln,
+                    description=decomposition.arbitrage.description,
+                ),
+                total_power_kw=decomposition.total_power_kw,
+                total_energy_kwh=decomposition.total_energy_kwh,
+                total_capex_pln=decomposition.total_capex_pln,
+                total_annual_savings_pln=decomposition.total_annual_savings_pln,
+                total_npv_pln=decomposition.total_npv_pln,
+                sizing_rationale=decomposition.sizing_rationale,
+            )
+            logger.info(f"✅ Stacked Decomposition calculated: Peak={decomposition.peak_shaving.power_kw:.0f}kW + Arb={decomposition.arbitrage.power_kw:.0f}kW = {decomposition.total_power_kw:.0f}kW")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to calculate Stacked Decomposition: {e}", exc_info=True)
+            stacked_decomposition_model = None
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -2464,7 +2884,9 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         grid_constraints_applied=grid_constraints_applied,  # v0.7.0
         constraints_report=constraints_report,  # v0.8.0
         pareto_frontier=pareto_frontier,  # v0.8.0
+        stacked_decomposition=stacked_decomposition_model,  # v3.1.0 Stacked decomposition
         warnings=warnings,
+        advisor_response=advisor_response_dict,  # v3.0.0 BESS Advisor
     )
 
 

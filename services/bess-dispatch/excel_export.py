@@ -363,11 +363,12 @@ def calculate_capacity_fee_dynamic(
                 a_coeff = 1.0
             else:
                 delta_s = (avg_s / avg_ps - 1) * 100
-                if delta_s < 5:
+                # Thresholds per Dz.U. 2023 poz. 503
+                if delta_s < -10:
                     a_coeff = 0.17  # K1
                 elif delta_s < 10:
                     a_coeff = 0.50  # K2
-                elif delta_s < 15:
+                elif delta_s < 30:
                     a_coeff = 0.83  # K3
                 else:
                     a_coeff = 1.00  # K4

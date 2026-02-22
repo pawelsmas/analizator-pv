@@ -195,92 +195,308 @@
 
     <!-- BESS Cycle Animation Section -->
     <div class="chart-section full-width bess-animation-section">
-      <h2>🔄 Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
+      <h2>⚡ Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
       <div class="bess-animation-container">
-        <!-- Visual Energy Flow Diagram -->
-        <div class="bess-flow-diagram">
-          <!-- PV Panel -->
-          <div class="flow-node pv-node">
-            <div class="node-icon">☀️</div>
-            <div class="node-label">PV</div>
-            <div class="node-value" id="animPvPower">0 kW</div>
+        <!-- Visual Energy Flow Diagram - SVG Based -->
+        <div class="bess-flow-diagram" id="bessFlowDiagram">
+          <!-- SVG Layer for Flow Paths -->
+          <svg class="flow-svg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <!-- PV flow gradient (golden yellow) -->
+              <linearGradient id="pvGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#fcd34d;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#fbbf24;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#f59e0b;stop-opacity:1" />
+              </linearGradient>
+              <!-- Battery flow gradient (emerald green) -->
+              <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#6ee7b7;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#34d399;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#10b981;stop-opacity:1" />
+              </linearGradient>
+              <!-- Grid flow gradient (coral red) -->
+              <linearGradient id="gridGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#fca5a5;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#f87171;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#ef4444;stop-opacity:1" />
+              </linearGradient>
+              <!-- Arbitrage charging gradient (electric blue) -->
+              <linearGradient id="arbitrageChargeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#93c5fd;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#60a5fa;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+              </linearGradient>
+
+              <!-- Glow filters for paths -->
+              <filter id="glowPv" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feFlood flood-color="#fbbf24" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowBattery" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feFlood flood-color="#34d399" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowGrid" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feFlood flood-color="#f87171" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowArbitrage" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="7" result="blur"/>
+                <feFlood flood-color="#60a5fa" flood-opacity="0.7" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+
+              <!-- Particle glow filters -->
+              <filter id="particleGlowYellow" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feFlood flood-color="#fbbf24" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowGreen" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feFlood flood-color="#34d399" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowRed" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="3" result="blur"/>
+                <feFlood flood-color="#f87171" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowBlue" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feFlood flood-color="#60a5fa" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+
+            <!-- Background glow paths (wider, more diffuse) -->
+            <g id="pathGlowGroup" opacity="0.4">
+              <path id="glowPvBattery" class="flow-glow-path" d="M 300 75 C 240 95, 180 140, 130 195" fill="none" stroke="#fbbf24" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowPvLoad" class="flow-glow-path" d="M 300 75 C 360 85, 420 110, 475 145" fill="none" stroke="#fbbf24" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowBatteryLoad" class="flow-glow-path" d="M 130 195 C 250 175, 380 155, 475 145" fill="none" stroke="#34d399" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowGridLoad" class="flow-glow-path" d="M 505 310 C 515 250, 500 190, 485 155" fill="none" stroke="#f87171" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowGridBattery" class="flow-glow-path" d="M 505 310 C 380 340, 250 330, 130 225" fill="none" stroke="#60a5fa" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowBatteryGrid" class="flow-glow-path" d="M 130 225 C 250 300, 380 320, 505 310" fill="none" stroke="#34d399" stroke-width="0" stroke-linecap="round"/>
+            </g>
+
+            <!-- Main flow paths (cubic Bezier for smoother curves) -->
+            <g id="pathMainGroup">
+              <!-- PV to Battery -->
+              <path id="pathPvBattery" class="flow-path flow-pv"
+                    d="M 300 75 C 240 95, 180 140, 130 195"
+                    fill="none" stroke="url(#pvGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowPv)"/>
+              <!-- PV to Load -->
+              <path id="pathPvLoad" class="flow-path flow-pv"
+                    d="M 300 75 C 360 85, 420 110, 475 145"
+                    fill="none" stroke="url(#pvGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowPv)"/>
+              <!-- Battery to Load -->
+              <path id="pathBatteryLoad" class="flow-path flow-battery"
+                    d="M 130 195 C 250 175, 380 155, 475 145"
+                    fill="none" stroke="url(#batteryGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowBattery)"/>
+              <!-- Grid to Load -->
+              <path id="pathGridLoad" class="flow-path flow-grid"
+                    d="M 505 310 C 515 250, 500 190, 485 155"
+                    fill="none" stroke="url(#gridGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowGrid)"/>
+              <!-- Grid to Battery (arbitrage) -->
+              <path id="pathGridBattery" class="flow-path flow-arbitrage"
+                    d="M 505 310 C 380 340, 250 330, 130 225"
+                    fill="none" stroke="url(#arbitrageChargeGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowArbitrage)"/>
+              <!-- Battery to Grid -->
+              <path id="pathBatteryGrid" class="flow-path flow-battery"
+                    d="M 130 225 C 250 300, 380 320, 505 310"
+                    fill="none" stroke="url(#batteryGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowBattery)"/>
+            </g>
+
+            <!-- Animated particles container -->
+            <g id="particlesGroup"></g>
+
+            <!-- Flow value labels with background -->
+            <g id="labelsGroup" class="flow-labels">
+              <g id="labelGroupPvBattery" opacity="0">
+                <rect x="165" y="115" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelPvBattery" class="flow-label-svg" x="190" y="130" fill="#fcd34d">0 kW</text>
+              </g>
+              <g id="labelGroupPvLoad" opacity="0">
+                <rect x="375" y="85" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelPvLoad" class="flow-label-svg" x="400" y="100" fill="#fcd34d">0 kW</text>
+              </g>
+              <g id="labelGroupBatteryLoad" opacity="0">
+                <rect x="275" y="150" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelBatteryLoad" class="flow-label-svg" x="300" y="165" fill="#6ee7b7">0 kW</text>
+              </g>
+              <g id="labelGroupGridLoad" opacity="0">
+                <rect x="515" y="220" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelGridLoad" class="flow-label-svg" x="540" y="235" fill="#fca5a5">0 kW</text>
+              </g>
+              <g id="labelGroupGridBattery" opacity="0">
+                <rect x="290" y="315" width="60" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelGridBattery" class="flow-label-svg" x="320" y="330" fill="#93c5fd">0 kW</text>
+              </g>
+              <g id="labelGroupBatteryGrid" opacity="0">
+                <rect x="290" y="280" width="60" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelBatteryGrid" class="flow-label-svg" x="320" y="295" fill="#6ee7b7">0 kW</text>
+              </g>
+            </g>
+          </svg>
+
+          <!-- Node: PV Panel -->
+          <div class="energy-node node-pv" id="nodePv">
+            <div class="node-glow pv-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="56" height="56">
+                <circle cx="32" cy="32" r="20" fill="#fbbf24" opacity="0.3"/>
+                <circle cx="32" cy="32" r="14" fill="#f59e0b"/>
+                <g stroke="#fbbf24" stroke-width="3" stroke-linecap="round">
+                  <line x1="32" y1="4" x2="32" y2="12"/>
+                  <line x1="32" y1="52" x2="32" y2="60"/>
+                  <line x1="4" y1="32" x2="12" y2="32"/>
+                  <line x1="52" y1="32" x2="60" y2="32"/>
+                  <line x1="12" y1="12" x2="18" y2="18"/>
+                  <line x1="46" y1="46" x2="52" y2="52"/>
+                  <line x1="12" y1="52" x2="18" y2="46"/>
+                  <line x1="46" y1="18" x2="52" y2="12"/>
+                </g>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">PV</span>
+              <span class="node-power" id="animPvPower">0,0  kW</span>
+            </div>
           </div>
 
-          <!-- Flow arrows container -->
-          <div class="flow-arrows">
-            <!-- PV to Battery -->
-            <div class="flow-arrow arrow-pv-battery" id="arrowPvBattery">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesPvBattery"></div>
+          <!-- Node: Battery -->
+          <div class="energy-node node-battery" id="nodeBattery">
+            <div class="node-glow battery-glow"></div>
+            <div class="battery-3d">
+              <div class="battery-outer">
+                <div class="battery-terminal"></div>
+                <div class="battery-inner">
+                  <div class="battery-charge" id="batteryFill">
+                    <div class="battery-charge-glow"></div>
+                  </div>
+                  <span class="battery-percent" id="batteryLevel">0%</span>
+                </div>
               </div>
-              <div class="arrow-value" id="flowPvBattery">0</div>
             </div>
-
-            <!-- PV to Load -->
-            <div class="flow-arrow arrow-pv-load" id="arrowPvLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesPvLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowPvLoad">0</div>
-            </div>
-
-            <!-- Battery to Load -->
-            <div class="flow-arrow arrow-battery-load" id="arrowBatteryLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesBatteryLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowBatteryLoad">0</div>
-            </div>
-
-            <!-- Grid to Load -->
-            <div class="flow-arrow arrow-grid-load" id="arrowGridLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesGridLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowGridLoad">0</div>
-            </div>
-
-            <!-- Curtailment -->
-            <div class="flow-arrow arrow-curtailment" id="arrowCurtailment">
-              <div class="arrow-line">
-                <div class="arrow-particles curtailment-particles" id="particlesCurtailment"></div>
-              </div>
-              <div class="arrow-value" id="flowCurtailment">0</div>
+            <div class="node-info">
+              <span class="node-name">BESS</span>
+              <span class="node-power" id="animBatteryKwh">0  kWh</span>
             </div>
           </div>
 
-          <!-- Battery -->
-          <div class="flow-node battery-node">
-            <div class="battery-visual">
-              <div class="battery-body">
-                <div class="battery-fill" id="batteryFill"></div>
-                <div class="battery-level" id="batteryLevel">0%</div>
-              </div>
-              <div class="battery-cap"></div>
+          <!-- Node: Load (Factory) -->
+          <div class="energy-node node-load" id="nodeLoad">
+            <div class="node-glow load-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="48" height="48">
+                <rect x="8" y="24" width="48" height="32" rx="2" fill="#64748b"/>
+                <rect x="12" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="28" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="44" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="20" y="44" width="8" height="12" fill="#475569"/>
+                <rect x="36" y="44" width="8" height="12" fill="#475569"/>
+                <polygon points="8,24 32,8 56,24" fill="#475569"/>
+                <rect x="46" y="12" width="6" height="16" fill="#78716c"/>
+                <ellipse cx="49" cy="10" rx="5" ry="3" fill="#a8a29e" opacity="0.6"/>
+              </svg>
             </div>
-            <div class="node-label">BESS</div>
-            <div class="node-value" id="animBatteryKwh">0 kWh</div>
+            <div class="node-info">
+              <span class="node-name">Zużycie</span>
+              <span class="node-power" id="animLoadPower">0,0  kW</span>
+            </div>
           </div>
 
-          <!-- Load -->
-          <div class="flow-node load-node">
-            <div class="node-icon">🏭</div>
-            <div class="node-label">Zużycie</div>
-            <div class="node-value" id="animLoadPower">0 kW</div>
+          <!-- Node: Grid -->
+          <div class="energy-node node-grid" id="nodeGrid">
+            <div class="node-glow grid-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="48" height="48">
+                <rect x="28" y="16" width="8" height="40" fill="#78716c"/>
+                <line x1="32" y1="20" x2="12" y2="32" stroke="#78716c" stroke-width="4"/>
+                <line x1="32" y1="20" x2="52" y2="32" stroke="#78716c" stroke-width="4"/>
+                <line x1="32" y1="32" x2="8" y2="44" stroke="#78716c" stroke-width="3"/>
+                <line x1="32" y1="32" x2="56" y2="44" stroke="#78716c" stroke-width="3"/>
+                <circle cx="32" cy="20" r="6" fill="#f59e0b"/>
+                <path d="M30 17 L34 17 L32 23 L35 20 L31 20 L33 14 Z" fill="#fef3c7"/>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">Sieć</span>
+              <span class="node-power" id="animGridPower">0  kW</span>
+            </div>
+            <!-- Energy Price Badge -->
+            <div class="price-badge-modern" id="priceBadge">
+              <span class="price-indicator" id="priceIcon">💚</span>
+              <span class="price-text" id="priceLabel">TANIA</span>
+              <span class="price-amount" id="priceValue">350 PLN/MWh</span>
+            </div>
           </div>
 
-          <!-- Grid -->
-          <div class="flow-node grid-node">
-            <div class="node-icon">⚡</div>
-            <div class="node-label">Sieć</div>
-            <div class="node-value" id="animGridPower">0 kW</div>
+          <!-- Arbitrage Status Indicator -->
+          <div class="arbitrage-status" id="arbitrageIndicator" style="display: none;">
+            <div class="arbitrage-badge-modern" id="arbitrageBadge">
+              <span class="arbitrage-icon-modern">📈</span>
+              <span class="arbitrage-text-modern" id="arbitrageText">Arbitraż aktywny</span>
+            </div>
           </div>
 
-          <!-- Curtailment indicator -->
-          <div class="flow-node curtailment-node" id="curtailmentNode" style="display: none;">
-            <div class="node-icon">🚫</div>
-            <div class="node-label">Strata</div>
-            <div class="node-value" id="animCurtailment">0 kW</div>
+          <!-- Curtailment indicator (hidden by default) -->
+          <div class="energy-node node-curtailment" id="curtailmentNode" style="display: none;">
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="40" height="40">
+                <circle cx="32" cy="32" r="24" fill="none" stroke="#9ca3af" stroke-width="4"/>
+                <line x1="16" y1="16" x2="48" y2="48" stroke="#9ca3af" stroke-width="4"/>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">Strata</span>
+              <span class="node-power" id="animCurtailment">0 kW</span>
+            </div>
           </div>
         </div>
 
@@ -308,6 +524,32 @@
             <div class="anim-stat">
               <span class="anim-stat-label">Cykle dziś:</span>
               <span class="anim-stat-value" id="animDailyCycles">0,0</span>
+            </div>
+          </div>
+
+          <!-- NEW: Arbitrage Stats Section -->
+          <div class="anim-arbitrage-stats" id="animArbitrageStats">
+            <div class="arbitrage-stats-header">
+              <span class="arbitrage-stats-title">📈 Arbitraż ToU</span>
+              <span class="arbitrage-stats-toggle" id="arbitrageStatsToggle" onclick="toggleArbitrageStats()">▼</span>
+            </div>
+            <div class="arbitrage-stats-grid" id="arbitrageStatsGrid">
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Ładowanie tanie:</span>
+                <span class="anim-stat-value" id="animDailyGridCharge">0 kWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Rozładowanie drogie:</span>
+                <span class="anim-stat-value" id="animDailyPeakDischarge">0 kWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Spread dziś:</span>
+                <span class="anim-stat-value" id="animDailySpread">0 PLN/MWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat highlight">
+                <span class="anim-stat-label">💰 Oszczędność:</span>
+                <span class="anim-stat-value" id="animDailyArbitrageSavings">0 PLN</span>
+              </div>
             </div>
           </div>
 
@@ -347,6 +589,7 @@
         </div>
 
         <button class="anim-btn anim-btn-secondary" onclick="resetBessAnimation()">🔄 Reset</button>
+        <button class="anim-btn anim-btn-secondary" onclick="exportAnimationDataToExcel()" id="exportAnimDataBtn" title="Eksportuj dane animacji do Excel/CSV">📊 Export Excel</button>
       </div>
 
       <div class="info-banner" style="margin-top: 16px;">
@@ -354,6 +597,8 @@
         <div class="banner-text">
           Animacja pokazuje godzinowy przepływ energii przez cały rok. Żółte cząsteczki = energia z PV,
           zielone = energia z/do baterii, czerwone = pobór z sieci, szare = curtailment (strata).
+          <strong>Niebieskie = arbitraż (ładowanie tanim prądem z sieci).</strong>
+          Wskaźnik ceny przy sieci pokazuje aktualną stawkę ToU.
         </div>
       </div>
     </div>
@@ -665,6 +910,138 @@
       </div>
     </div>
 
+    <!-- NEW v3.0: BESS Advisor Recommendations -->
+    <div class="stats-section full-width advisor-section" id="advisorSection" style="display:none;">
+      <h2>🤖 BESS Advisor - Rekomendacje</h2>
+      <div class="chart-info">
+        Inteligentne rekomendacje doboru BESS ze snap-to-SKU (produkty rynkowe)
+      </div>
+
+      <!-- v4.0.0: Calculation Mode Toggle -->
+      <div class="calculation-mode-toggle" id="calculationModeToggle" style="margin: 16px 0; padding: 12px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 8px; border: 1px solid #90caf9;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">⚡</span>
+            <span style="font-weight: 600; color: #1565c0;">Tryb kalkulacji:</span>
+          </div>
+          <div class="mode-buttons" style="display: flex; gap: 8px;">
+            <button class="mode-btn active" data-mode="standard" onclick="setCalculationMode('standard')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: #1565c0; color: white; font-weight: 500; cursor: pointer; transition: all 0.2s;">
+              🚀 Standardowy
+            </button>
+            <button class="mode-btn" data-mode="verified" onclick="setCalculationMode('verified')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: white; color: #1565c0; font-weight: 500; cursor: pointer; transition: all 0.2s;">
+              ✅ Zweryfikowany
+            </button>
+            <button class="mode-btn" data-mode="diagnostic" onclick="setCalculationMode('diagnostic')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: white; color: #1565c0; font-weight: 500; cursor: pointer; transition: all 0.2s;">
+              🔬 Diagnostyka
+            </button>
+          </div>
+          <div id="calculationModeInfo" style="font-size: 12px; color: #546e7a;">
+            <span id="modeDescription">Szybka kalkulacja z rodzimym silnikiem</span>
+          </div>
+        </div>
+        <!-- Confidence indicator (shown for verified/diagnostic modes) -->
+        <div id="confidenceIndicator" style="display: none; margin-top: 12px; padding: 10px; background: white; border-radius: 6px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-weight: 600;">Poziom pewności:</span>
+            <div id="confidenceBadge" style="padding: 4px 12px; border-radius: 4px; font-weight: 600; background: #4caf50; color: white;">WYSOKI</div>
+            <span id="confidenceScore" style="color: #546e7a;">95%</span>
+            <span id="enginesUsed" style="font-size: 11px; color: #78909c;">Silniki: native, reopt</span>
+          </div>
+          <div id="confidenceIssues" style="display: none; margin-top: 8px; font-size: 12px; color: #f57c00;"></div>
+        </div>
+      </div>
+
+      <!-- Advisor Summary Cards -->
+      <div class="stats-cards" id="advisorSummaryCards">
+        <div class="stat-card bess-green">
+          <div class="stat-icon">🎯</div>
+          <div class="stat-content">
+            <div class="stat-label">Rekomendowany SKU</div>
+            <div class="stat-value" id="advisorSkuPower">-</div>
+            <div class="stat-unit" id="advisorSkuEnergy">-</div>
+            <div class="stat-detail" id="advisorVariantLabel">-</div>
+          </div>
+        </div>
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">💰</div>
+          <div class="stat-content">
+            <div class="stat-label">CAPEX (SKU)</div>
+            <div class="stat-value" id="advisorCapex">-</div>
+            <div class="stat-unit">PLN</div>
+            <div class="stat-detail" id="advisorCapexDelta">-</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">📈</div>
+          <div class="stat-content">
+            <div class="stat-label">NPV (post-snap)</div>
+            <div class="stat-value" id="advisorNpv">-</div>
+            <div class="stat-unit">PLN</div>
+            <div class="stat-detail" id="advisorIrr">IRR: -</div>
+          </div>
+        </div>
+        <div class="stat-card" id="advisorStatusCard">
+          <div class="stat-icon" id="advisorStatusIcon">✅</div>
+          <div class="stat-content">
+            <div class="stat-label">SKU Snap Status</div>
+            <div class="stat-value" id="advisorSnapStatus">-</div>
+            <div class="stat-detail" id="advisorSnapDetail">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alternatives Table -->
+      <div class="advisor-alternatives" id="advisorAlternatives" style="margin-top: 20px;">
+        <h3>📦 Alternatywne konfiguracje SKU</h3>
+        <table class="data-table" id="advisorAlternativesTable">
+          <thead>
+            <tr>
+              <th>Model PCS</th>
+              <th>Moc [kW]</th>
+              <th>Pojemność [kWh]</th>
+              <th>Duration [h]</th>
+              <th>Bateria</th>
+            </tr>
+          </thead>
+          <tbody id="advisorAlternativesBody">
+            <!-- Dynamically filled -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Savings Comparison -->
+      <div class="advisor-savings" id="advisorSavings" style="margin-top: 20px;">
+        <h3>📊 Porównanie scenariuszy oszczędności</h3>
+        <div class="savings-comparison-grid" id="savingsComparisonGrid">
+          <!-- Dynamically filled -->
+        </div>
+      </div>
+
+      <!-- Tariff Recommendation (only when arbitrage) -->
+      <div class="advisor-tariff" id="advisorTariff" style="margin-top: 20px; display: none;">
+        <h3>💡 Rekomendacja taryfowa</h3>
+        <div id="advisorTariffContent">
+          <!-- Dynamically filled -->
+        </div>
+      </div>
+
+      <!-- Warnings -->
+      <div class="advisor-warnings" id="advisorWarnings" style="margin-top: 20px; display: none;">
+        <h3>⚠️ Uwagi</h3>
+        <ul id="advisorWarningsList">
+          <!-- Dynamically filled -->
+        </ul>
+      </div>
+
+      <!-- Assumptions (collapsible) -->
+      <details class="advisor-assumptions" id="advisorAssumptions" style="margin-top: 20px;">
+        <summary>📋 Założenia kalkulacji</summary>
+        <div id="advisorAssumptionsContent">
+          <!-- Dynamically filled -->
+        </div>
+      </details>
+    </div>
+
     <!-- NEW v3.3: Degradation Budget Status -->
     <div class="stats-section full-width degradation-budget-section" id="degradationBudgetSection" style="display:none;">
       <h2>📉 Budżet Degradacji</h2>
@@ -713,6 +1090,91 @@
         <strong>Tryb STACKED:</strong> Bateria świadczy dwie usługi - Peak Shaving (priorytet 1) i PV Shifting (priorytet 2).
         <span id="stackedReserveInfo">Rezerwa SOC: 30% dla peak shaving.</span>
         <span id="stackedPeakLimit">Limit importu: - kW.</span>
+      </div>
+    </div>
+
+    <!-- NEW: BESS vs Load Comparison Section -->
+    <div class="stats-section full-width" id="bessLoadComparisonSection" style="display:none;">
+      <h2>⚡ BESS vs Zapotrzebowanie Fabryki</h2>
+      <div class="bess-load-comparison">
+        <!-- Visual comparison bars -->
+        <div class="comparison-visual">
+          <div class="comparison-row">
+            <div class="comparison-label">Moc BESS</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar bess-bar" id="bessPowerBar" style="width: 0%"></div>
+              <span class="comparison-value" id="bessPowerBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row">
+            <div class="comparison-label">Szczyt obciążenia</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar load-bar" id="peakLoadBar" style="width: 100%"></div>
+              <span class="comparison-value" id="peakLoadBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row">
+            <div class="comparison-label">Średnie obciążenie</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar avg-bar" id="avgLoadBar" style="width: 50%"></div>
+              <span class="comparison-value" id="avgLoadBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row" id="pvPowerRow" style="display:none;">
+            <div class="comparison-label">Moc PV</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar pv-bar" id="pvPowerBar" style="width: 0%"></div>
+              <span class="comparison-value" id="pvPowerBarValue">0 kW</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Key metrics cards -->
+        <div class="comparison-metrics">
+          <div class="metric-card">
+            <div class="metric-icon">🔋</div>
+            <div class="metric-content">
+              <div class="metric-label">Pokrycie szczytu</div>
+              <div class="metric-value" id="peakCoveragePercent">0%</div>
+              <div class="metric-detail" id="peakCoverageDetail">BESS / Peak Load</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">⏱️</div>
+            <div class="metric-content">
+              <div class="metric-label">Autonomia przy szczycie</div>
+              <div class="metric-value" id="peakAutonomy">0h</div>
+              <div class="metric-detail" id="peakAutonomyDetail">Przy pełnym rozładowaniu</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">📊</div>
+            <div class="metric-content">
+              <div class="metric-label">Energia vs Zużycie</div>
+              <div class="metric-value" id="energyVsConsumption">0%</div>
+              <div class="metric-detail" id="energyVsConsumptionDetail">kWh BESS / kWh/dzień</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">🎯</div>
+            <div class="metric-content">
+              <div class="metric-label">Redukcja szczytu</div>
+              <div class="metric-value" id="peakReductionKw">0 kW</div>
+              <div class="metric-detail" id="peakReductionDetail">Możliwe peak shaving</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sizing fit indicator -->
+        <div class="sizing-fit-indicator" id="sizingFitIndicator">
+          <div class="fit-badge" id="sizingFitBadge">
+            <span class="fit-icon">✓</span>
+            <span class="fit-text" id="sizingFitText">Dobór optymalny</span>
+          </div>
+          <div class="fit-explanation" id="sizingFitExplanation">
+            BESS jest odpowiednio dobrany do profilu obciążenia fabryki.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2086,7 +2548,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <script src="auth.js?v=3.0.0"></script>
-<script src="bess.js?v=3.16-BESS-V2"></script>
+<script src="bess.js?v=4.1-EXPORT-PL-20260118"></script>
 <script>
   // ============================================
   // v3.7.0 PROJECT SELECTOR MODULE

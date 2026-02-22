@@ -315,27 +315,27 @@ async function searchLocation() {
   }
 
   try {
+    // Use geo-service with Photon API (supports full addresses with streets)
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=pl`,
-      { headers: { 'Accept-Language': 'pl' } }
+      `/api/geo/geocode?q=${encodeURIComponent(query)}&limit=5`
     );
 
-    const results = await response.json();
+    const data = await response.json();
 
-    if (results.length === 0) {
-      showToast('Nie znaleziono lokalizacji', 'error');
+    if (!data.results || data.results.length === 0) {
+      showToast('Nie znaleziono miasta. Kliknij na mapie aby wybrać lokalizację.', 'warning');
       return;
     }
 
     // Use first result
-    const result = results[0];
-    state.location.lat = parseFloat(result.lat);
-    state.location.lng = parseFloat(result.lon);
+    const result = data.results[0];
+    state.location.lat = result.lat;
+    state.location.lng = result.lng;
     state.location.address = result.display_name;
     state.location.selected = true;
 
-    // Update map
-    locationMap.setView([state.location.lat, state.location.lng], 17);
+    // Update map - zoom to city level (13) so user can refine by clicking
+    locationMap.setView([state.location.lat, state.location.lng], 13);
 
     // Update or create marker
     if (locationMarker) {
@@ -358,7 +358,13 @@ async function searchLocation() {
     document.getElementById('btnNextStep1').disabled = false;
     document.getElementById('locationDetails').style.display = 'grid';
 
-    showToast('Lokalizacja znaleziona', 'success');
+    // Show hint if user searched for street (contains "ul" or numbers)
+    const hasStreet = /\b(ul\.?|ulica|al\.?|aleja|\d+)\b/i.test(query);
+    if (hasStreet) {
+      showToast('Znaleziono miasto. Kliknij na mapie aby wybrać dokładną lokalizację.', 'info');
+    } else {
+      showToast('Lokalizacja znaleziona', 'success');
+    }
 
   } catch (error) {
     console.error('Search error:', error);
@@ -368,9 +374,9 @@ async function searchLocation() {
 
 async function reverseGeocode(lat, lng) {
   try {
+    // Use backend proxy to avoid CORS issues
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
-      { headers: { 'Accept-Language': 'pl' } }
+      `/api/geo/reverse?lat=${lat}&lon=${lng}`
     );
 
     const result = await response.json();
@@ -378,6 +384,7 @@ async function reverseGeocode(lat, lng) {
 
     document.getElementById('detailAddress').textContent = state.location.address;
   } catch (error) {
+    console.warn('Reverse geocoding failed:', error);
     document.getElementById('detailAddress').textContent = 'Nieznany adres';
   }
 }

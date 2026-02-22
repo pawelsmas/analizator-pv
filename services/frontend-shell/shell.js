@@ -1892,6 +1892,18 @@ window.addEventListener('message', (event) => {
         sharedData.hourlyData = event.data.data.hourlyData;
         DraftProjectManager.markChanged(); // Mark as having unsaved changes
 
+        // *** Store loadData for BESS module ***
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 ANALYSIS_COMPLETE: loadData stored: ${sharedData.loadData.length} values`);
+        }
+
+        // *** Calculate pvData if masterVariant already selected ***
+        if (sharedData.masterVariant?.capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * sharedData.masterVariant.capacity);
+          console.log(`📊 ANALYSIS_COMPLETE: pvData calculated: ${sharedData.pvData.length} values`);
+        }
+
         // *** AUTO-SAVE PV ANALYSIS TO DB ***
         if (sharedData.currentProject?.id) {
           // Save PV sizing calculation
@@ -1944,6 +1956,22 @@ window.addEventListener('message', (event) => {
           variantKey: event.data.data.variantKey,
           variantData: event.data.data.variantData
         });
+
+        // *** CRITICAL: Calculate and store pvData for BESS module ***
+        // This is the Single Source of Truth for PV generation data
+        const capacity = sharedData.masterVariant?.capacity;
+        if (capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
+          console.log(`📊 pvData calculated and stored: ${sharedData.pvData.length} values, capacity: ${capacity} kWp`);
+          const totalMWh = sharedData.pvData.reduce((a, b) => a + b, 0) / 1000;
+          console.log(`📊 Total PV production: ${totalMWh.toFixed(2)} MWh`);
+        }
+
+        // Also store loadData if available
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 loadData stored: ${sharedData.loadData.length} values`);
+        }
       }
       // Broadcast to all modules
       broadcastToModules({
@@ -2215,6 +2243,20 @@ window.addEventListener('message', (event) => {
             data: sharedData.masterVariant
           });
         }
+
+        // *** CRITICAL: Calculate and store pvData and loadData for BESS module ***
+        // This ensures data is available after project load
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 PROJECT_LOAD: loadData stored: ${sharedData.loadData.length} values`);
+        }
+        if (sharedData.masterVariant?.capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * sharedData.masterVariant.capacity);
+          console.log(`📊 PROJECT_LOAD: pvData calculated: ${sharedData.pvData.length} values`);
+          const totalMWh = sharedData.pvData.reduce((a, b) => a + b, 0) / 1000;
+          console.log(`📊 PROJECT_LOAD: Total PV: ${totalMWh.toFixed(2)} MWh`);
+        }
+
         if (projectData.currentScenario) {
           sharedData.currentScenario = projectData.currentScenario;
           localStorage.setItem('pv_current_scenario', projectData.currentScenario);

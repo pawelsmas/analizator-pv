@@ -754,47 +754,70 @@ async def upload_tge_csv(
     db: Session = Depends(get_db)
 ):
     """
-    Upload TGE (Towarowa Giełda Energii) price scenario from CSV.
+    Upload TGE (Towarowa Giełda Energii) price scenario from CSV or Excel.
 
-    Supports multiple TGE CSV formats:
-    1. Standard TGE export: Data, Godzina, Cena (PLN/MWh)
-    2. RDN format: timestamp, fixing_i_price, fixing_ii_price
-    3. Simple format: timestamp/datetime, price/cena
+    Supports multiple formats:
+    1. TGE Fixing Excel (.xlsx): Date/Data + Fixing 1 columns (D.MM.YYYY HH:MM format)
+    2. Standard TGE CSV: Data, Godzina, Cena (PLN/MWh)
+    3. RDN format: timestamp, fixing_i_price, fixing_ii_price
+    4. Simple format: timestamp/datetime, price/cena
 
+    Handles European decimal separator (comma) and negative prices.
     Returns scenario ID and statistics.
     """
+    import io
     content = await file.read()
+    filename = file.filename or ""
+    is_excel = filename.lower().endswith(('.xlsx', '.xls'))
 
-    # Try different encodings for TGE files
-    for encoding in ['utf-8', 'cp1250', 'latin1']:
+    # ---- STEP 1: Parse file into DataFrame ----
+    if is_excel:
         try:
-            text = content.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
+            df = pd.read_excel(io.BytesIO(content), engine='openpyxl')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Cannot read Excel file: {str(e)}")
     else:
-        raise HTTPException(status_code=400, detail="Cannot decode CSV file")
+        # CSV: try different encodings for TGE files
+        text = None
+        for encoding in ['utf-8', 'cp1250', 'latin1']:
+            try:
+                text = content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            raise HTTPException(status_code=400, detail="Cannot decode CSV file")
 
-    # Parse CSV with flexible column detection
-    df = pd.read_csv(StringIO(text), sep=None, engine='python')
+        # Try semicolon first (TGE standard), then auto-detect
+        try:
+            df = pd.read_csv(StringIO(text), sep=';', engine='python')
+            if len(df.columns) < 2:
+                df = pd.read_csv(StringIO(text), sep=None, engine='python')
+        except Exception:
+            df = pd.read_csv(StringIO(text), sep=None, engine='python')
 
-    # Detect date/time columns
+    if df is None or len(df) == 0:
+        raise HTTPException(status_code=400, detail="File is empty or unreadable")
+
+    print(f"TGE upload: {filename}, columns={list(df.columns)}, rows={len(df)}")
+
+    # ---- STEP 2: Detect columns ----
     date_col = None
     hour_col = None
     price_col = None
 
-    col_lower = {c.lower(): c for c in df.columns}
+    col_lower = {c.lower().strip(): c for c in df.columns}
 
-    # Date column detection
-    for name_pattern in ['data', 'date', 'datetime', 'timestamp', 'dzien']:
+    # Date column detection (order matters: most specific first)
+    for name_pattern in ['date', 'data', 'datetime', 'timestamp', 'dzien']:
         for key, col in col_lower.items():
-            if name_pattern in key:
+            if key == name_pattern or key.startswith(name_pattern):
                 date_col = col
                 break
         if date_col:
             break
 
-    # Hour column detection (TGE specific)
+    # Hour column detection (TGE classic: separate Data + Godzina)
     for name_pattern in ['godzina', 'hour', 'godz']:
         for key, col in col_lower.items():
             if name_pattern in key:
@@ -803,10 +826,11 @@ async def upload_tge_csv(
         if hour_col:
             break
 
-    # Price column detection
-    for name_pattern in ['cena', 'price', 'pln', 'fixing', 'kurs']:
+    # Price column detection - prefer "Fixing 1" / "Fixing I" over generic "price"
+    for name_pattern in ['fixing 1', 'fixing i', 'fixing_1', 'fixing_i',
+                         'cena', 'price', 'pln', 'fixing', 'kurs']:
         for key, col in col_lower.items():
-            if name_pattern in key and 'buy' not in key:
+            if name_pattern in key and 'buy' not in key and 'ii' not in key and '2' not in key:
                 price_col = col
                 break
         if price_col:
@@ -818,15 +842,32 @@ async def upload_tge_csv(
             detail=f"Cannot find price column. Available columns: {list(df.columns)}"
         )
 
-    # Parse timestamps
+    print(f"TGE columns detected: date={date_col}, hour={hour_col}, price={price_col}")
+
+    # ---- STEP 3: Parse prices (handle European comma decimals) ----
+    price_series = df[price_col].copy()
+    # If string column with commas as decimal separators, convert
+    if price_series.dtype == object:
+        price_series = price_series.astype(str).str.replace(',', '.', regex=False)
+    prices_full = pd.to_numeric(price_series, errors='coerce')
+
+    # Drop NaN rows from both prices and timestamps
+    valid_mask = prices_full.notna()
+    df_valid = df[valid_mask].copy()
+    prices = prices_full[valid_mask].tolist()
+
+    if len(prices) < 24:
+        raise HTTPException(status_code=400, detail=f"Too few valid prices: {len(prices)}")
+
+    # ---- STEP 4: Parse timestamps ----
     timestamps = []
+
     if date_col and hour_col:
-        # TGE format: separate date and hour columns
-        for _, row in df.iterrows():
+        # Classic TGE format: separate Date + Godzina columns
+        for _, row in df_valid.iterrows():
             try:
-                date_str = str(row[date_col])
+                date_str = str(row[date_col]).strip()
                 hour_val = row[hour_col]
-                # Parse date
                 for fmt in ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y']:
                     try:
                         dt = datetime.strptime(date_str.split()[0], fmt)
@@ -835,42 +876,91 @@ async def upload_tge_csv(
                         continue
                 else:
                     continue
-                # Parse hour (TGE uses 1-24, we need 0-23)
-                hour = int(hour_val) - 1 if int(hour_val) > 0 else 0
-                ts = dt.replace(hour=min(hour, 23))
+                hour = int(float(hour_val)) - 1 if int(float(hour_val)) > 0 else 0
+                ts = dt.replace(hour=min(max(hour, 0), 23))
                 timestamps.append(ts)
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue
+
     elif date_col:
-        # Single datetime column
-        for _, row in df.iterrows():
-            try:
-                ts = pd.to_datetime(row[date_col])
-                timestamps.append(ts.to_pydatetime())
-            except:
-                continue
+        # Single datetime column (TGE Fixing Excel: "1.01.2025 00:00")
+        date_series = df_valid[date_col]
+
+        # Try pandas auto-parse first
+        try:
+            parsed = pd.to_datetime(date_series, dayfirst=True, format='mixed')
+            timestamps = [ts.to_pydatetime() for ts in parsed if pd.notna(ts)]
+        except Exception:
+            # Manual parsing for European formats
+            for val in date_series:
+                try:
+                    val_str = str(val).strip()
+                    # Try multiple formats
+                    for fmt in ['%d.%m.%Y %H:%M', '%d.%m.%Y %H:%M:%S',
+                                '%Y-%m-%d %H:%M', '%Y-%m-%d %H:%M:%S',
+                                '%d/%m/%Y %H:%M', '%d.%m.%Y']:
+                        try:
+                            ts = datetime.strptime(val_str, fmt)
+                            timestamps.append(ts)
+                            break
+                        except ValueError:
+                            continue
+                except (ValueError, TypeError):
+                    continue
+
     else:
         # No date columns - assume hourly from Jan 1
         start_date = datetime(year, 1, 1)
-        timestamps = [start_date + timedelta(hours=i) for i in range(len(df))]
+        timestamps = [start_date + timedelta(hours=i) for i in range(len(prices))]
 
-    # Extract prices
-    prices = pd.to_numeric(df[price_col], errors='coerce').dropna().tolist()
-
-    if len(prices) < 24:
-        raise HTTPException(status_code=400, detail=f"Too few valid prices: {len(prices)}")
+    print(f"TGE parsed: {len(prices)} prices, {len(timestamps)} timestamps")
 
     # Match lengths
     min_len = min(len(timestamps), len(prices))
+    if min_len < 24:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too few matched data points: {min_len} (prices={len(prices)}, timestamps={len(timestamps)})"
+        )
     timestamps = timestamps[:min_len]
     prices = prices[:min_len]
 
-    # Create scenario
+    # ---- STEP 4b: Normalize timestamps to clean hours ----
+    # Excel floating-point date precision can produce 16:59:59.999 instead of 17:00:00
+    # Round each timestamp to the nearest hour
+    normalized_ts = []
+    for ts in timestamps:
+        # Remove timezone info if present (work in naive UTC)
+        if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+            ts = ts.replace(tzinfo=None)
+        # Round to nearest hour: if minute >= 30, round up; else round down
+        if ts.minute >= 30:
+            ts = ts.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        else:
+            ts = ts.replace(minute=0, second=0, microsecond=0)
+        normalized_ts.append(ts)
+    timestamps = normalized_ts
+
+    # De-duplicate timestamps (DST change can produce duplicate hours, e.g. Oct 26)
+    # Keep last occurrence for each timestamp
+    seen = {}
+    for i, ts in enumerate(timestamps):
+        seen[ts] = i  # last occurrence wins
+    unique_indices = sorted(seen.values())
+    timestamps = [timestamps[i] for i in unique_indices]
+    prices = [prices[i] for i in unique_indices]
+    dedup_removed = min_len - len(timestamps)
+    if dedup_removed > 0:
+        print(f"TGE dedup: removed {dedup_removed} duplicate timestamps (DST change)")
+
+    min_len = len(timestamps)
+
+    # ---- STEP 5: Create scenario and insert data ----
     db_scenario = PriceScenario(
         name=name,
-        description=f"TGE import: {file.filename}",
+        description=f"TGE import: {filename} ({min_len} hours)",
         scenario_type=scenario_type,
-        source="tge_csv",
+        source="tge_excel" if is_excel else "tge_csv",
         year=year,
         avg_price=float(np.mean(prices)),
         min_price=float(np.min(prices)),
@@ -880,8 +970,8 @@ async def upload_tge_csv(
     db.flush()
 
     # Insert price data in batches
-    batch_size = 1000
-    for i in range(0, len(timestamps), batch_size):
+    batch_size = 500
+    for i in range(0, min_len, batch_size):
         batch_ts = timestamps[i:i+batch_size]
         batch_prices = prices[i:i+batch_size]
 
@@ -898,7 +988,7 @@ async def upload_tge_csv(
     return {
         "message": "TGE price scenario created",
         "id": db_scenario.id,
-        "data_points": len(prices),
+        "data_points": min_len,
         "date_range": {
             "start": timestamps[0].isoformat() if timestamps else None,
             "end": timestamps[-1].isoformat() if timestamps else None
@@ -944,12 +1034,20 @@ async def get_price_array(
     if not data_points:
         raise HTTPException(status_code=404, detail="No price data in scenario")
 
-    # Build hourly price array
-    prices_dict = {d.timestamp: float(d.price_pln_mwh) for d in data_points}
+    # Build hourly price array — strip timezone so naive datetime keys match
+    prices_dict = {}
+    for d in data_points:
+        ts = d.timestamp.replace(tzinfo=None) if d.timestamp.tzinfo else d.timestamp
+        prices_dict[ts] = float(d.price_pln_mwh)
 
     # Get year from first data point
     year = data_points[0].timestamp.year
     start = datetime(year, 1, 1)
+
+    print(f"hourly-array: scenario {scenario_id}, year={year}, data_points={len(data_points)}, dict_keys={len(prices_dict)}")
+    # Debug: check first few matches
+    sample_ts = start + timedelta(hours=2)
+    print(f"  Sample lookup: ts={sample_ts}, found={sample_ts in prices_dict}, value={prices_dict.get(sample_ts, 'MISS')}")
 
     # Generate 8760 hourly values
     hourly_prices = []
@@ -1411,14 +1509,14 @@ async def create_calculation(
     db_calc = Calculation(
         project_id=calc_data.project_id,
         parent_calc_id=calc_data.parent_calc_id,
-        calc_type=calc_data.calc_type.value,
+        calc_type=calc_data.calc_type,
         status="pending",
         request_payload=calc_data.request_payload,
         service_name=calc_data.service_name,
         service_version=calc_data.service_version,
         service_endpoint=calc_data.service_endpoint,
         created_by=calc_data.created_by,
-        calc_metadata=calc_data.metadata or {}
+        calc_metadata=calc_data.calc_metadata or {}
     )
     db.add(db_calc)
     db.commit()

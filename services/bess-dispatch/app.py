@@ -388,6 +388,10 @@ app.include_router(audit_router, prefix="/api/bess-dispatch")
 from projects_router import router as projects_router
 app.include_router(projects_router, prefix="/api/bess-dispatch")
 
+# Include engine comparison router (v4.0.0 - Multi-engine BESS analysis)
+from api_engine_compare import router as engine_compare_router
+app.include_router(engine_compare_router)
+
 
 # =============================================================================
 # Health and Info Endpoints
@@ -3168,11 +3172,11 @@ async def calculate_capacity_fee(request: CapacityFeeRequestAPI):
     Selected hours: 7:00-22:00 on workdays (2026 default).
     Fee applies only to workdays (Mon-Fri, excluding Polish holidays).
 
-    K-class classification based on Δs:
-    - K1: Δs < 5%     → A = 0.17 (83% discount)
-    - K2: Δs ∈ [5%, 10%)  → A = 0.50 (50% discount)
-    - K3: Δs ∈ [10%, 15%) → A = 0.83 (17% discount)
-    - K4: Δs ≥ 15%    → A = 1.00 (no discount)
+    K-class classification based on Δs (Dz.U. 2023 poz. 503):
+    - K1: Δs < -10%    → A = 0.17 (83% discount)
+    - K2: Δs ∈ [-10%, 10%) → A = 0.50 (50% discount)
+    - K3: Δs ∈ [10%, 30%) → A = 0.83 (17% discount)
+    - K4: Δs ≥ 30%    → A = 1.00 (no discount)
     """
     import pandas as pd
 

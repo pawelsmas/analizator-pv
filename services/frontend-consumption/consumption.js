@@ -292,13 +292,14 @@ function updateStatisticsFromBackend(stats) {
   // Show measurements count with resolution info
   const measurements = stats.measurements || stats.hours;
   const resolution = stats.data_resolution || 'hourly';
-  const resolutionLabel = resolution === '15-min' ? ' (15-min)' : '';
+  const detectedInterval = stats.detected_interval_minutes || 15;
+  const resolutionLabel = detectedInterval === 60 ? ' (1h)' : detectedInterval === 30 ? ' (30-min)' : ' (15-min)';
   document.getElementById('dataPoints').textContent = measurements.toLocaleString('pl-PL') + resolutionLabel;
 
   document.getElementById('dataPeriod').textContent = `${stats.days} dni (${stats.date_start} - ${stats.date_end})`;
 
   // Log data resolution for debugging
-  console.log(`📊 Statistics resolution: ${resolution}, measurements: ${measurements}`);
+  console.log(`📊 Statistics resolution: ${resolution}, detected interval: ${detectedInterval} min, measurements: ${measurements}`);
 }
 
 // Update data info
@@ -3047,5 +3048,1378 @@ performAnalysis = async function() {
   await originalPerformAnalysis();
   // Run tariff analysis after main analysis completes
   await performTariffAnalysis();
+  // Initialize K-class analysis
+  initKClassAnalysis();
 };
+
+// ============================================================================
+// K-CLASS ANALYSIS (CAPACITY FEE - OPŁATA MOCOWA)
+// ============================================================================
+
+let kclassProfileChartInstance = null;
+let kclassMonthlyChartInstance = null;
+let lastKClassAnalysis = null;
+
+/**
+ * Polish holidays for 2025 (used to identify workdays)
+ */
+const POLISH_HOLIDAYS_2025 = [
+  '2025-01-01', '2025-01-06', '2025-04-20', '2025-04-21',
+  '2025-05-01', '2025-05-03', '2025-06-08', '2025-06-19',
+  '2025-08-15', '2025-11-01', '2025-11-11', '2025-12-25', '2025-12-26'
+];
+
+/**
+ * Check if a date is a Polish workday (Mon-Fri, not a holiday)
+ */
+function isPolishWorkday(date) {
+  const dayOfWeek = date.getDay();
+  if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+
+  const dateStr = date.toISOString().split('T')[0];
+  return !POLISH_HOLIDAYS_2025.includes(dateStr);
+}
+
+/**
+ * Determine K-class from Δs value
+ */
+function getKClass(deltaS) {
+  // Boundaries per Rozporządzenie Ministra Klimatu i Środowiska (Dz.U. 2023 poz. 503)
+  if (deltaS < -10) return { class: 'K1', coefficient: 0.17 };
+  if (deltaS < 10) return { class: 'K2', coefficient: 0.50 };
+  if (deltaS < 30) return { class: 'K3', coefficient: 0.83 };
+  return { class: 'K4', coefficient: 1.00 };
+}
+
+/**
+ * Calculate K-class analysis for capacity fee
+ * @param {Array} loadHourly - 8760 hourly load values (kW)
+ * @param {Array} pvHourly - 8760 hourly PV production values (kW)
+ * @param {number} year - Reference year (default 2025)
+ * @param {number} somPLNperKWh - Capacity fee rate (PLN/kWh)
+ * @returns {Object} Analysis results
+ */
+function calculateKClassAnalysis(loadHourly, pvHourly, year = 2025, somPLNperKWh = 0.2194) {
+  if (!loadHourly || loadHourly.length < 8760) {
+    console.log('⚡ K-class: Insufficient data');
+    return null;
+  }
+
+  // Calculate grid draw after PV
+  const gridDraw = loadHourly.map((load, i) => {
+    const pv = pvHourly?.[i] || 0;
+    return Math.max(0, load - pv);
+  });
+
+  // Build daily data
+  const dailyData = [];
+  const startDate = new Date(year, 0, 1);
+
+  for (let day = 0; day < 365; day++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(startDate.getDate() + day);
+
+    const isWorkday = isPolishWorkday(currentDate);
+    const dayStart = day * 24;
+
+    let selectedHoursBefore = 0, outsideHoursBefore = 0;
+    let selectedHoursAfter = 0, outsideHoursAfter = 0;
+    let selectedCountBefore = 0, outsideCountBefore = 0;
+    let selectedCountAfter = 0, outsideCountAfter = 0;
+
+    for (let hour = 0; hour < 24; hour++) {
+      const idx = dayStart + hour;
+      const loadBefore = loadHourly[idx] || 0;
+      const loadAfter = gridDraw[idx] || 0;
+
+      const isSelectedHour = isWorkday && hour >= 7 && hour < 22;
+
+      if (isSelectedHour) {
+        selectedHoursBefore += loadBefore;
+        selectedHoursAfter += loadAfter;
+        selectedCountBefore++;
+        selectedCountAfter++;
+      } else {
+        outsideHoursBefore += loadBefore;
+        outsideHoursAfter += loadAfter;
+        outsideCountBefore++;
+        outsideCountAfter++;
+      }
+    }
+
+    // Calculate averages
+    const avgSelectedBefore = selectedCountBefore > 0 ? selectedHoursBefore / selectedCountBefore : 0;
+    const avgOutsideBefore = outsideCountBefore > 0 ? outsideHoursBefore / outsideCountBefore : 0;
+    const avgSelectedAfter = selectedCountAfter > 0 ? selectedHoursAfter / selectedCountAfter : 0;
+    const avgOutsideAfter = outsideCountAfter > 0 ? outsideHoursAfter / outsideCountAfter : 0;
+
+    // Calculate Δs
+    const deltaSBefore = avgOutsideBefore > 0 ? ((avgSelectedBefore / avgOutsideBefore) - 1) * 100 : 0;
+    const deltaSAfter = avgOutsideAfter > 0 ? ((avgSelectedAfter / avgOutsideAfter) - 1) * 100 : 0;
+
+    const kclassBefore = getKClass(deltaSBefore);
+    const kclassAfter = getKClass(deltaSAfter);
+
+    dailyData.push({
+      date: currentDate,
+      isWorkday,
+      selectedHoursBefore,
+      outsideHoursBefore,
+      selectedHoursAfter,
+      outsideHoursAfter,
+      deltaSBefore,
+      deltaSAfter,
+      kclassBefore: kclassBefore.class,
+      kclassAfter: kclassAfter.class,
+      coeffBefore: kclassBefore.coefficient,
+      coeffAfter: kclassAfter.coefficient
+    });
+  }
+
+  // Aggregate results
+  let totalZsBefore = 0, totalZsAfter = 0;
+  let totalFeeBefore = 0, totalFeeAfter = 0;
+  let feeWithSameKclass = 0;
+  const kclassDistBefore = { K1: 0, K2: 0, K3: 0, K4: 0 };
+  const kclassDistAfter = { K1: 0, K2: 0, K3: 0, K4: 0 };
+  const monthlySavings = new Array(12).fill(0);
+  let daysWithKclassImprovement = 0;
+
+  for (const day of dailyData) {
+    if (!day.isWorkday) continue;
+
+    const zsBefore = day.selectedHoursBefore / 1000; // kWh to MWh
+    const zsAfter = day.selectedHoursAfter / 1000;
+
+    totalZsBefore += zsBefore;
+    totalZsAfter += zsAfter;
+
+    const feeBefore = day.coeffBefore * somPLNperKWh * day.selectedHoursBefore;
+    const feeAfter = day.coeffAfter * somPLNperKWh * day.selectedHoursAfter;
+    const feeWithOriginalKclass = day.coeffBefore * somPLNperKWh * day.selectedHoursAfter;
+
+    totalFeeBefore += feeBefore;
+    totalFeeAfter += feeAfter;
+    feeWithSameKclass += feeWithOriginalKclass;
+
+    kclassDistBefore[day.kclassBefore]++;
+    kclassDistAfter[day.kclassAfter]++;
+
+    if (day.coeffAfter < day.coeffBefore) {
+      daysWithKclassImprovement++;
+    }
+
+    const month = day.date.getMonth();
+    monthlySavings[month] += feeBefore - feeAfter;
+  }
+
+  // Calculate averages for hourly profile
+  const hourlyProfileBefore = new Array(24).fill(0);
+  const hourlyProfileAfter = new Array(24).fill(0);
+  const hourlyCount = new Array(24).fill(0);
+
+  for (let day = 0; day < 365; day++) {
+    for (let hour = 0; hour < 24; hour++) {
+      const idx = day * 24 + hour;
+      hourlyProfileBefore[hour] += loadHourly[idx] || 0;
+      hourlyProfileAfter[hour] += gridDraw[idx] || 0;
+      hourlyCount[hour]++;
+    }
+  }
+
+  for (let i = 0; i < 24; i++) {
+    if (hourlyCount[i] > 0) {
+      hourlyProfileBefore[i] /= hourlyCount[i];
+      hourlyProfileAfter[i] /= hourlyCount[i];
+    }
+  }
+
+  // Calculate aggregate deltas
+  const workdays = dailyData.filter(d => d.isWorkday);
+  const avgDeltaSBefore = workdays.reduce((s, d) => s + d.deltaSBefore, 0) / workdays.length;
+  const avgDeltaSAfter = workdays.reduce((s, d) => s + d.deltaSAfter, 0) / workdays.length;
+  const overallKclassBefore = getKClass(avgDeltaSBefore);
+  const overallKclassAfter = getKClass(avgDeltaSAfter);
+
+  // Two effects breakdown
+  const savingsFromZsReduction = totalFeeBefore - feeWithSameKclass;
+  const savingsFromKclassImprovement = feeWithSameKclass - totalFeeAfter;
+
+  return {
+    kclassBefore: overallKclassBefore.class,
+    kclassAfter: overallKclassAfter.class,
+    coeffBefore: overallKclassBefore.coefficient,
+    coeffAfter: overallKclassAfter.coefficient,
+    deltaSBefore: avgDeltaSBefore,
+    deltaSAfter: avgDeltaSAfter,
+    totalZsBefore,
+    totalZsAfter,
+    totalFeeBefore,
+    totalFeeAfter,
+    totalSavings: totalFeeBefore - totalFeeAfter,
+    savingsPercent: totalFeeBefore > 0 ? ((totalFeeBefore - totalFeeAfter) / totalFeeBefore) * 100 : 0,
+    savingsFromZsReduction,
+    savingsFromKclassImprovement,
+    daysWithKclassImprovement,
+    kclassDistBefore,
+    kclassDistAfter,
+    monthlySavings,
+    hourlyProfile: {
+      before: hourlyProfileBefore,
+      after: hourlyProfileAfter
+    },
+    dailyComparison: dailyData,
+    avgPeakBefore: Math.max(...hourlyProfileBefore.slice(7, 22)),
+    avgPeakAfter: Math.max(...hourlyProfileAfter.slice(7, 22)),
+    avgOffpeakBefore: hourlyProfileBefore.filter((_, i) => i < 7 || i >= 22).reduce((a, b) => a + b, 0) / 9,
+    avgOffpeakAfter: hourlyProfileAfter.filter((_, i) => i < 7 || i >= 22).reduce((a, b) => a + b, 0) / 9,
+    flatnessBefore: Math.min(...hourlyProfileBefore) / Math.max(...hourlyProfileBefore),
+    flatnessAfter: Math.min(...hourlyProfileAfter) / Math.max(...hourlyProfileAfter)
+  };
+}
+
+/**
+ * Update K-class widget UI
+ */
+function updateKClassWidget(analysis) {
+  if (!analysis) {
+    document.getElementById('capacityFeeKClassSection').style.display = 'none';
+    return;
+  }
+
+  lastKClassAnalysis = analysis;
+  document.getElementById('capacityFeeKClassSection').style.display = 'block';
+
+  // Helper: get indicator - clear icons without confusing arrows
+  // ✓ green = OSZCZĘDNOŚĆ (lepiej z PV)
+  // ✗ red = WZROST (gorzej z PV)
+  // = gray = bez zmian
+  const getIndicator = (before, after, lowerIsBetter = true) => {
+    const diff = after - before;
+    const pctChange = before !== 0 ? ((after - before) / Math.abs(before)) * 100 : 0;
+
+    if (Math.abs(diff) < 0.001 || Math.abs(pctChange) < 0.1) {
+      return { icon: '=', color: '#9e9e9e', text: 'bez zmian', isGood: null };
+    }
+
+    const isGood = lowerIsBetter ? diff < 0 : diff > 0;
+    const absChange = Math.abs(pctChange).toFixed(1);
+
+    if (isGood) {
+      // OSZCZĘDNOŚĆ - green checkmark
+      return {
+        icon: '✓',
+        color: '#2e7d32',
+        text: lowerIsBetter ? `oszcz. ${absChange}%` : `+${absChange}%`,
+        isGood: true
+      };
+    } else {
+      // WZROST - red X
+      return {
+        icon: '✗',
+        color: '#c62828',
+        text: lowerIsBetter ? `wzrost ${absChange}%` : `-${absChange}%`,
+        isGood: false
+      };
+    }
+  };
+
+  // Update main K-class cards
+  const kclassBefore = document.getElementById('kclassBeforePV');
+  const kclassAfter = document.getElementById('kclassAfterPV');
+  const coeffBefore = document.getElementById('kclassCoeffBefore');
+  const coeffAfter = document.getElementById('kclassCoeffAfter');
+  const deltaSBefore = document.getElementById('deltaSBefore');
+  const deltaSAfter = document.getElementById('deltaSAfter');
+  const changeIndicator = document.getElementById('kclassChangeIndicator');
+
+  if (kclassBefore) kclassBefore.textContent = analysis.kclassBefore;
+  if (kclassAfter) kclassAfter.textContent = analysis.kclassAfter;
+  if (coeffBefore) coeffBefore.textContent = analysis.coeffBefore.toFixed(2);
+  if (coeffAfter) coeffAfter.textContent = analysis.coeffAfter.toFixed(2);
+  if (deltaSBefore) deltaSBefore.textContent = `${analysis.deltaSBefore.toFixed(1)}%`;
+  if (deltaSAfter) deltaSAfter.textContent = `${analysis.deltaSAfter.toFixed(1)}%`;
+
+  // Update change indicator arrow
+  if (changeIndicator) {
+    const kclassImproved = analysis.coeffAfter < analysis.coeffBefore;
+    const kclassSame = analysis.coeffAfter === analysis.coeffBefore;
+    if (kclassImproved) {
+      changeIndicator.innerHTML = `
+        <div style="font-size:40px;color:#4caf50;">✓</div>
+        <div style="font-size:11px;color:#4caf50;font-weight:600;">LEPIEJ</div>
+      `;
+    } else if (kclassSame) {
+      changeIndicator.innerHTML = `
+        <div style="font-size:36px;color:#9e9e9e;">=</div>
+        <div style="font-size:11px;color:#666;">bez zmian</div>
+      `;
+    } else {
+      changeIndicator.innerHTML = `
+        <div style="font-size:40px;color:#f44336;">✗</div>
+        <div style="font-size:11px;color:#f44336;font-weight:600;">GORZEJ</div>
+      `;
+    }
+  }
+
+  // Build indicators table
+  const indicatorsTable = document.getElementById('kclassIndicatorsTable');
+  if (indicatorsTable) {
+    // Rows with clear descriptions - lower value = better for most metrics
+    const rows = [
+      {
+        name: 'Pobór w szczycie (ZS)',
+        before: analysis.totalZsBefore.toFixed(0),
+        after: analysis.totalZsAfter.toFixed(0),
+        indicator: getIndicator(analysis.totalZsBefore, analysis.totalZsAfter, true),
+        unit: 'MWh/rok',
+        tooltip: 'Energia pobrana z sieci w godz. 7-22 (dni robocze). Mniej = niższa opłata.'
+      },
+      {
+        name: 'Opłata mocowa roczna',
+        before: Math.round(analysis.totalFeeBefore).toLocaleString('pl-PL'),
+        after: Math.round(analysis.totalFeeAfter).toLocaleString('pl-PL'),
+        indicator: getIndicator(analysis.totalFeeBefore, analysis.totalFeeAfter, true),
+        unit: 'PLN/rok',
+        tooltip: 'Roczna opłata mocowa. Niższa = oszczędność.'
+      },
+      {
+        name: 'Współczynnik A (klasa K)',
+        before: analysis.coeffBefore.toFixed(2),
+        after: analysis.coeffAfter.toFixed(2),
+        indicator: getIndicator(analysis.coeffBefore, analysis.coeffAfter, true),
+        unit: '',
+        tooltip: 'Mnożnik opłaty (K1=0.17, K4=1.00). Niższy = niższa opłata.'
+      },
+      {
+        name: 'Wskaźnik profilu Δs',
+        before: `${analysis.deltaSBefore.toFixed(1)}%`,
+        after: `${analysis.deltaSAfter.toFixed(1)}%`,
+        indicator: getIndicator(analysis.deltaSBefore, analysis.deltaSAfter, true),
+        unit: '',
+        tooltip: 'Różnica szczyt vs poza-szczyt. Niższy = płaski profil = lepsza klasa K.'
+      }
+    ];
+
+    indicatorsTable.innerHTML = rows.map(row => `
+      <tr style="border-bottom:1px solid #f0f0f0;">
+        <td style="padding:10px 4px;color:#333;" title="${row.tooltip}">${row.name} ${row.unit ? `<span style="color:#888;font-size:10px;">[${row.unit}]</span>` : ''}</td>
+        <td style="padding:10px 4px;text-align:right;color:#666;">${row.before}</td>
+        <td style="padding:10px 4px;text-align:center;">
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${row.indicator.color}20;color:${row.indicator.color};font-size:16px;font-weight:700;">
+            ${row.indicator.icon}
+          </span>
+        </td>
+        <td style="padding:10px 4px;text-align:right;font-weight:600;color:${row.indicator.color};">${row.after}</td>
+        <td style="padding:10px 4px;text-align:right;font-size:10px;color:${row.indicator.color};font-weight:500;">${row.indicator.text}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Update savings section
+  const feeBefore = document.getElementById('kclassFeeBefore');
+  const feeAfter = document.getElementById('kclassFeeAfter');
+  const savingsZs = document.getElementById('kclassSavingsZs');
+  const savingsKclass = document.getElementById('kclassSavingsKclass');
+  const totalSavings = document.getElementById('kclassSavings');
+  const totalSavingsPct = document.getElementById('kclassSavingsPct');
+
+  if (feeBefore) feeBefore.textContent = Math.round(analysis.totalFeeBefore).toLocaleString('pl-PL');
+  if (feeAfter) feeAfter.textContent = Math.round(analysis.totalFeeAfter).toLocaleString('pl-PL');
+  if (savingsZs) savingsZs.textContent = Math.round(analysis.savingsFromZsReduction).toLocaleString('pl-PL');
+  if (savingsKclass) savingsKclass.textContent = Math.round(analysis.savingsFromKclassImprovement).toLocaleString('pl-PL');
+  if (totalSavings) totalSavings.textContent = `${Math.round(analysis.totalSavings).toLocaleString('pl-PL')} PLN`;
+  if (totalSavingsPct) totalSavingsPct.textContent = `-${analysis.savingsPercent.toFixed(1)}% opłaty`;
+
+  // Update histograms
+  updateKClassHistograms(analysis);
+
+  // Render charts
+  renderKClassProfileChart(analysis);
+  renderKClassMonthlyChart(analysis);
+}
+
+/**
+ * Update K-class distribution histograms
+ */
+function updateKClassHistograms(analysis) {
+  const histBefore = document.getElementById('kclassHistBefore');
+  const histAfter = document.getElementById('kclassHistAfter');
+
+  if (!histBefore || !histAfter) return;
+
+  const classes = ['K1', 'K2', 'K3', 'K4'];
+  const colors = { K1: '#4caf50', K2: '#8bc34a', K3: '#ff9800', K4: '#f44336' };
+  const totalBefore = Object.values(analysis.kclassDistBefore).reduce((a, b) => a + b, 0);
+  const totalAfter = Object.values(analysis.kclassDistAfter).reduce((a, b) => a + b, 0);
+
+  histBefore.innerHTML = classes.map(k => {
+    const count = analysis.kclassDistBefore[k];
+    const pct = totalBefore > 0 ? (count / totalBefore) * 100 : 0;
+    return `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="width:24px;font-weight:600;color:${colors[k]};">${k}</span>
+        <div style="flex:1;height:16px;background:#e0e0e0;border-radius:4px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${colors[k]};"></div>
+        </div>
+        <span style="width:50px;font-size:10px;text-align:right;">${count} dni</span>
+      </div>
+    `;
+  }).join('');
+
+  histAfter.innerHTML = classes.map(k => {
+    const count = analysis.kclassDistAfter[k];
+    const pct = totalAfter > 0 ? (count / totalAfter) * 100 : 0;
+    return `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="width:24px;font-weight:600;color:${colors[k]};">${k}</span>
+        <div style="flex:1;height:16px;background:#e0e0e0;border-radius:4px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${colors[k]};"></div>
+        </div>
+        <span style="width:50px;font-size:10px;text-align:right;">${count} dni</span>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Render K-class profile chart (hourly before/after PV)
+ */
+function renderKClassProfileChart(analysis) {
+  const canvas = document.getElementById('kclassProfileChart');
+  if (!canvas || !analysis?.hourlyProfile) return;
+
+  const ctx = canvas.getContext('2d');
+
+  if (kclassProfileChartInstance) {
+    kclassProfileChartInstance.destroy();
+  }
+
+  const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+  const maxVal = Math.max(...analysis.hourlyProfile.before, ...analysis.hourlyProfile.after) * 1.15;
+  const selectedHoursBackground = hours.map((_, i) => (i >= 7 && i < 22) ? maxVal : 0);
+
+  kclassProfileChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: hours,
+      datasets: [
+        {
+          label: 'Godz. wybrane (7-22)',
+          data: selectedHoursBackground,
+          type: 'bar',
+          backgroundColor: 'rgba(255, 193, 7, 0.15)',
+          borderWidth: 0,
+          barPercentage: 1.0,
+          categoryPercentage: 1.0,
+          order: 3
+        },
+        {
+          label: 'Bez PV (zużycie)',
+          data: analysis.hourlyProfile.before,
+          borderColor: '#f44336',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          order: 1
+        },
+        {
+          label: 'Z PV (pobór z sieci)',
+          data: analysis.hourlyProfile.after,
+          borderColor: '#4caf50',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          order: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        intersect: false,
+        mode: 'index'
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          filter: function(tooltipItem) {
+            return tooltipItem.dataset.label !== 'Godz. wybrane (7-22)';
+          },
+          callbacks: {
+            label: function(context) {
+              return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} kW`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            font: { size: 9 },
+            callback: function(val, index) {
+              return index % 3 === 0 ? this.getLabelForValue(val) : '';
+            }
+          }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: {
+            font: { size: 10 },
+            callback: function(val) {
+              return val.toFixed(0) + ' kW';
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Render K-class monthly savings chart
+ */
+function renderKClassMonthlyChart(analysis) {
+  const canvas = document.getElementById('kclassMonthlyChart');
+  if (!canvas || !analysis?.monthlySavings) return;
+
+  const ctx = canvas.getContext('2d');
+
+  if (kclassMonthlyChartInstance) {
+    kclassMonthlyChartInstance.destroy();
+  }
+
+  const months = ['Sty', 'Lut', 'Mar', 'Kwi', 'Maj', 'Cze', 'Lip', 'Sie', 'Wrz', 'Paź', 'Lis', 'Gru'];
+
+  kclassMonthlyChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: months,
+      datasets: [{
+        label: 'Oszczędność',
+        data: analysis.monthlySavings.map(v => v / 1000),
+        backgroundColor: '#4caf50',
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              return `${context.parsed.y.toFixed(2)} tys PLN`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 9 } }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: {
+            font: { size: 9 },
+            callback: function(val) {
+              return val.toFixed(1) + ' tys';
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Toggle K-class details panel
+ */
+function toggleKClassDetails() {
+  const panel = document.getElementById('kclassDetailsPanel');
+  const btn = document.getElementById('kclassToggleBtn');
+  if (!panel) return;
+
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    if (btn) btn.textContent = '▲ Ukryj';
+  } else {
+    panel.style.display = 'none';
+    if (btn) btn.textContent = '▼ Szczegóły';
+  }
+}
+
+/**
+ * Export K-class analysis to Excel (Clean Look - ExcelJS)
+ * Styled like CAPEX/EaaS exports in economics module
+ */
+async function exportKClassToExcel() {
+  if (!lastKClassAnalysis) {
+    alert('Brak danych do eksportu. Uruchom najpierw analizę.');
+    return;
+  }
+
+  console.log('📥 Eksport analizy K-class do Excel (Clean Look)...');
+
+  const analysis = lastKClassAnalysis;
+  const exportDate = new Date().toLocaleString('pl-PL');
+
+  // Get SOM rate from settings
+  let somRate = 0.2194;
+  try {
+    const settings = cachedSystemSettings || JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+    if (settings.capacityFeeRate) somRate = settings.capacityFeeRate / 1000;
+  } catch (e) {}
+
+  // Helper: round number
+  const roundNum = (val, decimals = 2) => {
+    if (val === null || val === undefined || isNaN(val)) return 0;
+    return Math.round(val * Math.pow(10, decimals)) / Math.pow(10, decimals);
+  };
+
+  // Create workbook using ExcelJS
+  const workbook = new ExcelJS.Workbook();
+
+  // Color constants (matching CAPEX export)
+  const COLORS = {
+    headerBg: 'FF37474F',      // Dark blue-grey
+    headerText: 'FFFFFFFF',    // White
+    titleText: 'FF1565C0',     // Blue
+    sectionBg: 'FFE3F2FD',     // Light blue
+    positive: 'FF2E7D32',      // Green
+    positiveBg: 'FFE8F5E9',    // Light green
+    negative: 'FFC62828',      // Red
+    negativeBg: 'FFFFEBEE',    // Light red
+    neutralText: 'FF616161',   // Grey
+    borderLight: 'FFEEEEEE',   // Light grey border
+    highlightBg: 'FFFFF8E1',   // Amber highlight
+    highlightBorder: 'FFFFC107' // Amber border
+  };
+
+  // Number format with space as thousands separator (Polish)
+  const numFmtStandard = '# ##0.00';
+  const numFmtInt = '# ##0';
+  const numFmtPct = '0.0%';
+
+  // ========== SHEET 1: Podsumowanie ==========
+  const sheet1 = workbook.addWorksheet('Podsumowanie');
+  sheet1.columns = [
+    { width: 3 },   // A: margin
+    { width: 38 },  // B: labels
+    { width: 16 },  // C: Bez PV
+    { width: 16 },  // D: Z PV
+    { width: 14 },  // E: Zmiana
+    { width: 16 }   // F: Ocena
+  ];
+  sheet1.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Title
+  sheet1.mergeCells('B1:F2');
+  const titleCell = sheet1.getCell('B1');
+  titleCell.value = 'ANALIZA KLASY K - OPŁATA MOCOWA';
+  titleCell.font = { bold: true, size: 16, color: { argb: COLORS.titleText } };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  // Export date
+  sheet1.getCell('B3').value = 'Raport wygenerowany:';
+  sheet1.getCell('B3').font = { color: { argb: COLORS.neutralText }, size: 10 };
+  sheet1.getCell('C3').value = exportDate;
+  sheet1.getCell('C3').font = { color: { argb: COLORS.neutralText }, size: 10 };
+
+  // === Section: Parametry ===
+  let row = 5;
+  sheet1.mergeCells(`B${row}:F${row}`);
+  const paramHeader = sheet1.getCell(`B${row}`);
+  paramHeader.value = 'PARAMETRY ANALIZY';
+  paramHeader.font = { bold: true, color: { argb: COLORS.titleText } };
+  paramHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  row++;
+
+  const paramData = [
+    ['Stawka opłaty mocowej (SOM)', roundNum(somRate * 1000, 2), 'PLN/MWh'],
+    ['Rok analizy', 2025, ''],
+    ['Godziny wybrane', '7:00 - 22:00', 'dni robocze']
+  ];
+  paramData.forEach(p => {
+    sheet1.getCell(`B${row}`).value = p[0];
+    sheet1.getCell(`B${row}`).font = { color: { argb: COLORS.neutralText } };
+    sheet1.getCell(`C${row}`).value = p[1];
+    sheet1.getCell(`C${row}`).font = { bold: true };
+    if (typeof p[1] === 'number') sheet1.getCell(`C${row}`).numFmt = numFmtStandard;
+    sheet1.getCell(`D${row}`).value = p[2];
+    sheet1.getCell(`D${row}`).font = { color: { argb: COLORS.neutralText }, italic: true };
+    row++;
+  });
+
+  // === Section: Porównanie ===
+  row += 2;
+  sheet1.mergeCells(`B${row}:F${row}`);
+  const compHeader = sheet1.getCell(`B${row}`);
+  compHeader.value = 'PORÓWNANIE: BEZ PV vs Z PV';
+  compHeader.font = { bold: true, color: { argb: COLORS.titleText } };
+  compHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  row++;
+
+  // Table headers
+  const tableHeaders = ['Wskaźnik', 'Bez PV', 'Z PV', 'Zmiana', 'Ocena'];
+  tableHeaders.forEach((h, i) => {
+    const cell = sheet1.getCell(row, i + 2);
+    cell.value = h;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  row++;
+
+  // Comparison data
+  const compData = [
+    { name: 'Klasa K (agregat)', before: analysis.kclassBefore, after: analysis.kclassAfter, change: '',
+      isGood: analysis.coeffAfter < analysis.coeffBefore, isNeutral: analysis.coeffAfter === analysis.coeffBefore },
+    { name: 'Współczynnik A', before: roundNum(analysis.coeffBefore, 2), after: roundNum(analysis.coeffAfter, 2),
+      change: roundNum(analysis.coeffAfter - analysis.coeffBefore, 2), isGood: analysis.coeffAfter < analysis.coeffBefore },
+    { name: 'Wskaźnik Δs [%]', before: roundNum(analysis.deltaSBefore, 2), after: roundNum(analysis.deltaSAfter, 2),
+      change: roundNum(analysis.deltaSAfter - analysis.deltaSBefore, 2), isGood: analysis.deltaSAfter < analysis.deltaSBefore },
+    { name: 'Energia ZS [MWh]', before: roundNum(analysis.totalZsBefore / 1000, 2), after: roundNum(analysis.totalZsAfter / 1000, 2),
+      change: roundNum((analysis.totalZsAfter - analysis.totalZsBefore) / 1000, 2), isGood: analysis.totalZsAfter < analysis.totalZsBefore },
+    { name: 'Śr. pobór szczytowy [kW]', before: roundNum(analysis.avgPeakBefore, 1), after: roundNum(analysis.avgPeakAfter, 1),
+      change: roundNum(analysis.avgPeakAfter - analysis.avgPeakBefore, 1), isGood: analysis.avgPeakAfter < analysis.avgPeakBefore }
+  ];
+
+  compData.forEach(d => {
+    sheet1.getCell(row, 2).value = d.name;
+    sheet1.getCell(row, 2).font = { bold: true };
+    sheet1.getCell(row, 3).value = d.before;
+    sheet1.getCell(row, 3).alignment = { horizontal: 'center' };
+    if (typeof d.before === 'number') sheet1.getCell(row, 3).numFmt = numFmtStandard;
+    sheet1.getCell(row, 4).value = d.after;
+    sheet1.getCell(row, 4).alignment = { horizontal: 'center' };
+    if (typeof d.after === 'number') sheet1.getCell(row, 4).numFmt = numFmtStandard;
+    sheet1.getCell(row, 5).value = d.change;
+    sheet1.getCell(row, 5).alignment = { horizontal: 'center' };
+    if (typeof d.change === 'number') sheet1.getCell(row, 5).numFmt = numFmtStandard;
+
+    // Ocena column with color
+    const ocenaCell = sheet1.getCell(row, 6);
+    if (d.isNeutral) {
+      ocenaCell.value = '= BEZ ZMIAN';
+      ocenaCell.font = { color: { argb: COLORS.neutralText } };
+    } else if (d.isGood) {
+      ocenaCell.value = '✓ LEPIEJ';
+      ocenaCell.font = { bold: true, color: { argb: COLORS.positive } };
+      ocenaCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+    } else {
+      ocenaCell.value = '✗ GORZEJ';
+      ocenaCell.font = { bold: true, color: { argb: COLORS.negative } };
+      ocenaCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.negativeBg } };
+    }
+    ocenaCell.alignment = { horizontal: 'center' };
+
+    // Alternate row background
+    if (row % 2 === 0) {
+      for (let c = 2; c <= 5; c++) {
+        sheet1.getCell(row, c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+      }
+    }
+    row++;
+  });
+
+  // === Section: Opłata Mocowa ===
+  row += 2;
+  sheet1.mergeCells(`B${row}:F${row}`);
+  const feeHeader = sheet1.getCell(`B${row}`);
+  feeHeader.value = 'OPŁATA MOCOWA ROCZNA';
+  feeHeader.font = { bold: true, color: { argb: COLORS.titleText } };
+  feeHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  row++;
+
+  // Fee comparison
+  sheet1.getCell(`B${row}`).value = 'Opłata BEZ PV';
+  sheet1.getCell(`C${row}`).value = roundNum(analysis.totalFeeBefore, 0);
+  sheet1.getCell(`C${row}`).numFmt = numFmtInt;
+  sheet1.getCell(`C${row}`).font = { bold: true };
+  sheet1.getCell(`D${row}`).value = 'PLN/rok';
+  sheet1.getCell(`D${row}`).font = { color: { argb: COLORS.neutralText } };
+  row++;
+
+  sheet1.getCell(`B${row}`).value = 'Opłata Z PV';
+  sheet1.getCell(`C${row}`).value = roundNum(analysis.totalFeeAfter, 0);
+  sheet1.getCell(`C${row}`).numFmt = numFmtInt;
+  sheet1.getCell(`C${row}`).font = { bold: true };
+  sheet1.getCell(`D${row}`).value = 'PLN/rok';
+  sheet1.getCell(`D${row}`).font = { color: { argb: COLORS.neutralText } };
+  row += 2;
+
+  // Savings highlight box
+  sheet1.mergeCells(`B${row}:C${row}`);
+  const savingsLabel = sheet1.getCell(`B${row}`);
+  savingsLabel.value = 'OSZCZĘDNOŚĆ ROCZNA:';
+  savingsLabel.font = { bold: true, size: 12 };
+  savingsLabel.alignment = { horizontal: 'right', vertical: 'middle' };
+
+  sheet1.mergeCells(`D${row}:E${row}`);
+  const savingsValue = sheet1.getCell(`D${row}`);
+  savingsValue.value = roundNum(analysis.totalSavings, 0);
+  savingsValue.numFmt = numFmtInt + ' "PLN"';
+  savingsValue.font = { bold: true, size: 14, color: { argb: COLORS.positive } };
+  savingsValue.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+  savingsValue.alignment = { horizontal: 'center', vertical: 'middle' };
+  savingsValue.border = {
+    top: { style: 'medium', color: { argb: COLORS.positive } },
+    bottom: { style: 'medium', color: { argb: COLORS.positive } },
+    left: { style: 'medium', color: { argb: COLORS.positive } },
+    right: { style: 'medium', color: { argb: COLORS.positive } }
+  };
+
+  sheet1.getCell(`F${row}`).value = `(${roundNum(analysis.savingsPercent, 1)}%)`;
+  sheet1.getCell(`F${row}`).font = { bold: true, color: { argb: COLORS.positive } };
+  row += 2;
+
+  // Savings breakdown
+  sheet1.getCell(`B${row}`).value = 'Rozbicie oszczędności:';
+  sheet1.getCell(`B${row}`).font = { bold: true, color: { argb: COLORS.neutralText } };
+  row++;
+  sheet1.getCell(`B${row}`).value = '• Efekt redukcji ZS:';
+  sheet1.getCell(`C${row}`).value = roundNum(analysis.savingsFromZsReduction, 0);
+  sheet1.getCell(`C${row}`).numFmt = numFmtInt;
+  sheet1.getCell(`D${row}`).value = 'PLN';
+  sheet1.getCell(`E${row}`).value = `(${roundNum(analysis.totalSavings > 0 ? analysis.savingsFromZsReduction / analysis.totalSavings * 100 : 0, 0)}%)`;
+  row++;
+  sheet1.getCell(`B${row}`).value = '• Efekt poprawy klasy K:';
+  sheet1.getCell(`C${row}`).value = roundNum(analysis.savingsFromKclassImprovement, 0);
+  sheet1.getCell(`C${row}`).numFmt = numFmtInt;
+  sheet1.getCell(`D${row}`).value = 'PLN';
+  sheet1.getCell(`E${row}`).value = `(${roundNum(analysis.totalSavings > 0 ? analysis.savingsFromKclassImprovement / analysis.totalSavings * 100 : 0, 0)}%)`;
+
+  // === Section: Rozkład Klas K ===
+  row += 3;
+  sheet1.mergeCells(`B${row}:F${row}`);
+  const distHeader = sheet1.getCell(`B${row}`);
+  distHeader.value = 'ROZKŁAD KLAS K (DNI ROBOCZE)';
+  distHeader.font = { bold: true, color: { argb: COLORS.titleText } };
+  distHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  row++;
+
+  // Distribution table headers
+  const distHeaders = ['Klasa', 'Zakres Δs', 'Wsp. A', 'Bez PV', 'Z PV', 'Zmiana'];
+  distHeaders.forEach((h, i) => {
+    const cell = sheet1.getCell(row, i + 2);
+    cell.value = h;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  row++;
+
+  // Distribution data
+  const distData = [
+    ['K1', '< -10%', 0.17, analysis.kclassDistBefore.K1, analysis.kclassDistAfter.K1],
+    ['K2', '-10% do 10%', 0.50, analysis.kclassDistBefore.K2, analysis.kclassDistAfter.K2],
+    ['K3', '10% do 30%', 0.83, analysis.kclassDistBefore.K3, analysis.kclassDistAfter.K3],
+    ['K4', '\u2265 30%', 1.00, analysis.kclassDistBefore.K4, analysis.kclassDistAfter.K4]
+  ];
+
+  distData.forEach(d => {
+    sheet1.getCell(row, 2).value = d[0];
+    sheet1.getCell(row, 2).font = { bold: true };
+    sheet1.getCell(row, 2).alignment = { horizontal: 'center' };
+    sheet1.getCell(row, 3).value = d[1];
+    sheet1.getCell(row, 3).alignment = { horizontal: 'center' };
+    sheet1.getCell(row, 4).value = d[2];
+    sheet1.getCell(row, 4).numFmt = '0.00';
+    sheet1.getCell(row, 4).alignment = { horizontal: 'center' };
+    sheet1.getCell(row, 5).value = d[3];
+    sheet1.getCell(row, 5).alignment = { horizontal: 'center' };
+    sheet1.getCell(row, 6).value = d[4];
+    sheet1.getCell(row, 6).alignment = { horizontal: 'center' };
+
+    const change = d[4] - d[3];
+    const changeCell = sheet1.getCell(row, 7);
+    changeCell.value = change > 0 ? `+${change}` : change;
+    changeCell.alignment = { horizontal: 'center' };
+
+    // Color K1 increase (good) and K4 decrease (good)
+    if ((d[0] === 'K1' && change > 0) || (d[0] === 'K4' && change < 0)) {
+      changeCell.font = { bold: true, color: { argb: COLORS.positive } };
+      changeCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+    } else if ((d[0] === 'K1' && change < 0) || (d[0] === 'K4' && change > 0)) {
+      changeCell.font = { bold: true, color: { argb: COLORS.negative } };
+      changeCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.negativeBg } };
+    }
+    row++;
+  });
+
+  // ========== SHEET 2: Profil 24h ==========
+  const sheet2 = workbook.addWorksheet('Profil 24h');
+  sheet2.columns = [
+    { width: 3 },   // A: margin
+    { width: 10 },  // B: Godzina
+    { width: 14 },  // C: Bez PV
+    { width: 14 },  // D: Z PV
+    { width: 14 },  // E: Redukcja kW
+    { width: 12 },  // F: Redukcja %
+    { width: 12 }   // G: Typ
+  ];
+  sheet2.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Title
+  sheet2.getCell('B1').value = 'ŚREDNI PROFIL DOBOWY POBORU Z SIECI';
+  sheet2.getCell('B1').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
+  sheet2.mergeCells('B1:G2');
+
+  // Headers
+  const hourlyHeaders = ['Godzina', 'Bez PV [kW]', 'Z PV [kW]', 'Redukcja [kW]', 'Redukcja [%]', 'Typ'];
+  hourlyHeaders.forEach((h, i) => {
+    const cell = sheet2.getCell(4, i + 2);
+    cell.value = h;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  });
+  sheet2.getRow(4).height = 30;
+
+  // Data rows
+  for (let h = 0; h < 24; h++) {
+    const r = h + 5;
+    const before = analysis.hourlyProfile.before[h];
+    const after = analysis.hourlyProfile.after[h];
+    const isPeak = (h >= 7 && h < 22);
+
+    sheet2.getCell(r, 2).value = `${h.toString().padStart(2, '0')}:00`;
+    sheet2.getCell(r, 2).alignment = { horizontal: 'center' };
+
+    sheet2.getCell(r, 3).value = roundNum(before, 1);
+    sheet2.getCell(r, 3).numFmt = numFmtStandard;
+    sheet2.getCell(r, 3).alignment = { horizontal: 'right' };
+
+    sheet2.getCell(r, 4).value = roundNum(after, 1);
+    sheet2.getCell(r, 4).numFmt = numFmtStandard;
+    sheet2.getCell(r, 4).alignment = { horizontal: 'right' };
+
+    // Formulas
+    sheet2.getCell(r, 5).value = { formula: `C${r}-D${r}` };
+    sheet2.getCell(r, 5).numFmt = numFmtStandard;
+    sheet2.getCell(r, 5).alignment = { horizontal: 'right' };
+
+    sheet2.getCell(r, 6).value = { formula: `IF(C${r}>0,(C${r}-D${r})/C${r}*100,0)` };
+    sheet2.getCell(r, 6).numFmt = '0.0"%"';
+    sheet2.getCell(r, 6).alignment = { horizontal: 'right' };
+
+    sheet2.getCell(r, 7).value = isPeak ? 'SZCZYT' : 'poza';
+    sheet2.getCell(r, 7).alignment = { horizontal: 'center' };
+
+    // Highlight peak hours
+    if (isPeak) {
+      sheet2.getCell(r, 7).font = { bold: true, color: { argb: COLORS.positive } };
+      sheet2.getCell(r, 7).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+    }
+  }
+
+  // Summary below data
+  const summaryRow = 30;
+  sheet2.getCell(`B${summaryRow}`).value = 'PODSUMOWANIE';
+  sheet2.getCell(`B${summaryRow}`).font = { bold: true, color: { argb: COLORS.titleText } };
+  sheet2.mergeCells(`B${summaryRow}:G${summaryRow}`);
+  sheet2.getCell(`B${summaryRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+
+  const summaryData2 = [
+    ['Suma dobowa [kWh]', { formula: 'SUM(C5:C28)' }, { formula: 'SUM(D5:D28)' }, { formula: `C${summaryRow+1}-D${summaryRow+1}` }],
+    ['Średnia godz. 7-22 [kW]', { formula: 'AVERAGE(C12:C26)' }, { formula: 'AVERAGE(D12:D26)' }, { formula: `C${summaryRow+2}-D${summaryRow+2}` }],
+    ['Maksimum [kW]', { formula: 'MAX(C5:C28)' }, { formula: 'MAX(D5:D28)' }, ''],
+    ['Minimum [kW]', { formula: 'MIN(C5:C28)' }, { formula: 'MIN(D5:D28)' }, '']
+  ];
+
+  summaryData2.forEach((s, idx) => {
+    const r = summaryRow + 1 + idx;
+    sheet2.getCell(r, 2).value = s[0];
+    sheet2.getCell(r, 2).font = { bold: true };
+    sheet2.getCell(r, 3).value = s[1];
+    sheet2.getCell(r, 3).numFmt = numFmtStandard;
+    sheet2.getCell(r, 4).value = s[2];
+    sheet2.getCell(r, 4).numFmt = numFmtStandard;
+    if (s[3]) {
+      sheet2.getCell(r, 5).value = s[3];
+      sheet2.getCell(r, 5).numFmt = numFmtStandard;
+      sheet2.getCell(r, 5).font = { bold: true, color: { argb: COLORS.positive } };
+    }
+  });
+
+  // ========== SHEET 3: Miesięcznie ==========
+  const sheet3 = workbook.addWorksheet('Miesięcznie');
+  sheet3.columns = [
+    { width: 3 },   // A: margin
+    { width: 16 },  // B: Miesiąc
+    { width: 18 },  // C: Oszczędność
+    { width: 14 }   // D: Udział
+  ];
+  sheet3.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Title
+  sheet3.getCell('B1').value = 'OSZCZĘDNOŚCI MIESIĘCZNE OPŁATY MOCOWEJ';
+  sheet3.getCell('B1').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
+  sheet3.mergeCells('B1:D2');
+
+  // Headers
+  const monthHeaders = ['Miesiąc', 'Oszczędność [PLN]', 'Udział [%]'];
+  monthHeaders.forEach((h, i) => {
+    const cell = sheet3.getCell(4, i + 2);
+    cell.value = h;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  const months = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                  'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+
+  months.forEach((m, i) => {
+    const r = i + 5;
+    sheet3.getCell(r, 2).value = m;
+    sheet3.getCell(r, 3).value = analysis.monthlySavings[i];
+    sheet3.getCell(r, 3).numFmt = numFmtStandard;
+    sheet3.getCell(r, 3).alignment = { horizontal: 'right' };
+    sheet3.getCell(r, 4).value = { formula: `IF($C$17>0,C${r}/$C$17*100,0)` };
+    sheet3.getCell(r, 4).numFmt = '0.0"%"';
+    sheet3.getCell(r, 4).alignment = { horizontal: 'right' };
+  });
+
+  // Total row
+  sheet3.getCell('B17').value = 'SUMA ROCZNA';
+  sheet3.getCell('B17').font = { bold: true };
+  sheet3.getCell('B17').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  sheet3.getCell('C17').value = { formula: 'SUM(C5:C16)' };
+  sheet3.getCell('C17').numFmt = numFmtStandard;
+  sheet3.getCell('C17').font = { bold: true };
+  sheet3.getCell('C17').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+  sheet3.getCell('D17').value = '100%';
+  sheet3.getCell('D17').font = { bold: true };
+  sheet3.getCell('D17').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+
+  // ========== SHEET 4: Dane dzienne ==========
+  const sheet4 = workbook.addWorksheet('Dane dzienne');
+  sheet4.columns = [
+    { width: 3 },   // A: margin
+    { width: 11 },  // B: Data
+    { width: 5 },   // C: Dzień
+    { width: 5 },   // D: Typ
+    { width: 8 },   // E: K bez
+    { width: 8 },   // F: K z
+    { width: 10 },  // G: Δs bez
+    { width: 10 },  // H: Δs z
+    { width: 12 },  // I: ZS bez
+    { width: 12 },  // J: ZS z
+    { width: 8 }    // K: Poprawa
+  ];
+  sheet4.views = [{ showGridLines: false, showRowColHeaders: false, state: 'frozen', ySplit: 4, xSplit: 0 }];
+
+  // Title
+  sheet4.getCell('B1').value = 'ANALIZA DZIENNA - WSZYSTKIE DNI ROKU';
+  sheet4.getCell('B1').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
+  sheet4.mergeCells('B1:K2');
+  sheet4.getCell('B3').value = 'Tylko dni robocze (R) wpływają na opłatę mocową';
+  sheet4.getCell('B3').font = { italic: true, color: { argb: COLORS.neutralText }, size: 10 };
+
+  // Headers
+  const dailyHeaders = ['Data', 'Dzień', 'Typ', 'K bez', 'K z', 'Δs bez', 'Δs z', 'ZS bez', 'ZS z', 'Poprawa'];
+  dailyHeaders.forEach((h, i) => {
+    const cell = sheet4.getCell(4, i + 2);
+    cell.value = h;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.headerBg } };
+    cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 9 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+  });
+  sheet4.getRow(4).height = 30;
+
+  const dayNames = ['Nd', 'Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So'];
+
+  analysis.dailyComparison.forEach((day, idx) => {
+    const r = idx + 5;
+    sheet4.getCell(r, 2).value = day.date.toLocaleDateString('pl-PL');
+    sheet4.getCell(r, 3).value = dayNames[day.date.getDay()];
+    sheet4.getCell(r, 4).value = day.isWorkday ? 'R' : 'W';
+    sheet4.getCell(r, 5).value = day.kclassBefore;
+    sheet4.getCell(r, 6).value = day.kclassAfter;
+    sheet4.getCell(r, 7).value = roundNum(day.deltaSBefore, 1);
+    sheet4.getCell(r, 7).numFmt = '0.0';
+    sheet4.getCell(r, 8).value = roundNum(day.deltaSAfter, 1);
+    sheet4.getCell(r, 8).numFmt = '0.0';
+    sheet4.getCell(r, 9).value = roundNum(day.selectedHoursBefore, 0);
+    sheet4.getCell(r, 9).numFmt = numFmtInt;
+    sheet4.getCell(r, 10).value = roundNum(day.selectedHoursAfter, 0);
+    sheet4.getCell(r, 10).numFmt = numFmtInt;
+
+    // Improvement column
+    const improved = day.coeffAfter < day.coeffBefore;
+    const improvCell = sheet4.getCell(r, 11);
+    improvCell.value = improved ? '✓' : '';
+    if (improved) {
+      improvCell.font = { bold: true, color: { argb: COLORS.positive } };
+      improvCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+    }
+    improvCell.alignment = { horizontal: 'center' };
+
+    // Highlight workdays
+    if (day.isWorkday) {
+      sheet4.getCell(r, 4).font = { bold: true };
+    } else {
+      // Light grey for weekends/holidays
+      for (let c = 2; c <= 11; c++) {
+        sheet4.getCell(r, c).font = { color: { argb: 'FF9E9E9E' } };
+      }
+    }
+  });
+
+  // Statistics below data
+  const statRow = analysis.dailyComparison.length + 6;
+  sheet4.getCell(`B${statRow}`).value = 'STATYSTYKI';
+  sheet4.getCell(`B${statRow}`).font = { bold: true, color: { argb: COLORS.titleText } };
+  sheet4.mergeCells(`B${statRow}:K${statRow}`);
+  sheet4.getCell(`B${statRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+
+  const lastDataRow = analysis.dailyComparison.length + 4;
+  sheet4.getCell(`B${statRow+1}`).value = 'Dni robocze:';
+  sheet4.getCell(`C${statRow+1}`).value = { formula: `COUNTIF(D5:D${lastDataRow},"R")` };
+  sheet4.getCell(`B${statRow+2}`).value = 'Dni wolne:';
+  sheet4.getCell(`C${statRow+2}`).value = { formula: `COUNTIF(D5:D${lastDataRow},"W")` };
+  sheet4.getCell(`B${statRow+3}`).value = 'Dni z poprawą klasy:';
+  sheet4.getCell(`C${statRow+3}`).value = { formula: `COUNTIF(K5:K${lastDataRow},"✓")` };
+  sheet4.getCell(`C${statRow+3}`).font = { bold: true, color: { argb: COLORS.positive } };
+
+  // ========== SHEET 5: Metodologia ==========
+  const sheet5 = workbook.addWorksheet('Metodologia');
+  sheet5.columns = [
+    { width: 3 },   // A: margin
+    { width: 80 }   // B: content
+  ];
+  sheet5.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  const methodologyText = [
+    { text: 'METODOLOGIA OBLICZEŃ - OPŁATA MOCOWA', isTitle: true },
+    { text: '' },
+    { text: 'PODSTAWA PRAWNA', isHeader: true },
+    { text: '• Rozporządzenie Ministra Klimatu i Środowiska z dnia 27 grudnia 2024 r.' },
+    { text: '• URE - Metodyka wyznaczania klasy odbiorcy końcowego' },
+    { text: '• Obowiązuje od 1 stycznia 2025 roku' },
+    { text: '' },
+    { text: 'WZÓR NA OPŁATĘ MOCOWĄ (WOM)', isHeader: true },
+    { text: '    WOM = A × SOM × ZS' },
+    { text: '' },
+    { text: '    gdzie:' },
+    { text: '    WOM - opłata mocowa [PLN]' },
+    { text: '    A   - współczynnik klasy K (zależny od profilu odbiorcy)' },
+    { text: '    SOM - stawka opłaty mocowej [PLN/kWh]' },
+    { text: '    ZS  - energia pobrana w godzinach wybranych [kWh]' },
+    { text: '' },
+    { text: 'WZÓR NA WSKAŹNIK Δs (DELTA S)', isHeader: true },
+    { text: '    Δs = (średnia_wybrana / średnia_poza - 1) × 100%' },
+    { text: '' },
+    { text: '    ZS  - energia w godzinach wybranych (7-22 dni robocze) [kWh]' },
+    { text: '    ZPS - energia poza godzinami wybranymi [kWh]' },
+    { text: '' },
+    { text: 'KLASYFIKACJA KLAS K (Dz.U. 2023 poz. 503)', isHeader: true },
+    { text: '    K1: Δs < -10%    → A = 0.17 (nocne zuzycie wyzsze niz szczytowe)' },
+    { text: '    K2: -10% ≤ Δs < 10% → A = 0.50 (profil plaski)' },
+    { text: '    K3: 10% ≤ Δs < 30%  → A = 0.83 (profil umiarkowanie szczytowy)' },
+    { text: '    K4: Δs ≥ 30%    → A = 1.00 (profil wybitnie szczytowy)' },
+    { text: '' },
+    { text: 'GODZINY WYBRANE', isHeader: true },
+    { text: '    7:00 - 22:00 w dni robocze' },
+    { text: '    Wykluczone: weekendy i święta państwowe' },
+    { text: '' },
+    { text: 'WPŁYW PV NA OPŁATĘ MOCOWĄ', isHeader: true },
+    { text: '    1. REDUKCJA ZS - PV zmniejsza pobór w godz. 7-22' },
+    { text: '    2. POPRAWA KLASY K - PV spłaszcza profil dobowy' },
+    { text: '' },
+    { text: 'Wygenerowano przez Analizator PV', isFooter: true }
+  ];
+
+  methodologyText.forEach((item, idx) => {
+    const r = idx + 2;
+    const cell = sheet5.getCell(r, 2);
+    cell.value = item.text;
+    if (item.isTitle) {
+      cell.font = { bold: true, size: 16, color: { argb: COLORS.titleText } };
+    } else if (item.isHeader) {
+      cell.font = { bold: true, size: 12, color: { argb: COLORS.titleText } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+    } else if (item.isFooter) {
+      cell.font = { italic: true, color: { argb: COLORS.neutralText } };
+    } else {
+      cell.font = { size: 11 };
+    }
+  });
+
+  // Generate and download
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const filename = `Analiza_Klasy_K_Oplata_Mocowa_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+  if (typeof saveAs !== 'undefined') {
+    saveAs(blob, filename);
+  } else {
+    // Fallback
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  console.log('📥 Exported K-class analysis to Excel (Clean Look):', filename);
+}
+
+/**
+ * Initialize K-class analysis
+ */
+function initKClassAnalysis() {
+  console.log('⚡ K-class: Initializing...');
+
+  if (!consumptionData || !consumptionData.hourlyData || !consumptionData.hourlyData.values) {
+    console.log('⚡ K-class: No consumption data available');
+    document.getElementById('capacityFeeKClassSection').style.display = 'none';
+    return;
+  }
+
+  const loadHourly = consumptionData.hourlyData.values;
+
+  // Try to get PV production from shell or generate synthetic
+  let pvHourly = null;
+
+  try {
+    // Try to get from localStorage
+    const pvSettings = localStorage.getItem('pv_system_settings');
+    if (pvSettings) {
+      const settings = JSON.parse(pvSettings);
+      const capacity = settings.pvCapacity || settings.capacity_kWp || 0;
+      const annualProduction = capacity * 1000; // Approx 1000 kWh/kWp
+
+      if (annualProduction > 0) {
+        console.log(`⚡ K-class: Generating synthetic PV profile (${annualProduction} kWh/year)`);
+        pvHourly = new Array(8760).fill(0);
+
+        for (let day = 0; day < 365; day++) {
+          const seasonalFactor = 0.6 + 0.4 * Math.sin(2 * Math.PI * (day - 80) / 365);
+
+          for (let hour = 0; hour < 24; hour++) {
+            const idx = day * 24 + hour;
+            if (hour >= 6 && hour <= 20) {
+              const solarFactor = Math.sin(Math.PI * (hour - 6) / 14);
+              pvHourly[idx] = (annualProduction / 8760) * 2.5 * solarFactor * seasonalFactor;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log('⚡ K-class: Could not load PV settings:', e.message);
+  }
+
+  // If still no PV data, request from shell but don't hide widget
+  if (!pvHourly) {
+    console.log('⚡ K-class: Requesting PV data from shell...');
+    window.parent.postMessage({ type: 'REQUEST_PV_DATA' }, '*');
+
+    // Show widget with "before PV" only (no PV comparison)
+    pvHourly = new Array(8760).fill(0); // Zero PV = show only consumption profile
+    console.log('⚡ K-class: No PV configured - showing consumption profile only');
+  }
+
+  // Handle 15-min data - aggregate to hourly
+  let hourlyLoad = loadHourly;
+  if (loadHourly.length > 10000) {
+    // 15-min data (35040 for 365 days, 35136 for 366 days)
+    console.log(`⚡ K-class: Converting ${loadHourly.length} 15-min points to hourly`);
+    const hourCount = Math.floor(loadHourly.length / 4);
+    hourlyLoad = [];
+    for (let h = 0; h < hourCount; h++) {
+      const start = h * 4;
+      const avg = (loadHourly[start] + (loadHourly[start+1]||0) + (loadHourly[start+2]||0) + (loadHourly[start+3]||0)) / 4;
+      hourlyLoad.push(avg);
+    }
+  }
+
+  // Need at least 30 days of data (720 hours) for meaningful K-class analysis
+  if (hourlyLoad.length < 720) {
+    console.log('⚡ K-class: Insufficient data points:', hourlyLoad.length, '(need ≥720)');
+    document.getElementById('capacityFeeKClassSection').style.display = 'none';
+    return;
+  }
+
+  // Pad to 8760 if slightly shorter (e.g. 8736 for 364 days), or truncate if longer (leap year 8784)
+  if (hourlyLoad.length < 8760) {
+    console.log(`⚡ K-class: Padding data from ${hourlyLoad.length} to 8760 hours`);
+    while (hourlyLoad.length < 8760) hourlyLoad.push(0);
+  } else if (hourlyLoad.length > 8760) {
+    console.log(`⚡ K-class: Truncating data from ${hourlyLoad.length} to 8760 hours`);
+    hourlyLoad = hourlyLoad.slice(0, 8760);
+  }
+
+  // Get capacity fee rate from settings
+  let somPLNperKWh = 0.2194; // Default
+  try {
+    const settings = cachedSystemSettings || JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+    if (settings.capacityFeeRate) {
+      somPLNperKWh = settings.capacityFeeRate / 1000;
+    }
+  } catch (e) {}
+
+  // Calculate and update (use hourlyLoad which handles 15-min conversion)
+  const analysis = calculateKClassAnalysis(hourlyLoad, pvHourly, 2025, somPLNperKWh);
+  updateKClassWidget(analysis);
+
+  console.log('⚡ K-class: Analysis complete');
+}
+
+// Listen for PV data from shell
+window.addEventListener('message', (event) => {
+  // Shell sends: { type: 'PV_DATA_RESPONSE', data: { hourly_generation: [...], capacity_kwp: ... } }
+  const pvData = event.data?.data;
+  if (event.data?.type === 'PV_DATA_RESPONSE' && pvData?.hourly_generation && pvData.hourly_generation.length > 0) {
+    console.log('⚡ K-class: Received PV data from shell:', pvData.hourly_generation.length, 'values, capacity:', pvData.capacity_kwp, 'kWp');
+
+    if (!consumptionData?.hourlyData?.values) {
+      console.log('⚡ K-class: No consumption data yet, cannot re-run analysis');
+      return;
+    }
+
+    let loadHourly = consumptionData.hourlyData.values;
+    const pvHourly = pvData.hourly_generation;
+
+    // Handle 15-min data (35040 points) - aggregate to hourly
+    if (loadHourly.length === 35040) {
+      console.log('⚡ K-class: Converting 15-min data to hourly');
+      const hourlyLoad = [];
+      for (let h = 0; h < 8760; h++) {
+        const start = h * 4;
+        const avg = (loadHourly[start] + loadHourly[start+1] + loadHourly[start+2] + loadHourly[start+3]) / 4;
+        hourlyLoad.push(avg);
+      }
+      loadHourly = hourlyLoad;
+    }
+
+    if (loadHourly.length < 8760) return;
+
+    let somPLNperKWh = 0.2194;
+    try {
+      const settings = cachedSystemSettings || JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+      if (settings.capacityFeeRate) {
+        somPLNperKWh = settings.capacityFeeRate / 1000;
+      }
+    } catch (e) {}
+
+    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, 2025, somPLNperKWh);
+    updateKClassWidget(analysis);
+    console.log('⚡ K-class: Re-ran analysis with PV data - savings:', analysis.totalSavingsPLN?.toFixed(0), 'PLN');
+  }
+});
 

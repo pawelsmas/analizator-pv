@@ -41,11 +41,20 @@ const DEFAULT_CONFIG = {
     },
     // K-class coefficients (read-only, based on law)
     kCoefficients: {
-      K1: 0.17,  // Δs < 5%
-      K2: 0.50,  // Δs 5-10%
-      K3: 0.83,  // Δs 10-15%
-      K4: 1.00,  // Δs ≥ 15%
+      K1: 0.17,  // Δs < -10% (Dz.U. 2023 poz. 503)
+      K2: 0.50,  // -10% ≤ Δs < 10%
+      K3: 0.83,  // 10% ≤ Δs < 30%
+      K4: 1.00,  // Δs ≥ 30%
     }
+  },
+
+  // Fixed Monthly Fees (not dependent on energy volume)
+  fixedMonthlyFees: {
+    contractedPowerKw: 50,          // kW — contracted power from OSD agreement
+    distFixedRatePerKwMonth: 9.14,  // zł/kW/month — C11: 8.04, C12: 9.14, C21: 32.02
+    osdSubscriptionFeeMonth: 5.54,  // PLN/month — OSD subscription fee
+    transitionFeeMonth: 0,          // PLN/month — transition fee (0 in 2026)
+    supplierTradeFeeMonth: 0        // PLN/month — supplier trade fee (optional)
   },
 
   // Time-of-Use Tariffs Configuration
@@ -382,7 +391,21 @@ const DEFAULT_CONFIG = {
   // BESS Scenarios - Work mode selection (MVP v3.17)
   // ============================================================================
   bessScenarioId: null,                 // Selected scenario ID (null = auto-select based on topology)
-  bessCapacityFeeOverlay: false         // Show capacity fee savings overlay after dispatch
+  bessCapacityFeeOverlay: false,        // Show capacity fee savings overlay after dispatch
+
+  // ============================================================================
+  // RDN Dynamic Pricing - Rynek Dnia Następnego (Day-Ahead Market)
+  // ============================================================================
+  rdnPricingConfig: {
+    enabled: false,
+    scenarioId: null,
+    scenarioName: '',
+    year: null,
+    avgPrice: null,
+    minPrice: null,
+    maxPrice: null,
+    dataPoints: 0
+  }
 };
 
 // ============================================================================
@@ -467,14 +490,17 @@ const BESS_SCENARIOS = {
     id: 5,
     name: 'ToU Arbitrage',
     shortName: 'Arbitraż',
-    description: 'Arbitraż cenowy na strefach taryfowych - osobny endpoint API',
+    description: 'Arbitraż cenowy na strefach taryfowych OSD (C12a/C12b) - ładuj tanio, rozładuj drogo',
     topologies: ['pv_bess', 'bess_only'],
     modes: ['pro'],
-    baseMode: null,  // Osobny flow /arbitrage/dispatch
-    presets: {},
-    requiredFields: [],
-    beta: true,
-    betaTooltip: 'BETA – wymaga osobnego flow /arbitrage/dispatch (nie zintegrowane z /dispatch)',
+    baseMode: 'stacked',  // Arbitraż działa w trybie stacked (3. priorytet po peak shaving i PV shifting)
+    presets: {
+      bessMode: 'pro',  // Auto-enable BESS in PRO mode
+      bessOsdArbitrageEnabled: true,
+      bessOsdTariffGroup: 'C12a'
+    },
+    requiredFields: ['bessOsdTariffGroup'],
+    kpiLabels: ['Arbitrage savings', 'ToU spread'],
     icon: '💹'
   },
   // Scenariusz 6 NIE jest kafelkiem - to checkbox overlay
@@ -1550,6 +1576,19 @@ function applySettingsToUI(config) {
     console.log('✅ Tariff config applied from import:', tc);
   }
 
+  // Apply Fixed Monthly Fees Configuration
+  if (config.fixedMonthlyFees) {
+    const fmf = config.fixedMonthlyFees;
+    const setVal = (id, key) => { const el = document.getElementById(id); if (el && fmf[key] !== undefined) el.value = fmf[key]; };
+    setVal('contractedPowerKw', 'contractedPowerKw');
+    setVal('distFixedRatePerKw', 'distFixedRatePerKwMonth');
+    setVal('osdSubscriptionFee', 'osdSubscriptionFeeMonth');
+    setVal('transitionFee', 'transitionFeeMonth');
+    setVal('supplierTradeFee', 'supplierTradeFeeMonth');
+    updateFixedMonthlyTotal();
+    console.log('✅ Fixed monthly fees applied from import:', fmf);
+  }
+
   // Apply Capacity Fee Configuration (opłata mocowa)
   if (config.capacityFeeConfig) {
     const cfc = config.capacityFeeConfig;
@@ -1577,6 +1616,25 @@ function applySettingsToUI(config) {
   if (config.esgPvTechnology) {
     const el = document.getElementById('esgPvTechnology');
     if (el) el.value = config.esgPvTechnology;
+  }
+
+  // Apply RDN Dynamic Pricing Configuration
+  if (config.rdnPricingConfig) {
+    const rdn = config.rdnPricingConfig;
+    const rdnCheckbox = document.getElementById('rdnPricingEnabled');
+    const rdnPanel = document.getElementById('rdnPricingPanel');
+    if (rdnCheckbox) rdnCheckbox.checked = rdn.enabled || false;
+    if (rdnPanel) rdnPanel.style.display = rdn.enabled ? 'block' : 'none';
+    if (rdn.enabled && rdn.scenarioId) {
+      loadSavedRdnScenarios().then(() => {
+        const selectEl = document.getElementById('rdnScenarioSelect');
+        if (selectEl) {
+          selectEl.value = rdn.scenarioId;
+          selectRdnScenario(rdn.scenarioId);
+        }
+      });
+    }
+    console.log('RDN pricing config applied:', rdn);
   }
 }
 
@@ -1810,8 +1868,14 @@ function getCurrentSettings() {
     // Capacity Fee (Opłata Mocowa) Configuration
     capacityFeeConfig: getCapacityFeeConfig(),
 
+    // Fixed Monthly Fees Configuration
+    fixedMonthlyFees: getFixedMonthlyFeesConfig(),
+
     // Time-of-Use Tariff Configuration
-    tariffConfig: getTariffConfig()
+    tariffConfig: getTariffConfig(),
+
+    // RDN Dynamic Pricing Configuration
+    rdnPricingConfig: getRdnPricingConfig()
   };
 
   // Calculate total fixed charges (without energia czynna - now in ToU section)
@@ -4351,12 +4415,42 @@ function getTariffHourlyRates(dayType = 'weekday') {
   return rates;
 }
 
+// ======== Fixed Monthly Fees Functions ========
+
+/**
+ * Read fixed monthly fees config from DOM inputs.
+ */
+function getFixedMonthlyFeesConfig() {
+  return {
+    contractedPowerKw: parseFloat(document.getElementById('contractedPowerKw')?.value) || 50,
+    distFixedRatePerKwMonth: parseFloat(document.getElementById('distFixedRatePerKw')?.value) || 9.14,
+    osdSubscriptionFeeMonth: parseFloat(document.getElementById('osdSubscriptionFee')?.value) || 5.54,
+    transitionFeeMonth: parseFloat(document.getElementById('transitionFee')?.value) || 0,
+    supplierTradeFeeMonth: parseFloat(document.getElementById('supplierTradeFee')?.value) || 0
+  };
+}
+
+/**
+ * Recalculate and display the total fixed monthly fee.
+ * Called from oninput handlers on each fixed monthly fee field.
+ */
+function updateFixedMonthlyTotal() {
+  const cfg = getFixedMonthlyFeesConfig();
+  const total = (cfg.distFixedRatePerKwMonth * cfg.contractedPowerKw) +
+                cfg.osdSubscriptionFeeMonth +
+                cfg.transitionFeeMonth +
+                cfg.supplierTradeFeeMonth;
+  const el = document.getElementById('totalFixedMonthly');
+  if (el) el.value = total.toFixed(2);
+}
+
 // Make tariff functions globally available
 window.onTariffTypeChange = onTariffTypeChange;
 window.getTariffConfig = getTariffConfig;
 window.getTariffHourlyRates = getTariffHourlyRates;
 window.updateTariffVisualization = updateTariffVisualization;
 window.updateTariffAverageRate = updateTariffAverageRate;
+window.updateFixedMonthlyTotal = updateFixedMonthlyTotal;
 
 // Initialize tariff section and add event listeners
 document.addEventListener('DOMContentLoaded', function() {
@@ -4388,4 +4482,371 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 });
+
+// ============================================================================
+// RDN Dynamic Pricing - Rynek Dnia Następnego (Day-Ahead Market)
+// ============================================================================
+
+document.addEventListener('DOMContentLoaded', function() {
+  // RDN enabled checkbox → toggle panel
+  const rdnCheckbox = document.getElementById('rdnPricingEnabled');
+  const rdnPanel = document.getElementById('rdnPricingPanel');
+  if (rdnCheckbox && rdnPanel) {
+    rdnCheckbox.addEventListener('change', function() {
+      rdnPanel.style.display = this.checked ? 'block' : 'none';
+      if (this.checked) {
+        loadSavedRdnScenarios();
+      }
+      markUnsaved();
+    });
+  }
+
+  // RDN file upload handler
+  const rdnFileInput = document.getElementById('rdnFileInput');
+  if (rdnFileInput) {
+    rdnFileInput.addEventListener('change', handleRdnFileUpload);
+  }
+
+  // RDN scenario select handler
+  const rdnSelect = document.getElementById('rdnScenarioSelect');
+  if (rdnSelect) {
+    rdnSelect.addEventListener('change', function() {
+      const scenarioId = parseInt(this.value);
+      if (scenarioId) {
+        selectRdnScenario(scenarioId);
+      } else {
+        clearRdnScenarioInfo();
+      }
+    });
+  }
+
+  // Restore RDN state from config
+  restoreRdnState();
+});
+
+/**
+ * Handle RDN CSV/Excel file upload
+ */
+async function handleRdnFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const statusEl = document.getElementById('rdnUploadStatus');
+  if (statusEl) statusEl.textContent = 'Wysyłanie...';
+
+  // Get scenario metadata from UI inputs
+  const scenarioName = document.getElementById('rdnScenarioName')?.value?.trim()
+    || file.name.replace(/\.(csv|xlsx|xls)$/i, '');
+  const scenarioYear = parseInt(document.getElementById('rdnScenarioYear')?.value) || 2025;
+  const scenarioType = document.getElementById('rdnScenarioType')?.value || 'historical';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  // Build URL with required query parameters
+  const params = new URLSearchParams({
+    name: scenarioName,
+    year: scenarioYear,
+    scenario_type: scenarioType
+  });
+
+  try {
+    const response = await fetch(`/api/db/prices/upload-tge-csv?${params.toString()}`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errText}`);
+    }
+
+    const result = await response.json();
+    console.log('RDN upload result:', result);
+
+    const stats = result.stats || {};
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#2e7d32">Wgrano: ${scenarioName} (${result.data_points || '?'} godzin, śr. ${stats.avg_price?.toFixed(0) || '?'} PLN/MWh)</span>`;
+    }
+
+    // Refresh scenarios list and auto-select the new one
+    await loadSavedRdnScenarios();
+
+    if (result.id) {
+      const rdnSelect = document.getElementById('rdnScenarioSelect');
+      if (rdnSelect) {
+        rdnSelect.value = result.id;
+        await selectRdnScenario(result.id);
+      }
+    }
+  } catch (err) {
+    console.error('RDN upload error:', err);
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#c62828">Błąd: ${err.message}</span>`;
+    }
+  }
+
+  // Reset file input
+  event.target.value = '';
+}
+
+/**
+ * Download CSV template for RDN price upload
+ * Generates a sample CSV matching TGE Fixing format: Date;Fixing 1
+ * Format: D.MM.YYYY HH:MM (European, matching real TGE exports)
+ */
+function downloadRdnTemplate() {
+  const year = parseInt(document.getElementById('rdnScenarioYear')?.value) || 2025;
+
+  // Use semicolon separator and European format to match real TGE files
+  const lines = ['Date;Fixing 1'];
+
+  // Realistic RDN hourly price profile [PLN/MWh]
+  const samplePrices = [
+    // Night (00-05): low/negative (renewables oversupply)
+    180, 150, 130, 120, 125, 140,
+    // Morning ramp (06-09): rising demand
+    220, 310, 420, 480,
+    // Midday solar dip (10-14): solar pushes prices down
+    390, 350, 320, 310, 330,
+    // Evening peak (15-20): highest (no solar + peak demand)
+    420, 510, 580, 620, 560, 490,
+    // Night wind-down (21-23)
+    380, 300, 230
+  ];
+
+  // Generate 3 sample days
+  for (let day = 1; day <= 3; day++) {
+    for (let h = 0; h < 24; h++) {
+      // TGE format: D.MM.YYYY HH:MM (no leading zero for day)
+      const dateStr = `${day}.01.${year} ${String(h).padStart(2, '0')}:00`;
+      // Use comma as decimal separator (European)
+      const price = samplePrices[h] + Math.round((Math.random() - 0.5) * 60);
+      const priceStr = price.toFixed(2).replace('.', ',');
+      lines.push(`${dateStr};${priceStr}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('# ===== INSTRUKCJA =====');
+  lines.push('# Format kompatybilny z eksportem TGE Fixing I');
+  lines.push('# Kolumna "Date": D.MM.YYYY HH:MM lub DD.MM.YYYY HH:MM');
+  lines.push('# Kolumna "Fixing 1": cena w PLN/MWh (przecinek lub kropka jako separator)');
+  lines.push('# Ceny mogą być ujemne (np. -200 podczas nadpodaży OZE)');
+  lines.push('# Uzupełnij dane za cały rok: 8760 godzin (365 x 24)');
+  lines.push('# Można też wgrać bezpośrednio plik .xlsx z TGE');
+  lines.push('# Źródło: https://tge.pl/energia-elektryczna-rdn');
+
+  const bom = '\uFEFF'; // BOM for proper Excel encoding
+  const csv = bom + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `szablon_ceny_rdn_${year}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Load saved RDN price scenarios from database
+ */
+async function loadSavedRdnScenarios() {
+  const selectEl = document.getElementById('rdnScenarioSelect');
+  if (!selectEl) return;
+
+  try {
+    const response = await fetch('/api/db/prices/scenarios-for-arbitrage');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const scenarios = await response.json();
+    console.log('RDN scenarios loaded:', scenarios);
+
+    // Clear existing options
+    selectEl.innerHTML = '<option value="">-- Wybierz scenariusz --</option>';
+
+    if (Array.isArray(scenarios)) {
+      scenarios.forEach(s => {
+        const option = document.createElement('option');
+        option.value = s.id;
+        const avgPrice = s.stats?.avg_price || s.avg_price;
+        const avgLabel = avgPrice ? ` (śr. ${avgPrice.toFixed(0)} PLN/MWh, ${s.data_points || '?'} godz.)` : '';
+        const yearLabel = s.year ? ` [${s.year}]` : '';
+        option.textContent = `${s.name || s.scenario_name || 'Scenariusz #' + s.id}${yearLabel}${avgLabel}`;
+        selectEl.appendChild(option);
+      });
+    }
+  } catch (err) {
+    console.error('Error loading RDN scenarios:', err);
+  }
+}
+
+/**
+ * Select an RDN price scenario and load its details
+ */
+async function selectRdnScenario(scenarioId) {
+  const infoEl = document.getElementById('rdnScenarioInfo');
+
+  try {
+    // Try to use cached data first (avoids fetch errors during module transitions)
+    const cachedInfo = localStorage.getItem('rdn_scenario_info');
+    const cachedPrices = localStorage.getItem('rdn_hourly_prices');
+    if (cachedInfo && cachedPrices) {
+      const info = JSON.parse(cachedInfo);
+      if (info.scenarioId == scenarioId && info.dataPoints > 0) {
+        // Cache hit - update UI from localStorage without API call
+        document.getElementById('rdnInfoName').textContent = info.scenarioName || `Scenariusz #${scenarioId}`;
+        document.getElementById('rdnInfoYear').textContent = info.year || '-';
+        document.getElementById('rdnInfoPoints').textContent = info.dataPoints;
+        document.getElementById('rdnInfoAvg').textContent = (info.avgPrice || 0).toFixed(1);
+        document.getElementById('rdnInfoMin').textContent = (info.minPrice || 0).toFixed(1);
+        document.getElementById('rdnInfoMax').textContent = (info.maxPrice || 0).toFixed(1);
+        if (infoEl) infoEl.style.display = 'block';
+        console.log(`RDN scenario #${scenarioId} restored from cache: ${info.dataPoints} prices, avg=${(info.avgPrice || 0).toFixed(1)} PLN/MWh`);
+        return;
+      }
+    }
+
+    // Fetch hourly prices from API
+    const response = await fetch(`/api/db/prices/${scenarioId}/hourly-array`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    console.log('RDN scenario data:', data);
+
+    const prices = data.prices_plnmwh || data.prices || data.hourly_prices || data;
+    const priceArray = Array.isArray(prices) ? prices : [];
+
+    if (priceArray.length === 0) {
+      throw new Error('Brak danych cenowych w scenariuszu');
+    }
+
+    // Calculate statistics
+    const validPrices = priceArray.filter(p => p !== null && p !== undefined && !isNaN(p));
+    const avg = validPrices.reduce((a, b) => a + b, 0) / validPrices.length;
+    const min = Math.min(...validPrices);
+    const max = Math.max(...validPrices);
+
+    // Get scenario name from select dropdown
+    const selectEl = document.getElementById('rdnScenarioSelect');
+    const selectedOption = selectEl?.options[selectEl.selectedIndex];
+    const scenarioName = selectedOption?.textContent || `Scenariusz #${scenarioId}`;
+
+    // Determine year from data or name
+    const yearMatch = scenarioName.match(/\[(\d{4})\]/);
+    const year = data.year || (yearMatch ? parseInt(yearMatch[1]) : null);
+
+    // Update info panel
+    document.getElementById('rdnInfoName').textContent = scenarioName.replace(/\s*\[.*?\]\s*\(.*?\)/, '').trim();
+    document.getElementById('rdnInfoYear').textContent = year || '-';
+    document.getElementById('rdnInfoPoints').textContent = priceArray.length;
+    document.getElementById('rdnInfoAvg').textContent = avg.toFixed(1);
+    document.getElementById('rdnInfoMin').textContent = min.toFixed(1);
+    document.getElementById('rdnInfoMax').textContent = max.toFixed(1);
+
+    if (infoEl) infoEl.style.display = 'block';
+
+    // Cache hourly prices in localStorage for Economics module
+    localStorage.setItem('rdn_hourly_prices', JSON.stringify(priceArray));
+    localStorage.setItem('rdn_scenario_info', JSON.stringify({
+      scenarioId,
+      scenarioName: scenarioName.replace(/\s*\[.*?\]\s*\(.*?\)/, '').trim(),
+      year,
+      avgPrice: avg,
+      minPrice: min,
+      maxPrice: max,
+      dataPoints: priceArray.length
+    }));
+
+    markUnsaved();
+    console.log(`RDN scenario #${scenarioId} selected: ${priceArray.length} prices, avg=${avg.toFixed(1)} PLN/MWh`);
+
+  } catch (err) {
+    console.error('Error loading RDN scenario:', err);
+    if (infoEl) infoEl.style.display = 'none';
+    const statusEl = document.getElementById('rdnUploadStatus');
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#c62828">Błąd ładowania scenariusza: ${err.message}</span>`;
+    }
+  }
+}
+
+/**
+ * Clear RDN scenario info panel
+ */
+function clearRdnScenarioInfo() {
+  const infoEl = document.getElementById('rdnScenarioInfo');
+  if (infoEl) infoEl.style.display = 'none';
+  localStorage.removeItem('rdn_hourly_prices');
+  localStorage.removeItem('rdn_scenario_info');
+}
+
+/**
+ * Get current RDN pricing config from UI state
+ */
+function getRdnPricingConfig() {
+  const enabled = document.getElementById('rdnPricingEnabled')?.checked || false;
+  const scenarioId = parseInt(document.getElementById('rdnScenarioSelect')?.value) || null;
+
+  if (!enabled || !scenarioId) {
+    return {
+      enabled,
+      scenarioId: null,
+      scenarioName: '',
+      year: null,
+      avgPrice: null,
+      minPrice: null,
+      maxPrice: null,
+      dataPoints: 0
+    };
+  }
+
+  // Read cached info
+  try {
+    const info = JSON.parse(localStorage.getItem('rdn_scenario_info') || '{}');
+    return {
+      enabled: true,
+      scenarioId: info.scenarioId || scenarioId,
+      scenarioName: info.scenarioName || '',
+      year: info.year || null,
+      avgPrice: info.avgPrice || null,
+      minPrice: info.minPrice || null,
+      maxPrice: info.maxPrice || null,
+      dataPoints: info.dataPoints || 0
+    };
+  } catch (e) {
+    return { enabled: true, scenarioId, scenarioName: '', year: null, avgPrice: null, minPrice: null, maxPrice: null, dataPoints: 0 };
+  }
+}
+
+/**
+ * Restore RDN state from saved config on page load
+ */
+function restoreRdnState() {
+  try {
+    const savedSettings = JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+    const rdnConfig = savedSettings.rdnPricingConfig || DEFAULT_CONFIG.rdnPricingConfig;
+
+    const checkbox = document.getElementById('rdnPricingEnabled');
+    const panel = document.getElementById('rdnPricingPanel');
+
+    if (checkbox) checkbox.checked = rdnConfig.enabled || false;
+    if (panel) panel.style.display = rdnConfig.enabled ? 'block' : 'none';
+
+    if (rdnConfig.enabled) {
+      // Load scenarios and restore selection
+      loadSavedRdnScenarios().then(() => {
+        if (rdnConfig.scenarioId) {
+          const selectEl = document.getElementById('rdnScenarioSelect');
+          if (selectEl) {
+            selectEl.value = rdnConfig.scenarioId;
+            selectRdnScenario(rdnConfig.scenarioId);
+          }
+        }
+      });
+    }
+  } catch (e) {
+    console.error('Error restoring RDN state:', e);
+  }
+}
 

@@ -907,12 +907,20 @@ def generate_pv_profile_pvlib(
     # Apply soiling loss separately (user-configurable parameter)
     system_efficiency = base_efficiency * (1 - soiling_loss)
 
-    power_output = power_per_kwp * system_efficiency
+    # CRITICAL: Clearsky model correction factor for Poland
+    # Clearsky gives ideal conditions (no clouds) which overestimates yield by ~60-70%
+    # Real yield in Poland is 950-1100 kWh/kWp, clearsky gives ~1700 kWh/kWp
+    # Apply cloud/weather correction factor based on latitude (higher lat = more clouds)
+    # For Poland (lat ~52°): typical GHI reduction due to clouds is ~35-40%
+    CLEARSKY_CORRECTION_FACTOR = 0.62  # Reduces clearsky to realistic Poland values
+    print(f"   ⚠️ Using CLEARSKY model (PVGIS unavailable) - applying {CLEARSKY_CORRECTION_FACTOR:.0%} correction factor")
+
+    power_output = power_per_kwp * system_efficiency * CLEARSKY_CORRECTION_FACTOR
     power_output = np.maximum(power_output, 0)  # No negative power
 
     # Calculate annual yield
     annual_yield = power_output.sum()  # kWh/kWp/year for hourly data
-    print(f"   Annual yield: {annual_yield:.0f} kWh/kWp")
+    print(f"   Annual yield (corrected): {annual_yield:.0f} kWh/kWp")
     print(f"   System efficiency: {system_efficiency:.3f} (incl. {soiling_loss*100:.1f}% soiling loss)")
     print(f"   Peak power: {power_output.max():.3f} kW/kWp")
 
@@ -2595,6 +2603,13 @@ async def generate_profile(config: PVConfiguration, start_date: Optional[str] = 
                 yield_target=config.yield_target
             )
 
+        # Scale profile DOWN to match yield_target (only if target < actual)
+        actual_yield = float(profile.sum())
+        if config.yield_target > 0 and actual_yield > 0 and config.yield_target < actual_yield - 10:
+            scale = config.yield_target / actual_yield
+            profile = profile * scale
+            print(f"   ⚡ Yield scaling DOWN: {actual_yield:.0f} → {config.yield_target:.0f} kWh/kWp (factor: {scale:.3f})")
+
         return {
             "success": True,
             "profile": profile.tolist(),
@@ -2746,6 +2761,18 @@ async def analyze(request: AnalysisRequest):
                 yield_target=config.yield_target
             )
 
+        # Scale profile DOWN to match yield_target (only if target < PVGIS yield)
+        # This allows users to reduce yield to match PV SYST simulations.
+        # Never scales UP — if PVGIS is already below target, soiling/physical losses are preserved.
+        pvgis_yield = float(pv_profile.sum()) if hasattr(pv_profile, 'sum') else float(np.sum(pv_profile))
+        yield_target = config.yield_target
+        if yield_target > 0 and pvgis_yield > 0 and yield_target < pvgis_yield - 10:
+            yield_scale = yield_target / pvgis_yield
+            pv_profile = pv_profile * yield_scale
+            print(f"   ⚡ Yield scaling DOWN: PVGIS {pvgis_yield:.0f} → target {yield_target:.0f} kWh/kWp (factor: {yield_scale:.3f})")
+        else:
+            print(f"   ✓ No downscaling needed: PVGIS {pvgis_yield:.0f} kWh/kWp, target {yield_target:.0f} kWh/kWp")
+
         # Determine DC/AC selection mode
         dcac_mode = getattr(config, 'dcac_mode', 'manual')  # Default to manual if not set
         auto_dcac_ratio = None
@@ -2778,8 +2805,12 @@ async def analyze(request: AnalysisRequest):
         scenarios = []
         capacity = request.capacity_min
 
-        print(f"\n📊 Running {int((request.capacity_max - request.capacity_min) / request.capacity_step) + 1} scenarios")
+        n_scenarios = int((request.capacity_max - request.capacity_min) / request.capacity_step) + 1
+        print(f"\n📊 Running {n_scenarios} scenarios")
         print(f"   Capacity range: {request.capacity_min} - {request.capacity_max} kWp")
+        print(f"   Thresholds: {request.thresholds}")
+        print(f"   Consumption: sum={consumption.sum():.0f} kWh ({consumption.sum()/1000:.1f} MWh), len={len(consumption)}, min={consumption.min():.2f}, max={consumption.max():.2f}")
+        print(f"   PV profile: sum={pv_profile.sum():.0f} kWh/kWp, max={pv_profile.max():.4f} kW/kWp")
 
         while capacity <= request.capacity_max:
             # Get DC/AC ratio for this capacity
@@ -2835,6 +2866,20 @@ async def analyze(request: AnalysisRequest):
 
             scenarios.append(result)
             capacity += request.capacity_step
+
+        # Debug: print first, middle, and last scenario auto_consumption
+        if scenarios:
+            first = scenarios[0]
+            last = scenarios[-1]
+            mid = scenarios[len(scenarios)//2]
+            print(f"\n🔍 DEBUG Scenario auto_consumption:")
+            print(f"   First ({first.capacity:.0f} kWp): auto={first.auto_consumption_pct:.1f}%, prod={first.production:.0f} kWh, self={first.self_consumed:.0f} kWh, exported={first.exported:.0f} kWh")
+            print(f"   Mid   ({mid.capacity:.0f} kWp): auto={mid.auto_consumption_pct:.1f}%, prod={mid.production:.0f} kWh, self={mid.self_consumed:.0f} kWh")
+            print(f"   Last  ({last.capacity:.0f} kWp): auto={last.auto_consumption_pct:.1f}%, prod={last.production:.0f} kWh, self={last.self_consumed:.0f} kWh")
+            # Count how many meet each threshold
+            for thr_name, thr_val in request.thresholds.items():
+                count = sum(1 for s in scenarios if s.auto_consumption_pct >= thr_val)
+                print(f"   Threshold {thr_name} ({thr_val}%): {count}/{len(scenarios)} scenarios qualify")
 
         # Find key variants
         key_variants = {}
@@ -3249,6 +3294,16 @@ async def optimize_seasonality(request: SeasonalityOptimizationRequest):
                 pv_type=config.pv_type,
                 yield_target=config.yield_target
             )
+
+        # Scale profile DOWN to match yield_target (only if target < actual yield)
+        pvgis_yield_band = float(pv_profile.sum()) if hasattr(pv_profile, 'sum') else float(np.sum(pv_profile))
+        yield_target_band = config.yield_target
+        if yield_target_band > 0 and pvgis_yield_band > 0 and yield_target_band < pvgis_yield_band - 10:
+            yield_scale_band = yield_target_band / pvgis_yield_band
+            pv_profile = pv_profile * yield_scale_band
+            print(f"   ⚡ Yield scaling DOWN: {pvgis_yield_band:.0f} → target {yield_target_band:.0f} kWh/kWp (factor: {yield_scale_band:.3f})")
+        else:
+            print(f"   ✓ No downscaling needed: actual {pvgis_yield_band:.0f} kWh/kWp, target {yield_target_band:.0f} kWh/kWp")
 
         # Uruchom optymalizację w osobnym wątku (pozwala SSE działać równolegle)
         target_seasons = request.target_seasons if request.target_seasons else ["High", "Mid"]

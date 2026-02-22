@@ -9,11 +9,11 @@ Key formulas:
 - WOM = A × SOM × ZS
 - Δs = (avg_selected / avg_outside - 1) × 100%
 
-K-class classification:
-- K1: Δs < 5%     → A = 0.17
-- K2: Δs ∈ [5%, 10%) → A = 0.50
-- K3: Δs ∈ [10%, 15%) → A = 0.83
-- K4: Δs ≥ 15% OR ZPS=0 → A = 1.00
+K-class classification (Dz.U. 2023 poz. 503):
+- K1: Δs < -10%    → A = 0.17
+- K2: Δs ∈ [-10%, 10%) → A = 0.50
+- K3: Δs ∈ [10%, 30%) → A = 0.83
+- K4: Δs ≥ 30% OR ZPS=0 → A = 1.00
 
 IMPORTANT: Input must be grid_import_kwh (energy from grid), not load!
 """
@@ -127,12 +127,12 @@ def classify_period_K(
     # Calculate Δs
     delta_s = (avg_s / avg_ps - 1) * 100
 
-    # Classify based on thresholds
-    if delta_s < 5:
+    # Classify based on thresholds (Dz.U. 2023 poz. 503)
+    if delta_s < -10:
         k_class = KClass.K1
     elif delta_s < 10:
         k_class = KClass.K2
-    elif delta_s < 15:
+    elif delta_s < 30:
         k_class = KClass.K3
     else:
         k_class = KClass.K4

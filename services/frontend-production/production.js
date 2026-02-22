@@ -907,11 +907,16 @@ function calculateStatistics() {
       scenario: currentScenario
     });
 
+    // Performance Ratio = actual yield / theoretical yield
+    // Theoretical = capacity * reference irradiance (1000 kWh/m²/year standard)
+    const theoreticalProd = (variant.capacity || 1) * 1000; // kWh
+    const prPct = variant.capacity > 0 ? (actualProduction / theoreticalProd) * 100 : 0;
+
     return {
       annualProduction: formatNumberEU(actualProduction / 1000000, 2), // kWh -> GWh (from hourly data)
       installedCapacity: formatNumberEU((variant.capacity || 0) / 1000, 2), // kWp -> MWp
       specificYield: formatNumberEU(variant.capacity > 0 ? (actualProduction / variant.capacity) : 0, 0), // kWh/kWp (from hourly)
-      performanceRatio: formatNumberEU(selfConsumptionPct, 1), // % - using actual self-consumption
+      performanceRatio: formatNumberEU(prPct, 1), // % - actual/theoretical production ratio
       selfConsumption: `${formatNumberEU(selfConsumptionPct, 1)}%`, // %
       selfSufficiency: `${formatNumberEU(selfSufficiencyPct, 1)}%`, // %
       gridExport: `${formatNumberEU(gridExportKwh / 1000000, 2)} GWh`, // GWh (from hourly calculation)
