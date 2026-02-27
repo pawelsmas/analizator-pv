@@ -1,0 +1,131 @@
+{{/*
+MinIO deployment for dev-mode (v3.5.0 PR5)
+Provides S3-compatible storage for artifact store when minio.enabled=true
+*/}}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-minio
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pv-portal.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "pv-portal.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio
+    spec:
+      containers:
+        - name: minio
+          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":9001"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pv-portal.fullname" . }}-minio
+                  key: access-key
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pv-portal.fullname" . }}-minio
+                  key: secret-key
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          {{- if .Values.minio.persistence.enabled }}
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          {{- end }}
+      {{- if .Values.minio.persistence.enabled }}
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: {{ include "pv-portal.fullname" . }}-minio
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-minio
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: api
+      protocol: TCP
+      name: api
+    - port: 9001
+      targetPort: console
+      protocol: TCP
+      name: console
+  selector:
+    {{- include "pv-portal.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-minio
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+type: Opaque
+data:
+  access-key: {{ .Values.minio.accessKey | b64enc | quote }}
+  secret-key: {{ .Values.minio.secretKey | b64enc | quote }}
+{{- if .Values.minio.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-minio
+  labels:
+    {{- include "pv-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.minio.persistence.size }}
+  {{- if .Values.minio.persistence.storageClass }}
+  storageClassName: {{ .Values.minio.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}
