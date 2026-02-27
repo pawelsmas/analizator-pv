@@ -1,0 +1,91 @@
+# Example HA configuration for pv-portal
+# This file shows how to configure the chart for high availability
+
+# Enable HA mode with strict validation
+ha:
+  enabled: true
+  strict: true
+
+# Multiple API replicas for load balancing
+api:
+  replicaCount: 2
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+
+# Multiple worker replicas for parallel processing
+worker:
+  replicaCount: 2
+  concurrency: 4
+  pdb:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+
+# Use database backend for shared state
+runstore:
+  backend: db
+  compress: true
+
+# Enable bundled PostgreSQL
+postgresql:
+  enabled: true
+  auth:
+    username: pvportal
+    database: pvportal
+    # In production, use existingSecret
+    # existingSecret: pv-portal-postgresql-secret
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+
+# Enable bundled Redis for job queue and caching
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+
+# Enable MinIO for artifact storage
+minio:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 50Gi
+
+# Enable ingress
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: pv-portal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend
+        - path: /api
+          pathType: Prefix
+          service: api
+  tls:
+    - secretName: pv-portal-tls
+      hosts:
+        - pv-portal.example.com
+
+# Enable monitoring
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+  prometheusRule:
+    enabled: true

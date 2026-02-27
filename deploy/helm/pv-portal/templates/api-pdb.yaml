@@ -1,0 +1,19 @@
+{{- if .Values.api.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pv-portal.fullname" . }}-api
+  labels:
+    {{- include "pv-portal.api.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.api.pdb.minAvailable }}
+  minAvailable: {{ .Values.api.pdb.minAvailable }}
+  {{- else if .Values.api.pdb.maxUnavailable }}
+  maxUnavailable: {{ .Values.api.pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pv-portal.api.selectorLabels" . | nindent 6 }}
+{{- end }}
