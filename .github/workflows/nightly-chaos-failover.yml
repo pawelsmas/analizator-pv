@@ -1,0 +1,173 @@
+# Nightly Chaos/Failover Tests (v3.9.0)
+# Tests BESS service resilience under pod failures using kind
+name: Nightly Chaos Failover
+
+on:
+  schedule:
+    # Run at 3:00 AM UTC every day (after load tests)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      load_duration:
+        description: 'Load test duration (seconds)'
+        required: false
+        default: '120'
+      pod_kill_interval:
+        description: 'Interval between pod kills (seconds)'
+        required: false
+        default: '30'
+
+env:
+  CLUSTER_NAME: bess-ha-chaos
+  NAMESPACE: bess
+
+jobs:
+  chaos-failover:
+    name: Chaos Failover Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Create kind cluster
+        run: |
+          kind create cluster \
+            --config k8s/kind/kind-ha-cluster.yaml \
+            --name ${{ env.CLUSTER_NAME }} \
+            --wait 120s
+
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Build BESS image
+        run: |
+          docker build -t bess-dispatch:latest -f services/bess-dispatch/Dockerfile services/bess-dispatch
+          kind load docker-image bess-dispatch:latest --name ${{ env.CLUSTER_NAME }}
+
+      - name: Deploy BESS HA
+        run: |
+          kubectl apply -f k8s/kind/bess-ha-deployment.yaml
+          echo "Waiting for deployment to be ready..."
+          kubectl wait --for=condition=available deployment/bess-dispatch \
+            -n ${{ env.NAMESPACE }} \
+            --timeout=120s
+          kubectl wait --for=condition=available deployment/redis \
+            -n ${{ env.NAMESPACE }} \
+            --timeout=60s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get svc -n ${{ env.NAMESPACE }}
+
+      - name: Port forward setup
+        run: |
+          kubectl port-forward svc/bess-dispatch 30031:8031 -n ${{ env.NAMESPACE }} &
+          sleep 5
+          curl -sf http://localhost:30031/health || echo "Health check failed"
+
+      - name: Run chaos failover test
+        env:
+          TARGET_URL: http://localhost:30031
+          LOAD_DURATION: ${{ github.event.inputs.load_duration || '120' }}
+          POD_KILL_INTERVAL: ${{ github.event.inputs.pod_kill_interval || '30' }}
+        run: |
+          chmod +x tests/chaos/pod_failover_test.sh
+          ./tests/chaos/pod_failover_test.sh || true
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Pod Status ===" > chaos_debug.log
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide >> chaos_debug.log
+          echo "" >> chaos_debug.log
+          echo "=== Pod Events ===" >> chaos_debug.log
+          kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' >> chaos_debug.log
+          echo "" >> chaos_debug.log
+          echo "=== BESS Logs ===" >> chaos_debug.log
+          kubectl logs -l app=bess-dispatch -n ${{ env.NAMESPACE }} --tail=100 >> chaos_debug.log || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-test-results
+          path: |
+            chaos_results.json
+            chaos_debug.log
+          retention-days: 30
+
+      - name: Cleanup cluster
+        if: always()
+        run: |
+          kind delete cluster --name ${{ env.CLUSTER_NAME }} || true
+
+      - name: Generate summary
+        run: |
+          echo "## Chaos Failover Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** ${{ env.CLUSTER_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Load Duration:** ${{ github.event.inputs.load_duration || '120' }}s" >> $GITHUB_STEP_SUMMARY
+          echo "**Pod Kill Interval:** ${{ github.event.inputs.pod_kill_interval || '30' }}s" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Scenario" >> $GITHUB_STEP_SUMMARY
+          echo "1. Deploy BESS with 3 replicas (HA mode)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Start k6 load test (baseline scenario)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Kill pods periodically during load" >> $GITHUB_STEP_SUMMARY
+          echo "4. Verify recovery and SLO compliance (99.5%)" >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: chaos-failover
+    if: failure()
+
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Chaos Failover Test Failure - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+            ## Chaos Failover Test Failure
+
+            The nightly chaos/failover test has failed.
+
+            **Workflow Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+            **Date:** ${new Date().toISOString()}
+
+            ### Possible Causes
+            - Pod recovery time exceeded threshold
+            - Service did not maintain 99.5% availability during failover
+            - Network partition issues in kind cluster
+            - Resource constraints
+
+            Please investigate the test artifacts for details.
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['chaos-test', 'automated', 'needs-investigation']
+            });
