@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend promtool-check
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -232,3 +232,10 @@ guard-no-legacy: ## Check for legacy references in codebase
 	@echo "${BLUE}Checking for legacy references...${RESET}"
 	@python scripts/guards/check_no_legacy.py
 	@echo "${GREEN}✓ No legacy references found${RESET}"
+
+# ===== MONITORING / SLO (v3.9.0) =====
+
+promtool-check: ## Validate Prometheus recording and alerting rules
+	@echo "${BLUE}Validating Prometheus rules...${RESET}"
+	@bash scripts/monitoring/promtool_check.sh
+	@echo "${GREEN}✓ All Prometheus rules valid${RESET}"

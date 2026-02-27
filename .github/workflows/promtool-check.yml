@@ -1,0 +1,70 @@
+# Prometheus rules validation workflow (v3.9.0)
+# Validates recording and alerting rules using promtool
+name: Promtool Check
+
+on:
+  push:
+    paths:
+      - 'monitoring/prometheus/**'
+      - 'scripts/monitoring/promtool_check.sh'
+      - '.github/workflows/promtool-check.yml'
+  pull_request:
+    paths:
+      - 'monitoring/prometheus/**'
+      - 'scripts/monitoring/promtool_check.sh'
+      - '.github/workflows/promtool-check.yml'
+  workflow_dispatch:
+
+jobs:
+  promtool-check:
+    name: Validate Prometheus Rules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install promtool
+        run: |
+          # Download and extract Prometheus (includes promtool)
+          PROMETHEUS_VERSION="2.48.0"
+          wget -q "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          tar xzf "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          sudo mv "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/
+          rm -rf "prometheus-${PROMETHEUS_VERSION}.linux-amd64" "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+
+      - name: Verify promtool installation
+        run: promtool --version
+
+      - name: Validate recording rules
+        run: |
+          echo "Validating SLO recording rules..."
+          promtool check rules monitoring/prometheus/slo_recording_rules.yml
+
+      - name: Validate alerting rules (if present)
+        run: |
+          if ls monitoring/prometheus/*_alerts.yml 1> /dev/null 2>&1; then
+            echo "Validating alerting rules..."
+            for file in monitoring/prometheus/*_alerts.yml; do
+              echo "Checking: $file"
+              promtool check rules "$file"
+            done
+          else
+            echo "No alerting rules files found (monitoring/prometheus/*_alerts.yml)"
+          fi
+
+      - name: Run full promtool check script
+        run: |
+          chmod +x scripts/monitoring/promtool_check.sh
+          ./scripts/monitoring/promtool_check.sh
+
+      - name: Summary
+        run: |
+          echo "## Prometheus Rules Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All Prometheus rules are valid!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files Validated:" >> $GITHUB_STEP_SUMMARY
+          for file in monitoring/prometheus/*.yml; do
+            echo "- \`$file\`" >> $GITHUB_STEP_SUMMARY
+          done
