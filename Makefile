@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend
+.PHONY: help build up down logs restart clean deploy-k8s delete-k8s status test test-contract smoke smoke-no-arb smoke-with-arb validate validate-list validate-pack capture-scenario test-frontend load-smoke load-baseline load-stress load-soak load-validation load-jobs load-all
 
 # Colors
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -232,3 +232,42 @@ guard-no-legacy: ## Check for legacy references in codebase
 	@echo "${BLUE}Checking for legacy references...${RESET}"
 	@python scripts/guards/check_no_legacy.py
 	@echo "${GREEN}✓ No legacy references found${RESET}"
+
+# ===== LOAD TESTS (v3.9.0) =====
+
+load-smoke: ## Run k6 smoke test (1 VU, 30s)
+	@echo "${BLUE}Running k6 smoke test...${RESET}"
+	@k6 run --env SCENARIO=smoke tests/load/sizing_load.js
+	@echo "${GREEN}✓ Smoke test complete${RESET}"
+
+load-baseline: ## Run k6 baseline test (5 VU, 2m)
+	@echo "${BLUE}Running k6 baseline test...${RESET}"
+	@k6 run --env SCENARIO=baseline tests/load/sizing_load.js
+	@echo "${GREEN}✓ Baseline test complete${RESET}"
+
+load-stress: ## Run k6 stress test (ramp to 20 VU, 5m)
+	@echo "${BLUE}Running k6 stress test...${RESET}"
+	@k6 run --env SCENARIO=stress tests/load/sizing_load.js
+	@echo "${GREEN}✓ Stress test complete${RESET}"
+
+load-soak: ## Run k6 soak test (10 VU, 30m)
+	@echo "${BLUE}Running k6 soak test...${RESET}"
+	@k6 run --env SCENARIO=soak tests/load/sizing_load.js
+	@echo "${GREEN}✓ Soak test complete${RESET}"
+
+load-validation: ## Run k6 validation endpoint load test
+	@echo "${BLUE}Running validation load test...${RESET}"
+	@k6 run --env SCENARIO=$(SCENARIO) tests/load/validation_load.js
+	@echo "${GREEN}✓ Validation load test complete${RESET}"
+
+load-jobs: ## Run k6 jobs endpoint load test
+	@echo "${BLUE}Running jobs load test...${RESET}"
+	@k6 run --env SCENARIO=$(SCENARIO) tests/load/jobs_load.js
+	@echo "${GREEN}✓ Jobs load test complete${RESET}"
+
+load-all: ## Run all k6 load tests (smoke scenario)
+	@echo "${BLUE}Running all load tests (smoke)...${RESET}"
+	@k6 run --env SCENARIO=smoke tests/load/sizing_load.js
+	@k6 run --env SCENARIO=smoke tests/load/validation_load.js
+	@k6 run --env SCENARIO=smoke tests/load/jobs_load.js
+	@echo "${GREEN}✓ All load tests complete${RESET}"
