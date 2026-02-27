@@ -563,7 +563,7 @@ def revoke_invite(
 # -------------------------------------------------------------------------
 
 class ShareResponse(BaseModel):
-    """Share response (excludes token)."""
+    """Share response (excludes token and password_hash)."""
     id: str
     tenant_id: str
     resource_type: str
@@ -574,6 +574,13 @@ class ShareResponse(BaseModel):
     created_by: str
     label: Optional[str] = None
     project_id: Optional[str] = None
+    # v3.8.0 fields
+    requires_password: bool = False
+    single_use: bool = False
+    max_access_count: Optional[int] = None
+    access_count: int = 0
+    last_access_at: Optional[str] = None
+    token_version: int = 1
 
 
 class ShareListResponse(BaseModel):
@@ -589,6 +596,11 @@ class ShareCreateRequest(BaseModel):
     label: Optional[str] = None
     expires_hours: Optional[int] = None  # None = never expires
     project_id: Optional[str] = None  # v3.7.0: optional project for policy enforcement
+    # v3.8.0 fields
+    requires_password: bool = False
+    password: Optional[str] = None  # Plaintext, only used during creation
+    single_use: bool = False
+    max_access_count: Optional[int] = None
 
 
 class ShareCreateResponse(BaseModel):
@@ -602,6 +614,12 @@ class ShareCreateResponse(BaseModel):
     created_by: str
     label: Optional[str] = None
     project_id: Optional[str] = None
+    # v3.8.0 fields
+    requires_password: bool = False
+    single_use: bool = False
+    max_access_count: Optional[int] = None
+    access_count: int = 0
+    token_version: int = 1
     token: str  # Plaintext token - shown only once!
 
 
@@ -639,6 +657,13 @@ def list_shares(
             created_by=share["created_by"],
             label=share["label"],
             project_id=share.get("project_id"),
+            # v3.8.0 fields
+            requires_password=share.get("requires_password", False),
+            single_use=share.get("single_use", False),
+            max_access_count=share.get("max_access_count"),
+            access_count=share.get("access_count", 0),
+            last_access_at=share.get("last_access_at"),
+            token_version=share.get("token_version", 1),
         )
         for share in shares
     ]
@@ -661,6 +686,12 @@ def create_share(
     - allow_public_shares must be True or request is rejected
     - share_max_expiry_hours caps the requested expires_hours
 
+    v3.8.0 additions:
+    - requires_password: If true, password must be provided for access
+    - password: Plaintext password (min 10 chars) - stored hashed
+    - single_use: If true, share is auto-revoked after first access
+    - max_access_count: Maximum number of times share can be accessed
+
     Requires admin role.
     """
     # Validate resource_type
@@ -678,6 +709,14 @@ def create_share(
                 detail={"error_code": "INVALID_EXPIRY", "message": "expires_hours must be between 1 and 8760"},
             )
 
+    # Validate max_access_count if provided (v3.8.0)
+    if request.max_access_count is not None:
+        if request.max_access_count < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "INVALID_MAX_ACCESS_COUNT", "message": "max_access_count must be at least 1"},
+            )
+
     auth_store = get_auth_store()
 
     try:
@@ -689,6 +728,11 @@ def create_share(
             label=request.label,
             expires_hours=request.expires_hours,
             project_id=request.project_id,
+            # v3.8.0 parameters
+            requires_password=request.requires_password,
+            password=request.password,
+            single_use=request.single_use,
+            max_access_count=request.max_access_count,
         )
     except ValueError as e:
         error_msg = str(e)
@@ -712,6 +756,17 @@ def create_share(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error_code": "PUBLIC_SHARES_DISABLED", "message": "Project does not allow public shares"},
             )
+        # v3.8.0: Handle password validation errors
+        if "SHARE_PASSWORD_REQUIRED" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "SHARE_PASSWORD_REQUIRED", "message": "Password is required when requires_password is True"},
+            )
+        if "SHARE_PASSWORD_TOO_WEAK" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "SHARE_PASSWORD_TOO_WEAK", "message": "Password must be at least 10 characters"},
+            )
         raise
 
     # Log audit event for share creation
@@ -730,6 +785,10 @@ def create_share(
             "project_id": request.project_id,
             "expires_at": share["expires_at"],
             "label": request.label,
+            # v3.8.0 fields
+            "requires_password": request.requires_password,
+            "single_use": request.single_use,
+            "max_access_count": request.max_access_count,
         },
     )
 
@@ -743,6 +802,12 @@ def create_share(
         created_by=share["created_by"],
         label=share["label"],
         project_id=share.get("project_id"),
+        # v3.8.0 fields
+        requires_password=share.get("requires_password", False),
+        single_use=share.get("single_use", False),
+        max_access_count=share.get("max_access_count"),
+        access_count=share.get("access_count", 0),
+        token_version=share.get("token_version", 1),
         token=share["token"],
     )
 
@@ -791,3 +856,181 @@ def revoke_share(
     )
 
     return None
+
+
+# -------------------------------------------------------------------------
+# Share Token Rotation and Revoke-All (v3.8.0)
+# -------------------------------------------------------------------------
+
+
+class ShareRotateResponse(BaseModel):
+    """Response after rotating share token (v3.8.0)."""
+    id: str
+    tenant_id: str
+    resource_type: str
+    resource_id: str
+    token_version: int
+    token: str  # New plaintext token - shown only once!
+
+
+class RevokeAllSharesResponse(BaseModel):
+    """Response after revoking all shares (v3.8.0)."""
+    revoked_count: int
+
+
+@router.post("/shares/{share_id}/rotate", response_model=ShareRotateResponse)
+def rotate_share_token(
+    share_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Rotate a share token (v3.8.0).
+
+    Generates a new token for an existing share, incrementing token_version.
+    Old tokens become invalid immediately.
+
+    IMPORTANT: The new share token is returned ONLY in this response.
+    Store it securely - it cannot be retrieved later.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+
+    # Get share details before rotation for audit log
+    share_before = auth_store.get_share_by_id(share_id, auth.tenant_id)
+
+    result = auth_store.rotate_share_token(share_id, auth.tenant_id)
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "SHARE_NOT_FOUND", "message": "Share not found or already revoked"},
+        )
+
+    # Log audit event for token rotation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="share_token_rotated",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="share",
+        resource_id=share_id,
+        details={
+            "shared_resource_type": result["resource_type"],
+            "shared_resource_id": result["resource_id"],
+            "old_token_version": share_before.get("token_version", 1) if share_before else 1,
+            "new_token_version": result["token_version"],
+            "project_id": share_before.get("project_id") if share_before else None,
+        },
+    )
+
+    return ShareRotateResponse(
+        id=result["id"],
+        tenant_id=result["tenant_id"],
+        resource_type=result["resource_type"],
+        resource_id=result["resource_id"],
+        token_version=result["token_version"],
+        token=result["token"],
+    )
+
+
+@router.post("/projects/{project_id}/shares/revoke-all", response_model=RevokeAllSharesResponse)
+def revoke_all_project_shares(
+    project_id: str,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke all active shares for a project (v3.8.0).
+
+    All active (non-revoked) shares associated with the project will be revoked.
+    This is useful for security incidents or when decommissioning a project.
+
+    Requires admin role.
+    """
+    auth_store = get_auth_store()
+
+    # Verify project exists and user has access
+    project = auth_store.get_project(project_id, auth.tenant_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "PROJECT_NOT_FOUND", "message": "Project not found"},
+        )
+
+    # Count active shares before revocation for audit
+    count_before = auth_store.count_active_shares_for_project(project_id, auth.tenant_id)
+
+    # Revoke all shares
+    revoked_count = auth_store.revoke_all_shares_for_project(project_id, auth.tenant_id)
+
+    # Log audit event for bulk revocation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="shares_revoked_all",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type="project",
+        resource_id=project_id,
+        details={
+            "project_name": project["name"],
+            "shares_revoked": revoked_count,
+            "active_shares_before": count_before,
+        },
+    )
+
+    return RevokeAllSharesResponse(revoked_count=revoked_count)
+
+
+class RevokeSharesForResourceRequest(BaseModel):
+    """Request to revoke all shares for a resource (v3.8.0)."""
+    resource_type: str  # "run" or "report"
+    resource_id: str
+
+
+@router.post("/shares/revoke-all", response_model=RevokeAllSharesResponse)
+def revoke_all_resource_shares(
+    request: RevokeSharesForResourceRequest,
+    auth: AuthContext = Depends(require_role(Role.ADMIN)),
+):
+    """
+    Revoke all active shares for a specific resource (v3.8.0).
+
+    All active (non-revoked) shares for the given resource will be revoked.
+
+    Requires admin role.
+    """
+    # Validate resource_type
+    if request.resource_type not in ("run", "report"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_RESOURCE_TYPE", "message": "resource_type must be 'run' or 'report'"},
+        )
+
+    auth_store = get_auth_store()
+
+    revoked_count = auth_store.revoke_all_shares_for_resource(
+        resource_type=request.resource_type,
+        resource_id=request.resource_id,
+        tenant_id=auth.tenant_id,
+    )
+
+    # Log audit event for bulk revocation
+    log_audit(
+        tenant_id=auth.tenant_id,
+        action="shares_revoked_for_resource",
+        actor_id=auth.user_id,
+        actor_email=auth.email,
+        actor_role=auth.role.value if auth.role else None,
+        auth_method=auth.auth_method,
+        resource_type=request.resource_type,
+        resource_id=request.resource_id,
+        details={
+            "shares_revoked": revoked_count,
+        },
+    )
+
+    return RevokeAllSharesResponse(revoked_count=revoked_count)
