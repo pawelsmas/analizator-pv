@@ -563,7 +563,7 @@ def revoke_invite(
 # -------------------------------------------------------------------------
 
 class ShareResponse(BaseModel):
-    """Share response (excludes token)."""
+    """Share response (excludes token and password_hash)."""
     id: str
     tenant_id: str
     resource_type: str
@@ -574,6 +574,13 @@ class ShareResponse(BaseModel):
     created_by: str
     label: Optional[str] = None
     project_id: Optional[str] = None
+    # v3.8.0 fields
+    requires_password: bool = False
+    single_use: bool = False
+    max_access_count: Optional[int] = None
+    access_count: int = 0
+    last_access_at: Optional[str] = None
+    token_version: int = 1
 
 
 class ShareListResponse(BaseModel):
@@ -589,6 +596,11 @@ class ShareCreateRequest(BaseModel):
     label: Optional[str] = None
     expires_hours: Optional[int] = None  # None = never expires
     project_id: Optional[str] = None  # v3.7.0: optional project for policy enforcement
+    # v3.8.0 fields
+    requires_password: bool = False
+    password: Optional[str] = None  # Plaintext, only used during creation
+    single_use: bool = False
+    max_access_count: Optional[int] = None
 
 
 class ShareCreateResponse(BaseModel):
@@ -602,6 +614,12 @@ class ShareCreateResponse(BaseModel):
     created_by: str
     label: Optional[str] = None
     project_id: Optional[str] = None
+    # v3.8.0 fields
+    requires_password: bool = False
+    single_use: bool = False
+    max_access_count: Optional[int] = None
+    access_count: int = 0
+    token_version: int = 1
     token: str  # Plaintext token - shown only once!
 
 
@@ -639,6 +657,13 @@ def list_shares(
             created_by=share["created_by"],
             label=share["label"],
             project_id=share.get("project_id"),
+            # v3.8.0 fields
+            requires_password=share.get("requires_password", False),
+            single_use=share.get("single_use", False),
+            max_access_count=share.get("max_access_count"),
+            access_count=share.get("access_count", 0),
+            last_access_at=share.get("last_access_at"),
+            token_version=share.get("token_version", 1),
         )
         for share in shares
     ]
@@ -661,6 +686,12 @@ def create_share(
     - allow_public_shares must be True or request is rejected
     - share_max_expiry_hours caps the requested expires_hours
 
+    v3.8.0 additions:
+    - requires_password: If true, password must be provided for access
+    - password: Plaintext password (min 10 chars) - stored hashed
+    - single_use: If true, share is auto-revoked after first access
+    - max_access_count: Maximum number of times share can be accessed
+
     Requires admin role.
     """
     # Validate resource_type
@@ -678,6 +709,14 @@ def create_share(
                 detail={"error_code": "INVALID_EXPIRY", "message": "expires_hours must be between 1 and 8760"},
             )
 
+    # Validate max_access_count if provided (v3.8.0)
+    if request.max_access_count is not None:
+        if request.max_access_count < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "INVALID_MAX_ACCESS_COUNT", "message": "max_access_count must be at least 1"},
+            )
+
     auth_store = get_auth_store()
 
     try:
@@ -689,6 +728,11 @@ def create_share(
             label=request.label,
             expires_hours=request.expires_hours,
             project_id=request.project_id,
+            # v3.8.0 parameters
+            requires_password=request.requires_password,
+            password=request.password,
+            single_use=request.single_use,
+            max_access_count=request.max_access_count,
         )
     except ValueError as e:
         error_msg = str(e)
@@ -712,6 +756,17 @@ def create_share(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={"error_code": "PUBLIC_SHARES_DISABLED", "message": "Project does not allow public shares"},
             )
+        # v3.8.0: Handle password validation errors
+        if "SHARE_PASSWORD_REQUIRED" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "SHARE_PASSWORD_REQUIRED", "message": "Password is required when requires_password is True"},
+            )
+        if "SHARE_PASSWORD_TOO_WEAK" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "SHARE_PASSWORD_TOO_WEAK", "message": "Password must be at least 10 characters"},
+            )
         raise
 
     # Log audit event for share creation
@@ -730,6 +785,10 @@ def create_share(
             "project_id": request.project_id,
             "expires_at": share["expires_at"],
             "label": request.label,
+            # v3.8.0 fields
+            "requires_password": request.requires_password,
+            "single_use": request.single_use,
+            "max_access_count": request.max_access_count,
         },
     )
 
@@ -743,6 +802,12 @@ def create_share(
         created_by=share["created_by"],
         label=share["label"],
         project_id=share.get("project_id"),
+        # v3.8.0 fields
+        requires_password=share.get("requires_password", False),
+        single_use=share.get("single_use", False),
+        max_access_count=share.get("max_access_count"),
+        access_count=share.get("access_count", 0),
+        token_version=share.get("token_version", 1),
         token=share["token"],
     )
 

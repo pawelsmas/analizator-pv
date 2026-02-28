@@ -1,12 +1,13 @@
 """
-Auth store - SQLite-backed storage for users, tenants, API keys, invites, shares, projects (v3.7.0).
+Auth store - SQLite-backed storage for users, tenants, API keys, invites, shares, projects (v3.8.0).
 
 Tables:
 - tenants(id, name, created_at)
 - users(id, tenant_id, email, password_hash, role, created_at, disabled)
 - api_keys(id, tenant_id, label, key_hash, role, created_at, revoked_at)
 - invites(id, tenant_id, email, role, token_hash, created_at, expires_at, accepted_at, revoked_at, created_by)
-- shares(id, tenant_id, project_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label)
+- shares(id, tenant_id, project_id, resource_type, resource_id, token_hash, created_at, expires_at, revoked_at, created_by, label,
+         requires_password, password_hash, single_use, max_access_count, access_count, last_access_at, token_version)  # v3.8.0
 - projects(id, tenant_id, name, created_at, archived_at, created_by_user_id, allow_public_shares, share_max_expiry_hours)
 - project_memberships(id, tenant_id, project_id, user_id, role, created_at)
 """
@@ -91,11 +92,32 @@ def generate_invite_token() -> str:
 # Share token pepper (separate from invite and API key for isolation)
 SHARE_TOKEN_PEPPER = "bess_share_v1"
 
+# Minimum share password length (v3.8.0)
+MIN_SHARE_PASSWORD_LENGTH = 10
+
 
 def hash_share_token(token: str) -> str:
     """Hash a share token using SHA-256 with pepper."""
     salted = f"{SHARE_TOKEN_PEPPER}:{token}"
     return hashlib.sha256(salted.encode()).hexdigest()
+
+
+def hash_share_password(password: str) -> str:
+    """Hash a share password using bcrypt (v3.8.0)."""
+    password_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    return hashed.decode("utf-8")
+
+
+def verify_share_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a share password against its hash (v3.8.0)."""
+    try:
+        password_bytes = plain_password.encode("utf-8")[:72]
+        hashed_bytes = hashed_password.encode("utf-8")
+        return bcrypt.checkpw(password_bytes, hashed_bytes)
+    except Exception:
+        return False
 
 
 def generate_share_token() -> str:
@@ -198,7 +220,7 @@ class AuthStore:
                 CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(email)
             """)
 
-            # Shares table
+            # Shares table (v3.8.0: added password/single_use/max_access/access_count/token_version)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS shares (
                     id TEXT PRIMARY KEY,
@@ -211,6 +233,13 @@ class AuthStore:
                     revoked_at TEXT,
                     created_by TEXT NOT NULL,
                     label TEXT,
+                    requires_password INTEGER NOT NULL DEFAULT 0,
+                    password_hash TEXT,
+                    single_use INTEGER NOT NULL DEFAULT 0,
+                    max_access_count INTEGER,
+                    access_count INTEGER NOT NULL DEFAULT 0,
+                    last_access_at TEXT,
+                    token_version INTEGER NOT NULL DEFAULT 1,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id),
                     FOREIGN KEY (created_by) REFERENCES users(id)
                 )
@@ -278,6 +307,7 @@ class AuthStore:
 
         # Run migrations for existing databases
         self._migrate_shares_project_id()
+        self._migrate_shares_v2()
 
     def _migrate_shares_project_id(self) -> None:
         """Add project_id column to shares table if not exists (v3.7.0)."""
@@ -290,6 +320,34 @@ class AuthStore:
             if "project_id" not in existing_columns:
                 cursor.execute("ALTER TABLE shares ADD COLUMN project_id TEXT")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_shares_project ON shares(project_id)")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _migrate_shares_v2(self) -> None:
+        """Add v3.8.0 share columns if not exists (password/single_use/max_access/etc)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(shares)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+
+            # Add new v3.8.0 columns
+            if "requires_password" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN requires_password INTEGER NOT NULL DEFAULT 0")
+            if "password_hash" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN password_hash TEXT")
+            if "single_use" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN single_use INTEGER NOT NULL DEFAULT 0")
+            if "max_access_count" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN max_access_count INTEGER")
+            if "access_count" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0")
+            if "last_access_at" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN last_access_at TEXT")
+            if "token_version" not in existing_columns:
+                cursor.execute("ALTER TABLE shares ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
+
             conn.commit()
         finally:
             conn.close()
@@ -859,6 +917,10 @@ class AuthStore:
         label: Optional[str] = None,
         expires_hours: Optional[int] = None,
         project_id: Optional[str] = None,
+        requires_password: bool = False,
+        password: Optional[str] = None,
+        single_use: bool = False,
+        max_access_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Create a new share link. Returns dict with plaintext token (shown once).
@@ -866,6 +928,12 @@ class AuthStore:
         If project_id is provided, share policies from the project are enforced:
         - allow_public_shares: if False, raises ValueError
         - share_max_expiry_hours: if set, caps expires_hours (or sets if not provided)
+
+        v3.8.0 additions:
+        - requires_password: if True, password must be provided on access
+        - password: plaintext password (hashed before storage)
+        - single_use: if True, share is auto-revoked after first access
+        - max_access_count: maximum number of times share can be accessed
 
         Args:
             tenant_id: Tenant identifier
@@ -875,13 +943,24 @@ class AuthStore:
             label: Optional label for the share
             expires_hours: Optional expiry in hours
             project_id: Optional project ID for policy enforcement
+            requires_password: Whether share requires password (v3.8.0)
+            password: Plaintext password for the share (v3.8.0)
+            single_use: Whether share is single-use (v3.8.0)
+            max_access_count: Maximum access count (v3.8.0)
 
         Returns:
             Share dict with plaintext token
 
         Raises:
-            ValueError: If project policies prohibit the share
+            ValueError: If project policies prohibit the share or password requirements not met
         """
+        # Validate password requirements (v3.8.0)
+        if requires_password:
+            if not password:
+                raise ValueError("SHARE_PASSWORD_REQUIRED: Password is required when requires_password is True")
+            if len(password) < MIN_SHARE_PASSWORD_LENGTH:
+                raise ValueError(f"SHARE_PASSWORD_TOO_WEAK: Password must be at least {MIN_SHARE_PASSWORD_LENGTH} characters")
+
         # Enforce project share policies if project_id provided
         effective_expires_hours = expires_hours
         if project_id:
@@ -909,12 +988,22 @@ class AuthStore:
         plaintext_token = generate_share_token()
         token_hash = hash_share_token(plaintext_token)
 
+        # Hash password if provided (v3.8.0)
+        password_hash_value = None
+        if requires_password and password:
+            password_hash_value = hash_share_password(password)
+
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO shares (id, tenant_id, resource_type, resource_id, token_hash, created_at, expires_at, created_by, label, project_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO shares (
+                    id, tenant_id, resource_type, resource_id, token_hash,
+                    created_at, expires_at, created_by, label, project_id,
+                    requires_password, password_hash, single_use, max_access_count,
+                    access_count, token_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 share_id,
                 tenant_id,
@@ -926,6 +1015,12 @@ class AuthStore:
                 created_by,
                 label,
                 project_id,
+                1 if requires_password else 0,
+                password_hash_value,
+                1 if single_use else 0,
+                max_access_count,
+                0,  # access_count starts at 0
+                1,  # token_version starts at 1
             ))
             conn.commit()
             return {
@@ -938,6 +1033,11 @@ class AuthStore:
                 "created_by": created_by,
                 "label": label,
                 "project_id": project_id,
+                "requires_password": requires_password,
+                "single_use": single_use,
+                "max_access_count": max_access_count,
+                "access_count": 0,
+                "token_version": 1,
                 "token": plaintext_token,  # Shown once!
             }
         finally:
@@ -955,7 +1055,10 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             query = """
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at,
+                       revoked_at, created_by, label, project_id,
+                       requires_password, single_use, max_access_count, access_count,
+                       last_access_at, token_version
                 FROM shares WHERE tenant_id = ?
             """
             params = [tenant_id]
@@ -983,6 +1086,12 @@ class AuthStore:
                     "created_by": row[7],
                     "label": row[8],
                     "project_id": row[9],
+                    "requires_password": bool(row[10]),
+                    "single_use": bool(row[11]),
+                    "max_access_count": row[12],
+                    "access_count": row[13] or 0,
+                    "last_access_at": row[14],
+                    "token_version": row[15] or 1,
                 }
                 for row in cursor.fetchall()
             ]
@@ -995,7 +1104,10 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at,
+                       revoked_at, created_by, label, project_id,
+                       requires_password, single_use, max_access_count, access_count,
+                       last_access_at, token_version
                 FROM shares WHERE id = ? AND tenant_id = ?
             """, (share_id, tenant_id))
             row = cursor.fetchone()
@@ -1012,6 +1124,12 @@ class AuthStore:
                 "created_by": row[7],
                 "label": row[8],
                 "project_id": row[9],
+                "requires_password": bool(row[10]),
+                "single_use": bool(row[11]),
+                "max_access_count": row[12],
+                "access_count": row[13] or 0,
+                "last_access_at": row[14],
+                "token_version": row[15] or 1,
             }
         finally:
             conn.close()
@@ -1023,7 +1141,10 @@ class AuthStore:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at, revoked_at, created_by, label, project_id
+                SELECT id, tenant_id, resource_type, resource_id, created_at, expires_at,
+                       revoked_at, created_by, label, project_id,
+                       requires_password, password_hash, single_use, max_access_count,
+                       access_count, last_access_at, token_version
                 FROM shares WHERE token_hash = ? AND revoked_at IS NULL
             """, (token_hash,))
             row = cursor.fetchone()
@@ -1040,6 +1161,13 @@ class AuthStore:
                 "created_by": row[7],
                 "label": row[8],
                 "project_id": row[9],
+                "requires_password": bool(row[10]),
+                "password_hash": row[11],  # Needed for password verification
+                "single_use": bool(row[12]),
+                "max_access_count": row[13],
+                "access_count": row[14] or 0,
+                "last_access_at": row[15],
+                "token_version": row[16] or 1,
             }
         finally:
             conn.close()
@@ -1073,6 +1201,127 @@ class AuthStore:
         if self.is_share_expired(share):
             return None
         return share
+
+    def record_share_access(self, share_id: str) -> Dict[str, Any]:
+        """
+        Record a share access (v3.8.0).
+
+        Increments access_count and updates last_access_at.
+        If single_use is True, also revokes the share after recording.
+
+        Args:
+            share_id: Share identifier
+
+        Returns:
+            Dict with updated access_count and whether share was auto-revoked
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            # Increment access count and update last_access_at
+            cursor.execute("""
+                UPDATE shares
+                SET access_count = access_count + 1, last_access_at = ?
+                WHERE id = ?
+            """, (now, share_id))
+            conn.commit()
+
+            # Check if single_use and auto-revoke
+            cursor.execute("""
+                SELECT access_count, single_use FROM shares WHERE id = ?
+            """, (share_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return {"access_count": 0, "auto_revoked": False}
+
+            access_count, single_use = row
+            auto_revoked = False
+
+            if single_use:
+                # Auto-revoke single-use shares after access
+                cursor.execute("""
+                    UPDATE shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL
+                """, (now, share_id))
+                conn.commit()
+                auto_revoked = cursor.rowcount > 0
+
+            return {
+                "access_count": access_count,
+                "auto_revoked": auto_revoked,
+            }
+        finally:
+            conn.close()
+
+    def is_share_max_access_exceeded(self, share: Dict[str, Any]) -> bool:
+        """
+        Check if share has exceeded max_access_count (v3.8.0).
+
+        Args:
+            share: Share dict
+
+        Returns:
+            True if max_access_count is set and access_count >= max_access_count
+        """
+        max_count = share.get("max_access_count")
+        if max_count is None:
+            return False
+        return share.get("access_count", 0) >= max_count
+
+    def verify_share_access(
+        self,
+        token: str,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Verify share access with full v3.8.0 enforcement (v3.8.0).
+
+        Checks:
+        1. Token validity (exists, not revoked)
+        2. Expiry
+        3. Max access count
+        4. Password (if required)
+
+        Does NOT increment access_count - caller should call record_share_access after successful access.
+
+        Args:
+            token: Share token
+            password: Optional password if share requires it
+
+        Returns:
+            Dict with:
+                - valid: bool
+                - error_code: Optional[str] - e.g. SHARE_NOT_FOUND, SHARE_EXPIRED, SHARE_MAX_ACCESS_EXCEEDED,
+                              SHARE_PASSWORD_REQUIRED, SHARE_PASSWORD_INVALID, SHARE_ALREADY_USED
+                - share: Optional[Dict] - share data if valid
+        """
+        share = self.get_share_by_token(token)
+
+        # Check token exists and not revoked
+        if share is None:
+            return {"valid": False, "error_code": "SHARE_NOT_FOUND", "share": None}
+
+        # Check expiry
+        if self.is_share_expired(share):
+            return {"valid": False, "error_code": "SHARE_EXPIRED", "share": None}
+
+        # Check single-use already used (revoked_at would be set)
+        if share.get("single_use") and share.get("access_count", 0) > 0:
+            return {"valid": False, "error_code": "SHARE_ALREADY_USED", "share": None}
+
+        # Check max access count
+        if self.is_share_max_access_exceeded(share):
+            return {"valid": False, "error_code": "SHARE_MAX_ACCESS_EXCEEDED", "share": None}
+
+        # Check password
+        if share.get("requires_password"):
+            if not password:
+                return {"valid": False, "error_code": "SHARE_PASSWORD_REQUIRED", "share": None}
+            if not verify_share_password(password, share.get("password_hash", "")):
+                return {"valid": False, "error_code": "SHARE_PASSWORD_INVALID", "share": None}
+
+        return {"valid": True, "error_code": None, "share": share}
 
     # -------------------------------------------------------------------------
     # Project operations (v3.7.0)
