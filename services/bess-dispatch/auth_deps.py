@@ -108,7 +108,9 @@ def require_role(min_role: Role):
         Dependency function
     """
     def role_checker(auth: AuthContext = Depends(get_auth_context)) -> AuthContext:
-        if not auth.role.has_permission(min_role):
+        # Handle role as either enum or string (due to use_enum_values=True in AuthContext)
+        role = auth.role if isinstance(auth.role, Role) else Role(auth.role)
+        if not role.has_permission(min_role):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
