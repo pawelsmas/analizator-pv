@@ -1,0 +1,231 @@
+name: HA E2E Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'services/bess-dispatch/**'
+      - '.github/workflows/ha-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'services/bess-dispatch/**'
+      - '.github/workflows/ha-e2e.yml'
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug mode'
+        required: false
+        default: 'false'
+
+jobs:
+  ha-e2e:
+    name: HA E2E (2x API/Worker + PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          config: deploy/kind/kind-ha-config.yaml
+          cluster_name: pv-portal-ha
+          wait: 120s
+
+      - name: Create local registry
+        run: |
+          docker run -d --restart=always -p 5000:5000 --name kind-registry registry:2
+          docker network connect kind kind-registry || true
+
+      - name: Build and push API image
+        run: |
+          docker build -t localhost:5000/pv-portal-api:test \
+            -f services/bess-dispatch/Dockerfile \
+            services/bess-dispatch
+          docker push localhost:5000/pv-portal-api:test
+
+      - name: Build and push Worker image
+        run: |
+          docker build -t localhost:5000/pv-portal-worker:test \
+            -f services/bess-dispatch/Dockerfile.worker \
+            services/bess-dispatch
+          docker push localhost:5000/pv-portal-worker:test
+
+      - name: Install NGINX Ingress Controller
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=90s
+
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+      - name: Install pv-portal Helm chart
+        run: |
+          helm install pv-portal ./deploy/helm/pv-portal \
+            -f deploy/kind/ha-test-values.yaml \
+            --wait --timeout 5m
+
+      - name: Verify HA deployment
+        run: |
+          echo "=== Checking pod status ==="
+          kubectl get pods -o wide
+
+          echo "=== Checking deployments ==="
+          kubectl get deployments
+
+          echo "=== Verifying API replicas ==="
+          API_REPLICAS=$(kubectl get deployment pv-portal-api -o jsonpath='{.status.readyReplicas}')
+          if [ "$API_REPLICAS" != "2" ]; then
+            echo "ERROR: Expected 2 API replicas, got $API_REPLICAS"
+            kubectl describe deployment pv-portal-api
+            kubectl logs -l app.kubernetes.io/component=api --tail=50
+            exit 1
+          fi
+          echo "OK: $API_REPLICAS API replicas running"
+
+          echo "=== Verifying Worker replicas ==="
+          WORKER_REPLICAS=$(kubectl get deployment pv-portal-worker -o jsonpath='{.status.readyReplicas}')
+          if [ "$WORKER_REPLICAS" != "2" ]; then
+            echo "ERROR: Expected 2 Worker replicas, got $WORKER_REPLICAS"
+            kubectl describe deployment pv-portal-worker
+            kubectl logs -l app.kubernetes.io/component=worker --tail=50
+            exit 1
+          fi
+          echo "OK: $WORKER_REPLICAS Worker replicas running"
+
+      - name: Verify PDB configuration
+        run: |
+          echo "=== Checking PDB status ==="
+          kubectl get pdb
+
+          echo "=== Verifying API PDB ==="
+          API_PDB=$(kubectl get pdb pv-portal-api -o jsonpath='{.status.currentHealthy}')
+          if [ "$API_PDB" -lt "1" ]; then
+            echo "ERROR: API PDB shows unhealthy pods"
+            kubectl describe pdb pv-portal-api
+            exit 1
+          fi
+          echo "OK: API PDB healthy"
+
+          echo "=== Verifying Worker PDB ==="
+          WORKER_PDB=$(kubectl get pdb pv-portal-worker -o jsonpath='{.status.currentHealthy}')
+          if [ "$WORKER_PDB" -lt "1" ]; then
+            echo "ERROR: Worker PDB shows unhealthy pods"
+            kubectl describe pdb pv-portal-worker
+            exit 1
+          fi
+          echo "OK: Worker PDB healthy"
+
+      - name: Verify zone distribution
+        run: |
+          echo "=== Checking pod zone distribution ==="
+          kubectl get pods -o wide | grep -E "(NAME|pv-portal)"
+
+          echo "=== Checking node zones ==="
+          kubectl get nodes -L topology.kubernetes.io/zone
+
+          echo "=== Pod distribution by zone ==="
+          kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.nodeName}{"\n"}{end}' | \
+            while read pod node; do
+              zone=$(kubectl get node $node -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null || echo "unknown")
+              echo "$pod -> $node -> $zone"
+            done
+
+      - name: Test API health endpoints
+        run: |
+          # Port-forward to API
+          kubectl port-forward svc/pv-portal-api 8080:80 &
+          sleep 5
+
+          echo "=== Testing /health/live ==="
+          curl -sf http://localhost:8080/health/live || exit 1
+          echo "OK"
+
+          echo "=== Testing /health/ready ==="
+          curl -sf http://localhost:8080/health/ready || exit 1
+          echo "OK"
+
+      - name: Test HA failover scenario
+        run: |
+          echo "=== Testing HA failover ==="
+
+          # Get one API pod name
+          API_POD=$(kubectl get pods -l app.kubernetes.io/component=api -o jsonpath='{.items[0].metadata.name}')
+          echo "Deleting pod: $API_POD"
+
+          # Delete one pod
+          kubectl delete pod $API_POD --wait=false
+
+          # Wait for replacement
+          echo "Waiting for replacement pod..."
+          sleep 10
+
+          # Verify still 2 replicas
+          kubectl wait --for=condition=available deployment/pv-portal-api --timeout=60s
+
+          NEW_COUNT=$(kubectl get deployment pv-portal-api -o jsonpath='{.status.readyReplicas}')
+          if [ "$NEW_COUNT" != "2" ]; then
+            echo "ERROR: Failover failed, only $NEW_COUNT replicas"
+            exit 1
+          fi
+          echo "OK: Failover successful, $NEW_COUNT replicas running"
+
+      - name: Test database connectivity
+        run: |
+          echo "=== Testing PostgreSQL connectivity ==="
+          kubectl exec -it $(kubectl get pods -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}') -- \
+            psql -U pvportal -d pvportal -c "SELECT 1;"
+          echo "OK"
+
+      - name: Test Redis connectivity
+        run: |
+          echo "=== Testing Redis connectivity ==="
+          kubectl exec -it $(kubectl get pods -l app.kubernetes.io/name=redis -o jsonpath='{.items[0].metadata.name}') -- \
+            redis-cli PING
+          echo "OK"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Collecting debug information ==="
+
+          echo "--- Pod status ---"
+          kubectl get pods -o wide
+
+          echo "--- Events ---"
+          kubectl get events --sort-by='.lastTimestamp'
+
+          echo "--- API logs ---"
+          kubectl logs -l app.kubernetes.io/component=api --tail=100 || true
+
+          echo "--- Worker logs ---"
+          kubectl logs -l app.kubernetes.io/component=worker --tail=100 || true
+
+          echo "--- PostgreSQL logs ---"
+          kubectl logs -l app.kubernetes.io/name=postgresql --tail=50 || true
+
+          echo "--- Redis logs ---"
+          kubectl logs -l app.kubernetes.io/name=redis --tail=50 || true
+
+          echo "--- Describe deployments ---"
+          kubectl describe deployments || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          helm uninstall pv-portal || true
+          kind delete cluster --name pv-portal-ha || true
+          docker stop kind-registry || true
+          docker rm kind-registry || true
