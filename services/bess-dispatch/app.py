@@ -419,6 +419,25 @@ async def health_check():
     )
 
 
+# Database health (v3.3.0)
+from db_config import check_db_connection
+
+
+class DBHealthResponse(BaseModel):
+    """Database health check response."""
+    ok: bool
+    db_backend: str
+    latency_ms: int
+    error: Optional[str] = None
+
+
+@app.get("/health/db", response_model=DBHealthResponse)
+async def health_db():
+    """Database connectivity health check (v3.3.0)."""
+    result = check_db_connection()
+    return DBHealthResponse(**result)
+
+
 @app.get("/metrics")
 def metrics_root():
     """Prometheus metrics endpoint"""
