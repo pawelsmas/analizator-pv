@@ -3009,16 +3009,46 @@ async def analyze(request: AnalysisRequest):
                     )
 
                     if bess_dispatch_result and bess_dispatch_result.get('variants'):
-                        # Use recommended variant from bess-dispatch
-                        best_bess_variant = bess_dispatch_result['variants'][0]  # First is recommended
+                        # BUG FIX v7.1: Use recommended_power_kw/recommended_energy_kwh
+                        # from bess-dispatch instead of variants[0] which is just the first
+                        # tested variant, NOT the optimal one.
+                        rec_power = bess_dispatch_result.get('recommended_power_kw', 0)
+                        rec_energy = bess_dispatch_result.get('recommended_energy_kwh', 0)
+                        rec_variant_name = bess_dispatch_result.get('recommended_variant')
+
+                        # Find the recommended variant in the variants list
+                        best_bess_variant = None
+                        if rec_variant_name:
+                            for v in bess_dispatch_result['variants']:
+                                if v.get('variant') == rec_variant_name:
+                                    best_bess_variant = v
+                                    break
+                        # Fallback: find variant closest to recommended sizing
+                        if not best_bess_variant and rec_power > 0:
+                            best_match = None
+                            best_dist = float('inf')
+                            for v in bess_dispatch_result['variants']:
+                                dist = abs(v['power_kw'] - rec_power) + abs(v['energy_kwh'] - rec_energy)
+                                if dist < best_dist:
+                                    best_dist = dist
+                                    best_match = v
+                            best_bess_variant = best_match
+                        # Final fallback: first variant
+                        if not best_bess_variant:
+                            best_bess_variant = bess_dispatch_result['variants'][0]
+
+                        bess_power = best_bess_variant['power_kw']
+                        bess_energy = best_bess_variant['energy_kwh']
+                        print(f"   🎯 Recommended by bess-dispatch: {rec_power:.0f} kW / {rec_energy:.0f} kWh ({rec_variant_name})")
+                        print(f"   ✅ Using variant: {bess_power:.0f} kW / {bess_energy:.0f} kWh")
 
                         # Re-simulate with bess-dispatch optimized sizing
                         variant_scenario = simulate_pv_system_with_bess(
                             capacity=variant_scenario.capacity,
                             pv_profile=pv_profile,
                             consumption=consumption,
-                            bess_power_kw=best_bess_variant['power_kw'],
-                            bess_energy_kwh=best_bess_variant['energy_kwh'],
+                            bess_power_kw=bess_power,
+                            bess_energy_kwh=bess_energy,
                             dc_ac_ratio=variant_scenario.dcac_ratio,
                             roundtrip_efficiency=bess_config.roundtrip_efficiency,
                             soc_min=bess_config.soc_min,
@@ -3028,7 +3058,6 @@ async def analyze(request: AnalysisRequest):
 
                         # Store bess-dispatch result for savings_breakdown
                         variant_scenario._bess_dispatch_result = bess_dispatch_result
-                        print(f"   ✅ bess-dispatch: {best_bess_variant['power_kw']:.0f} kW / {best_bess_variant['energy_kwh']:.0f} kWh")
                         if best_bess_variant.get('savings_breakdown'):
                             sb = best_bess_variant['savings_breakdown']
                             print(f"   💰 Savings: {sb.get('net_savings_pln', 0):.0f} PLN/year")

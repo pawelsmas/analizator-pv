@@ -50,6 +50,8 @@ from models import (
     DebugEvents,
     # v2.2.0 Battery Trace
     BatteryTraceTimeseries,
+    # v7.0.0 LP Solver
+    LPSolverParams,
 )
 from debug_events_helper import compute_debug_events
 from battery_trace_helper import create_battery_trace_from_dispatch_result
@@ -2041,61 +2043,51 @@ def run_dispatch(
                 f"import_prices length ({len(import_prices)}) must match load_kw length ({len(load)})"
             )
 
-    if request.mode == DispatchMode.PV_SURPLUS:
-        result = dispatch_pv_surplus(
-            pv, load, request.battery, dt_hours, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
+    # === LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy) ===
+    from lp_dispatch import dispatch_lp, resolve_price_arrays
+    import logging as _logging
+    _lp_logger = _logging.getLogger("lp_dispatch")
 
-    elif request.mode == DispatchMode.PEAK_SHAVING:
-        if request.peak_limit_kw is None:
-            raise ValueError("peak_limit_kw required for PEAK_SHAVING mode")
-        result = dispatch_peak_shaving(
-            pv, load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
+    lp_config = getattr(request, 'lp_params', None) or LPSolverParams()
 
-    elif request.mode == DispatchMode.STACKED:
-        if request.stacked_params is None:
-            raise ValueError("stacked_params required for STACKED mode")
-        result = dispatch_stacked(
-            pv, load, request.battery, dt_hours,
-            request.stacked_params, request.prices,
-            import_prices=import_prices,
-            arb_config=arb_config,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
+    # Determine peak_limit for LP
+    lp_peak_limit = request.peak_limit_kw
+    if request.mode == DispatchMode.STACKED and request.stacked_params:
+        lp_peak_limit = request.stacked_params.peak_limit_kw
 
-    elif request.mode == DispatchMode.LOAD_ONLY:
-        if request.peak_limit_kw is None:
-            raise ValueError("peak_limit_kw required for LOAD_ONLY mode")
-        result = dispatch_load_only(
-            load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
-
+    # Resolve price arrays for LP
+    buy_price_arr = import_prices  # May be None (flat pricing)
+    sell_price_arr = None
+    if buy_price_arr is None:
+        buy_price_arr, sell_price_arr = resolve_price_arrays(request.prices, len(load))
     else:
-        raise ValueError(f"Unsupported dispatch mode: {request.mode}")
+        _, sell_price_arr = resolve_price_arrays(request.prices, len(load))
 
-    # Check degradation budget
+    result = dispatch_lp(
+        pv_kw=pv,
+        load_kw=load,
+        battery=request.battery,
+        dt_hours=dt_hours,
+        prices=request.prices,
+        mode=request.mode,
+        peak_limit_kw=lp_peak_limit,
+        lp_config=lp_config,
+        return_hourly=True,
+        buy_price_override=buy_price_arr,
+        sell_price_override=sell_price_arr,
+    )
+
+    # Post-processing: degradation budget + grid constraints
     if request.degradation_budget:
         result.degradation = check_degradation_budget(
             result.degradation, request.degradation_budget
         )
 
-    # Apply grid constraints (v0.7.0) - handles export cap, import cap
     result, constraint_summary = apply_grid_constraints(
         result, request.grid_constraints, dt_hours
     )
     result.constraint_summary = constraint_summary
 
-    # Compute debug events (v1.8.0) - aggregates constraint/curtail/unserved info
     result.debug_events = compute_debug_events(
         n_timesteps=result.n_timesteps,
         constraint_summary=constraint_summary,

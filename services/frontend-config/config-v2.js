@@ -2311,8 +2311,9 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
     // Send BESS result to shell as Single Source of Truth
     // =========================================================================
     sendBessResultToShell({
-      recommended_power_kw: sizingResult.recommended_variant?.power_kw || (variants[0]?.power_kw) || 0,
-      recommended_energy_kwh: sizingResult.recommended_variant?.energy_kwh || (variants[0]?.energy_kwh) || 0,
+      // BUG FIX v7.1: Use backend-provided recommended values instead of variants[0]
+      recommended_power_kw: sizingResult.recommended_power_kw || sizingResult.recommended_variant?.power_kw || 0,
+      recommended_energy_kwh: sizingResult.recommended_energy_kwh || sizingResult.recommended_variant?.energy_kwh || 0,
       variants: sizingResult.variants,
       total_load_mwh: sizingResult.total_load_mwh,
       topology: 'load_only',

@@ -62,6 +62,8 @@ from models import (
     # v3.1.0 Stacked Decomposition
     StackedComponentModel,
     StackedDecompositionModel,
+    # v7.0.0 LP Solver
+    LPSolverParams,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -1155,35 +1157,35 @@ def run_sizing_for_variant(
     # Pass include_energy_flows_timeseries from request to dispatch functions
     include_timeseries = request.include_energy_flows_timeseries
 
-    if mode == DispatchMode.PV_SURPLUS:
-        result = dispatch_pv_surplus(
-            pv_kw, load_kw, battery, dt_hours, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
-        )
-    elif mode == DispatchMode.PEAK_SHAVING:
-        result = dispatch_peak_shaving(
-            pv_kw, load_kw, battery, dt_hours,
-            request.peak_limit_kw, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
-        )
-    elif mode == DispatchMode.STACKED:
-        # Pass arbitrage parameters to dispatch_stacked
-        result = dispatch_stacked(
-            pv_kw, load_kw, battery, dt_hours,
-            request.stacked_params, request.prices, return_hourly=True,
-            import_prices=import_prices if arb_enabled else None,
-            arb_config=request.arbitrage_config if arb_enabled else None,
-            include_energy_flows_timeseries=include_timeseries,
-        )
-    elif mode == DispatchMode.LOAD_ONLY:
-        # LOAD_ONLY mode: peak shaving without PV
-        peak_limit = request.peak_limit_kw or (np.max(load_kw) * 0.7)
-        result = dispatch_load_only(
-            load_kw, battery, dt_hours, peak_limit, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
-        )
+    # LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy)
+    from lp_dispatch import dispatch_lp, resolve_price_arrays
+
+    lp_params = getattr(request, 'lp_params', None) or LPSolverParams()
+
+    lp_peak_limit = request.peak_limit_kw
+    if mode == DispatchMode.STACKED and request.stacked_params:
+        lp_peak_limit = request.stacked_params.peak_limit_kw
+
+    buy_arr = import_prices
+    sell_arr = None
+    if buy_arr is None:
+        buy_arr, sell_arr = resolve_price_arrays(request.prices, len(load_kw))
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
+        _, sell_arr = resolve_price_arrays(request.prices, len(load_kw))
+
+    result = dispatch_lp(
+        pv_kw=pv_kw,
+        load_kw=load_kw,
+        battery=battery,
+        dt_hours=dt_hours,
+        prices=request.prices,
+        mode=mode,
+        peak_limit_kw=lp_peak_limit,
+        lp_config=lp_params,
+        return_hourly=True,
+        buy_price_override=buy_arr,
+        sell_price_override=sell_arr,
+    )
 
     # Check degradation budget
     if request.degradation_budget:

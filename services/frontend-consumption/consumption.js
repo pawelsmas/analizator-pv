@@ -3061,13 +3061,65 @@ let kclassMonthlyChartInstance = null;
 let lastKClassAnalysis = null;
 
 /**
- * Polish holidays for 2025 (used to identify workdays)
+ * Easter date calculation (Anonymous Gregorian algorithm)
  */
-const POLISH_HOLIDAYS_2025 = [
-  '2025-01-01', '2025-01-06', '2025-04-20', '2025-04-21',
-  '2025-05-01', '2025-05-03', '2025-06-08', '2025-06-19',
-  '2025-08-15', '2025-11-01', '2025-11-11', '2025-12-25', '2025-12-26'
-];
+function getEasterDate(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+/**
+ * Polish holidays for a given year (matching calendar.py PolishHolidayCalendar)
+ */
+function getPolishHolidays(year) {
+  const easter = getEasterDate(year);
+  const easterMs = easter.getTime();
+  const oneDay = 24 * 60 * 60 * 1000;
+
+  const dates = [
+    new Date(year, 0, 1),             // Nowy Rok
+    new Date(year, 0, 6),             // Trzech Króli
+    easter,                            // Wielkanoc (Niedziela)
+    new Date(easterMs + oneDay),       // Poniedziałek Wielkanocny
+    new Date(year, 4, 1),             // Święto Pracy
+    new Date(year, 4, 3),             // Święto Konstytucji
+    new Date(easterMs + 49 * oneDay), // Zielone Świątki
+    new Date(easterMs + 60 * oneDay), // Boże Ciało
+    new Date(year, 7, 15),            // Święto Wojska Polskiego
+    new Date(year, 10, 1),            // Wszystkich Świętych
+    new Date(year, 10, 11),           // Święto Niepodległości
+    new Date(year, 11, 24),           // Wigilia (od 2025)
+    new Date(year, 11, 25),           // Boże Narodzenie 1
+    new Date(year, 11, 26),           // Boże Narodzenie 2
+  ];
+
+  return new Set(dates.map(d => {
+    const yy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }));
+}
+
+// Cache holidays per year
+const _holidayCache = {};
+function getHolidaysForYear(year) {
+  if (!_holidayCache[year]) _holidayCache[year] = getPolishHolidays(year);
+  return _holidayCache[year];
+}
 
 /**
  * Check if a date is a Polish workday (Mon-Fri, not a holiday)
@@ -3076,18 +3128,23 @@ function isPolishWorkday(date) {
   const dayOfWeek = date.getDay();
   if (dayOfWeek === 0 || dayOfWeek === 6) return false;
 
-  const dateStr = date.toISOString().split('T')[0];
-  return !POLISH_HOLIDAYS_2025.includes(dateStr);
+  // Use local date parts (not toISOString which converts to UTC)
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const dateStr = `${y}-${m}-${d}`;
+
+  return !getHolidaysForYear(y).has(dateStr);
 }
 
 /**
  * Determine K-class from Δs value
  */
 function getKClass(deltaS) {
-  // Boundaries per Rozporządzenie Ministra Klimatu i Środowiska (Dz.U. 2023 poz. 503)
-  if (deltaS < -10) return { class: 'K1', coefficient: 0.17 };
+  // Boundaries per Rozporządzenie Ministra Klimatu i Środowiska
+  if (deltaS < 5) return { class: 'K1', coefficient: 0.17 };
   if (deltaS < 10) return { class: 'K2', coefficient: 0.50 };
-  if (deltaS < 30) return { class: 'K3', coefficient: 0.83 };
+  if (deltaS < 15) return { class: 'K3', coefficient: 0.83 };
   return { class: 'K4', coefficient: 1.00 };
 }
 
@@ -3234,10 +3291,14 @@ function calculateKClassAnalysis(loadHourly, pvHourly, year = 2025, somPLNperKWh
     }
   }
 
-  // Calculate aggregate deltas
+  // Calculate aggregate deltas — energy-weighted (sum all ZS/ZPS, then one Δs formula)
   const workdays = dailyData.filter(d => d.isWorkday);
-  const avgDeltaSBefore = workdays.reduce((s, d) => s + d.deltaSBefore, 0) / workdays.length;
-  const avgDeltaSAfter = workdays.reduce((s, d) => s + d.deltaSAfter, 0) / workdays.length;
+  const totalSelectedBefore = workdays.reduce((s, d) => s + d.selectedHoursBefore, 0);
+  const totalOutsideBefore = workdays.reduce((s, d) => s + d.outsideHoursBefore, 0);
+  const totalSelectedAfter = workdays.reduce((s, d) => s + d.selectedHoursAfter, 0);
+  const totalOutsideAfter = workdays.reduce((s, d) => s + d.outsideHoursAfter, 0);
+  const avgDeltaSBefore = totalOutsideBefore > 0 ? ((totalSelectedBefore / 15) / (totalOutsideBefore / 9) - 1) * 100 : 0;
+  const avgDeltaSAfter = totalOutsideAfter > 0 ? ((totalSelectedAfter / 15) / (totalOutsideAfter / 9) - 1) * 100 : 0;
   const overallKclassBefore = getKClass(avgDeltaSBefore);
   const overallKclassAfter = getKClass(avgDeltaSAfter);
 
@@ -3659,6 +3720,100 @@ function toggleKClassDetails() {
   }
 }
 
+// ============================================================================
+// WATERMARK — 4-layer document traceability (matching economics module)
+// ============================================================================
+function _wmHash(input) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36).padStart(12, '0');
+}
+function _wmEncodeZW(payload) {
+  let e = '\uFEFF';
+  for (let i = 0; i < payload.length; i++) {
+    if (i > 0) e += '\u200D';
+    const bits = payload.charCodeAt(i).toString(2).padStart(8, '0');
+    for (const b of bits) e += b === '0' ? '\u200B' : '\u200C';
+  }
+  return e + '\uFEFF';
+}
+function _wmStego(sheet, hash, rows, cols) {
+  if (!hash || !rows.length || !cols.length) return;
+  let idx = 0;
+  const B = 0.00000001;
+  for (const r of rows) {
+    for (const c of cols) {
+      const cell = sheet.getRow(r).getCell(c);
+      if (typeof cell.value === 'number' && cell.value !== 0) {
+        cell.value += (hash.charCodeAt(idx % hash.length) % 9 + 1) * B;
+        idx++;
+      }
+    }
+  }
+}
+function applyConsumptionWatermark(workbook, options = {}) {
+  const proj = (window.parent && window.parent.sharedData && window.parent.sharedData.currentProject) || {};
+  const now = new Date();
+  const identity = {
+    pid: proj.id || proj.uuid || 'unknown',
+    name: proj.name || 'draft',
+    cid: proj.companyId || 'none',
+    ts: now.toISOString(),
+  };
+  const payload = `${identity.pid}|${identity.cid}|${identity.ts}|kclass`;
+  const hash = _wmHash(payload);
+  const shortId = `PV-${identity.pid}-${hash}`;
+  console.log(`\uD83D\uDD12 Watermark: fingerprint ${hash} for project ${identity.pid}`);
+
+  // Layer 1: Document properties
+  workbook.creator = 'Pagra Energy Studio';
+  workbook.lastModifiedBy = 'Pagra Energy Studio';
+  workbook.created = now;
+  workbook.modified = now;
+  workbook.subject = shortId;
+  workbook.keywords = `pv,analizator,kclass,${hash}`;
+  workbook.description = `Report ${hash} generated ${now.toISOString().slice(0, 10)}`;
+
+  // Layer 2: veryHidden sheet
+  const hw = workbook.addWorksheet('_sys_config');
+  hw.state = 'veryHidden';
+  hw.getCell('A1').value = 'WATERMARK_V1';
+  hw.getCell('A2').value = hash;
+  hw.getCell('A3').value = identity.pid;
+  hw.getCell('A4').value = identity.cid;
+  hw.getCell('A5').value = identity.name;
+  hw.getCell('A6').value = identity.ts;
+  hw.getCell('A7').value = payload;
+  hw.getCell('A8').value = _wmHash(hash + payload);
+
+  // Layer 3: Zero-width Unicode in titles
+  const zw = _wmEncodeZW(hash);
+  for (const name of (options.visibleSheets || [])) {
+    const ws = workbook.getWorksheet(name);
+    if (!ws) continue;
+    for (let c = 1; c <= 10; c++) {
+      const cell = ws.getRow(1).getCell(c);
+      if (cell.value && typeof cell.value === 'string' && cell.value.length > 5) {
+        cell.value = cell.value + zw;
+        break;
+      }
+    }
+  }
+
+  // Layer 4: Numeric steganography
+  for (const t of (options.stegoTargets || [])) {
+    const ws = workbook.getWorksheet(t.sheet);
+    if (ws) _wmStego(ws, hash, t.rows, t.cols);
+  }
+  console.log(`\uD83D\uDD12 Watermark: 4 layers applied`);
+}
+
 /**
  * Export K-class analysis to Excel (Clean Look - ExcelJS)
  * Styled like CAPEX/EaaS exports in economics module
@@ -3689,6 +3844,24 @@ async function exportKClassToExcel() {
 
   // Create workbook using ExcelJS
   const workbook = new ExcelJS.Workbook();
+
+  // Load logo image
+  let logoImageId = null;
+  try {
+    const logoResponse = await fetch('logo.png');
+    if (logoResponse.ok) {
+      const logoBlob = await logoResponse.blob();
+      const logoBase64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(logoBlob);
+      });
+      logoImageId = workbook.addImage({ base64: logoBase64, extension: 'png' });
+      console.log('\uD83D\uDCF7 Logo loaded successfully');
+    }
+  } catch (e) {
+    console.warn('\u26A0\uFE0F Could not load logo:', e);
+  }
 
   // Color constants (matching CAPEX export)
   const COLORS = {
@@ -3786,13 +3959,17 @@ async function exportKClassToExcel() {
     { name: 'Klasa K (agregat)', before: analysis.kclassBefore, after: analysis.kclassAfter, change: '',
       isGood: analysis.coeffAfter < analysis.coeffBefore, isNeutral: analysis.coeffAfter === analysis.coeffBefore },
     { name: 'Współczynnik A', before: roundNum(analysis.coeffBefore, 2), after: roundNum(analysis.coeffAfter, 2),
-      change: roundNum(analysis.coeffAfter - analysis.coeffBefore, 2), isGood: analysis.coeffAfter < analysis.coeffBefore },
+      change: roundNum(analysis.coeffAfter - analysis.coeffBefore, 2), isGood: analysis.coeffAfter < analysis.coeffBefore,
+      isNeutral: analysis.coeffAfter === analysis.coeffBefore },
     { name: 'Wskaźnik Δs [%]', before: roundNum(analysis.deltaSBefore, 2), after: roundNum(analysis.deltaSAfter, 2),
-      change: roundNum(analysis.deltaSAfter - analysis.deltaSBefore, 2), isGood: analysis.deltaSAfter < analysis.deltaSBefore },
-    { name: 'Energia ZS [MWh]', before: roundNum(analysis.totalZsBefore / 1000, 2), after: roundNum(analysis.totalZsAfter / 1000, 2),
-      change: roundNum((analysis.totalZsAfter - analysis.totalZsBefore) / 1000, 2), isGood: analysis.totalZsAfter < analysis.totalZsBefore },
+      change: roundNum(analysis.deltaSAfter - analysis.deltaSBefore, 2), isGood: analysis.deltaSAfter < analysis.deltaSBefore,
+      isNeutral: Math.abs(analysis.deltaSAfter - analysis.deltaSBefore) < 0.01 },
+    { name: 'Energia ZS [MWh]', before: roundNum(analysis.totalZsBefore, 2), after: roundNum(analysis.totalZsAfter, 2),
+      change: roundNum(analysis.totalZsAfter - analysis.totalZsBefore, 2), isGood: analysis.totalZsAfter < analysis.totalZsBefore,
+      isNeutral: Math.abs(analysis.totalZsAfter - analysis.totalZsBefore) < 0.01 },
     { name: 'Śr. pobór szczytowy [kW]', before: roundNum(analysis.avgPeakBefore, 1), after: roundNum(analysis.avgPeakAfter, 1),
-      change: roundNum(analysis.avgPeakAfter - analysis.avgPeakBefore, 1), isGood: analysis.avgPeakAfter < analysis.avgPeakBefore }
+      change: roundNum(analysis.avgPeakAfter - analysis.avgPeakBefore, 1), isGood: analysis.avgPeakAfter < analysis.avgPeakBefore,
+      isNeutral: Math.abs(analysis.avgPeakAfter - analysis.avgPeakBefore) < 0.1 }
   ];
 
   compData.forEach(d => {
@@ -3922,10 +4099,10 @@ async function exportKClassToExcel() {
 
   // Distribution data
   const distData = [
-    ['K1', '< -10%', 0.17, analysis.kclassDistBefore.K1, analysis.kclassDistAfter.K1],
-    ['K2', '-10% do 10%', 0.50, analysis.kclassDistBefore.K2, analysis.kclassDistAfter.K2],
-    ['K3', '10% do 30%', 0.83, analysis.kclassDistBefore.K3, analysis.kclassDistAfter.K3],
-    ['K4', '\u2265 30%', 1.00, analysis.kclassDistBefore.K4, analysis.kclassDistAfter.K4]
+    ['K1', '< 5%', 0.17, analysis.kclassDistBefore.K1, analysis.kclassDistAfter.K1],
+    ['K2', '5% do 10%', 0.50, analysis.kclassDistBefore.K2, analysis.kclassDistAfter.K2],
+    ['K3', '10% do 15%', 0.83, analysis.kclassDistBefore.K3, analysis.kclassDistAfter.K3],
+    ['K4', '\u2265 15%', 1.00, analysis.kclassDistBefore.K4, analysis.kclassDistAfter.K4]
   ];
 
   distData.forEach(d => {
@@ -4063,10 +4240,13 @@ async function exportKClassToExcel() {
   ];
   sheet3.views = [{ showGridLines: false, showRowColHeaders: false }];
 
-  // Title
-  sheet3.getCell('B1').value = 'OSZCZĘDNOŚCI MIESIĘCZNE OPŁATY MOCOWEJ';
-  sheet3.getCell('B1').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
-  sheet3.mergeCells('B1:D2');
+  // Row 1: logo (set height)
+  sheet3.getRow(1).height = 35;
+
+  // Title (rows 2-3, shifted down for logo)
+  sheet3.getCell('B2').value = 'OSZCZĘDNOŚCI MIESIĘCZNE OPŁATY MOCOWEJ';
+  sheet3.getCell('B2').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
+  sheet3.mergeCells('B2:D3');
 
   // Headers
   const monthHeaders = ['Miesiąc', 'Oszczędność [PLN]', 'Udział [%]'];
@@ -4111,25 +4291,65 @@ async function exportKClassToExcel() {
     { width: 11 },  // B: Data
     { width: 5 },   // C: Dzień
     { width: 5 },   // D: Typ
-    { width: 8 },   // E: K bez
-    { width: 8 },   // F: K z
-    { width: 10 },  // G: Δs bez
-    { width: 10 },  // H: Δs z
-    { width: 12 },  // I: ZS bez
-    { width: 12 },  // J: ZS z
-    { width: 8 }    // K: Poprawa
+    { width: 12 },  // E: Pobór 7-22h bez PV
+    { width: 12 },  // F: Pobór 22-7h bez PV
+    { width: 8 },   // G: Δs bez
+    { width: 7 },   // H: Klasa K bez
+    { width: 7 },   // I: Wsp. A bez
+    { width: 12 },  // J: Pobór 7-22h z PV
+    { width: 12 },  // K: Pobór 22-7h z PV
+    { width: 8 },   // L: Δs z
+    { width: 7 },   // M: Klasa K z
+    { width: 7 },   // N: Wsp. A z
+    { width: 13 },  // O: Opłata bez PV
+    { width: 13 },  // P: Opłata z PV
+    { width: 13 },  // Q: Oszcz. mniejszy pobór
+    { width: 13 },  // R: Oszcz. zmiana klasy
+    { width: 13 },  // S: Oszcz. łączna
+    { width: 10 }   // T: Zmiana klasy
   ];
   sheet4.views = [{ showGridLines: false, showRowColHeaders: false, state: 'frozen', ySplit: 4, xSplit: 0 }];
 
-  // Title
+  // Title (rows 1-2)
   sheet4.getCell('B1').value = 'ANALIZA DZIENNA - WSZYSTKIE DNI ROKU';
   sheet4.getCell('B1').font = { bold: true, size: 14, color: { argb: COLORS.titleText } };
-  sheet4.mergeCells('B1:K2');
-  sheet4.getCell('B3').value = 'Tylko dni robocze (R) wpływają na opłatę mocową';
-  sheet4.getCell('B3').font = { italic: true, color: { argb: COLORS.neutralText }, size: 10 };
+  sheet4.mergeCells('B1:T2');
 
-  // Headers
-  const dailyHeaders = ['Data', 'Dzień', 'Typ', 'K bez', 'K z', 'Δs bez', 'Δs z', 'ZS bez', 'ZS z', 'Poprawa'];
+  // Row 3: Section headers (merged, colored)
+  sheet4.mergeCells('B3:D3');
+  sheet4.getCell('B3').value = 'DZIEŃ';
+  sheet4.getCell('B3').font = { bold: true, size: 10 };
+  sheet4.getCell('B3').alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet4.getCell('B3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+  sheet4.mergeCells('E3:I3');
+  sheet4.getCell('E3').value = 'BEZ INSTALACJI PV';
+  sheet4.getCell('E3').font = { bold: true, size: 10 };
+  sheet4.getCell('E3').alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet4.getCell('E3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
+
+  sheet4.mergeCells('J3:N3');
+  sheet4.getCell('J3').value = 'Z INSTALACJĄ PV';
+  sheet4.getCell('J3').font = { bold: true, size: 10 };
+  sheet4.getCell('J3').alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet4.getCell('J3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
+
+  sheet4.mergeCells('O3:T3');
+  sheet4.getCell('O3').value = 'EFEKT — OSZCZĘDNOŚĆ';
+  sheet4.getCell('O3').font = { bold: true, size: 10 };
+  sheet4.getCell('O3').alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet4.getCell('O3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.highlightBg } };
+
+  // SOM cross-sheet ref (Sheet1 C6 = SOM in PLN/MWh)
+  const somRefDaily = "'Podsumowanie'!$C$6";
+
+  // Row 4: Column headers
+  const dailyHeaders = [
+    'Data', 'Dzień', 'Typ',
+    'Pobór\n7-22h\n[kWh]', 'Pobór\n22-7h\n[kWh]', 'Δs\n[%]', 'Klasa\nK', 'Wsp.\nA',
+    'Pobór\n7-22h\n[kWh]', 'Pobór\n22-7h\n[kWh]', 'Δs\n[%]', 'Klasa\nK', 'Wsp.\nA',
+    'Opłata\nbez PV\n[PLN]', 'Opłata\nz PV\n[PLN]', 'Oszcz.\nmniejszy\npobór', 'Oszcz.\nzmiana\nklasy', 'Oszcz.\nłączna\n[PLN]', 'Zmiana\nklasy'
+  ];
   dailyHeaders.forEach((h, i) => {
     const cell = sheet4.getCell(4, i + 2);
     cell.value = h;
@@ -4137,62 +4357,130 @@ async function exportKClassToExcel() {
     cell.font = { bold: true, color: { argb: COLORS.headerText }, size: 9 };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
   });
-  sheet4.getRow(4).height = 30;
+  sheet4.getRow(4).height = 40;
 
   const dayNames = ['Nd', 'Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So'];
 
   analysis.dailyComparison.forEach((day, idx) => {
     const r = idx + 5;
-    sheet4.getCell(r, 2).value = day.date.toLocaleDateString('pl-PL');
-    sheet4.getCell(r, 3).value = dayNames[day.date.getDay()];
-    sheet4.getCell(r, 4).value = day.isWorkday ? 'R' : 'W';
-    sheet4.getCell(r, 5).value = day.kclassBefore;
-    sheet4.getCell(r, 6).value = day.kclassAfter;
-    sheet4.getCell(r, 7).value = roundNum(day.deltaSBefore, 1);
-    sheet4.getCell(r, 7).numFmt = '0.0';
-    sheet4.getCell(r, 8).value = roundNum(day.deltaSAfter, 1);
-    sheet4.getCell(r, 8).numFmt = '0.0';
-    sheet4.getCell(r, 9).value = roundNum(day.selectedHoursBefore, 0);
-    sheet4.getCell(r, 9).numFmt = numFmtInt;
-    sheet4.getCell(r, 10).value = roundNum(day.selectedHoursAfter, 0);
-    sheet4.getCell(r, 10).numFmt = numFmtInt;
+    const row = sheet4.getRow(r);
 
-    // Improvement column
-    const improved = day.coeffAfter < day.coeffBefore;
-    const improvCell = sheet4.getCell(r, 11);
-    improvCell.value = improved ? '✓' : '';
-    if (improved) {
-      improvCell.font = { bold: true, color: { argb: COLORS.positive } };
-      improvCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.positiveBg } };
-    }
-    improvCell.alignment = { horizontal: 'center' };
+    // B: Data, C: Dzień, D: Typ
+    row.getCell(2).value = day.date.toLocaleDateString('pl-PL');
+    row.getCell(3).value = dayNames[day.date.getDay()];
+    row.getCell(4).value = day.isWorkday ? 'R' : 'W';
 
-    // Highlight workdays
+    // --- BEZ INSTALACJI PV ---
+    // E: Pobór 7-22h [kWh] (pełna precyzja, wyświetlane jako int)
+    row.getCell(5).value = day.selectedHoursBefore;
+    row.getCell(5).numFmt = numFmtInt;
+    // F: Pobór 22-7h [kWh] (pełna precyzja, wyświetlane jako int)
+    row.getCell(6).value = day.outsideHoursBefore;
+    row.getCell(6).numFmt = numFmtInt;
+    // G: Δs [%] = IFERROR(((E/15)/(F/9)-1)*100, -100)
+    row.getCell(7).value = { formula: `IFERROR(((E${r}/15)/(F${r}/9)-1)*100,-100)`, result: roundNum(day.deltaSBefore, 1) };
+    row.getCell(7).numFmt = '0.0';
+    // H: Klasa K = IF(Δs<5,"K1",IF(Δs<10,"K2",IF(Δs<15,"K3","K4")))
+    row.getCell(8).value = { formula: `IF(G${r}<5,"K1",IF(G${r}<10,"K2",IF(G${r}<15,"K3","K4")))`, result: day.kclassBefore };
+    row.getCell(8).alignment = { horizontal: 'center' };
+    // I: Wsp. A = współczynnik z klasy K
+    row.getCell(9).value = { formula: `IF(H${r}="K1",0.17,IF(H${r}="K2",0.5,IF(H${r}="K3",0.83,1)))`, result: roundNum(day.coeffBefore, 2) };
+    row.getCell(9).numFmt = '0.00';
+
+    // --- Z INSTALACJĄ PV ---
+    // J: Pobór 7-22h [kWh] (pełna precyzja, wyświetlane jako int)
+    row.getCell(10).value = day.selectedHoursAfter;
+    row.getCell(10).numFmt = numFmtInt;
+    // K: Pobór 22-7h [kWh] (pełna precyzja, wyświetlane jako int)
+    row.getCell(11).value = day.outsideHoursAfter;
+    row.getCell(11).numFmt = numFmtInt;
+    // L: Δs [%]
+    row.getCell(12).value = { formula: `IFERROR(((J${r}/15)/(K${r}/9)-1)*100,-100)`, result: roundNum(day.deltaSAfter, 1) };
+    row.getCell(12).numFmt = '0.0';
+    // M: Klasa K
+    row.getCell(13).value = { formula: `IF(L${r}<5,"K1",IF(L${r}<10,"K2",IF(L${r}<15,"K3","K4")))`, result: day.kclassAfter };
+    row.getCell(13).alignment = { horizontal: 'center' };
+    // N: Wsp. A
+    row.getCell(14).value = { formula: `IF(M${r}="K1",0.17,IF(M${r}="K2",0.5,IF(M${r}="K3",0.83,1)))`, result: roundNum(day.coeffAfter, 2) };
+    row.getCell(14).numFmt = '0.00';
+
+    // --- EFEKT — OSZCZĘDNOŚĆ ---
+    // O: Opłata bez PV [PLN] = Wsp.A × SOM/1000 × Pobór 7-22h
+    row.getCell(15).value = { formula: `I${r}*${somRefDaily}/1000*E${r}`, result: roundNum(day.coeffBefore * somRate * day.selectedHoursBefore, 2) };
+    row.getCell(15).numFmt = numFmtStandard;
+    // P: Opłata z PV [PLN] = Wsp.A × SOM/1000 × Pobór 7-22h
+    row.getCell(16).value = { formula: `N${r}*${somRefDaily}/1000*J${r}`, result: roundNum(day.coeffAfter * somRate * day.selectedHoursAfter, 2) };
+    row.getCell(16).numFmt = numFmtStandard;
+    // Q: Oszcz. mniejszy pobór [PLN] = A_bez × SOM/1000 × (Pobór_bez - Pobór_z)
+    row.getCell(17).value = { formula: `I${r}*${somRefDaily}/1000*(E${r}-J${r})`, result: roundNum(day.coeffBefore * somRate * (day.selectedHoursBefore - day.selectedHoursAfter), 2) };
+    row.getCell(17).numFmt = numFmtStandard;
+    // R: Oszcz. zmiana klasy [PLN] = (A_bez - A_z) × SOM/1000 × Pobór_z
+    row.getCell(18).value = { formula: `(I${r}-N${r})*${somRefDaily}/1000*J${r}`, result: roundNum((day.coeffBefore - day.coeffAfter) * somRate * day.selectedHoursAfter, 2) };
+    row.getCell(18).numFmt = numFmtStandard;
+    // S: Oszcz. łączna [PLN] = Q + R (= O - P)
+    row.getCell(19).value = { formula: `Q${r}+R${r}`, result: roundNum(day.coeffBefore * somRate * day.selectedHoursBefore - day.coeffAfter * somRate * day.selectedHoursAfter, 2) };
+    row.getCell(19).numFmt = numFmtStandard;
+    // T: Zmiana klasy
+    const klassChange = !day.isWorkday ? '\u2014' : (day.kclassBefore === day.kclassAfter ? '\u2014' : `${day.kclassBefore} \u2192 ${day.kclassAfter}`);
+    row.getCell(20).value = { formula: `IF(D${r}="W","\u2014",IF(H${r}=M${r},"\u2014",H${r}&" \u2192 "&M${r}))`, result: klassChange };
+    row.getCell(20).alignment = { horizontal: 'center' };
+
+    // Section background colors (matching row 3 headers)
+    const fillDay = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+    const fillBez = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECF4FE' } };
+    const fillPV  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECF6ED' } };
+    const fillEf  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFBEB' } };
+    for (let c = 2; c <= 4; c++)  row.getCell(c).fill = fillDay;
+    for (let c = 5; c <= 9; c++)  row.getCell(c).fill = fillBez;
+    for (let c = 10; c <= 14; c++) row.getCell(c).fill = fillPV;
+    for (let c = 15; c <= 20; c++) row.getCell(c).fill = fillEf;
+
+    // Style: weekends grey font, workdays bold type
     if (day.isWorkday) {
-      sheet4.getCell(r, 4).font = { bold: true };
+      row.getCell(4).font = { bold: true };
     } else {
-      // Light grey for weekends/holidays
-      for (let c = 2; c <= 11; c++) {
-        sheet4.getCell(r, c).font = { color: { argb: 'FF9E9E9E' } };
+      for (let c = 2; c <= 20; c++) {
+        row.getCell(c).font = { color: { argb: 'FF9E9E9E' } };
       }
     }
   });
 
   // Statistics below data
   const statRow = analysis.dailyComparison.length + 6;
+  const lastDataRow = analysis.dailyComparison.length + 4;
+
   sheet4.getCell(`B${statRow}`).value = 'STATYSTYKI';
   sheet4.getCell(`B${statRow}`).font = { bold: true, color: { argb: COLORS.titleText } };
-  sheet4.mergeCells(`B${statRow}:K${statRow}`);
+  sheet4.mergeCells(`B${statRow}:T${statRow}`);
   sheet4.getCell(`B${statRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLORS.sectionBg } };
 
-  const lastDataRow = analysis.dailyComparison.length + 4;
   sheet4.getCell(`B${statRow+1}`).value = 'Dni robocze:';
   sheet4.getCell(`C${statRow+1}`).value = { formula: `COUNTIF(D5:D${lastDataRow},"R")` };
   sheet4.getCell(`B${statRow+2}`).value = 'Dni wolne:';
   sheet4.getCell(`C${statRow+2}`).value = { formula: `COUNTIF(D5:D${lastDataRow},"W")` };
-  sheet4.getCell(`B${statRow+3}`).value = 'Dni z poprawą klasy:';
-  sheet4.getCell(`C${statRow+3}`).value = { formula: `COUNTIF(K5:K${lastDataRow},"✓")` };
+  sheet4.getCell(`B${statRow+3}`).value = 'Dni ze zmianą klasy K:';
+  sheet4.getCell(`C${statRow+3}`).value = { formula: `COUNTIF(T5:T${lastDataRow},"*\u2192*")` };
   sheet4.getCell(`C${statRow+3}`).font = { bold: true, color: { argb: COLORS.positive } };
+
+  // Fee totals
+  sheet4.getCell(`B${statRow+5}`).value = 'SUMY (dni robocze)';
+  sheet4.getCell(`B${statRow+5}`).font = { bold: true, color: { argb: COLORS.titleText } };
+  sheet4.getCell(`B${statRow+6}`).value = 'Opłata bez PV [PLN]:';
+  sheet4.getCell(`C${statRow+6}`).value = { formula: `SUM(O5:O${lastDataRow})`, result: roundNum(analysis.totalFeeBefore || 0, 0) };
+  sheet4.getCell(`C${statRow+6}`).numFmt = numFmtStandard;
+  sheet4.getCell(`B${statRow+7}`).value = 'Opłata z PV [PLN]:';
+  sheet4.getCell(`C${statRow+7}`).value = { formula: `SUM(P5:P${lastDataRow})`, result: roundNum(analysis.totalFeeAfter || 0, 0) };
+  sheet4.getCell(`C${statRow+7}`).numFmt = numFmtStandard;
+  sheet4.getCell(`B${statRow+8}`).value = 'Oszcz. z mniejszego poboru [PLN]:';
+  sheet4.getCell(`C${statRow+8}`).value = { formula: `SUM(Q5:Q${lastDataRow})`, result: roundNum(analysis.savingsFromZsReduction || 0, 0) };
+  sheet4.getCell(`C${statRow+8}`).numFmt = numFmtStandard;
+  sheet4.getCell(`B${statRow+9}`).value = 'Oszcz. ze zmiany klasy [PLN]:';
+  sheet4.getCell(`C${statRow+9}`).value = { formula: `SUM(R5:R${lastDataRow})`, result: roundNum(analysis.savingsFromKclassImprovement || 0, 0) };
+  sheet4.getCell(`C${statRow+9}`).numFmt = numFmtStandard;
+  sheet4.getCell(`B${statRow+10}`).value = 'Oszczędność łączna [PLN]:';
+  sheet4.getCell(`C${statRow+10}`).value = { formula: `C${statRow+8}+C${statRow+9}`, result: roundNum(analysis.totalSavings || 0, 0) };
+  sheet4.getCell(`C${statRow+10}`).numFmt = numFmtStandard;
+  sheet4.getCell(`C${statRow+10}`).font = { bold: true, color: { argb: COLORS.positive } };
 
   // ========== SHEET 5: Metodologia ==========
   const sheet5 = workbook.addWorksheet('Metodologia');
@@ -4201,6 +4489,9 @@ async function exportKClassToExcel() {
     { width: 80 }   // B: content
   ];
   sheet5.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+  // Row 1: logo (set height)
+  sheet5.getRow(1).height = 35;
 
   const methodologyText = [
     { text: 'METODOLOGIA OBLICZEŃ - OPŁATA MOCOWA', isTitle: true },
@@ -4225,11 +4516,11 @@ async function exportKClassToExcel() {
     { text: '    ZS  - energia w godzinach wybranych (7-22 dni robocze) [kWh]' },
     { text: '    ZPS - energia poza godzinami wybranymi [kWh]' },
     { text: '' },
-    { text: 'KLASYFIKACJA KLAS K (Dz.U. 2023 poz. 503)', isHeader: true },
-    { text: '    K1: Δs < -10%    → A = 0.17 (nocne zuzycie wyzsze niz szczytowe)' },
-    { text: '    K2: -10% ≤ Δs < 10% → A = 0.50 (profil plaski)' },
-    { text: '    K3: 10% ≤ Δs < 30%  → A = 0.83 (profil umiarkowanie szczytowy)' },
-    { text: '    K4: Δs ≥ 30%    → A = 1.00 (profil wybitnie szczytowy)' },
+    { text: 'KLASYFIKACJA KLAS K', isHeader: true },
+    { text: '    K1: Δs < 5%      → A = 0.17 (profil bardzo płaski, 83% rabatu)' },
+    { text: '    K2: 5% ≤ Δs < 10%  → A = 0.50 (profil płaski, 50% rabatu)' },
+    { text: '    K3: 10% ≤ Δs < 15% → A = 0.83 (profil umiarkowany, 17% rabatu)' },
+    { text: '    K4: Δs ≥ 15%     → A = 1.00 (profil szczytowy, brak rabatu)' },
     { text: '' },
     { text: 'GODZINY WYBRANE', isHeader: true },
     { text: '    7:00 - 22:00 w dni robocze' },
@@ -4257,6 +4548,51 @@ async function exportKClassToExcel() {
       cell.font = { size: 11 };
     }
   });
+
+  // ========== LOGO on all sheets ==========
+  if (logoImageId !== null) {
+    const logo = { width: 150, height: 38 };
+    // Wide sheets: logo right-aligned in title row
+    sheet1.addImage(logoImageId, { tl: { col: 5, row: 0.15 }, ext: logo });    // Sheet1: right edge (col F)
+    sheet2.addImage(logoImageId, { tl: { col: 5.2, row: 0.15 }, ext: logo });  // Sheet2: right edge (col F-G)
+    sheet4.addImage(logoImageId, { tl: { col: 18, row: 0.15 }, ext: logo });   // Sheet4: right edge (col S-T)
+    // Narrow sheets: logo above title in dedicated row 1
+    sheet3.addImage(logoImageId, { tl: { col: 2.5, row: 0.05 }, ext: logo }); // Sheet3: centered in row 1
+    sheet5.addImage(logoImageId, { tl: { col: 1.2, row: 0.05 }, ext: logo }); // Sheet5: in row 1 above title
+  }
+
+  // ========== BRANDING footer on key sheets ==========
+  const brandingText = `Wygenerowano: ${new Date().toLocaleDateString('pl-PL')} | Pagra Energy Studio`;
+  const brandingFont = { italic: true, size: 9, color: { argb: 'FF9E9E9E' } };
+
+  // Sheet 1: after last content row
+  const s1BrandRow = sheet1.lastRow ? sheet1.lastRow.number + 2 : 30;
+  sheet1.getCell(`B${s1BrandRow}`).value = brandingText;
+  sheet1.getCell(`B${s1BrandRow}`).font = brandingFont;
+  sheet1.mergeCells(`B${s1BrandRow}:D${s1BrandRow}`);
+
+  // Sheet 4: after statistics
+  const s4BrandRow = analysis.dailyComparison.length + 18;
+  sheet4.getCell(`B${s4BrandRow}`).value = brandingText;
+  sheet4.getCell(`B${s4BrandRow}`).font = brandingFont;
+  sheet4.mergeCells(`B${s4BrandRow}:F${s4BrandRow}`);
+
+  // Sheet 5: at the bottom of methodology
+  const s5BrandRow = sheet5.lastRow ? sheet5.lastRow.number + 2 : 30;
+  sheet5.getCell(`B${s5BrandRow}`).value = brandingText;
+  sheet5.getCell(`B${s5BrandRow}`).font = brandingFont;
+
+  // ========== WATERMARK (4-layer document traceability) ==========
+  try {
+    const stegoRows = [];
+    for (let i = 5; i <= Math.min(analysis.dailyComparison.length + 4, 50); i++) stegoRows.push(i);
+    applyConsumptionWatermark(workbook, {
+      visibleSheets: ['Podsumowanie', 'Dane dzienne'],
+      stegoTargets: [{ sheet: 'Dane dzienne', rows: stegoRows, cols: [5, 6, 10, 11] }],
+    });
+  } catch (wmErr) {
+    console.warn('\u26A0\uFE0F Watermark failed:', wmErr);
+  }
 
   // Generate and download
   const buffer = await workbook.xlsx.writeBuffer();

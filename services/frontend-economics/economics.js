@@ -3324,19 +3324,24 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       bessDegradation = (1 - bessDegradationYear1) * Math.pow(1 - bessDegradationPctPerYear, Math.max(0, year - 1));
     }
 
-    // Apply inflation factor only if useInflation is true (nominal mode)
-    const inflationFactor = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;
+    // --- Inflation factors (audit-grade, matching Excel formulas) ---
+    // Savings CPI escalation: (1+CPI)^(year-1) — year 1 at base prices, year 2+ escalated
+    // Used for tariff-mode energy price and RDN savings
+    const savingsCpiEscalation = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;
+    // OPEX CPI escalation: ALWAYS (1+CPI)^year — costs always grow with inflation
+    // Excel formula: =$F$14*POWER(1+$F$5,year) — unconditional, exponent = year (not year-1)
+    const opexCpiEscalation = Math.pow(1 + inflationRate, year);
 
     // Breakdown: PV direct uses PV degradation, BESS uses BESS degradation
     const yearPvDirectMwh = pvDirectSelfConsumedMwh * pvDegradation;
     const yearBessMwh = bessSelfConsumedMwh * bessDegradation;
     const yearSelfConsumedMwh = yearPvDirectMwh + yearBessMwh;
 
-    const adjustedEnergyPrice = totalEnergyPrice * inflationFactor; // PLN/MWh
+    const adjustedEnergyPrice = totalEnergyPrice * savingsCpiEscalation; // PLN/MWh
 
-    // OPEX = PV OPEX + BESS OPEX (z inflacją jeśli włączona)
-    const adjustedOpexPV = capacityKwp * params.opex_per_kwp * inflationFactor;
-    const adjustedOpexBESS = opexBESS * inflationFactor;
+    // OPEX = PV OPEX + BESS OPEX — ALWAYS inflated (operational costs grow with CPI)
+    const adjustedOpexPV = capacityKwp * params.opex_per_kwp * opexCpiEscalation;
+    const adjustedOpexBESS = opexBESS * opexCpiEscalation;
     const adjustedOpex = adjustedOpexPV + adjustedOpexBESS;
 
     // --- Savings calculation: tariff vs RDN mode ---
@@ -3534,18 +3539,26 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   }
   console.log('  DPP:', discountedPayback ? discountedPayback.toFixed(1) + ' lat' : 'Powyzej okresu analizy');
 
-  // Calculate LCOE (Levelized Cost of Energy) = Total Discounted Costs / Total Discounted Production
-  let lcoeDiscountedCosts = capex;
-  let lcoeDiscountedProduction = 0;
+  // LCOE — EXACT replica of reference Excel formula:
+  // =($F$10*1000+SUMPRODUCT(K18:K47/POWER(1+$F$4,B18:B47)))/SUMPRODUCT(I18:I47/POWER(1+$F$4,B18:B47))
+  // F10 = CAPEX [tys PLN], K = OPEX [tys PLN], I = AutoTotal [MWh]
+  // capex variable is in PLN = F10*1000
+  let lcoeNumerator = capex; // = F10*1000 [PLN]
+  let lcoeDenominator = 0;
   for (let yr = 1; yr <= analysisPeriod; yr++) {
-    // Use degradationRate for years 2+ (same as main cash flow calculation)
     const pvDeg = yr === 1 ? (1 - pvDegradationYear1) : (1 - pvDegradationYear1) * Math.pow(1 - degradationRate, yr - 1);
-    const inflFactor = useInflation ? Math.pow(1 + inflationRate, yr) : 1;
-    const yrOpex = (capacityKwp * params.opex_per_kwp + opexBESS) * inflFactor;
-    lcoeDiscountedCosts += yrOpex / Math.pow(1 + discountRate, yr);
-    lcoeDiscountedProduction += (productionMwh * pvDeg) / Math.pow(1 + discountRate, yr);
+    let bessDeg = 1;
+    if (hasBess && yr >= 1) {
+      bessDeg = (1 - bessDegradationYear1) * Math.pow(1 - bessDegradationPctPerYear, Math.max(0, yr - 1));
+    }
+    // K column = OPEX [tys PLN] = =$F$14*POWER(1+$F$5,yr)
+    const yrOpexTys = ((capacityKwp * params.opex_per_kwp + opexBESS) * Math.pow(1 + inflationRate, yr)) / 1000;
+    lcoeNumerator += yrOpexTys / Math.pow(1 + discountRate, yr);
+    // I column = AutoPV + AutoBESS [MWh]
+    const yrAutocons = pvDirectSelfConsumedMwh * pvDeg + bessSelfConsumedMwh * bessDeg;
+    lcoeDenominator += yrAutocons / Math.pow(1 + discountRate, yr);
   }
-  const lcoe = lcoeDiscountedProduction > 0 ? lcoeDiscountedCosts / lcoeDiscountedProduction : 0; // PLN/MWh
+  const lcoe = lcoeDenominator > 0 ? lcoeNumerator / lcoeDenominator : 0; // PLN/MWh
 
   return {
     capex: {
@@ -8256,7 +8269,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     ['', currencyInfoLabel, '', '', currencyInfoValue],  // B15, E15 - Currency info (Waluta EUR: / 4,25 PLN/EUR)
     [''],  // Row 16 - empty row before header
     // Header row (row 17)
-    ['Rok', 'Faza', 'Autokonsumpcja [MWh]', isRdnExport ? `Oszcz. RDN brutto [tys. ${currencyLabel}]` : `Koszt Sieci [tys. ${currencyLabel}]`, `Koszt EaaS/Własność [tys. ${currencyLabel}]`, `Oszczędności [tys. ${currencyLabel}]`, `CF Zdyskontowany [tys. ${currencyLabel}]`, `Skumulowany NPV [mln ${currencyLabel}]`]
+    ['Rok', 'Faza', 'Autokonsumpcja [MWh]', isRdnExport ? `Oszcz. RDN brutto [tys. ${currencyLabel}]` : `Koszt Energii z Sieci [tys. ${currencyLabel}]`, `Koszt EaaS/Własność [tys. ${currencyLabel}]`, `Oszczędności [tys. ${currencyLabel}]`, `CF Zdyskontowany [tys. ${currencyLabel}]`, `Skumulowany NPV [mln ${currencyLabel}]`]
   ]);
 
   // Format cells E4:E7 as percentages (Excel percentage format)
@@ -8328,7 +8341,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     // Year 1: base * (1 - degYear1)
     // Year 2+: base * (1 - degYear1) * (1 - degYears2+)^(year-1)
     // E10=autokonsumpcja bazowa, E6=degradacja rok 1, E7=degradacja lata 2+
-    const autoFormula = `ROUND($E$10*(1-$E$6)*POWER(1-$E$7,A${row}-1),2)`;
+    const autoFormula = `$E$10*(1-$E$6)*POWER(1-$E$7,A${row}-1)`;
     setCell(ws2, 2, row, autoFormula, roundNum(autoconsumptionYearMwh, 2));
 
     // Column D: Koszt Sieci [tys. PLN/waluta] (= savings brutto, ile zaoszczędzono)
@@ -8336,8 +8349,8 @@ async function exportEaaSToExcel(withFormulas = false) {
     // RDN:    gridCost from cashflows already = totalSavings (energy+capacity)
     //         E11 = roczna oszcz. RDN brutto [tys.], just use value from cashflows
     const gridCostFormula = isRdnExport
-      ? `ROUND($E$11*POWER(1+$E$5,A${row}-1),2)`
-      : `ROUND(C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1),2)`;
+      ? `$E$11*POWER(1+$E$5,A${row}-1)`
+      : `C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1)`;
     setCell(ws2, 3, row, gridCostFormula, roundNum(gridCost / 1000, 2));
 
     // Column E: Koszt EaaS/Własność [tys. PLN]
@@ -8350,16 +8363,16 @@ async function exportEaaSToExcel(withFormulas = false) {
     setCell(ws2, 4, row, eaasCostFormula, roundNum(eaasCost / 1000, 2));
 
     // Column F: Oszczędności [tys. PLN] = Koszt Sieci - Koszt EaaS
-    const savingsFormula = `ROUND(D${row}-E${row},2)`;
+    const savingsFormula = `D${row}-E${row}`;
     setCell(ws2, 5, row, savingsFormula, roundNum(savings / 1000, 2));
 
     // Column G: CF Zdyskontowany [tys. PLN]
     // E4 = stopa dyskontowa
-    const discountedFormula = `ROUND(F${row}/POWER(1+$E$4,A${row}),2)`;
+    const discountedFormula = `F${row}/POWER(1+$E$4,A${row})`;
     setCell(ws2, 6, row, discountedFormula, roundNum(discountedCF / 1000, 2));
 
     // Column H: Skumulowany NPV [mln PLN]
-    const npvFormula = year === 1 ? `ROUND(G${row}/1000,2)` : `ROUND(H${prevRow}+G${row}/1000,2)`;
+    const npvFormula = year === 1 ? `G${row}/1000` : `H${prevRow}+G${row}/1000`;
     setCell(ws2, 7, row, npvFormula, roundNum(cumulativeNPV / 1000000, 2));
   }
 
@@ -8587,16 +8600,16 @@ async function exportEaaSToExcel(withFormulas = false) {
             .replace(/§F§/g, '$G')
             .replace(/§G§/g, '$H')
             .replace(/§H§/g, '$I');
-          // Also handle non-absolute references with tokens
+          // Also handle non-absolute references with tokens (^| to match start of formula)
           shiftedFormula = shiftedFormula
-            .replace(/([^$§])H(\d+)/g, '$1«H»$2')
-            .replace(/([^$§])G(\d+)/g, '$1«G»$2')
-            .replace(/([^$§])F(\d+)/g, '$1«F»$2')
-            .replace(/([^$§])E(\d+)/g, '$1«E»$2')
-            .replace(/([^$§])D(\d+)/g, '$1«D»$2')
-            .replace(/([^$§])C(\d+)/g, '$1«C»$2')
-            .replace(/([^$§])B(\d+)/g, '$1«B»$2')
-            .replace(/([^$§])A(\d+)/g, '$1«A»$2')
+            .replace(/(^|[^$§])H(\d+)/g, '$1«H»$2')
+            .replace(/(^|[^$§])G(\d+)/g, '$1«G»$2')
+            .replace(/(^|[^$§])F(\d+)/g, '$1«F»$2')
+            .replace(/(^|[^$§])E(\d+)/g, '$1«E»$2')
+            .replace(/(^|[^$§])D(\d+)/g, '$1«D»$2')
+            .replace(/(^|[^$§])C(\d+)/g, '$1«C»$2')
+            .replace(/(^|[^$§])B(\d+)/g, '$1«B»$2')
+            .replace(/(^|[^$§])A(\d+)/g, '$1«A»$2')
             .replace(/«A»/g, 'B')
             .replace(/«B»/g, 'C')
             .replace(/«C»/g, 'D')
@@ -8636,7 +8649,7 @@ async function exportEaaSToExcel(withFormulas = false) {
       const dRow = dataStartRow + yr - 1;
       const pvDeg = `(1-$F$6)*POWER(1-$F$7,B${dRow}-1)`;
       const cpi = `POWER(1+$F$5,B${dRow}-1)`;
-      const rdnFormula = `ROUND((${AUDIT}F18*${pvDeg}*${cpi}+${AUDIT}F21*${cpi})/1000,2)`;
+      const rdnFormula = `(${AUDIT}F18*${pvDeg}*${cpi}+${AUDIT}F21*${cpi})/1000`;
       const prevResult = excelSheet2.getCell(`E${dRow}`).value;
       const prevNum = typeof prevResult === 'object' ? prevResult.result : prevResult;
       excelSheet2.getCell(`E${dRow}`).value = { formula: rdnFormula, result: prevNum || 0 };
@@ -8704,6 +8717,16 @@ async function exportEaaSToExcel(withFormulas = false) {
       bottom: { style: 'thin', color: { argb: 'FF263238' } }
     };
   });
+
+  // Column header notes (Sheet 2 PL) — explain formulas in each column
+  if (withFormulas) {
+    excelSheet2.getCell('D17').note = `-- Bazowa × (1-degY1) × (1-degY2+)^(rok-1)`;
+    excelSheet2.getCell('E17').note = `-- Autokonsumpcja × cena_sieci / 1000\n-- × (1+inflacja)^(rok-1)`;
+    excelSheet2.getCell('F17').note = `-- Faza EaaS: abonament\n-- Faza Własność: O&M + ubezpieczenie`;
+    excelSheet2.getCell('G17').note = `-- Koszt_Energii_Sieci - Koszt_EaaS`;
+    excelSheet2.getCell('H17').note = `-- Oszczędności / (1+r)^rok`;
+    excelSheet2.getCell('I17').note = `-- Suma bieżąca CF / 1000 [mln PLN]`;
+  }
 
   // Add logo to Sheet 2 (top right corner, columns H-I, row 1) - shifted +1
   if (logoImageId !== null) {
@@ -9018,28 +9041,42 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`G${cfoRow}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
 
   cfoRow++;
-  // Row 6: More parameters
+  const autoParamRow = cfoRow; // Store row for ESG formulas
+  // Row 6: More parameters - formulas referencing year-by-year sheet
   excelSheet3.getCell(`B${cfoRow}`).value = 'Autokonsumpcja [MWh/rok]';
-  excelSheet3.getCell(`C${cfoRow}`).value = autoconsumptionMwh;  // C6 = autoconsumption
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `'EaaS Rok po Roku'!F10`, result: autoconsumptionMwh };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = autoconsumptionMwh;
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0.0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true };
   excelSheet3.getCell(`D${cfoRow}`).value = 'Degradacja PV [%/rok]';
-  excelSheet3.getCell(`E${cfoRow}`).value = pvDegradationYears2Plus;  // E6 = degradation
+  if (withFormulas) {
+    excelSheet3.getCell(`E${cfoRow}`).value = { formula: `'EaaS Rok po Roku'!F7`, result: pvDegradationYears2Plus };
+  } else {
+    excelSheet3.getCell(`E${cfoRow}`).value = pvDegradationYears2Plus;
+  }
   excelSheet3.getCell(`E${cfoRow}`).numFmt = '0.00%';
   excelSheet3.getCell(`E${cfoRow}`).font = { bold: true };
 
   cfoRow++;
+  const co2ParamRow = cfoRow; // Store row for ESG formulas (G7 = CO2 factor)
   // Row 7: More parameters
   excelSheet3.getCell(`B${cfoRow}`).value = `Cena sieci [${currencyLabel}/MWh]`;
-  excelSheet3.getCell(`C${cfoRow}`).value = gridPriceDisplay;  // C7 = grid price
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `'EaaS Rok po Roku'!F11`, result: gridPriceDisplay };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = gridPriceDisplay;
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true };
   excelSheet3.getCell(`D${cfoRow}`).value = `Cena EaaS [${currencyLabel}/MWh]`;
-  excelSheet3.getCell(`E${cfoRow}`).value = eaasPriceDisplay;  // E7 = EaaS price
+  excelSheet3.getCell(`E${cfoRow}`).value = eaasPriceDisplay;  // E7 = EaaS price (not from RpR)
   excelSheet3.getCell(`E${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`E${cfoRow}`).font = { bold: true };
-  excelSheet3.getCell(`F${cfoRow}`).value = 'Emisja CO₂ [kg/kWh]';
-  excelSheet3.getCell(`G${cfoRow}`).value = 0.7;  // G7 = CO2 factor
+  excelSheet3.getCell(`F${cfoRow}`).value = 'Emisja CO₂ [t/MWh]';
+  excelSheet3.getCell(`G${cfoRow}`).value = 0.7;  // G7 = CO2 factor (t/MWh = kg/kWh)
   excelSheet3.getCell(`G${cfoRow}`).numFmt = '0.0';
   excelSheet3.getCell(`G${cfoRow}`).font = { bold: true };
   const gridPriceParamRow = cfoRow; // Store row number for matrix formulas
@@ -9047,7 +9084,11 @@ async function exportEaaSToExcel(withFormulas = false) {
   cfoRow++;
   // Row 8: Calculated degradation factor for formulas
   excelSheet3.getCell(`B${cfoRow}`).value = 'Wskaźnik degradacji śr.';
-  excelSheet3.getCell(`C${cfoRow}`).value = 1 - pvDegradationYears2Plus * cfoPeriod / 2;  // C8 = degradation factor
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `1-E${autoParamRow}*${cfoPeriod}/2`, result: 1 - pvDegradationYears2Plus * cfoPeriod / 2 };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = 1 - pvDegradationYears2Plus * cfoPeriod / 2;
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '0.000';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9235,12 +9276,17 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { color: { argb: 'FF9E9E9E' } };
 
-  // Helper row for NPV in tys. PLN (for tornado/scenario formulas - full NPV recalculation)
+  // Helper row for NPV in tys. PLN - formula referencing year-by-year sheet (I column = mln PLN * 1000)
   cfoRow++;
   const kpiNpvTysRow = cfoRow;
   excelSheet3.getCell(`B${cfoRow}`).value = '(NPV w tys. PLN)';
   excelSheet3.getCell(`B${cfoRow}`).font = { italic: true, size: 9, color: { argb: 'FF9E9E9E' } };
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(baseEaaSNpvTys, 0);
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `'EaaS Rok po Roku'!I${lastDataRow}*1000`, result: roundNum(baseEaaSNpvTys, 0) };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- NPV z arkusza Rok po Roku\n-- I${lastDataRow} = skumulowany NPV [mln] × 1000`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(baseEaaSNpvTys, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { color: { argb: 'FF9E9E9E' } };
 
@@ -9317,42 +9363,53 @@ async function exportEaaSToExcel(withFormulas = false) {
     disc: [roundNum(npvDiscPess, 0), roundNum(baseEaaSNpvTys, 0), roundNum(npvDiscOpt, 0)]
   });
 
+  // SUMPRODUCT formula building blocks for tornado
+  const _s2e = "'EaaS Rok po Roku'!";
+  const _eR = `${_s2e}$E$${dataStartRow}:$E$${lastDataRow}`;
+  const _fR = `${_s2e}$F$${dataStartRow}:$F$${lastDataRow}`;
+  const _bR = `${_s2e}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const _dR = `${_s2e}$F$4`;
+
   const tornadoData = [
     {
       param: 'Cena energii z sieci',
       variation: '±20%',
       pessimisticSavings: npvGridPess,
       optimisticSavings: npvGridOpt,
-      pessMultiplier: roundNum(npvGridPess / baseEaaSNpvTys, 4),
-      optMultiplier: roundNum(npvGridOpt / baseEaaSNpvTys, 4),
-      formulaExplanation: 'Full NPV recalculation (±20% grid price)'
-    },
-    {
-      param: 'Cena abonamentu EaaS',
-      variation: '±20%',
-      pessimisticSavings: npvSubsPess,
-      optimisticSavings: npvSubsOpt,
-      pessMultiplier: roundNum(npvSubsPess / baseEaaSNpvTys, 4),
-      optMultiplier: roundNum(npvSubsOpt / baseEaaSNpvTys, 4),
-      formulaExplanation: 'Full NPV recalculation (±20% EaaS subscription)'
-    },
-    {
-      param: 'Yield PV (produkcja)',
-      variation: '±15%',
-      pessimisticSavings: npvYieldPess,
-      optimisticSavings: npvYieldOpt,
-      pessMultiplier: roundNum(npvYieldPess / baseEaaSNpvTys, 4),
-      optMultiplier: roundNum(npvYieldOpt / baseEaaSNpvTys, 4),
-      formulaExplanation: 'Full NPV recalculation (±15% yield)'
+      pessFormula: `SUMPRODUCT(\n  (${_eR} * 0.8\n   - ${_fR}),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eR} * 1.2\n   - ${_fR}),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      pessNote: `-- NPV EaaS: cena sieci -20%\n-- E = Koszt Energii Sieci, F = Koszt EaaS\n-- B = Rok, F4 = stopa dyskontowa`,
+      optNote: `-- NPV EaaS: cena sieci +20%\n-- E = Koszt Energii Sieci, F = Koszt EaaS`
     },
     {
       param: 'Stopa dyskontowa',
       variation: '±2pp',
       pessimisticSavings: npvDiscPess,
       optimisticSavings: npvDiscOpt,
-      pessMultiplier: roundNum(npvDiscPess / baseEaaSNpvTys, 4),
-      optMultiplier: roundNum(npvDiscOpt / baseEaaSNpvTys, 4),
-      formulaExplanation: 'Full NPV recalculation (±2pp discount rate)'
+      pessFormula: `SUMPRODUCT(\n  (${_eR} - ${_fR}),\n  1 / POWER(\n    1 + ${_dR} + 0.02,\n    ${_bR}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eR} - ${_fR}),\n  1 / POWER(\n    1 + ${_dR} - 0.02,\n    ${_bR}))`,
+      pessNote: `-- NPV EaaS: stopa dyskontowa +2pp`,
+      optNote: `-- NPV EaaS: stopa dyskontowa -2pp`
+    },
+    {
+      param: 'Yield PV (produkcja)',
+      variation: '±15%',
+      pessimisticSavings: npvYieldPess,
+      optimisticSavings: npvYieldOpt,
+      pessFormula: `SUMPRODUCT(\n  (${_eR} * 0.85\n   - ${_fR}),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eR} * 1.15\n   - ${_fR}),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      pessNote: `-- NPV EaaS: yield PV -15%`,
+      optNote: `-- NPV EaaS: yield PV +15%`
+    },
+    {
+      param: 'Cena abonamentu EaaS',
+      variation: '±20%',
+      pessimisticSavings: npvSubsPess,
+      optimisticSavings: npvSubsOpt,
+      pessFormula: `SUMPRODUCT(\n  (${_eR}\n   - ${_fR} * 1.2),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eR}\n   - ${_fR} * 0.8),\n  1 / POWER(\n    1 + ${_dR},\n    ${_bR}))`,
+      pessNote: `-- NPV EaaS: abonament +20%`,
+      optNote: `-- NPV EaaS: abonament -20%`
     }
   ];
 
@@ -9398,12 +9455,13 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet3.getCell(`C${cfoRow}`).value = t.variation;
     excelSheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
 
-    // Pessimistic NPV value (tys. PLN) - formula: baseNPV × pessMultiplier
+    // Pessimistic NPV value (tys. PLN) - SUMPRODUCT formula
     if (withFormulas) {
       excelSheet3.getCell(`D${cfoRow}`).value = {
-        formula: `ROUND($C$${kpiNpvTysRow}*${t.pessMultiplier},0)`,
+        formula: t.pessFormula,
         result: roundNum(t.pessimisticSavings, 0)
       };
+      if (t.pessNote) excelSheet3.getCell(`D${cfoRow}`).note = t.pessNote;
     } else {
       excelSheet3.getCell(`D${cfoRow}`).value = roundNum(t.pessimisticSavings, 0);
     }
@@ -9423,12 +9481,13 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet3.getCell(`E${cfoRow}`).font = { bold: true };
     excelSheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
-    // Optimistic NPV value (tys. PLN) - formula: baseNPV × optMultiplier
+    // Optimistic NPV value (tys. PLN) - SUMPRODUCT formula
     if (withFormulas) {
       excelSheet3.getCell(`F${cfoRow}`).value = {
-        formula: `ROUND($C$${kpiNpvTysRow}*${t.optMultiplier},0)`,
+        formula: t.optFormula,
         result: roundNum(t.optimisticSavings, 0)
       };
+      if (t.optNote) excelSheet3.getCell(`F${cfoRow}`).note = t.optNote;
     } else {
       excelSheet3.getCell(`F${cfoRow}`).value = roundNum(t.optimisticSavings, 0);
     }
@@ -9457,20 +9516,6 @@ async function exportEaaSToExcel(withFormulas = false) {
   });
   const tornadoDataEndRow = cfoRow;
 
-  // Add formula explanation column (H) when withFormulas=true for audit trail
-  if (withFormulas) {
-    excelSheet3.getCell(`H${tornadoHeaderRow}`).value = 'Formuła (mnożnik)';
-    excelSheet3.getCell(`H${tornadoHeaderRow}`).font = { bold: true, size: 9 };
-    excelSheet3.getCell(`H${tornadoHeaderRow}`).alignment = { horizontal: 'left' };
-    excelSheet3.getColumn('H').width = 28;
-
-    let explRow = tornadoDataStartRow;
-    tornadoData.forEach((t, idx) => {
-      excelSheet3.getCell(`H${explRow}`).value = `pess=${t.pessMultiplier}, opt=${t.optMultiplier}`;
-      excelSheet3.getCell(`H${explRow}`).font = { size: 8, italic: true, color: { argb: 'FF757575' } };
-      explRow++;
-    });
-  }
 
   // Horizontal bar chart visualization using Unicode bars
   cfoRow += 2;
@@ -9479,9 +9524,11 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
 
   cfoRow++;
-  const chartBaseCol = 4; // Where "0" baseline is
+  // Max range = first sorted item (row tornadoDataStartRow) = F - D
+  const maxRangeRef = `(F${tornadoDataStartRow}-D${tornadoDataStartRow})`;
   tornadoData.forEach((t, idx) => {
     cfoRow++;
+    const dataRow = tornadoDataStartRow + idx;
     // Parameter name
     excelSheet3.getCell(`B${cfoRow}`).value = t.param;
     excelSheet3.getCell(`B${cfoRow}`).font = { size: 10 };
@@ -9494,19 +9541,40 @@ async function exportEaaSToExcel(withFormulas = false) {
     // Red bar (pessimistic - left side)
     const redBarLen = Math.round(Math.abs(pessimisticDelta) / maxRange * 15);
     const redBar = '█'.repeat(Math.max(1, redBarLen));
-    excelSheet3.getCell(`C${cfoRow}`).value = redBar;
+    if (withFormulas) {
+      excelSheet3.getCell(`C${cfoRow}`).value = {
+        formula: `REPT("█",\n  MAX(1, ROUND(\n    ABS(D${dataRow} - E${dataRow})\n    / ${maxRangeRef} * 15, 0)))`,
+        result: redBar
+      };
+    } else {
+      excelSheet3.getCell(`C${cfoRow}`).value = redBar;
+    }
     excelSheet3.getCell(`C${cfoRow}`).font = { color: { argb: 'FFC62828' }, size: 10 };
     excelSheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'right' };
 
     // Values
-    excelSheet3.getCell(`D${cfoRow}`).value = `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`;
+    if (withFormulas) {
+      excelSheet3.getCell(`D${cfoRow}`).value = {
+        formula: `TEXT(D${dataRow},"# ##0")\n& " | " & TEXT(E${dataRow},"# ##0")\n& " | " & TEXT(F${dataRow},"# ##0")`,
+        result: `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`
+      };
+    } else {
+      excelSheet3.getCell(`D${cfoRow}`).value = `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`;
+    }
     excelSheet3.getCell(`D${cfoRow}`).font = { size: 9 };
     excelSheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
 
     // Green bar (optimistic - right side)
     const greenBarLen = Math.round(Math.abs(optimisticDelta) / maxRange * 15);
     const greenBar = '█'.repeat(Math.max(1, greenBarLen));
-    excelSheet3.getCell(`E${cfoRow}`).value = greenBar;
+    if (withFormulas) {
+      excelSheet3.getCell(`E${cfoRow}`).value = {
+        formula: `REPT("█",\n  MAX(1, ROUND(\n    ABS(F${dataRow} - E${dataRow})\n    / ${maxRangeRef} * 15, 0)))`,
+        result: greenBar
+      };
+    } else {
+      excelSheet3.getCell(`E${cfoRow}`).value = greenBar;
+    }
     excelSheet3.getCell(`E${cfoRow}`).font = { color: { argb: 'FF2E7D32' }, size: 10 };
     excelSheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'left' };
   });
@@ -9540,11 +9608,13 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
 
   cfoRow++;
+  const matrixHeaderRowEaaS = cfoRow;
   excelSheet3.getCell(`B${cfoRow}`).value = 'Cena sieci ↓';
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 9 };
   excelSheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'right' };
   yieldVariations.forEach((yv, i) => {
-    excelSheet3.getCell(cfoRow, 3 + i).value = `${yv >= 0 ? '+' : ''}${(yv * 100).toFixed(0)}%`;
+    excelSheet3.getCell(cfoRow, 3 + i).value = yv;
+    excelSheet3.getCell(cfoRow, 3 + i).numFmt = '+0%;-0%;0%';
     excelSheet3.getCell(cfoRow, 3 + i).font = { bold: true, size: 9 };
     excelSheet3.getCell(cfoRow, 3 + i).alignment = { horizontal: 'center' };
     excelSheet3.getCell(cfoRow, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
@@ -9567,17 +9637,9 @@ async function exportEaaSToExcel(withFormulas = false) {
     });
   }
 
-  // Formula support for EaaS sensitivity matrix (PL) — NPV decomposition
-  // NPV = SC_kwh × price_perkwh × (1+pv) × K_factor - K_eaas
   const _col = (n) => String.fromCharCode(64 + n); // 1=A, 2=B, 3=C, ...
 
-  // Compute K_factor (PV of savings per kWh·PLN/kWh) and K_eaas (PV of all EaaS costs)
-  let _K_factor = 0;
-  for (let _y = 1; _y <= (analysisPeriod || 30); _y++) {
-    _K_factor += Math.pow(1 - (eaasNpvBaseForMatrix.degradation_rate), _y - 1)
-              * Math.pow(1 + inflationRate, _y - 1)
-              / Math.pow(1 + discountRate, _y);
-  }
+  // Compute K_eaas (PV of all EaaS costs) — used by scenario analysis formulas
   let _K_eaas = 0;
   for (let _y = 1; _y <= (analysisPeriod || 30); _y++) {
     const _inflFactor = Math.pow(1 + inflationRate, _y - 1);
@@ -9590,45 +9652,12 @@ async function exportEaaSToExcel(withFormulas = false) {
       _K_eaas += (_omCost + _insCost) * _inflFactor / Math.pow(1 + discountRate, _y);
     }
   }
-  // K_eaas in display currency
   const _K_eaas_disp = _K_eaas * currencyMultiplier;
-  const _scBaseKwh = autoconsumptionMwh * 1000; // base SC in kWh
-  console.log('📊 EaaS NPV formula components:', { K_factor: roundNum(_K_factor, 4), K_eaas: roundNum(_K_eaas, 0), K_eaas_disp: roundNum(_K_eaas_disp, 0), scBaseKwh: roundNum(_scBaseKwh, 0) });
-
-  let fParamRowEaaS, fScRowEaaS;
-  if (withFormulas) {
-    cfoRow += 2;
-    fParamRowEaaS = cfoRow;
-    const paramStyle = { size: 8, color: { argb: 'FF888888' } };
-    const paramLabelStyle = { size: 8, italic: true, color: { argb: 'FF888888' } };
-    excelSheet3.getCell(`B${fParamRowEaaS}`).value = 'Parametry:'; excelSheet3.getCell(`B${fParamRowEaaS}`).font = paramLabelStyle;
-    // C: gridPrice in PLN/MWh (display currency)
-    const cfoGridPriceDisp = roundNum(effectiveEnergyPriceEaas * currencyMultiplier, 2);  // RDN-aware
-    excelSheet3.getCell(`C${fParamRowEaaS}`).value = cfoGridPriceDisp; excelSheet3.getCell(`C${fParamRowEaaS}`).font = paramStyle; excelSheet3.getCell(`C${fParamRowEaaS}`).numFmt = '# ##0.00';
-    excelSheet3.getCell(`D${fParamRowEaaS}`).value = `Cena sieci${isRdnExport ? ' RDN' : ''} [${currencyLabel}/MWh]`; excelSheet3.getCell(`D${fParamRowEaaS}`).font = paramLabelStyle;
-    // E: K_factor (dimensionless PV factor for savings)
-    excelSheet3.getCell(`E${fParamRowEaaS}`).value = roundNum(_K_factor, 6); excelSheet3.getCell(`E${fParamRowEaaS}`).font = paramStyle; excelSheet3.getCell(`E${fParamRowEaaS}`).numFmt = '0.000000';
-    excelSheet3.getCell(`F${fParamRowEaaS}`).value = 'PV factor (savings)'; excelSheet3.getCell(`F${fParamRowEaaS}`).font = paramLabelStyle;
-    // G: K_eaas (PV of all EaaS costs in display currency)
-    excelSheet3.getCell(`G${fParamRowEaaS}`).value = roundNum(_K_eaas_disp, 0); excelSheet3.getCell(`G${fParamRowEaaS}`).font = paramStyle; excelSheet3.getCell(`G${fParamRowEaaS}`).numFmt = '# ##0';
-    excelSheet3.getCell(`H${fParamRowEaaS}`).value = `PV(koszty EaaS) [${currencyLabel}]`; excelSheet3.getCell(`H${fParamRowEaaS}`).font = paramLabelStyle;
-    // I: SC_base in kWh
-    excelSheet3.getCell(`I${fParamRowEaaS}`).value = roundNum(_scBaseKwh, 0); excelSheet3.getCell(`I${fParamRowEaaS}`).font = paramStyle; excelSheet3.getCell(`I${fParamRowEaaS}`).numFmt = '# ##0';
-    excelSheet3.getCell(`J${fParamRowEaaS}`).value = 'SC bazowa [kWh]'; excelSheet3.getCell(`J${fParamRowEaaS}`).font = paramLabelStyle;
-
-    cfoRow++;
-    fScRowEaaS = cfoRow;
-    excelSheet3.getCell(`B${fScRowEaaS}`).value = 'SC wg Yield [kWh]:'; excelSheet3.getCell(`B${fScRowEaaS}`).font = paramLabelStyle;
-    yieldVariations.forEach((yv, i) => {
-      excelSheet3.getCell(fScRowEaaS, 3 + i).value = roundNum(eaasSelfConsumptionByYield[yv] * 1000, 0); // MWh → kWh
-      excelSheet3.getCell(fScRowEaaS, 3 + i).font = paramStyle;
-      excelSheet3.getCell(fScRowEaaS, 3 + i).numFmt = '# ##0';
-    });
-  }
 
   gridPriceVariations.forEach(gpv => {
     cfoRow++;
-    excelSheet3.getCell(`B${cfoRow}`).value = `${gpv >= 0 ? '+' : ''}${(gpv * 100).toFixed(0)}%`;
+    excelSheet3.getCell(`B${cfoRow}`).value = gpv;
+    excelSheet3.getCell(`B${cfoRow}`).numFmt = '+0%;-0%;0%';
     excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 9 };
     excelSheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'right' };
     excelSheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
@@ -9649,11 +9678,23 @@ async function exportEaaSToExcel(withFormulas = false) {
       if (!isFinite(adjNpv)) adjNpv = 0;
 
       const cell = excelSheet3.getCell(cfoRow, 3 + i);
-      if (withFormulas && fParamRowEaaS && fScRowEaaS) {
-        const scRef = `${_col(3 + i)}${fScRowEaaS}`;
-        // NPV = K_factor × SC_kWh / 1000 × gridPrice_MWh × (1+pv) - K_eaas  → /1000 for tys.
-        // SC_kWh/1000 converts kWh→MWh so: MWh × currency/MWh = currency
-        const formula = `($E$${fParamRowEaaS}*${scRef}/1000*$C$${fParamRowEaaS}*(1+${gpv})-$G$${fParamRowEaaS})/1000`;
+      if (withFormulas) {
+        const s2e = "'EaaS Rok po Roku'!";
+        const colLetter = _col(3 + i);
+        const yieldRef = `${colLetter}$${matrixHeaderRowEaaS}`;
+        const priceRef = `$B${cfoRow}`;
+        const bRange = `${s2e}$B$${dataStartRow}:$B$${lastDataRow}`;
+        const eRange = `${s2e}$E$${dataStartRow}:$E$${lastDataRow}`;
+        const fCostRange = `${s2e}$F$${dataStartRow}:$F$${lastDataRow}`;
+        let formula;
+        if (isRdnExport) {
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          const degRange = `(1-${s2e}$F$6)*POWER(1-${s2e}$F$7,${bRange}-1)`;
+          const cpiRange = `POWER(1+${s2e}$F$5,${bRange}-1)`;
+          formula = `SUMPRODUCT((${A}$F$18*${degRange}*(1+${yieldRef})*(1+${priceRef})*${cpiRange}+${A}$F$21*(1+${yieldRef})*${cpiRange})/1000-${fCostRange},1/POWER(1+${s2e}$F$4,${bRange}))`;
+        } else {
+          formula = `SUMPRODUCT((${eRange}*(1+${yieldRef})*(1+${priceRef})-${fCostRange}),1/POWER(1+${s2e}$F$4,${bRange}))`;
+        }
         cell.value = { formula, result: roundNum(adjNpv, 0) };
       } else {
         cell.value = roundNum(adjNpv, 0);
@@ -9706,7 +9747,12 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRow++;
   excelSheet3.getCell(`B${cfoRow}`).value = 'Współczynnik emisji sieci [t CO₂/MWh]';
-  excelSheet3.getCell(`C${cfoRow}`).value = co2FactorKgPerKwh;
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `$G$${co2ParamRow}`, result: co2FactorKgPerKwh };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- Wsp. emisji z parametrów (G${co2ParamRow})`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = co2FactorKgPerKwh;
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '0.0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9714,21 +9760,35 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`D${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRow += 2;
+  const annualCO2Row = cfoRow;
   excelSheet3.getCell(`B${cfoRow}`).value = '🌍 Redukcja CO₂ rocznie [tony]';
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons, 0);
+  if (withFormulas) {
+    // CO2 annual = Autokonsumpcja (C_autoParamRow) × CO2 factor (G_co2ParamRow)
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND(\n  $C$${autoParamRow} * $G$${co2ParamRow},\n  0)`, result: roundNum(annualCO2Tons, 0) };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- Autokonsumpcja × emisyjność\n-- C${autoParamRow} = MWh/rok, G${co2ParamRow} = t CO₂/MWh`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' }, size: 12 };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
-  excelSheet3.getCell(`D${cfoRow}`).value = `= ${roundNum(autoconsumptionMwh, 0)} MWh × ${co2FactorKgPerKwh} t/MWh`;
+  excelSheet3.getCell(`D${cfoRow}`).value = `= Autokonsumpcja × ${co2FactorKgPerKwh} t/MWh`;
   excelSheet3.getCell(`D${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
   excelSheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
   excelSheet3.getCell(`C${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
 
   cfoRow++;
+  const totalCO2Row = cfoRow;  // Store for decision summary formulas
   excelSheet3.getCell(`B${cfoRow}`).value = `🌍 Redukcja CO₂ (${cfoPeriod} lat) [tony]`;
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(totalCO2Tons, 0);
+  if (withFormulas) {
+    // Total CO2 = annual × period × avg degradation factor
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND(\n  $C$${annualCO2Row} * ${cfoPeriod}\n  * $C$${degradFactorParamRow},\n  0)`, result: roundNum(totalCO2Tons, 0) };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- CO₂ roczne × lata × śr. degradacja\n-- C${annualCO2Row} = tony/rok, C${degradFactorParamRow} = wsp. degradacji`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(totalCO2Tons, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' }, size: 12 };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9739,7 +9799,11 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRow += 2;
   excelSheet3.getCell(`B${cfoRow}`).value = '🚗 Ekwiwalent samochodów';
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 4.6, 0); // car emits 4.6 tons/year
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND($C$${annualCO2Row}/4.6,0)`, result: roundNum(annualCO2Tons / 4.6, 0) };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 4.6, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9748,7 +9812,11 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRow++;
   excelSheet3.getCell(`B${cfoRow}`).value = '🌳 Ekwiwalent drzew';
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 0.022, 0); // tree absorbs 22kg/year
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND($C$${annualCO2Row}/0.022,0)`, result: roundNum(annualCO2Tons / 0.022, 0) };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 0.022, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9757,7 +9825,11 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRow++;
   excelSheet3.getCell(`B${cfoRow}`).value = '✈️ Ekwiwalent lotów WAW-LON';
-  excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 0.255, 0); // WAW-LON ~255kg CO2
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND($C$${annualCO2Row}/0.255,0)`, result: roundNum(annualCO2Tons / 0.255, 0) };
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(annualCO2Tons / 0.255, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet3.mergeCells(`D${cfoRow}:F${cfoRow}`);
@@ -9770,9 +9842,27 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet3.getRow(r).getCell(3).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
   }
 
-  // --- SECTION 5: BREAK-EVEN ANALYSIS - DIRECT VALUES ---
-  const breakEvenGridPrice = eaasPriceDisplay; // Break-even = when grid price = EaaS price
-  const safetyMarginPct = (gridPriceDisplay - eaasPriceDisplay) / gridPriceDisplay;
+  // --- SECTION 5: BREAK-EVEN ANALYSIS - Full 30-year NPV-based ---
+  // Break-even = grid price where NPV = 0 over full analysis period
+  // NPV = SUMPRODUCT(E_savings - F_costs, discount_factors) = 0
+  // breakEvenPrice = gridPrice × PV(costs) / PV(savings)
+  let pvSavings = 0, pvCosts = 0;
+  for (let yr = 1; yr <= (analysisPeriod || 30); yr++) {
+    const deg = Math.pow(1 - pvDegradationYears2Plus, yr - 1);
+    const cpi = Math.pow(1 + inflationRate, yr - 1);
+    const disc = Math.pow(1 + discountRate, yr);
+    pvSavings += autoconsumptionMwh * gridPriceDisplay / 1000 * deg * cpi / disc;
+    let cost;
+    if (yr <= eaasDuration) {
+      const eaasInfl = eaasIndexation === 'cpi' ? cpi : 1;
+      cost = baseSubscriptionCost / 1000 * eaasInfl;
+    } else {
+      cost = (capacityKwp * eaasOM + capex * (window.economicsSettings?.insuranceRate || 0.005)) / 1000 * cpi;
+    }
+    pvCosts += cost / disc;
+  }
+  const breakEvenGridPrice = pvSavings > 0 ? gridPriceDisplay * pvCosts / pvSavings : eaasPriceDisplay;
+  const safetyMarginPct = (gridPriceDisplay - breakEvenGridPrice) / gridPriceDisplay;
 
   cfoRow += 3;
   excelSheet3.mergeCells(`B${cfoRow}:I${cfoRow}`);
@@ -9804,22 +9894,36 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FF757575' } };
 
   cfoRow++;
-  excelSheet3.getCell(`B${cfoRow}`).value = '⚠️ BREAK-EVEN: Cena sieci';
+  const breakEvenRow = cfoRow;
+  excelSheet3.getCell(`B${cfoRow}`).value = `⚠️ BREAK-EVEN: Cena sieci (${cfoPeriod} lat)`;
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
-  excelSheet3.getCell(`C${cfoRow}`).value = breakEvenGridPrice;
+  if (withFormulas) {
+    // Break-even = gridPrice × PV(costs) / PV(savings) = C_gridPriceRow × SUMPRODUCT(F/disc) / SUMPRODUCT(E/disc)
+    const _s2be = "'EaaS Rok po Roku'!";
+    const beFormula = `$C$${gridPriceParamRow}\n* SUMPRODUCT(\n    ${_s2be}$F$${dataStartRow}:$F$${lastDataRow}\n    / POWER(1 + ${_s2be}$F$4,\n            ${_s2be}$B$${dataStartRow}:$B$${lastDataRow}))\n/ SUMPRODUCT(\n    ${_s2be}$E$${dataStartRow}:$E$${lastDataRow}\n    / POWER(1 + ${_s2be}$F$4,\n            ${_s2be}$B$${dataStartRow}:$B$${lastDataRow}))`;
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: beFormula, result: roundNum(breakEvenGridPrice, 0) };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- Cena sieci przy NPV=0 (${cfoPeriod} lat)\n-- cena × PV(koszty_EaaS) / PV(koszty_sieci)`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(breakEvenGridPrice, 0);
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '#,##0';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FFE65100' }, size: 12 };
   excelSheet3.getCell(`C${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
   excelSheet3.getCell(`D${cfoRow}`).value = `${currencyLabel}/MWh`;
   excelSheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FF757575' } };
   excelSheet3.mergeCells(`E${cfoRow}:G${cfoRow}`);
-  excelSheet3.getCell(`E${cfoRow}`).value = 'Poniżej tej ceny EaaS nie generuje oszczędności';
+  excelSheet3.getCell(`E${cfoRow}`).value = `Cena sieci przy NPV=0 (pełne ${cfoPeriod} lat z własnością)`;
   excelSheet3.getCell(`E${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRow++;
   excelSheet3.getCell(`B${cfoRow}`).value = '🛡️ Margines bezpieczeństwa';
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
-  excelSheet3.getCell(`C${cfoRow}`).value = safetyMarginPct;
+  if (withFormulas) {
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `($C$${gridPriceParamRow} - C${breakEvenRow})\n/ $C$${gridPriceParamRow}`, result: safetyMarginPct };
+    excelSheet3.getCell(`C${cfoRow}`).note = `-- (cena_sieci - break_even) / cena_sieci`;
+  } else {
+    excelSheet3.getCell(`C${cfoRow}`).value = safetyMarginPct;
+  }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = '0.0%';
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF2E7D32' }, size: 12 };
   excelSheet3.getCell(`C${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
@@ -9917,10 +10021,12 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
 
     // Oszczędności - use formula or value
-    if (withFormulas && fParamRowEaaS) {
-      // Correct formula: NPV_new = (NPV_base + K_eaas/1000) × gridMult × yieldMult - K_eaas/1000
-      // Because NPV = PV(savings) - PV(costs), and only savings scale with grid×yield
-      excelSheet3.getCell(`E${cfoRow}`).value = { formula: `ROUND(($C$${kpiNpvTysRow}+$G$${fParamRowEaaS}/1000)*(1+C${cfoRow})*(1+D${cfoRow})-$G$${fParamRowEaaS}/1000,0)`, result: roundNum(scenarioSavings, 0) };
+    // K_eaas = PV of all EaaS/ownership costs = SUMPRODUCT(F_range/POWER(1+disc,B_range))
+    if (withFormulas) {
+      const _s2sc = "'EaaS Rok po Roku'!";
+      const kEaasFormula = `SUMPRODUCT(\n    ${_s2sc}$F$${dataStartRow}:$F$${lastDataRow}\n    / POWER(1 + ${_s2sc}$F$4,\n            ${_s2sc}$B$${dataStartRow}:$B$${lastDataRow}))`;
+      excelSheet3.getCell(`E${cfoRow}`).value = { formula: `ROUND(\n  ($C$${kpiNpvTysRow} + ${kEaasFormula})\n  * (1 + C${cfoRow}) * (1 + D${cfoRow})\n  - ${kEaasFormula},\n  0)`, result: roundNum(scenarioSavings, 0) };
+      excelSheet3.getCell(`E${cfoRow}`).note = `-- NPV przy zmianach yield/cena\n-- K_eaas = PV kosztów EaaS\n-- (NPV+K)×mnożniki - K`;
     } else {
       excelSheet3.getCell(`E${cfoRow}`).value = roundNum(scenarioSavings, 0);
     }
@@ -9986,6 +10092,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   const baseInflIdx = inflationRates.findIndex(r => Math.abs(r - baseInflation) < 0.002);
 
   cfoRow += 2;
+  const inflHeaderRow = cfoRow;
   excelSheet3.getCell(`B${cfoRow}`).value = 'Roczna inflacja cen energii';
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true };
   inflationRates.forEach((inf, i) => {
@@ -10001,89 +10108,37 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`B${cfoRow}`).value = `NPV [tys. ${currencyLabel}]`;
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true };
 
-  // Pre-compute K_factor(i) and K_eaas(i) for each inflation rate
-  // NPV(i) = SC_kWh × price_kWh × K_factor(i) × 1000 - K_eaas(i) → /1000 for tys.
-  // Formula: = (SC_kWh/1000 × price_MWh × K_factor_col - K_eaas_col) / 1000
-  const inflKFactors = [];
-  const inflKEaas = [];
+  // Pre-compute NPV for each inflation rate (for result values)
   const inflNpvValues = [];
-
   inflationRates.forEach((inf) => {
-    let kf = 0, ke = 0;
-    for (let y = 1; y <= (analysisPeriod || 30); y++) {
-      const degFactor = Math.pow(1 - (eaasNpvBaseForMatrix.degradation_rate), y - 1);
-      const inflFactor = Math.pow(1 + inf, y - 1);
-      const discFactor = Math.pow(1 + discountRate, y);
-      kf += degFactor * inflFactor / discFactor;
-      const eaasInflFactor = eaasIndexation === 'cpi' ? inflFactor : 1;
-      if (y <= eaasDuration) {
-        ke += baseSubscriptionCost * eaasInflFactor / discFactor;
-      } else {
-        const omCost = capacityKwp * eaasOM;
-        const insCost = capex * (window.economicsSettings?.insuranceRate || 0.005);
-        ke += (omCost + insCost) * inflFactor / discFactor;
-      }
-    }
-    inflKFactors.push(kf);
-    inflKEaas.push(ke);
-
-    // Full NPV from components (equivalent to calculateEaaSNPV)
-    const scMwh = eaasNpvBaseForMatrix.self_consumed_annual_kwh / 1000;
-    const pricePerkWh = eaasNpvBaseForMatrix.total_energy_price_per_kwh;
-    const npvPLN = scMwh * pricePerkWh * kf * 1000 - ke;
+    const npvPLN = calculateEaaSNPV({
+      ...eaasNpvBaseForMatrix,
+      inflation_rate: inf
+    });
     inflNpvValues.push(npvPLN / 1000 * currencyMultiplier);
   });
 
-  console.log('📊 Inflation K_factors:', inflationRates.map((r, i) => `${(r*100).toFixed(1)}%: Kf=${roundNum(inflKFactors[i], 4)}, Ke=${roundNum(inflKEaas[i], 0)}`).join(', '));
-
-  // Formula reference rows (when withFormulas)
-  let inflParamRow, inflKfRow, inflKeRow;
-  if (withFormulas) {
-    cfoRow++;
-    inflParamRow = cfoRow;
-    const pStyle = { size: 8, color: { argb: 'FF888888' } };
-    const pLabel = { size: 8, italic: true, color: { argb: 'FF888888' } };
-    excelSheet3.getCell(`B${cfoRow}`).value = 'Parametry:'; excelSheet3.getCell(`B${cfoRow}`).font = pLabel;
-
-    cfoRow++;
-    inflKfRow = cfoRow;
-    excelSheet3.getCell(`B${cfoRow}`).value = 'K_factor(i):'; excelSheet3.getCell(`B${cfoRow}`).font = pLabel;
-    inflationRates.forEach((inf, i) => {
-      excelSheet3.getCell(cfoRow, 3 + i).value = roundNum(inflKFactors[i], 6);
-      excelSheet3.getCell(cfoRow, 3 + i).font = pStyle;
-      excelSheet3.getCell(cfoRow, 3 + i).numFmt = '0.000000';
-    });
-
-    cfoRow++;
-    inflKeRow = cfoRow;
-    excelSheet3.getCell(`B${cfoRow}`).value = `K_eaas(i) [${currencyLabel}]:`; excelSheet3.getCell(`B${cfoRow}`).font = pLabel;
-    inflationRates.forEach((inf, i) => {
-      excelSheet3.getCell(cfoRow, 3 + i).value = roundNum(inflKEaas[i] * currencyMultiplier, 0);
-      excelSheet3.getCell(cfoRow, 3 + i).font = pStyle;
-      excelSheet3.getCell(cfoRow, 3 + i).numFmt = '# ##0';
-    });
-
-    // SC and price reference in param row
-    const scKwh = roundNum(eaasNpvBaseForMatrix.self_consumed_annual_kwh, 0);
-    const priceMwh = roundNum(effectiveEnergyPriceEaas * currencyMultiplier, 2);
-    excelSheet3.getCell(`C${inflParamRow}`).value = scKwh; excelSheet3.getCell(`C${inflParamRow}`).font = pStyle; excelSheet3.getCell(`C${inflParamRow}`).numFmt = '# ##0';
-    excelSheet3.getCell(`D${inflParamRow}`).value = 'SC [kWh]'; excelSheet3.getCell(`D${inflParamRow}`).font = pLabel;
-    excelSheet3.getCell(`E${inflParamRow}`).value = priceMwh; excelSheet3.getCell(`E${inflParamRow}`).font = pStyle; excelSheet3.getCell(`E${inflParamRow}`).numFmt = '# ##0.00';
-    excelSheet3.getCell(`F${inflParamRow}`).value = `Cena [${currencyLabel}/MWh]`; excelSheet3.getCell(`F${inflParamRow}`).font = pLabel;
-  }
-
   cfoRow++;
   const inflValuesRowActual = cfoRow;
+
+  // SUMPRODUCT formula building blocks for inflation sensitivity
+  const _s2inf = "'EaaS Rok po Roku'!";
+  const _eInf = `${_s2inf}$E$${dataStartRow}:$E$${lastDataRow}`;
+  const _fInf = `${_s2inf}$F$${dataStartRow}:$F$${lastDataRow}`;
+  const _bInf = `${_s2inf}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const _discInf = `${_s2inf}$F$4`;
+  const _baseInflRef = `${_s2inf}$F$5`;
+
   inflationRates.forEach((inf, i) => {
     const inflNpv = inflNpvValues[i];
     const cell = excelSheet3.getCell(cfoRow, 3 + i);
     const colLetter = _col(3 + i);
 
-    if (withFormulas && inflKfRow && inflKeRow && inflParamRow) {
-      // Formula: = ($C$param/1000 * $E$param * COL$kfRow - COL$keRow) / 1000
-      // SC_kWh/1000 × price_MWh × K_factor - K_eaas → /1000 for tys.
-      const formula = `($C$${inflParamRow}/1000*$E$${inflParamRow}*${colLetter}$${inflKfRow}-${colLetter}$${inflKeRow})/1000`;
+    if (withFormulas) {
+      // SUMPRODUCT: adjust savings E by inflation ratio (1+inf_new)/(1+inf_base) per year, keep costs F unchanged
+      const formula = `SUMPRODUCT(\n  (${_eInf}\n   * POWER(\n       (1 + ${colLetter}$${inflHeaderRow}) / (1 + ${_baseInflRef}),\n       ${_bInf} - 1)\n   - ${_fInf}),\n  1 / POWER(1 + ${_discInf}, ${_bInf}))`;
       cell.value = { formula, result: roundNum(inflNpv, 0) };
+      cell.note = `-- NPV przy inflacji ${colLetter}$${inflHeaderRow}\n-- E×(1+infl)^rok / dyskonto - F`;
     } else {
       cell.value = roundNum(inflNpv, 0);
     }
@@ -10164,35 +10219,70 @@ async function exportEaaSToExcel(withFormulas = false) {
   const co2FactorTonPerMwh = 0.7;
   const totalCO2Reduction = roundNum(autoconsumptionMwh * co2FactorTonPerMwh * cfoPeriod * degradationFactor30, 0);
 
-  // Decision rows with formulas for savings
+  // Decision rows with formulas for dynamic rows
   const decisions = [
     { criterion: 'Nakład inwestycyjny (CAPEX)', eaas: '0 PLN', statusQuo: '0 PLN', winner: 'Remis', winColor: 'FF757575', useFormula: false },
-    { criterion: `Koszt energii ${cfoPeriod} lat`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
+    { criterion: `Koszt energii ${cfoPeriod} lat`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
     { criterion: `Oszczędności ${cfoPeriod} lat`, eaas: `${roundNum(tornadoBaseSavings30, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'savings' },
     { criterion: 'Ryzyko techniczne', eaas: 'Dostawca', statusQuo: 'Brak instalacji', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Ryzyko cenowe', eaas: 'Częściowe zabezp.', statusQuo: '100% ekspozycji', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Wpływ na bilans', eaas: 'Off-balance', statusQuo: 'Brak', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Zielona energia', eaas: 'TAK', statusQuo: 'NIE', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
-    { criterion: 'Redukcja CO₂', eaas: `${totalCO2Reduction} ton`, statusQuo: '0 ton', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false }
+    { criterion: 'Redukcja CO₂', eaas: `${totalCO2Reduction} ton`, statusQuo: '0 ton', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'co2' }
   ];
 
+  const _s2dec = "'EaaS Rok po Roku'!";
+  const decisionFirstRow = cfoRow + 1;
   decisions.forEach(d => {
     cfoRow++;
     excelSheet3.getCell(`B${cfoRow}`).value = d.criterion;
     excelSheet3.mergeCells(`B${cfoRow}:C${cfoRow}`);
 
-    // Use formula for savings row when withFormulas=true
-    if (withFormulas && d.useFormula && d.formulaType === 'savings') {
-      excelSheet3.getCell(`D${cfoRow}`).value = { formula: `$C$${kpiTotalTysRow}&" tys. PLN"`, result: d.eaas };
+    // D column (EaaS value) — formulas matching reference ROUND pattern
+    if (withFormulas && d.useFormula) {
+      if (d.formulaType === 'savings') {
+        excelSheet3.getCell(`D${cfoRow}`).value = { formula: `ROUND($C$${kpiTotalTysRow},0)\n&" tys. PLN"`, result: d.eaas };
+      } else if (d.formulaType === 'energyCost') {
+        excelSheet3.getCell(`D${cfoRow}`).value = {
+          formula: `ROUND(\n  SUM(${_s2dec}F${dataStartRow}:${_s2dec}F${lastDataRow}),\n  0)\n&" tys."`,
+          result: d.eaas
+        };
+      } else if (d.formulaType === 'co2') {
+        excelSheet3.getCell(`D${cfoRow}`).value = { formula: `ROUND($C$${totalCO2Row},0)\n&" ton"`, result: d.eaas };
+      }
     } else {
       excelSheet3.getCell(`D${cfoRow}`).value = d.eaas;
     }
     excelSheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
     excelSheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
-    excelSheet3.getCell(`E${cfoRow}`).value = d.statusQuo;
+
+    // E column (Status Quo value) — formulas when applicable
+    if (withFormulas && d.useFormula && d.formulaType === 'energyCost') {
+      excelSheet3.getCell(`E${cfoRow}`).value = {
+        formula: `ROUND(\n  SUM(${_s2dec}E${dataStartRow}:${_s2dec}E${lastDataRow}),\n  0)\n&" tys."`,
+        result: d.statusQuo
+      };
+    } else {
+      excelSheet3.getCell(`E${cfoRow}`).value = d.statusQuo;
+    }
     excelSheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
     excelSheet3.getCell(`E${cfoRow}`).font = { color: { argb: 'FF757575' } };
-    excelSheet3.getCell(`F${cfoRow}`).value = d.winner;
+
+    // F column (Winner) — formulas when applicable
+    if (withFormulas && d.useFormula) {
+      if (d.formulaType === 'savings') {
+        excelSheet3.getCell(`F${cfoRow}`).value = { formula: `IF($C$${kpiTotalTysRow}>0,\n  "EaaS","Status Quo")`, result: d.winner };
+      } else if (d.formulaType === 'energyCost') {
+        excelSheet3.getCell(`F${cfoRow}`).value = {
+          formula: `IF(\n  SUM(${_s2dec}F${dataStartRow}:${_s2dec}F${lastDataRow})\n  < SUM(${_s2dec}E${dataStartRow}:${_s2dec}E${lastDataRow}),\n  "EaaS","Status Quo")`,
+          result: d.winner
+        };
+      } else if (d.formulaType === 'co2') {
+        excelSheet3.getCell(`F${cfoRow}`).value = { formula: `IF($C$${totalCO2Row}>0,\n  "EaaS","Status Quo")`, result: d.winner };
+      }
+    } else {
+      excelSheet3.getCell(`F${cfoRow}`).value = d.winner;
+    }
     excelSheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
     excelSheet3.getCell(`F${cfoRow}`).font = { bold: true, color: { argb: d.winColor } };
 
@@ -10204,11 +10294,22 @@ async function exportEaaSToExcel(withFormulas = false) {
       excelSheet3.getRow(cfoRow).getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
     }
   });
+  const decisionLastRow = cfoRow;
+  const eaasWinCount = decisions.filter(d => d.winner === 'EaaS').length;
 
-  // Final verdict
+  // Final verdict — dynamic COUNTIF formula
   cfoRow += 2;
   excelSheet3.mergeCells(`B${cfoRow}:F${cfoRow}`);
-  excelSheet3.getCell(`B${cfoRow}`).value = '✅ REKOMENDACJA: Model EaaS wygrywa w 7 z 8 kryteriów';
+  if (withFormulas) {
+    const fRange = `F${decisionFirstRow}:F${decisionLastRow}`;
+    const nCriteria = decisions.length;
+    excelSheet3.getCell(`B${cfoRow}`).value = {
+      formula: `IF(\n  COUNTIF(${fRange},"EaaS")\n  > COUNTIF(${fRange},"Status Quo"),\n  "✅ REKOMENDACJA: Model EaaS - wygrywa w "\n  & COUNTIF(${fRange},"EaaS")\n  & " z ${nCriteria} kryteriów",\n  "⛔ REKOMENDACJA: Status Quo - wygrywa w "\n  & COUNTIF(${fRange},"Status Quo")\n  & " z ${nCriteria} kryteriów")`,
+      result: `✅ REKOMENDACJA: Model EaaS - wygrywa w ${eaasWinCount} z ${nCriteria} kryteriów`
+    };
+  } else {
+    excelSheet3.getCell(`B${cfoRow}`).value = `✅ REKOMENDACJA: Model EaaS - wygrywa w ${eaasWinCount} z ${decisions.length} kryteriów`;
+  }
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 12, color: { argb: 'FF2E7D32' } };
   excelSheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } };
   excelSheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'center' };
@@ -10217,7 +10318,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.mergeCells(`B${cfoRow}:F${cfoRow}`);
   // Use formula for final summary when withFormulas=true
   if (withFormulas) {
-    excelSheet3.getCell(`B${cfoRow}`).value = { formula: `"Oczekiwana oszczędność: "&TEXT($C$${kpiTotalTysRow},"# ##0")&" tys. ${currencyLabel} przez ${cfoPeriod} lat bez nakładów CAPEX"` };
+    excelSheet3.getCell(`B${cfoRow}`).value = { formula: `"Oczekiwana oszczędność: "\n&ROUND($C$${kpiTotalTysRow},0)\n&" tys. ${currencyLabel} przez ${cfoPeriod} lat bez nakładów CAPEX"` };
   } else {
     excelSheet3.getCell(`B${cfoRow}`).value = `Oczekiwana oszczędność: ${roundNum(tornadoBaseSavings30, 0)} tys. ${currencyLabel} przez ${cfoPeriod} lat bez nakładów CAPEX`;
   }
@@ -10409,7 +10510,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // Row 17: Header row (English)
   const headerRowEN = excelSheet5.getRow(17);
   headerRowEN.height = 40;
-  const headersEN = ['', 'Year', 'Phase', `Self-consumption [MWh]`, isRdnExport ? `RDN Gross Savings [k${currencyLabel}]` : `Grid Cost [k${currencyLabel}]`, `EaaS/Ownership Cost [k${currencyLabel}]`, `Savings [k${currencyLabel}]`, `Discounted CF [k${currencyLabel}]`, `Cumulative NPV [M${currencyLabel}]`];
+  const headersEN = ['', 'Year', 'Phase', `Self-consumption [MWh]`, isRdnExport ? `RDN Gross Savings [k${currencyLabel}]` : `Grid Energy Cost [k${currencyLabel}]`, `EaaS/Ownership Cost [k${currencyLabel}]`, `Savings [k${currencyLabel}]`, `Discounted CF [k${currencyLabel}]`, `Cumulative NPV [M${currencyLabel}]`];
   headersEN.forEach((h, i) => {
     if (i === 0) return;
     const cell = headerRowEN.getCell(i + 1);
@@ -10423,6 +10524,16 @@ async function exportEaaSToExcel(withFormulas = false) {
     };
   });
 
+  // Column header notes (Sheet 5 EN) — explain formulas in each column
+  if (withFormulas) {
+    excelSheet5.getCell('D17').note = `-- Base × (1-degY1) × (1-degY2+)^(year-1)`;
+    excelSheet5.getCell('E17').note = `-- Self-consumption × grid_price / 1000\n-- × (1+inflation)^(year-1)`;
+    excelSheet5.getCell('F17').note = `-- EaaS phase: subscription\n-- Ownership phase: O&M + insurance`;
+    excelSheet5.getCell('G17').note = `-- Grid_Cost - EaaS_Cost`;
+    excelSheet5.getCell('H17').note = `-- Savings / (1+r)^year`;
+    excelSheet5.getCell('I17').note = `-- Running total of CF / 1000 [M PLN]`;
+  }
+
   // Copy data rows from Sheet 2 (rows 18 onwards)
   const dataStartRowEN = 18;
   for (let year = 1; year <= analysisPeriod; year++) {
@@ -10432,8 +10543,9 @@ async function exportEaaSToExcel(withFormulas = false) {
     const phase = yearData?.phase || (year <= eaasDuration ? 'eaas' : 'ownership');
 
     // Copy values from Sheet 2 but translate phase
+    const destRowNum = dataStartRowEN + year - 1;
     destRow.getCell(2).value = year;
-    destRow.getCell(3).value = phase === 'eaas' ? 'EaaS' : 'Ownership';
+    destRow.getCell(3).value = { formula: `IF(B${destRowNum}<=$F$8,"EaaS","Ownership")`, result: phase === 'eaas' ? 'EaaS' : 'Ownership' };
     destRow.getCell(3).font = { color: { argb: phase === 'eaas' ? 'FF1565C0' : 'FF2E7D32' } };
 
     // Copy numeric values from source row
@@ -10464,19 +10576,19 @@ async function exportEaaSToExcel(withFormulas = false) {
   const summaryStartRowEN = dataStartRowEN + analysisPeriod + 1;
   excelSheet5.getRow(summaryStartRowEN).getCell(3).value = 'TOTAL EaaS Phase:';
   excelSheet5.getRow(summaryStartRowEN).getCell(3).font = { bold: true, color: { argb: 'FF1565C0' } };
-  excelSheet5.getRow(summaryStartRowEN).getCell(7).value = excelSheet2.getRow(summaryStartRow).getCell(7).value;
+  excelSheet5.getRow(summaryStartRowEN).getCell(7).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"EaaS",G${dataStartRow}:G${lastDataRow})`, result: roundNum(eaasPhaseSavings / 1000, 2) };
   excelSheet5.getRow(summaryStartRowEN).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN).getCell(7).font = { bold: true, color: { argb: 'FF1565C0' } };
 
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(3).value = 'TOTAL Ownership Phase:';
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(3).font = { bold: true, color: { argb: 'FF2E7D32' } };
-  excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).value = excelSheet2.getRow(summaryStartRow + 1).getCell(7).value;
+  excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"Ownership",G${dataStartRow}:G${lastDataRow})`, result: roundNum(ownershipPhaseSavings / 1000, 2) };
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).font = { bold: true, color: { argb: 'FF2E7D32' } };
 
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(3).value = 'GRAND TOTAL:';
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(3).font = { bold: true, size: 11 };
-  excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).value = excelSheet2.getRow(summaryStartRow + 2).getCell(7).value;
+  excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).value = { formula: `SUM(G${dataStartRow}:G${lastDataRow})`, result: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 2) };
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).font = { bold: true, size: 11 };
 
@@ -10484,7 +10596,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   const npvRowEN = summaryStartRowEN + 4;
   excelSheet5.getRow(npvRowEN).getCell(3).value = `NPV [M${currencyLabel}]:`;
   excelSheet5.getRow(npvRowEN).getCell(3).font = { bold: true, size: 12, color: { argb: 'FF1976D2' } };
-  excelSheet5.getRow(npvRowEN).getCell(9).value = excelSheet2.getRow(lastDataRow).getCell(9).value;
+  excelSheet5.getRow(npvRowEN).getCell(9).value = { formula: `I${lastDataRow}`, result: roundNum(cumulativeNPV / 1000000, 2) };
   excelSheet5.getRow(npvRowEN).getCell(9).numFmt = '#,##0.00';
   excelSheet5.getRow(npvRowEN).getCell(9).font = { bold: true, size: 12, color: { argb: 'FF1976D2' } };
 
@@ -10526,6 +10638,14 @@ async function exportEaaSToExcel(withFormulas = false) {
   }
   excelSheet5.views = [{ state: 'frozen', ySplit: 17, showGridLines: false, showRowColHeaders: false }];
   console.log('✅ Sheet 5: EaaS Year by Year (EN) created');
+
+  // EN cross-sheet references (same row numbers as PL, different sheet name)
+  const sheet5Refs = {
+    eaasSum: `'EaaS Year by Year'!G${summaryStartRow}`,
+    ownershipSum: `'EaaS Year by Year'!G${summaryStartRow + 1}`,
+    totalSum: `'EaaS Year by Year'!G${summaryStartRow + 2}`,
+    npvFinal: `'EaaS Year by Year'!I${lastDataRow}`
+  };
 
   // --- SHEET 6: CFO Analysis (English) ---
   const excelSheet6 = excelWorkbook.addWorksheet('CFO Analysis');
@@ -10574,32 +10694,52 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`G${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
 
   cfoRowEN++;
+  const autoParamRowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Self-consumption [MWh/year]';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = autoconsumptionMwh;
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `'EaaS Year by Year'!F10`, result: autoconsumptionMwh };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = autoconsumptionMwh;
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0.0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true };
   excelSheet6.getCell(`D${cfoRowEN}`).value = 'PV degradation [%/year]';
-  excelSheet6.getCell(`E${cfoRowEN}`).value = pvDegradationYears2Plus;
+  if (withFormulas) {
+    excelSheet6.getCell(`E${cfoRowEN}`).value = { formula: `'EaaS Year by Year'!F7`, result: pvDegradationYears2Plus };
+  } else {
+    excelSheet6.getCell(`E${cfoRowEN}`).value = pvDegradationYears2Plus;
+  }
   excelSheet6.getCell(`E${cfoRowEN}`).numFmt = '0.00%';
   excelSheet6.getCell(`E${cfoRowEN}`).font = { bold: true };
 
   cfoRowEN++;
+  const gridPriceParamRowEN = cfoRowEN;
+  const co2ParamRowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = `Grid price [${currencyLabel}/MWh]`;
-  excelSheet6.getCell(`C${cfoRowEN}`).value = gridPriceDisplay;
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `'EaaS Year by Year'!F11`, result: gridPriceDisplay };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = gridPriceDisplay;
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true };
   excelSheet6.getCell(`D${cfoRowEN}`).value = `EaaS price [${currencyLabel}/MWh]`;
   excelSheet6.getCell(`E${cfoRowEN}`).value = eaasPriceDisplay;
   excelSheet6.getCell(`E${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`E${cfoRowEN}`).font = { bold: true };
-  excelSheet6.getCell(`F${cfoRowEN}`).value = 'CO2 emission [kg/kWh]';
+  excelSheet6.getCell(`F${cfoRowEN}`).value = 'CO2 emission [t/MWh]';
   excelSheet6.getCell(`G${cfoRowEN}`).value = 0.7;
   excelSheet6.getCell(`G${cfoRowEN}`).numFmt = '0.0';
   excelSheet6.getCell(`G${cfoRowEN}`).font = { bold: true };
 
   cfoRowEN++;
+  const degradFactorParamRowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Avg. degradation factor';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = 1 - pvDegradationYears2Plus * cfoPeriod / 2;
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `1-E${autoParamRowEN}*${cfoPeriod}/2`, result: 1 - pvDegradationYears2Plus * cfoPeriod / 2 };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = 1 - pvDegradationYears2Plus * cfoPeriod / 2;
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '0.000';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
@@ -10642,7 +10782,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `EaaS Phase (years 1-${eaasPhaseYears})`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet2Refs.eaasSum}/1000`, result: roundNum(totalSavingsEaaS / 1000, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.eaasSum}/1000`, result: roundNum(totalSavingsEaaS / 1000, 2) };
   } else {
     excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalSavingsEaaS / 1000, 2);
   }
@@ -10650,7 +10790,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   excelSheet6.getCell(`C${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
-  excelSheet6.getCell(`D${cfoRowEN}`).value = withFormulas ? `= ${sheet2Refs.eaasSum} / 1000` : 'Savings with EaaS subscription';
+  excelSheet6.getCell(`D${cfoRowEN}`).value = withFormulas ? `= ${sheet5Refs.eaasSum} / 1000` : 'Savings with EaaS subscription';
   excelSheet6.getCell(`D${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   // Ownership Phase savings
@@ -10659,7 +10799,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `Ownership Phase (years ${eaasPhaseYears + 1}-${cfoPeriod})`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet2Refs.ownershipSum}/1000`, result: roundNum(totalSavingsOwnership / 1000, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.ownershipSum}/1000`, result: roundNum(totalSavingsOwnership / 1000, 2) };
   } else {
     excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalSavingsOwnership / 1000, 2);
   }
@@ -10667,7 +10807,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
   excelSheet6.getCell(`C${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
-  excelSheet6.getCell(`D${cfoRowEN}`).value = withFormulas ? `= ${sheet2Refs.ownershipSum} / 1000` : 'Free energy (O&M only)';
+  excelSheet6.getCell(`D${cfoRowEN}`).value = withFormulas ? `= ${sheet5Refs.ownershipSum} / 1000` : 'Free energy (O&M only)';
   excelSheet6.getCell(`D${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   // TOTAL SAVINGS
@@ -10692,7 +10832,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'NPV (Net Present Value)';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet2Refs.npvFinal}`, result: roundNum(npvMln, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.npvFinal}`, result: roundNum(npvMln, 2) };
   } else {
     excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(npvMln, 2);
   }
@@ -10709,9 +10849,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Discounted Payback (DPP)';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true };
   if (withFormulas) {
-    const s2en = "'EaaS Rok po Roku'!";
-    const _nCfoEN = `SUMPRODUCT((${s2en}I${dataStartRow}:${s2en}I${lastDataRow}<0)*1)`;
-    const _iCfoRangeEN = `${s2en}I${dataStartRow}:${s2en}I${lastDataRow}`;
+    const s2enDpp = "'EaaS Year by Year'!";
+    const _nCfoEN = `SUMPRODUCT((${s2enDpp}I${dataStartRow}:${s2enDpp}I${lastDataRow}<0)*1)`;
+    const _iCfoRangeEN = `${s2enDpp}I${dataStartRow}:${s2enDpp}I${lastDataRow}`;
     const kpiDppFormulaEN = `IF(${_nCfoEN}=0,0,${_nCfoEN}+(-INDEX(${_iCfoRangeEN},${_nCfoEN}))/(INDEX(${_iCfoRangeEN},${_nCfoEN}+1)-INDEX(${_iCfoRangeEN},${_nCfoEN})))`;
     excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: kpiDppFormulaEN, result: hasDppEaaS ? roundNum(eaasDpp, 1) : 0 };
   } else {
@@ -10737,12 +10877,17 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { color: { argb: 'FF9E9E9E' } };
 
-  // Helper row for NPV in thousands (for tornado/scenario formulas)
+  // Helper row for NPV in thousands - formula referencing year-by-year sheet
   cfoRowEN++;
   const kpiNpvTysRowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '(NPV in thousands)';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { italic: true, size: 9, color: { argb: 'FF9E9E9E' } };
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(baseEaaSNpvTys, 0);
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `'EaaS Year by Year'!I${lastDataRow}*1000`, result: roundNum(baseEaaSNpvTys, 0) };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- NPV from Year by Year sheet\n-- I${lastDataRow} = cumulative NPV [M] × 1000`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(baseEaaSNpvTys, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { color: { argb: 'FF9E9E9E' } };
 
@@ -10816,21 +10961,34 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`G${cfoRowEN}`).value = `Range [k${currencyLabel}]`;
   excelSheet6.getCell(`G${cfoRowEN}`).font = { bold: true };
   excelSheet6.getCell(`G${cfoRowEN}`).alignment = { horizontal: 'center' };
-  if (withFormulas) {
-    excelSheet6.getCell(`H${cfoRowEN}`).value = 'Formula (multiplier)';
-    excelSheet6.getCell(`H${cfoRowEN}`).font = { bold: true, size: 9 };
-  }
+  // Tornado data (English) - SUMPRODUCT formulas referencing EaaS Year by Year sheet
+  const _s2en = "'EaaS Year by Year'!";
+  const _eRen = `${_s2en}$E$${dataStartRow}:$E$${lastDataRow}`;
+  const _fRen = `${_s2en}$F$${dataStartRow}:$F$${lastDataRow}`;
+  const _bRen = `${_s2en}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const _dRen = `${_s2en}$F$4`;
 
-  // Tornado data (English) - full NPV recalculation (consistent with CAPEX)
   const tornadoDataEN = [
     { param: 'Grid energy price', variation: '±20%', pessimisticSavings: npvGridPess, optimisticSavings: npvGridOpt,
-      pessMultiplier: roundNum(npvGridPess / baseEaaSNpvTys, 4), optMultiplier: roundNum(npvGridOpt / baseEaaSNpvTys, 4) },
+      pessFormula: `SUMPRODUCT(\n  (${_eRen} * 0.8\n   - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eRen} * 1.2\n   - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      pessNote: `-- NPV EaaS: grid price -20%\n-- E = Grid Energy Cost, F = EaaS Cost`,
+      optNote: `-- NPV EaaS: grid price +20%\n-- E = Grid Energy Cost, F = EaaS Cost` },
     { param: 'EaaS subscription price', variation: '±20%', pessimisticSavings: npvSubsPess, optimisticSavings: npvSubsOpt,
-      pessMultiplier: roundNum(npvSubsPess / baseEaaSNpvTys, 4), optMultiplier: roundNum(npvSubsOpt / baseEaaSNpvTys, 4) },
+      pessFormula: `SUMPRODUCT(\n  (${_eRen}\n   - ${_fRen} * 1.2),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eRen}\n   - ${_fRen} * 0.8),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      pessNote: `-- NPV EaaS: subscription +20%`,
+      optNote: `-- NPV EaaS: subscription -20%` },
     { param: 'PV yield (production)', variation: '±15%', pessimisticSavings: npvYieldPess, optimisticSavings: npvYieldOpt,
-      pessMultiplier: roundNum(npvYieldPess / baseEaaSNpvTys, 4), optMultiplier: roundNum(npvYieldOpt / baseEaaSNpvTys, 4) },
+      pessFormula: `SUMPRODUCT(\n  (${_eRen} * 0.85\n   - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eRen} * 1.15\n   - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen},\n    ${_bRen}))`,
+      pessNote: `-- NPV EaaS: PV yield -15%`,
+      optNote: `-- NPV EaaS: PV yield +15%` },
     { param: 'Discount rate', variation: '±2pp', pessimisticSavings: npvDiscPess, optimisticSavings: npvDiscOpt,
-      pessMultiplier: roundNum(npvDiscPess / baseEaaSNpvTys, 4), optMultiplier: roundNum(npvDiscOpt / baseEaaSNpvTys, 4) }
+      pessFormula: `SUMPRODUCT(\n  (${_eRen} - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen} + 0.02,\n    ${_bRen}))`,
+      optFormula: `SUMPRODUCT(\n  (${_eRen} - ${_fRen}),\n  1 / POWER(\n    1 + ${_dRen} - 0.02,\n    ${_bRen}))`,
+      pessNote: `-- NPV EaaS: discount rate +2pp`,
+      optNote: `-- NPV EaaS: discount rate -2pp` }
   ];
 
   // Calculate range and sort by impact
@@ -10839,21 +10997,25 @@ async function exportEaaSToExcel(withFormulas = false) {
   });
   tornadoDataEN.sort((a, b) => b.range - a.range);
 
+  const tornadoDataStartRowEN = cfoRowEN + 1;
   tornadoDataEN.forEach((t, idx) => {
     cfoRowEN++;
     excelSheet6.getCell(`B${cfoRowEN}`).value = t.param;
     excelSheet6.getCell(`C${cfoRowEN}`).value = t.variation;
     excelSheet6.getCell(`C${cfoRowEN}`).alignment = { horizontal: 'center' };
 
-    // NPV values from full recalculation
-    excelSheet6.getCell(`D${cfoRowEN}`).value = roundNum(t.pessimisticSavings, 0);
-    excelSheet6.getCell(`E${cfoRowEN}`).value = roundNum(baseEaaSNpvTys, 0);
-    excelSheet6.getCell(`F${cfoRowEN}`).value = roundNum(t.optimisticSavings, 0);
+    // NPV values - SUMPRODUCT formulas when withFormulas=true
     if (withFormulas) {
+      excelSheet6.getCell(`D${cfoRowEN}`).value = { formula: t.pessFormula, result: roundNum(t.pessimisticSavings, 0) };
+      if (t.pessNote) excelSheet6.getCell(`D${cfoRowEN}`).note = t.pessNote;
+      excelSheet6.getCell(`E${cfoRowEN}`).value = { formula: `$C$${kpiNpvTysRowEN}`, result: roundNum(baseEaaSNpvTys, 0) };
+      excelSheet6.getCell(`F${cfoRowEN}`).value = { formula: t.optFormula, result: roundNum(t.optimisticSavings, 0) };
+      if (t.optNote) excelSheet6.getCell(`F${cfoRowEN}`).note = t.optNote;
       excelSheet6.getCell(`G${cfoRowEN}`).value = { formula: `F${cfoRowEN}-D${cfoRowEN}`, result: roundNum(t.range, 0) };
-      excelSheet6.getCell(`H${cfoRowEN}`).value = `pess=${t.pessMultiplier}, opt=${t.optMultiplier}`;
-      excelSheet6.getCell(`H${cfoRowEN}`).font = { size: 8, italic: true, color: { argb: 'FF757575' } };
     } else {
+      excelSheet6.getCell(`D${cfoRowEN}`).value = roundNum(t.pessimisticSavings, 0);
+      excelSheet6.getCell(`E${cfoRowEN}`).value = roundNum(baseEaaSNpvTys, 0);
+      excelSheet6.getCell(`F${cfoRowEN}`).value = roundNum(t.optimisticSavings, 0);
       excelSheet6.getCell(`G${cfoRowEN}`).value = roundNum(t.range, 0);
     }
 
@@ -10888,8 +11050,10 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
 
   cfoRowEN++;
+  const maxRangeRefEN = `(F${tornadoDataStartRowEN}-D${tornadoDataStartRowEN})`;
   tornadoDataEN.forEach((t, idx) => {
     cfoRowEN++;
+    const dataRowEN = tornadoDataStartRowEN + idx;
     excelSheet6.getCell(`B${cfoRowEN}`).value = t.param;
     excelSheet6.getCell(`B${cfoRowEN}`).font = { size: 10 };
 
@@ -10899,17 +11063,38 @@ async function exportEaaSToExcel(withFormulas = false) {
 
     const redBarLen = Math.round(Math.abs(pessimisticDelta) / maxRange * 15);
     const redBar = '█'.repeat(Math.max(1, redBarLen));
-    excelSheet6.getCell(`C${cfoRowEN}`).value = redBar;
+    if (withFormulas) {
+      excelSheet6.getCell(`C${cfoRowEN}`).value = {
+        formula: `REPT("█",\n  MAX(1, ROUND(\n    ABS(D${dataRowEN} - E${dataRowEN})\n    / ${maxRangeRefEN} * 15, 0)))`,
+        result: redBar
+      };
+    } else {
+      excelSheet6.getCell(`C${cfoRowEN}`).value = redBar;
+    }
     excelSheet6.getCell(`C${cfoRowEN}`).font = { color: { argb: 'FFC62828' }, size: 10 };
     excelSheet6.getCell(`C${cfoRowEN}`).alignment = { horizontal: 'right' };
 
-    excelSheet6.getCell(`D${cfoRowEN}`).value = `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`;
+    if (withFormulas) {
+      excelSheet6.getCell(`D${cfoRowEN}`).value = {
+        formula: `TEXT(D${dataRowEN},"# ##0")\n& " | " & TEXT(E${dataRowEN},"# ##0")\n& " | " & TEXT(F${dataRowEN},"# ##0")`,
+        result: `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`
+      };
+    } else {
+      excelSheet6.getCell(`D${cfoRowEN}`).value = `${roundNum(t.pessimisticSavings, 0)} | ${roundNum(baseEaaSNpvTys, 0)} | ${roundNum(t.optimisticSavings, 0)}`;
+    }
     excelSheet6.getCell(`D${cfoRowEN}`).font = { size: 9 };
     excelSheet6.getCell(`D${cfoRowEN}`).alignment = { horizontal: 'center' };
 
     const greenBarLen = Math.round(Math.abs(optimisticDelta) / maxRange * 15);
     const greenBar = '█'.repeat(Math.max(1, greenBarLen));
-    excelSheet6.getCell(`E${cfoRowEN}`).value = greenBar;
+    if (withFormulas) {
+      excelSheet6.getCell(`E${cfoRowEN}`).value = {
+        formula: `REPT("█",\n  MAX(1, ROUND(\n    ABS(F${dataRowEN} - E${dataRowEN})\n    / ${maxRangeRefEN} * 15, 0)))`,
+        result: greenBar
+      };
+    } else {
+      excelSheet6.getCell(`E${cfoRowEN}`).value = greenBar;
+    }
     excelSheet6.getCell(`E${cfoRowEN}`).font = { color: { argb: 'FF2E7D32' }, size: 10 };
     excelSheet6.getCell(`E${cfoRowEN}`).alignment = { horizontal: 'left' };
   });
@@ -10939,47 +11124,22 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`C${cfoRowEN}`).alignment = { horizontal: 'center' };
 
   cfoRowEN++;
+  const matrixHeaderRowEaaSEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Grid price ↓';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 9 };
   excelSheet6.getCell(`B${cfoRowEN}`).alignment = { horizontal: 'right' };
   yieldVariations.forEach((yv, i) => {
-    excelSheet6.getCell(cfoRowEN, 3 + i).value = `${yv >= 0 ? '+' : ''}${(yv * 100).toFixed(0)}%`;
+    excelSheet6.getCell(cfoRowEN, 3 + i).value = yv;
+    excelSheet6.getCell(cfoRowEN, 3 + i).numFmt = '+0%;-0%;0%';
     excelSheet6.getCell(cfoRowEN, 3 + i).font = { bold: true, size: 9 };
     excelSheet6.getCell(cfoRowEN, 3 + i).alignment = { horizontal: 'center' };
     excelSheet6.getCell(cfoRowEN, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
   });
 
-  // Formula support for EaaS sensitivity matrix (EN) — NPV decomposition
-  let fParamRowEaaSEN, fScRowEaaSEN;
-  if (withFormulas) {
-    cfoRowEN += 2;
-    fParamRowEaaSEN = cfoRowEN;
-    const paramStyleEN = { size: 8, color: { argb: 'FF888888' } };
-    const paramLabelStyleEN = { size: 8, italic: true, color: { argb: 'FF888888' } };
-    excelSheet6.getCell(`B${fParamRowEaaSEN}`).value = 'Parameters:'; excelSheet6.getCell(`B${fParamRowEaaSEN}`).font = paramLabelStyleEN;
-    const cfoGridPriceDispEN = roundNum(effectiveEnergyPriceEaas * currencyMultiplier, 2);  // RDN-aware
-    excelSheet6.getCell(`C${fParamRowEaaSEN}`).value = cfoGridPriceDispEN; excelSheet6.getCell(`C${fParamRowEaaSEN}`).font = paramStyleEN; excelSheet6.getCell(`C${fParamRowEaaSEN}`).numFmt = '# ##0.00';
-    excelSheet6.getCell(`D${fParamRowEaaSEN}`).value = `Grid price${isRdnExport ? ' (RDN)' : ''} [${currencyLabel}/MWh]`; excelSheet6.getCell(`D${fParamRowEaaSEN}`).font = paramLabelStyleEN;
-    excelSheet6.getCell(`E${fParamRowEaaSEN}`).value = roundNum(_K_factor, 6); excelSheet6.getCell(`E${fParamRowEaaSEN}`).font = paramStyleEN; excelSheet6.getCell(`E${fParamRowEaaSEN}`).numFmt = '0.000000';
-    excelSheet6.getCell(`F${fParamRowEaaSEN}`).value = 'PV factor (savings)'; excelSheet6.getCell(`F${fParamRowEaaSEN}`).font = paramLabelStyleEN;
-    excelSheet6.getCell(`G${fParamRowEaaSEN}`).value = roundNum(_K_eaas_disp, 0); excelSheet6.getCell(`G${fParamRowEaaSEN}`).font = paramStyleEN; excelSheet6.getCell(`G${fParamRowEaaSEN}`).numFmt = '# ##0';
-    excelSheet6.getCell(`H${fParamRowEaaSEN}`).value = `PV(EaaS costs) [${currencyLabel}]`; excelSheet6.getCell(`H${fParamRowEaaSEN}`).font = paramLabelStyleEN;
-    excelSheet6.getCell(`I${fParamRowEaaSEN}`).value = roundNum(_scBaseKwh, 0); excelSheet6.getCell(`I${fParamRowEaaSEN}`).font = paramStyleEN; excelSheet6.getCell(`I${fParamRowEaaSEN}`).numFmt = '# ##0';
-    excelSheet6.getCell(`J${fParamRowEaaSEN}`).value = 'Base SC [kWh]'; excelSheet6.getCell(`J${fParamRowEaaSEN}`).font = paramLabelStyleEN;
-
-    cfoRowEN++;
-    fScRowEaaSEN = cfoRowEN;
-    excelSheet6.getCell(`B${fScRowEaaSEN}`).value = 'SC by Yield [kWh]:'; excelSheet6.getCell(`B${fScRowEaaSEN}`).font = paramLabelStyleEN;
-    yieldVariations.forEach((yv, i) => {
-      excelSheet6.getCell(fScRowEaaSEN, 3 + i).value = roundNum(eaasSelfConsumptionByYield[yv] * 1000, 0); // MWh → kWh
-      excelSheet6.getCell(fScRowEaaSEN, 3 + i).font = paramStyleEN;
-      excelSheet6.getCell(fScRowEaaSEN, 3 + i).numFmt = '# ##0';
-    });
-  }
-
   gridPriceVariations.forEach(gpv => {
     cfoRowEN++;
-    excelSheet6.getCell(`B${cfoRowEN}`).value = `${gpv >= 0 ? '+' : ''}${(gpv * 100).toFixed(0)}%`;
+    excelSheet6.getCell(`B${cfoRowEN}`).value = gpv;
+    excelSheet6.getCell(`B${cfoRowEN}`).numFmt = '+0%;-0%;0%';
     excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 9 };
     excelSheet6.getCell(`B${cfoRowEN}`).alignment = { horizontal: 'right' };
     excelSheet6.getCell(`B${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
@@ -11000,10 +11160,23 @@ async function exportEaaSToExcel(withFormulas = false) {
       if (!isFinite(adjNpv)) adjNpv = 0;
 
       const cell = excelSheet6.getCell(cfoRowEN, 3 + i);
-      if (withFormulas && fParamRowEaaSEN && fScRowEaaSEN) {
-        const scRef = `${_col(3 + i)}${fScRowEaaSEN}`;
-        // NPV = K_factor × SC_kWh / 1000 × gridPrice × (1+pv) - K_eaas  → /1000 for thousands
-        const formula = `($E$${fParamRowEaaSEN}*${scRef}/1000*$C$${fParamRowEaaSEN}*(1+${gpv})-$G$${fParamRowEaaSEN})/1000`;
+      if (withFormulas) {
+        const s2e = "'EaaS Year by Year'!";
+        const colLetter = _col(3 + i);
+        const yieldRef = `${colLetter}$${matrixHeaderRowEaaSEN}`;
+        const priceRef = `$B${cfoRowEN}`;
+        const bRange = `${s2e}$B$${dataStartRow}:$B$${lastDataRow}`;
+        const eRange = `${s2e}$E$${dataStartRow}:$E$${lastDataRow}`;
+        const fCostRange = `${s2e}$F$${dataStartRow}:$F$${lastDataRow}`;
+        let formula;
+        if (isRdnExport) {
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          const degRange = `(1-${s2e}$F$6)*POWER(1-${s2e}$F$7,${bRange}-1)`;
+          const cpiRange = `POWER(1+${s2e}$F$5,${bRange}-1)`;
+          formula = `SUMPRODUCT((${A}$F$18*${degRange}*(1+${yieldRef})*(1+${priceRef})*${cpiRange}+${A}$F$21*(1+${yieldRef})*${cpiRange})/1000-${fCostRange},1/POWER(1+${s2e}$F$4,${bRange}))`;
+        } else {
+          formula = `SUMPRODUCT((${eRange}*(1+${yieldRef})*(1+${priceRef})-${fCostRange}),1/POWER(1+${s2e}$F$4,${bRange}))`;
+        }
         cell.value = { formula, result: roundNum(adjNpv, 0) };
       } else {
         cell.value = roundNum(adjNpv, 0);
@@ -11032,9 +11205,6 @@ async function exportEaaSToExcel(withFormulas = false) {
   });
 
   // --- ESG SECTION (English) ---
-  const annualCO2TonsEN = autoconsumptionMwh * 0.7;
-  const totalCO2TonsEN = annualCO2TonsEN * cfoPeriod * degradationFactor30;
-
   cfoRowEN += 3;
   excelSheet6.mergeCells(`B${cfoRowEN}:I${cfoRowEN}`);
   excelSheet6.getCell(`B${cfoRowEN}`).value = `ESG - ENVIRONMENTAL IMPACT (${cfoPeriod} years)`;
@@ -11052,7 +11222,12 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRowEN++;
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Grid emission factor [t CO2/MWh]';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = 0.7;
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `$G$${co2ParamRowEN}`, result: co2FactorKgPerKwh };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- Emission factor from params (G${co2ParamRowEN})`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = co2FactorKgPerKwh;
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '0.0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
@@ -11060,21 +11235,33 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`D${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRowEN += 2;
+  const annualCO2RowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '🌍 Annual CO2 reduction [tons]';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2TonsEN, 0);
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `ROUND(\n  $C$${autoParamRowEN} * $G$${co2ParamRowEN},\n  0)`, result: roundNum(annualCO2Tons, 0) };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- Self-consumption × emission factor\n-- C${autoParamRowEN} = MWh/yr, G${co2ParamRowEN} = t CO2/MWh`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2Tons, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' }, size: 12 };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
-  excelSheet6.getCell(`D${cfoRowEN}`).value = `= ${roundNum(autoconsumptionMwh, 0)} MWh × 0.7 t/MWh`;
+  excelSheet6.getCell(`D${cfoRowEN}`).value = `= Autoconsumption × ${co2FactorKgPerKwh} t/MWh`;
   excelSheet6.getCell(`D${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
   excelSheet6.getCell(`B${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
   excelSheet6.getCell(`C${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
 
   cfoRowEN++;
+  const totalCO2RowEN = cfoRowEN;  // Store for decision summary formulas
   excelSheet6.getCell(`B${cfoRowEN}`).value = `🌍 Total CO2 reduction (${cfoPeriod} years) [tons]`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalCO2TonsEN, 0);
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `ROUND(\n  $C$${annualCO2RowEN} * ${cfoPeriod}\n  * $C$${degradFactorParamRowEN},\n  0)`, result: roundNum(totalCO2Tons, 0) };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- Annual CO2 × years × avg degradation\n-- C${annualCO2RowEN} = tons/yr, C${degradFactorParamRowEN} = degrad. factor`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalCO2Tons, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' }, size: 12 };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
@@ -11085,7 +11272,11 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRowEN += 2;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '🚗 Equivalent cars/year';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2TonsEN / 4.6, 0);
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `ROUND($C$${annualCO2RowEN}/4.6,0)`, result: roundNum(annualCO2Tons / 4.6, 0) };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2Tons / 4.6, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
@@ -11094,7 +11285,11 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRowEN++;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '🌳 Equivalent trees';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2TonsEN / 0.022, 0);
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `ROUND($C$${annualCO2RowEN}/0.022,0)`, result: roundNum(annualCO2Tons / 0.022, 0) };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2Tons / 0.022, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
@@ -11103,16 +11298,20 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   cfoRowEN++;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '✈️ Equivalent flights WAW-LON';
-  excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2TonsEN / 0.255, 0); // WAW-LON ~255kg CO2
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `ROUND($C$${annualCO2RowEN}/0.255,0)`, result: roundNum(annualCO2Tons / 0.255, 0) };
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(annualCO2Tons / 0.255, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF00695C' } };
   excelSheet6.mergeCells(`D${cfoRowEN}:F${cfoRowEN}`);
   excelSheet6.getCell(`D${cfoRowEN}`).value = 'Economy class flights';
   excelSheet6.getCell(`D${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
 
-  // --- BREAK-EVEN ANALYSIS (English) ---
-  const breakEvenGridPriceEN = eaasPriceDisplay;
-  const safetyMarginPctEN = (gridPriceDisplay - eaasPriceDisplay) / gridPriceDisplay;
+  // --- BREAK-EVEN ANALYSIS (English) - Full 30-year NPV-based ---
+  const breakEvenGridPriceEN = breakEvenGridPrice; // reuse PL calculation
+  const safetyMarginPctEN = safetyMarginPct;
 
   cfoRowEN += 3;
   excelSheet6.mergeCells(`B${cfoRowEN}:I${cfoRowEN}`);
@@ -11144,22 +11343,35 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`D${cfoRowEN}`).font = { color: { argb: 'FF757575' } };
 
   cfoRowEN++;
-  excelSheet6.getCell(`B${cfoRowEN}`).value = '⚠️ BREAK-EVEN: Grid price';
+  const breakEvenRowEN = cfoRowEN;
+  excelSheet6.getCell(`B${cfoRowEN}`).value = `⚠️ BREAK-EVEN: Grid price (${cfoPeriod} years)`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
-  excelSheet6.getCell(`C${cfoRowEN}`).value = breakEvenGridPriceEN;
+  if (withFormulas) {
+    const _s2beEN = "'EaaS Year by Year'!";
+    const beFormulaEN = `$C$${gridPriceParamRowEN}\n* SUMPRODUCT(\n    ${_s2beEN}$F$${dataStartRow}:$F$${lastDataRow}\n    / POWER(1 + ${_s2beEN}$F$4,\n            ${_s2beEN}$B$${dataStartRow}:$B$${lastDataRow}))\n/ SUMPRODUCT(\n    ${_s2beEN}$E$${dataStartRow}:$E$${lastDataRow}\n    / POWER(1 + ${_s2beEN}$F$4,\n            ${_s2beEN}$B$${dataStartRow}:$B$${lastDataRow}))`;
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: beFormulaEN, result: roundNum(breakEvenGridPriceEN, 0) };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- Grid price at NPV=0 (${cfoPeriod} years)\n-- price × PV(EaaS_costs) / PV(grid_costs)`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(breakEvenGridPriceEN, 0);
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '#,##0';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FFE65100' }, size: 12 };
   excelSheet6.getCell(`C${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3E0' } };
   excelSheet6.getCell(`D${cfoRowEN}`).value = `${currencyLabel}/MWh`;
   excelSheet6.getCell(`D${cfoRowEN}`).font = { color: { argb: 'FF757575' } };
   excelSheet6.mergeCells(`E${cfoRowEN}:G${cfoRowEN}`);
-  excelSheet6.getCell(`E${cfoRowEN}`).value = 'Below this price EaaS generates no savings';
+  excelSheet6.getCell(`E${cfoRowEN}`).value = `Grid price at NPV=0 (full ${cfoPeriod} years incl. ownership)`;
   excelSheet6.getCell(`E${cfoRowEN}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRowEN++;
   excelSheet6.getCell(`B${cfoRowEN}`).value = '🛡️ Safety margin';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
-  excelSheet6.getCell(`C${cfoRowEN}`).value = safetyMarginPctEN;
+  if (withFormulas) {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `($C$${gridPriceParamRowEN} - C${breakEvenRowEN})\n/ $C$${gridPriceParamRowEN}`, result: safetyMarginPctEN };
+    excelSheet6.getCell(`C${cfoRowEN}`).note = `-- (grid_price - break_even) / grid_price`;
+  } else {
+    excelSheet6.getCell(`C${cfoRowEN}`).value = safetyMarginPctEN;
+  }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '0.0%';
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' }, size: 12 };
   excelSheet6.getCell(`C${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
@@ -11233,9 +11445,12 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet6.getCell(`D${cfoRowEN}`).value = s.yieldMult - 1;
     excelSheet6.getCell(`D${cfoRowEN}`).numFmt = '+0%;-0%;0%';
     excelSheet6.getCell(`D${cfoRowEN}`).alignment = { horizontal: 'center' };
-    // NPV value - corrected formula: NPV_new = (base + K/1000) × g × y - K/1000
-    if (withFormulas && fParamRowEaaSEN) {
-      excelSheet6.getCell(`E${cfoRowEN}`).value = { formula: `ROUND(($C$${kpiNpvTysRowEN}+$G$${fParamRowEaaSEN}/1000)*(1+C${cfoRowEN})*(1+D${cfoRowEN})-$G$${fParamRowEaaSEN}/1000,0)`, result: roundNum(scenarioSavingsEN, 0) };
+    // NPV value - K_eaas as SUMPRODUCT formula
+    if (withFormulas) {
+      const _s2scEN = "'EaaS Year by Year'!";
+      const kEaasFormulaEN = `SUMPRODUCT(\n    ${_s2scEN}$F$${dataStartRow}:$F$${lastDataRow}\n    / POWER(1 + ${_s2scEN}$F$4,\n            ${_s2scEN}$B$${dataStartRow}:$B$${lastDataRow}))`;
+      excelSheet6.getCell(`E${cfoRowEN}`).value = { formula: `ROUND(\n  ($C$${kpiNpvTysRowEN} + ${kEaasFormulaEN})\n  * (1 + C${cfoRowEN}) * (1 + D${cfoRowEN})\n  - ${kEaasFormulaEN},\n  0)`, result: roundNum(scenarioSavingsEN, 0) };
+      excelSheet6.getCell(`E${cfoRowEN}`).note = `-- NPV with yield/price changes\n-- K_eaas = PV of EaaS costs\n-- (NPV+K)×multipliers - K`;
     } else {
       excelSheet6.getCell(`E${cfoRowEN}`).value = roundNum(scenarioSavingsEN, 0);
     }
@@ -11295,6 +11510,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   const inflationRatesEN = inflationRates;
 
   cfoRowEN += 2;
+  const inflHeaderRowEN = cfoRowEN;
   excelSheet6.getCell(`B${cfoRowEN}`).value = 'Annual energy price inflation';
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true };
   inflationRatesEN.forEach((inf, i) => {
@@ -11310,49 +11526,25 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `NPV [k${currencyLabel}]`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true };
 
-  // Formula reference rows (EN)
-  let inflParamRowEN, inflKfRowEN, inflKeRowEN;
-  if (withFormulas) {
-    cfoRowEN++;
-    inflParamRowEN = cfoRowEN;
-    const pStyleEN = { size: 8, color: { argb: 'FF888888' } };
-    const pLabelEN = { size: 8, italic: true, color: { argb: 'FF888888' } };
-    excelSheet6.getCell(`B${cfoRowEN}`).value = 'Parameters:'; excelSheet6.getCell(`B${cfoRowEN}`).font = pLabelEN;
-    const scKwhEN = roundNum(eaasNpvBaseForMatrix.self_consumed_annual_kwh, 0);
-    const priceMwhEN = roundNum(effectiveEnergyPriceEaas * currencyMultiplier, 2);
-    excelSheet6.getCell(`C${cfoRowEN}`).value = scKwhEN; excelSheet6.getCell(`C${cfoRowEN}`).font = pStyleEN; excelSheet6.getCell(`C${cfoRowEN}`).numFmt = '# ##0';
-    excelSheet6.getCell(`D${cfoRowEN}`).value = 'SC [kWh]'; excelSheet6.getCell(`D${cfoRowEN}`).font = pLabelEN;
-    excelSheet6.getCell(`E${cfoRowEN}`).value = priceMwhEN; excelSheet6.getCell(`E${cfoRowEN}`).font = pStyleEN; excelSheet6.getCell(`E${cfoRowEN}`).numFmt = '# ##0.00';
-    excelSheet6.getCell(`F${cfoRowEN}`).value = `Price [${currencyLabel}/MWh]`; excelSheet6.getCell(`F${cfoRowEN}`).font = pLabelEN;
-
-    cfoRowEN++;
-    inflKfRowEN = cfoRowEN;
-    excelSheet6.getCell(`B${cfoRowEN}`).value = 'K_factor(i):'; excelSheet6.getCell(`B${cfoRowEN}`).font = pLabelEN;
-    inflationRates.forEach((inf, i) => {
-      excelSheet6.getCell(cfoRowEN, 3 + i).value = roundNum(inflKFactors[i], 6);
-      excelSheet6.getCell(cfoRowEN, 3 + i).font = pStyleEN;
-      excelSheet6.getCell(cfoRowEN, 3 + i).numFmt = '0.000000';
-    });
-
-    cfoRowEN++;
-    inflKeRowEN = cfoRowEN;
-    excelSheet6.getCell(`B${cfoRowEN}`).value = `K_eaas(i) [${currencyLabel}]:`; excelSheet6.getCell(`B${cfoRowEN}`).font = pLabelEN;
-    inflationRates.forEach((inf, i) => {
-      excelSheet6.getCell(cfoRowEN, 3 + i).value = roundNum(inflKEaas[i] * currencyMultiplier, 0);
-      excelSheet6.getCell(cfoRowEN, 3 + i).font = pStyleEN;
-      excelSheet6.getCell(cfoRowEN, 3 + i).numFmt = '# ##0';
-    });
-  }
-
   cfoRowEN++;
   const inflValuesRowActualEN = cfoRowEN;
+
+  // SUMPRODUCT formula building blocks for inflation sensitivity (English)
+  const _s2infEN = "'EaaS Year by Year'!";
+  const _eInfEN = `${_s2infEN}$E$${dataStartRow}:$E$${lastDataRow}`;
+  const _fInfEN = `${_s2infEN}$F$${dataStartRow}:$F$${lastDataRow}`;
+  const _bInfEN = `${_s2infEN}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const _discInfEN = `${_s2infEN}$F$4`;
+  const _baseInflRefEN = `${_s2infEN}$F$5`;
+
   inflationRatesEN.forEach((inf, i) => {
     const cell = excelSheet6.getCell(cfoRowEN, 3 + i);
     const colLetter = _col(3 + i);
 
-    if (withFormulas && inflKfRowEN && inflKeRowEN && inflParamRowEN) {
-      const formula = `($C$${inflParamRowEN}/1000*$E$${inflParamRowEN}*${colLetter}$${inflKfRowEN}-${colLetter}$${inflKeRowEN})/1000`;
+    if (withFormulas) {
+      const formula = `SUMPRODUCT(\n  (${_eInfEN}\n   * POWER(\n       (1 + ${colLetter}$${inflHeaderRowEN}) / (1 + ${_baseInflRefEN}),\n       ${_bInfEN} - 1)\n   - ${_fInfEN}),\n  1 / POWER(1 + ${_discInfEN}, ${_bInfEN}))`;
       cell.value = { formula, result: roundNum(inflNpvValues[i], 0) };
+      cell.note = `-- NPV at inflation ${colLetter}$${inflHeaderRowEN}\n-- E×(1+infl)^year / discount - F`;
     } else {
       cell.value = roundNum(inflNpvValues[i], 0);
     }
@@ -11425,32 +11617,67 @@ async function exportEaaSToExcel(withFormulas = false) {
   // Decision criteria with formulas support (matching Polish version)
   const decisionsEN = [
     { criterion: 'Investment (CAPEX)', eaas: '0 PLN', statusQuo: '0 PLN', winner: 'Tie', winColor: 'FF757575', useFormula: false },
-    { criterion: `${cfoPeriod}-year energy cost`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
+    { criterion: `${cfoPeriod}-year energy cost`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
     { criterion: `${cfoPeriod}-year savings`, eaas: `${roundNum(baseTotalSavings, 0)} k${currencyLabel}`, statusQuo: '0', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'savings' },
     { criterion: 'Technical risk', eaas: 'Provider', statusQuo: 'No installation', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Price risk', eaas: 'Partial hedge', statusQuo: '100% exposure', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Balance sheet impact', eaas: 'Off-balance', statusQuo: 'None', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Green energy', eaas: 'YES', statusQuo: 'NO', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
-    { criterion: 'CO2 reduction', eaas: `${roundNum(totalCO2TonsEN, 0)} tons`, statusQuo: '0 tons', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false }
+    { criterion: 'CO2 reduction', eaas: `${roundNum(totalCO2Tons, 0)} tons`, statusQuo: '0 tons', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'co2' }
   ];
 
+  const _s2decEN = "'EaaS Year by Year'!";
+  const decisionFirstRowEN = cfoRowEN + 1;
   decisionsEN.forEach(d => {
     cfoRowEN++;
     excelSheet6.getCell(`B${cfoRowEN}`).value = d.criterion;
     excelSheet6.mergeCells(`B${cfoRowEN}:C${cfoRowEN}`);
 
-    // Use formula for savings row when withFormulas=true
-    if (withFormulas && d.useFormula && d.formulaType === 'savings') {
-      excelSheet6.getCell(`D${cfoRowEN}`).value = { formula: `$C$${kpiTotalTysRowEN}&" k${currencyLabel}"`, result: d.eaas };
+    // D column (EaaS value) — formulas matching reference ROUND pattern
+    if (withFormulas && d.useFormula) {
+      if (d.formulaType === 'savings') {
+        excelSheet6.getCell(`D${cfoRowEN}`).value = { formula: `ROUND($C$${kpiTotalTysRowEN},0)\n&" k${currencyLabel}"`, result: d.eaas };
+      } else if (d.formulaType === 'energyCost') {
+        excelSheet6.getCell(`D${cfoRowEN}`).value = {
+          formula: `ROUND(\n  SUM(${_s2decEN}F${dataStartRow}:${_s2decEN}F${lastDataRow}),\n  0)\n&" k"`,
+          result: d.eaas
+        };
+      } else if (d.formulaType === 'co2') {
+        excelSheet6.getCell(`D${cfoRowEN}`).value = { formula: `ROUND($C$${totalCO2RowEN},0)\n&" tons"`, result: d.eaas };
+      }
     } else {
       excelSheet6.getCell(`D${cfoRowEN}`).value = d.eaas;
     }
     excelSheet6.getCell(`D${cfoRowEN}`).alignment = { horizontal: 'center' };
     excelSheet6.getCell(`D${cfoRowEN}`).font = { color: { argb: 'FF2E7D32' } };
-    excelSheet6.getCell(`E${cfoRowEN}`).value = d.statusQuo;
+
+    // E column (Status Quo value) — formulas when applicable
+    if (withFormulas && d.useFormula && d.formulaType === 'energyCost') {
+      excelSheet6.getCell(`E${cfoRowEN}`).value = {
+        formula: `ROUND(\n  SUM(${_s2decEN}E${dataStartRow}:${_s2decEN}E${lastDataRow}),\n  0)\n&" k"`,
+        result: d.statusQuo
+      };
+    } else {
+      excelSheet6.getCell(`E${cfoRowEN}`).value = d.statusQuo;
+    }
     excelSheet6.getCell(`E${cfoRowEN}`).alignment = { horizontal: 'center' };
     excelSheet6.getCell(`E${cfoRowEN}`).font = { color: { argb: 'FF757575' } };
-    excelSheet6.getCell(`F${cfoRowEN}`).value = d.winner;
+
+    // F column (Winner) — formulas when applicable
+    if (withFormulas && d.useFormula) {
+      if (d.formulaType === 'savings') {
+        excelSheet6.getCell(`F${cfoRowEN}`).value = { formula: `IF($C$${kpiTotalTysRowEN}>0,\n  "EaaS","Status Quo")`, result: d.winner };
+      } else if (d.formulaType === 'energyCost') {
+        excelSheet6.getCell(`F${cfoRowEN}`).value = {
+          formula: `IF(\n  SUM(${_s2decEN}F${dataStartRow}:${_s2decEN}F${lastDataRow})\n  < SUM(${_s2decEN}E${dataStartRow}:${_s2decEN}E${lastDataRow}),\n  "EaaS","Status Quo")`,
+          result: d.winner
+        };
+      } else if (d.formulaType === 'co2') {
+        excelSheet6.getCell(`F${cfoRowEN}`).value = { formula: `IF($C$${totalCO2RowEN}>0,\n  "EaaS","Status Quo")`, result: d.winner };
+      }
+    } else {
+      excelSheet6.getCell(`F${cfoRowEN}`).value = d.winner;
+    }
     excelSheet6.getCell(`F${cfoRowEN}`).alignment = { horizontal: 'center' };
     excelSheet6.getCell(`F${cfoRowEN}`).font = { bold: true, color: { argb: d.winColor } };
     if (d.winner === 'EaaS') {
@@ -11460,11 +11687,22 @@ async function exportEaaSToExcel(withFormulas = false) {
       excelSheet6.getRow(cfoRowEN).getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
     }
   });
+  const decisionLastRowEN = cfoRowEN;
+  const eaasWinCountEN = decisionsEN.filter(d => d.winner === 'EaaS').length;
 
-  // Final verdict
+  // Final verdict — dynamic COUNTIF formula
   cfoRowEN += 2;
   excelSheet6.mergeCells(`B${cfoRowEN}:F${cfoRowEN}`);
-  excelSheet6.getCell(`B${cfoRowEN}`).value = '✅ RECOMMENDATION: EaaS model wins in 7 out of 8 criteria';
+  if (withFormulas) {
+    const fRangeEN = `F${decisionFirstRowEN}:F${decisionLastRowEN}`;
+    const nCriteriaEN = decisionsEN.length;
+    excelSheet6.getCell(`B${cfoRowEN}`).value = {
+      formula: `IF(\n  COUNTIF(${fRangeEN},"EaaS")\n  > COUNTIF(${fRangeEN},"Status Quo"),\n  "✅ RECOMMENDATION: EaaS model wins in "\n  & COUNTIF(${fRangeEN},"EaaS")\n  & " of ${nCriteriaEN} criteria",\n  "⛔ RECOMMENDATION: Status Quo wins in "\n  & COUNTIF(${fRangeEN},"Status Quo")\n  & " of ${nCriteriaEN} criteria")`,
+      result: `✅ RECOMMENDATION: EaaS model wins in ${eaasWinCountEN} of ${nCriteriaEN} criteria`
+    };
+  } else {
+    excelSheet6.getCell(`B${cfoRowEN}`).value = `✅ RECOMMENDATION: EaaS model wins in ${eaasWinCountEN} of ${decisionsEN.length} criteria`;
+  }
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 12, color: { argb: 'FF2E7D32' } };
   excelSheet6.getCell(`B${cfoRowEN}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } };
   excelSheet6.getCell(`B${cfoRowEN}`).alignment = { horizontal: 'center' };
@@ -11473,7 +11711,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.mergeCells(`B${cfoRowEN}:F${cfoRowEN}`);
   // Use formula for final summary when withFormulas=true
   if (withFormulas) {
-    excelSheet6.getCell(`B${cfoRowEN}`).value = { formula: `"Expected savings: "&TEXT($C$${kpiTotalTysRowEN},"# ##0")&" k${currencyLabel} over ${cfoPeriod} years with zero CAPEX"` };
+    excelSheet6.getCell(`B${cfoRowEN}`).value = { formula: `"Expected savings: "\n&ROUND($C$${kpiTotalTysRowEN},0)\n&" k${currencyLabel} over ${cfoPeriod} years with zero CAPEX"` };
   } else {
     excelSheet6.getCell(`B${cfoRowEN}`).value = `Expected savings: ${roundNum(baseTotalSavings, 0)} k${currencyLabel} over ${cfoPeriod} years with zero CAPEX`;
   }
@@ -11767,7 +12005,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet9.getCell(`B${dsRow}`).font = { bold: true };
     if (withFormulas) {
       excelSheet9.getCell(`C${dsRow}`).value = {
-        formula: `SUMPRODUCT(Cashflow!I${dscrP90StartRow}:I${dscrP90EndRow})/SUM(Cashflow!E${dscrP90StartRow}:E${dscrP90EndRow})`,
+        formula: `IF(SUM(Cashflow!E${dscrP90StartRow}:E${dscrP90EndRow})=0,"N/A",SUMPRODUCT(Cashflow!I${dscrP90StartRow}:I${dscrP90EndRow})/SUM(Cashflow!E${dscrP90StartRow}:E${dscrP90EndRow}))`,
         result: bankabilityData.scenarios?.P90?.kpi?.avgDSCRWeighted || ''
       };
     } else {
@@ -11798,7 +12036,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     excelSheet9.getCell(`B${dsRow}`).font = { bold: true };
     if (withFormulas) {
       excelSheet9.getCell(`C${dsRow}`).value = {
-        formula: `(C${minDscrRow}/C${covenantRowInDS})-1`,
+        formula: `IF(C${covenantRowInDS}=0,"N/A",(C${minDscrRow}/C${covenantRowInDS})-1)`,
         result: bankabilityData.scenarios?.P90?.kpi?.headroom || ''
       };
     } else {
@@ -16745,267 +16983,322 @@ async function exportKClassToExcel() {
 
   const workbook = new ExcelJS.Workbook();
 
-  // Polish number format helper (comma as decimal separator)
+  // Precompute Sheet 2 row references for cross-sheet formulas
+  const numDays = analysis.dailyComparison.length;
+  const dailyDataLastRow = numDays + 1;  // header row 1, data rows 2..numDays+1
+  const dailyTotalRow = numDays + 2;     // totals row
+
+  // Load and add logo image
+  let logoImageId = null;
+  try {
+    const logoResponse = await fetch('logo.png');
+    if (logoResponse.ok) {
+      const logoBlob = await logoResponse.blob();
+      const logoBase64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(logoBlob);
+      });
+      logoImageId = workbook.addImage({ base64: logoBase64, extension: 'png' });
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not load logo:', e);
+  }
+
+  // Polish number format helper
   const plNum = (val, decimals = 2) => {
     if (typeof val !== 'number') return val;
     return parseFloat(val.toFixed(decimals));
   };
 
-  // Number format styles for Polish locale
-  const numFmt2 = '#,##0.00';      // 2 decimals
-  const numFmt0 = '#,##0';          // 0 decimals
-  const pctFmt = '#,##0.0"%"';      // percentage
+  // Number format styles
+  const numFmt2 = '#,##0.00';
+  const numFmt0 = '#,##0';
 
   // ==========================================
-  // SHEET 1: PODSUMOWANIE
+  // SHEET 1: PODSUMOWANIE (with margin col A)
   // ==========================================
   const summarySheet = workbook.addWorksheet('Podsumowanie');
+  summarySheet.columns = [
+    { width: 3 },   // A: margin
+    { width: 35 },  // B: labels
+    { width: 20 },  // C: value 1
+    { width: 20 },  // D: value 2
+    { width: 45 }   // E: description
+  ];
+  summarySheet.views = [{ state: 'frozen', ySplit: 2, showGridLines: false, showRowColHeaders: false }];
+
+  // Logo
+  if (logoImageId !== null) {
+    summarySheet.addImage(logoImageId, {
+      tl: { col: 1.3, row: 0.1 },
+      ext: { width: 200, height: 50 }
+    });
+  }
 
   // Title
-  summarySheet.mergeCells('A1:F1');
-  summarySheet.getCell('A1').value = 'ANALIZA KLASY K - OPŁATA MOCOWA';
-  summarySheet.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF6A1B9A' } };
-  summarySheet.getCell('A1').alignment = { horizontal: 'center' };
+  summarySheet.getRow(1).height = 20;
+  summarySheet.getRow(2).height = 20;
+  summarySheet.mergeCells('B1:F1');
+  summarySheet.getCell('B1').value = 'ANALIZA KLASY K - OPŁATA MOCOWA';
+  summarySheet.getCell('B1').font = { bold: true, size: 16, color: { argb: 'FF6A1B9A' } };
+  summarySheet.getCell('B1').alignment = { horizontal: 'center', vertical: 'bottom' };
 
-  summarySheet.getCell('A3').value = 'Wygenerowano:';
-  summarySheet.getCell('B3').value = new Date().toLocaleString('pl-PL');
+  summarySheet.getCell('B3').value = 'Wygenerowano:';
+  summarySheet.getCell('C3').value = new Date().toLocaleString('pl-PL');
 
-  // Parameters
-  summarySheet.getCell('A5').value = 'PARAMETRY';
-  summarySheet.getCell('A5').font = { bold: true };
-  summarySheet.getCell('A6').value = 'Stawka SOM [PLN/kWh]:';
-  summarySheet.getCell('B6').value = analysis.somPLNperKWh;
-  summarySheet.getCell('A7').value = 'Dni robocze w roku:';
-  summarySheet.getCell('B7').value = analysis.before.workdays;
+  // Parameters — C6 holds SOM value (cross-sheet ref target)
+  summarySheet.getCell('B5').value = 'PARAMETRY';
+  summarySheet.getCell('B5').font = { bold: true };
+  summarySheet.getCell('B6').value = 'Stawka SOM [PLN/kWh]:';
+  summarySheet.getCell('C6').value = analysis.somPLNperKWh;
+  summarySheet.getCell('C6').numFmt = numFmt2;
+  summarySheet.getCell('C6').note = 'Stawka Opłaty Mocowej\nPobierana z ustawień taryfy';
+  summarySheet.getCell('B7').value = 'Dni robocze w roku:';
+  summarySheet.getCell('C7').value = analysis.before.workdays;
 
   // Before/After comparison
-  summarySheet.getCell('A9').value = 'PORÓWNANIE';
-  summarySheet.getCell('A9').font = { bold: true };
+  summarySheet.getCell('B9').value = 'PORÓWNANIE';
+  summarySheet.getCell('B9').font = { bold: true };
 
-  const compHeaders = ['', 'Bez PV', 'Z PV', 'Różnica'];
-  summarySheet.addRow([]);
-  summarySheet.addRow(compHeaders);
-  const headerRow = summarySheet.getRow(11);
-  headerRow.font = { bold: true };
-  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+  const compRow = summarySheet.getRow(11);
+  ['', '', 'Bez PV', 'Z PV', 'Różnica'].forEach((v, i) => compRow.getCell(i + 1).value = v);
+  compRow.font = { bold: true };
+  compRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
 
-  summarySheet.addRow(['Dominująca klasa K', analysis.before.dominantK, analysis.after.dominantK, '']);
+  // Row 12: Dominant K-class
+  const row12 = summarySheet.getRow(12);
+  row12.getCell(2).value = 'Dominująca klasa K';
+  row12.getCell(3).value = analysis.before.dominantK;
+  row12.getCell(4).value = analysis.after.dominantK;
 
-  const row13 = summarySheet.addRow(['Średnie Δs [%]', plNum(analysis.before.avgDeltaS, 1), plNum(analysis.after.avgDeltaS, 1), { formula: '=C13-B13' }]);
-  row13.getCell(2).numFmt = numFmt2;
-  row13.getCell(3).numFmt = numFmt2;
-  row13.getCell(4).numFmt = numFmt2;
+  // Row 13: Avg Δs — cross-sheet AVERAGE
+  const row13 = summarySheet.getRow(13);
+  row13.getCell(2).value = 'Średnie Δs [%]';
+  row13.getCell(3).value = { formula: `AVERAGE('Dane dzienne'!K2:K${dailyDataLastRow})`, result: plNum(analysis.before.avgDeltaS, 1) };
+  row13.getCell(4).value = { formula: `AVERAGE('Dane dzienne'!L2:L${dailyDataLastRow})`, result: plNum(analysis.after.avgDeltaS, 1) };
+  row13.getCell(5).value = { formula: 'D13-C13', result: plNum(analysis.after.avgDeltaS - analysis.before.avgDeltaS, 1) };
+  [3, 4, 5].forEach(c => row13.getCell(c).numFmt = numFmt2);
+  row13.getCell(3).note = 'Δs = (śr_wybranych / śr_poza - 1) × 100%';
 
-  const row14 = summarySheet.addRow(['ZS - energia w godz. wybranych [kWh]', plNum(analysis.before.totalZs, 0), plNum(analysis.after.totalZs, 0), { formula: '=C14-B14' }]);
-  row14.getCell(2).numFmt = numFmt0;
-  row14.getCell(3).numFmt = numFmt0;
-  row14.getCell(4).numFmt = numFmt0;
+  // Row 14: ZS — cross-sheet total
+  const row14 = summarySheet.getRow(14);
+  row14.getCell(2).value = 'ZS - energia w godz. wybranych [kWh]';
+  row14.getCell(3).value = { formula: `'Dane dzienne'!D${dailyTotalRow}`, result: plNum(analysis.before.totalZs, 0) };
+  row14.getCell(4).value = { formula: `'Dane dzienne'!E${dailyTotalRow}`, result: plNum(analysis.after.totalZs, 0) };
+  row14.getCell(5).value = { formula: 'D14-C14', result: plNum(analysis.after.totalZs - analysis.before.totalZs, 0) };
+  [3, 4, 5].forEach(c => row14.getCell(c).numFmt = numFmt0);
 
-  const row15 = summarySheet.addRow(['Opłata mocowa [PLN/rok]', plNum(analysis.before.totalFee, 2), plNum(analysis.after.totalFee, 2), { formula: '=C15-B15' }]);
-  row15.getCell(2).numFmt = numFmt2;
-  row15.getCell(3).numFmt = numFmt2;
-  row15.getCell(4).numFmt = numFmt2;
+  // Row 15: Opłata mocowa — cross-sheet total
+  const row15 = summarySheet.getRow(15);
+  row15.getCell(2).value = 'Opłata mocowa [PLN/rok]';
+  row15.getCell(3).value = { formula: `'Dane dzienne'!M${dailyTotalRow}`, result: plNum(analysis.before.totalFee, 2) };
+  row15.getCell(4).value = { formula: `'Dane dzienne'!N${dailyTotalRow}`, result: plNum(analysis.after.totalFee, 2) };
+  row15.getCell(5).value = { formula: 'D15-C15', result: plNum(analysis.after.totalFee - analysis.before.totalFee, 2) };
+  [3, 4, 5].forEach(c => row15.getCell(c).numFmt = numFmt2);
+  row15.getCell(2).note = 'WOM = A × SOM × ZS\nA = współczynnik klasy K';
 
   // Effects breakdown
-  summarySheet.getCell('A18').value = 'ROZKŁAD OSZCZĘDNOŚCI';
-  summarySheet.getCell('A18').font = { bold: true };
+  summarySheet.getCell('B18').value = 'ROZKŁAD OSZCZĘDNOŚCI';
+  summarySheet.getCell('B18').font = { bold: true };
 
-  summarySheet.addRow([]);
-  summarySheet.addRow(['Efekt', 'Oszczędność [PLN]', 'Udział [%]', 'Opis']);
-  const effectHeaderRow = summarySheet.getRow(20);
-  effectHeaderRow.font = { bold: true };
-  effectHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+  const effectRow = summarySheet.getRow(20);
+  ['', 'Efekt', 'Oszczędność [PLN]', 'Udział [%]', 'Opis'].forEach((v, i) => effectRow.getCell(i + 1).value = v);
+  effectRow.font = { bold: true };
+  effectRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
 
-  const row21 = summarySheet.addRow([
-    '1. Redukcja ZS',
-    plNum(analysis.savings.fromZsReduction, 2),
-    { formula: '=B21/$B$23*100' },
-    'Mniejszy pobór z sieci w godz. 7-22 (PV produkuje)'
-  ]);
-  row21.getCell(2).numFmt = numFmt2;
+  // Row 21: Redukcja ZS — cross-sheet ref
+  const row21 = summarySheet.getRow(21);
+  row21.getCell(2).value = '1. Redukcja ZS';
+  row21.getCell(3).value = { formula: `'Dane dzienne'!Q${dailyTotalRow}`, result: plNum(analysis.savings.fromZsReduction, 2) };
+  row21.getCell(4).value = { formula: 'C21/$C$23*100' };
+  row21.getCell(5).value = 'Mniejszy pobór z sieci w godz. 7-22 (PV produkuje)';
   row21.getCell(3).numFmt = numFmt2;
+  row21.getCell(4).numFmt = numFmt2;
+  row21.getCell(3).note = 'Opłata_przed - Opłata(stara_K)\nIle oszczędzamy z samej redukcji ZS';
 
-  const row22 = summarySheet.addRow([
-    '2. Poprawa klasy K',
-    plNum(analysis.savings.fromKclassImprovement, 2),
-    { formula: '=B22/$B$23*100' },
-    `Niższy współczynnik A w ${analysis.savings.daysImproved} dniach`
-  ]);
-  row22.getCell(2).numFmt = numFmt2;
+  // Row 22: Poprawa klasy K — cross-sheet ref
+  const row22 = summarySheet.getRow(22);
+  row22.getCell(2).value = '2. Poprawa klasy K';
+  row22.getCell(3).value = { formula: `'Dane dzienne'!R${dailyTotalRow}`, result: plNum(analysis.savings.fromKclassImprovement, 2) };
+  row22.getCell(4).value = { formula: 'C22/$C$23*100' };
+  row22.getCell(5).value = `Niższy współczynnik A w ${analysis.savings.daysImproved} dniach`;
   row22.getCell(3).numFmt = numFmt2;
+  row22.getCell(4).numFmt = numFmt2;
+  row22.getCell(3).note = 'Opłata(stara_K) - Opłata_po\nIle oszczędzamy z poprawy klasy';
 
-  const row23 = summarySheet.addRow([
-    'SUMA',
-    { formula: '=B21+B22' },
-    100,
-    ''
-  ]);
-  row23.getCell(2).numFmt = numFmt2;
-  summarySheet.getRow(23).font = { bold: true };
-  summarySheet.getRow(23).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4CAF50' } };
-  summarySheet.getRow(23).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  // Row 23: SUMA
+  const row23 = summarySheet.getRow(23);
+  row23.getCell(2).value = 'SUMA';
+  row23.getCell(3).value = { formula: 'C21+C22', result: plNum(analysis.savings.fromZsReduction + analysis.savings.fromKclassImprovement, 2) };
+  row23.getCell(4).value = 100;
+  row23.getCell(3).numFmt = numFmt2;
+  row23.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  row23.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4CAF50' } };
 
   // K-class histogram
-  summarySheet.getCell('A26').value = 'ROZKŁAD KLAS K';
-  summarySheet.getCell('A26').font = { bold: true };
+  summarySheet.getCell('B26').value = 'ROZKŁAD KLAS K';
+  summarySheet.getCell('B26').font = { bold: true };
 
-  summarySheet.addRow([]);
-  summarySheet.addRow(['Klasa', 'Współczynnik A', 'Dni (bez PV)', 'Dni (z PV)', 'Zmiana']);
-  const histHeaderRow = summarySheet.getRow(28);
-  histHeaderRow.font = { bold: true };
-  histHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } };
+  const histRow = summarySheet.getRow(28);
+  ['', 'Klasa', 'Współczynnik A', 'Dni (bez PV)', 'Dni (z PV)', 'Zmiana'].forEach((v, i) => histRow.getCell(i + 1).value = v);
+  histRow.font = { bold: true };
+  histRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } };
 
+  // Rows 29-32: K1-K4 with COUNTIF cross-sheet refs
   ['K1', 'K2', 'K3', 'K4'].forEach((k, i) => {
     const coeffs = { K1: 0.17, K2: 0.50, K3: 0.83, K4: 1.00 };
-    const beforeCount = analysis.before.histogram[k] || 0;
-    const afterCount = analysis.after.histogram[k] || 0;
-    summarySheet.addRow([k, coeffs[k], beforeCount, afterCount, { formula: `=D${29+i}-C${29+i}` }]);
+    const rn = 29 + i;
+    const row = summarySheet.getRow(rn);
+    row.getCell(2).value = k;
+    row.getCell(3).value = coeffs[k];
+    row.getCell(4).value = { formula: `COUNTIF('Dane dzienne'!G2:G${dailyDataLastRow},"${k}")`, result: analysis.before.histogram[k] || 0 };
+    row.getCell(5).value = { formula: `COUNTIF('Dane dzienne'!H2:H${dailyDataLastRow},"${k}")`, result: analysis.after.histogram[k] || 0 };
+    row.getCell(6).value = { formula: `E${rn}-D${rn}`, result: (analysis.after.histogram[k] || 0) - (analysis.before.histogram[k] || 0) };
   });
 
   // Formula explanation
-  summarySheet.getCell('A35').value = 'WZORY OBLICZENIOWE';
-  summarySheet.getCell('A35').font = { bold: true };
-  summarySheet.getCell('A36').value = 'Opłata mocowa: WOM = A × SOM × ZS';
-  summarySheet.getCell('A37').value = 'Δs = (śr_wybrane / śr_poza - 1) × 100%';
-  summarySheet.getCell('A38').value = 'Klasa K: K1 (Δs<5%), K2 (5-10%), K3 (10-15%), K4 (≥15%)';
+  summarySheet.getCell('B35').value = 'WZORY OBLICZENIOWE';
+  summarySheet.getCell('B35').font = { bold: true };
+  summarySheet.getCell('B36').value = 'Opłata mocowa: WOM = A × SOM × ZS';
+  summarySheet.getCell('B37').value = 'Δs = (śr_wybrane / śr_poza - 1) × 100%';
+  summarySheet.getCell('B38').value = 'Klasa K: K1 (Δs < -10%), K2 (-10% do 10%), K3 (10% do 30%), K4 (≥ 30%)';
 
-  // Column widths
-  summarySheet.getColumn('A').width = 35;
-  summarySheet.getColumn('B').width = 20;
-  summarySheet.getColumn('C').width = 20;
-  summarySheet.getColumn('D').width = 45;
+  // Print area
+  summarySheet.pageSetup = { printArea: 'A1:F38', fitToPage: true, fitToWidth: 1, orientation: 'portrait' };
 
   // ==========================================
-  // SHEET 2: DANE DZIENNE
+  // SHEET 2: DANE DZIENNE (with margin col A, formulas for fees)
   // ==========================================
   const dailySheet = workbook.addWorksheet('Dane dzienne');
 
-  // Headers
+  // Column widths: A=margin, B-R=data (D9)
+  const dailyColWidths = [3, 12, 8, 14, 14, 14, 8, 8, 8, 8, 10, 10, 14, 14, 14, 14, 12, 12];
+  dailyColWidths.forEach((w, i) => dailySheet.getColumn(i + 1).width = w);
+
+  dailySheet.views = [{ state: 'frozen', ySplit: 1, showGridLines: false, showRowColHeaders: false }];
+
+  // SOM cross-sheet ref for fee formulas: cell C6 on Podsumowanie sheet
+  const somRef = "'Podsumowanie'!$C$6";
+
+  // Header row 1 — via getRow (same pattern as CAPEX export)
   const dailyHeaders = [
-    'Data', 'Dzień tyg.',
+    '', 'Data', 'Dzień tyg.',
     'ZS przed [kWh]', 'ZS po [kWh]', 'Redukcja ZS [kWh]',
     'Klasa przed', 'Klasa po', 'A przed', 'A po',
     'Δs przed [%]', 'Δs po [%]',
     'Opłata przed [PLN]', 'Opłata po [PLN]', 'Oszczędność [PLN]',
     'Opłata (stara K) [PLN]', 'Efekt ZS [PLN]', 'Efekt K [PLN]'
   ];
-  dailySheet.addRow(dailyHeaders);
-  const dailyHeaderRow = dailySheet.getRow(1);
-  dailyHeaderRow.font = { bold: true };
-  dailyHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6A1B9A' } };
-  dailyHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  const hdrRow = dailySheet.getRow(1);
+  dailyHeaders.forEach((h, i) => { hdrRow.getCell(i + 1).value = h; });
+  hdrRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  hdrRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6A1B9A' } };
+  hdrRow.getCell(16).note = 'A_przed × SOM × ZS_po\nHipotetyczna opłata gdyby klasa K się nie zmieniła';
 
-  // Data rows with formulas
+  // Data rows — ALL cells via getRow().getCell() (proven ExcelJS pattern from CAPEX)
   const dayNames = ['Nd', 'Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So'];
+  const kColors = { K1: 'FF4CAF50', K2: 'FF8BC34A', K3: 'FFFF9800', K4: 'FFF44336' };
 
   analysis.dailyComparison.forEach((day, idx) => {
-    const rowNum = idx + 2;
-    const dateStr = day.date.toLocaleDateString('pl-PL');
-    const dayOfWeek = dayNames[day.date.getDay()];
+    const rn = idx + 2;
+    const row = dailySheet.getRow(rn);
 
-    const dataRow = dailySheet.addRow([
-      dateStr,
-      dayOfWeek,
-      plNum(day.zsBefore, 2),
-      plNum(day.zsAfter, 2),
-      { formula: `=C${rowNum}-D${rowNum}` },  // Redukcja ZS
-      day.klassBefore,
-      day.klassAfter,
-      plNum(day.coeffBefore, 2),
-      plNum(day.coeffAfter, 2),
-      plNum(day.deltaSBefore, 2),
-      plNum(day.deltaSAfter, 2),
-      plNum(day.feeBefore, 2),
-      plNum(day.feeAfter, 2),
-      { formula: `=L${rowNum}-M${rowNum}` },  // Oszczędność
-      plNum(day.feeWithOldKclass, 2),
-      { formula: `=L${rowNum}-O${rowNum}` },  // Efekt ZS
-      { formula: `=O${rowNum}-M${rowNum}` }   // Efekt K
-    ]);
+    row.getCell(1).value = '';                           // A: margin
+    row.getCell(2).value = day.date.toLocaleDateString('pl-PL');  // B: Data
+    row.getCell(3).value = dayNames[day.date.getDay()];  // C: Dzień tyg.
+    row.getCell(4).value = plNum(day.zsBefore, 2);       // D: ZS przed
+    row.getCell(5).value = plNum(day.zsAfter, 2);        // E: ZS po
+    row.getCell(6).value = { formula: `D${rn}-E${rn}`, result: plNum(day.zsBefore - day.zsAfter, 2) };  // F: Redukcja ZS
+    row.getCell(7).value = day.klassBefore;              // G: Klasa przed
+    row.getCell(8).value = day.klassAfter;               // H: Klasa po
+    row.getCell(9).value = plNum(day.coeffBefore, 2);    // I: A przed
+    row.getCell(10).value = plNum(day.coeffAfter, 2);    // J: A po
+    row.getCell(11).value = plNum(day.deltaSBefore, 2);  // K: Δs przed
+    row.getCell(12).value = plNum(day.deltaSAfter, 2);   // L: Δs po
+    row.getCell(13).value = { formula: `I${rn}*${somRef}*D${rn}`, result: plNum(day.feeBefore, 2) };         // M: Opłata przed
+    row.getCell(14).value = { formula: `J${rn}*${somRef}*E${rn}`, result: plNum(day.feeAfter, 2) };          // N: Opłata po
+    row.getCell(15).value = { formula: `M${rn}-N${rn}`, result: plNum(day.feeBefore - day.feeAfter, 2) };    // O: Oszczędność
+    row.getCell(16).value = { formula: `I${rn}*${somRef}*E${rn}`, result: plNum(day.feeWithOldKclass, 2) };  // P: Opłata (stara K)
+    row.getCell(17).value = { formula: `M${rn}-P${rn}`, result: plNum(day.feeBefore - day.feeWithOldKclass, 2) };   // Q: Efekt ZS
+    row.getCell(18).value = { formula: `P${rn}-N${rn}`, result: plNum(day.feeWithOldKclass - day.feeAfter, 2) };    // R: Efekt K
 
-    // Apply number formats
-    [3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].forEach(col => {
-      dataRow.getCell(col).numFmt = numFmt2;
+    // Number formats
+    [4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].forEach(col => {
+      row.getCell(col).numFmt = numFmt2;
     });
 
     // Color K-class cells
-    const row = dailySheet.getRow(rowNum);
-    const kColors = { K1: 'FF4CAF50', K2: 'FF8BC34A', K3: 'FFFF9800', K4: 'FFF44336' };
-
-    row.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kColors[day.klassBefore] } };
-    row.getCell(7).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kColors[day.klassAfter] } };
+    row.getCell(7).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kColors[day.klassBefore] } };
+    row.getCell(8).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kColors[day.klassAfter] } };
   });
 
-  // Add totals row
-  const totalRowNum = analysis.dailyComparison.length + 2;
-  dailySheet.addRow([
-    'SUMA',
-    '',
-    { formula: `=SUM(C2:C${totalRowNum-1})` },
-    { formula: `=SUM(D2:D${totalRowNum-1})` },
-    { formula: `=SUM(E2:E${totalRowNum-1})` },
-    '', '', '', '', '', '',
-    { formula: `=SUM(L2:L${totalRowNum-1})` },
-    { formula: `=SUM(M2:M${totalRowNum-1})` },
-    { formula: `=SUM(N2:N${totalRowNum-1})` },
-    { formula: `=SUM(O2:O${totalRowNum-1})` },
-    { formula: `=SUM(P2:P${totalRowNum-1})` },
-    { formula: `=SUM(Q2:Q${totalRowNum-1})` }
-  ]);
-  const totalRow = dailySheet.getRow(totalRowNum);
-  totalRow.font = { bold: true };
-  totalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+  // Totals row — also via getRow (no addRow)
+  const lr = dailyDataLastRow;
+  const tRow = dailySheet.getRow(dailyTotalRow);
+  tRow.getCell(2).value = 'SUMA';
+  tRow.getCell(4).value  = { formula: `SUM(D2:D${lr})`, result: plNum(analysis.before.totalZs, 0) };
+  tRow.getCell(5).value  = { formula: `SUM(E2:E${lr})`, result: plNum(analysis.after.totalZs, 0) };
+  tRow.getCell(6).value  = { formula: `SUM(F2:F${lr})`, result: plNum(analysis.before.totalZs - analysis.after.totalZs, 0) };
+  tRow.getCell(13).value = { formula: `SUM(M2:M${lr})`, result: plNum(analysis.before.totalFee, 2) };
+  tRow.getCell(14).value = { formula: `SUM(N2:N${lr})`, result: plNum(analysis.after.totalFee, 2) };
+  tRow.getCell(15).value = { formula: `SUM(O2:O${lr})`, result: plNum(analysis.before.totalFee - analysis.after.totalFee, 2) };
+  tRow.getCell(16).value = { formula: `SUM(P2:P${lr})`, result: plNum(analysis.before.totalFee - analysis.savings.fromKclassImprovement, 2) };
+  tRow.getCell(17).value = { formula: `SUM(Q2:Q${lr})`, result: plNum(analysis.savings.fromZsReduction, 2) };
+  tRow.getCell(18).value = { formula: `SUM(R2:R${lr})`, result: plNum(analysis.savings.fromKclassImprovement, 2) };
+  [4, 5, 6, 13, 14, 15, 16, 17, 18].forEach(c => tRow.getCell(c).numFmt = numFmt2);
+  tRow.font = { bold: true };
+  tRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
 
-  // Column widths
-  dailySheet.columns.forEach((col, idx) => {
-    col.width = idx === 0 ? 12 : 15;
-  });
+  // Print area
+  dailySheet.pageSetup = { printArea: `A1:R${dailyTotalRow}`, fitToPage: true, fitToWidth: 1, orientation: 'landscape' };
 
   // ==========================================
-  // SHEET 3: OBJAŚNIENIA
+  // SHEET 3: OBJAŚNIENIA (with margin col A)
   // ==========================================
   const helpSheet = workbook.addWorksheet('Objaśnienia');
+  helpSheet.getColumn(1).width = 3;   // A: margin
+  helpSheet.getColumn(2).width = 30;  // B: column name
+  helpSheet.getColumn(3).width = 70;  // C: description
+  helpSheet.views = [{ state: 'frozen', ySplit: 2, showGridLines: false, showRowColHeaders: false }];
 
-  helpSheet.getCell('A1').value = 'OBJAŚNIENIA KOLUMN';
-  helpSheet.getCell('A1').font = { bold: true, size: 14 };
+  helpSheet.getCell('B1').value = 'OBJAŚNIENIA KOLUMN';
+  helpSheet.getCell('B1').font = { bold: true, size: 14 };
 
   const explanations = [
-    ['', ''],
-    ['Kolumna', 'Opis'],
-    ['Data', 'Dzień roboczy (Pn-Pt, bez świąt)'],
-    ['ZS przed [kWh]', 'Energia pobrana z sieci w godz. wybranych (7-22) BEZ PV'],
-    ['ZS po [kWh]', 'Energia pobrana z sieci w godz. wybranych (7-22) Z PV'],
-    ['Redukcja ZS', 'ZS przed - ZS po (ile kWh mniej z sieci dzięki PV)'],
-    ['Klasa przed/po', 'Klasa taryfowa K1-K4 wyznaczona na podstawie Δs'],
-    ['A przed/po', 'Współczynnik opłaty mocowej (K1=0.17, K2=0.50, K3=0.83, K4=1.00)'],
-    ['Δs przed/po [%]', '(śr. pobór w godz. wybranych / śr. pobór poza - 1) × 100%'],
-    ['Opłata przed [PLN]', 'A_przed × SOM × ZS_przed'],
-    ['Opłata po [PLN]', 'A_po × SOM × ZS_po'],
-    ['Oszczędność [PLN]', 'Opłata przed - Opłata po (łączna oszczędność)'],
-    ['Opłata (stara K) [PLN]', 'A_przed × SOM × ZS_po (opłata gdyby klasa K się nie zmieniła)'],
-    ['Efekt ZS [PLN]', 'Opłata przed - Opłata (stara K) (oszczędność z samej redukcji ZS)'],
-    ['Efekt K [PLN]', 'Opłata (stara K) - Opłata po (oszczędność z poprawy klasy K)'],
-    ['', ''],
-    ['WZORY', ''],
-    ['WOM = A × SOM × ZS', 'Opłata mocowa = Współczynnik × Stawka × Energia w godz. wybranych'],
-    ['Δs = (śr_s / śr_ps - 1) × 100%', 'Stosunek średniego zużycia w szczycie do poza szczytem'],
-    ['', ''],
-    ['KLASY K (Dz.U. 2023 poz. 503)', ''],
-    ['K1: Δs < -10%', 'Współczynnik A = 0.17 (zużycie nocą wyższe niż w szczycie)'],
-    ['K2: Δs -10% do 10%', 'Współczynnik A = 0.50 (profil płaski)'],
-    ['K3: Δs 10% do 30%', 'Współczynnik A = 0.83 (profil umiarkowanie szczytowy)'],
-    ['K4: Δs ≥ 30%', 'Współczynnik A = 1.00 (profil wybitnie szczytowy)'],
+    ['', '', ''],
+    ['', 'Kolumna', 'Opis'],
+    ['', 'Data', 'Dzień roboczy (Pn-Pt, bez świąt)'],
+    ['', 'ZS przed [kWh]', 'Energia pobrana z sieci w godz. wybranych (7-22) BEZ PV'],
+    ['', 'ZS po [kWh]', 'Energia pobrana z sieci w godz. wybranych (7-22) Z PV'],
+    ['', 'Redukcja ZS', 'ZS przed - ZS po (ile kWh mniej z sieci dzięki PV)'],
+    ['', 'Klasa przed/po', 'Klasa taryfowa K1-K4 wyznaczona na podstawie Δs'],
+    ['', 'A przed/po', 'Współczynnik opłaty mocowej (K1=0.17, K2=0.50, K3=0.83, K4=1.00)'],
+    ['', 'Δs przed/po [%]', '(śr. pobór w godz. wybranych / śr. pobór poza - 1) × 100%'],
+    ['', 'Opłata przed [PLN]', 'A_przed × SOM × ZS_przed'],
+    ['', 'Opłata po [PLN]', 'A_po × SOM × ZS_po'],
+    ['', 'Oszczędność [PLN]', 'Opłata przed - Opłata po (łączna oszczędność)'],
+    ['', 'Opłata (stara K) [PLN]', 'A_przed × SOM × ZS_po (opłata gdyby klasa K się nie zmieniła)'],
+    ['', 'Efekt ZS [PLN]', 'Opłata przed - Opłata (stara K) (oszczędność z samej redukcji ZS)'],
+    ['', 'Efekt K [PLN]', 'Opłata (stara K) - Opłata po (oszczędność z poprawy klasy K)'],
+    ['', '', ''],
+    ['', 'WZORY', ''],
+    ['', 'WOM = A × SOM × ZS', 'Opłata mocowa = Współczynnik × Stawka × Energia w godz. wybranych'],
+    ['', 'Δs = (śr_s / śr_ps - 1) × 100%', 'Stosunek średniego zużycia w szczycie do poza szczytem'],
+    ['', '', ''],
+    ['', 'KLASY K (Dz.U. 2023 poz. 503)', ''],
+    ['', 'K1: Δs < -10%', 'Współczynnik A = 0.17 (zużycie nocą wyższe niż w szczycie)'],
+    ['', 'K2: Δs -10% do 10%', 'Współczynnik A = 0.50 (profil płaski)'],
+    ['', 'K3: Δs 10% do 30%', 'Współczynnik A = 0.83 (profil umiarkowanie szczytowy)'],
+    ['', 'K4: Δs ≥ 30%', 'Współczynnik A = 1.00 (profil wybitnie szczytowy)'],
   ];
 
   explanations.forEach(row => helpSheet.addRow(row));
   helpSheet.getRow(2).font = { bold: true };
-  helpSheet.getColumn('A').width = 30;
-  helpSheet.getColumn('B').width = 70;
 
   // ==========================================
   // SAVE FILE
   // ==========================================
-  // Apply watermark
   if (window.applyExcelWatermark) {
     try { window.applyExcelWatermark(workbook, {}); }
     catch (e) { console.warn('⚠️ Watermark:', e); }
@@ -17016,7 +17309,9 @@ async function exportKClassToExcel() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const filename = `Analiza_Klasy_K_${new Date().toISOString().slice(0,10)}.xlsx`;
+  const cap = window.currentVariant?.capacity || window.centralizedCalc?.common?.capacityKwp || '';
+  const capSuffix = cap ? `_${Math.round(cap)}kWp` : '';
+  const filename = `Analiza_Klasy_K${capSuffix}_${new Date().toISOString().slice(0,10)}.xlsx`;
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);

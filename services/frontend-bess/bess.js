@@ -4315,6 +4315,15 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
         soc_max: bessConfig.soc_max || 0.90,
         max_efc_per_year: bessConfig.max_efc_per_year || null,
         max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
+        // v7.0.0: LP only
+        solver: 'lp',
+      };
+
+      // LP params (v7.0.0)
+      overrides.lp_params = {
+        forecast_hours: parseInt(settings.bessLpForecastHours, 10) || 34,
+        keep_hours: parseInt(settings.bessLpKeepHours, 10) || 24,
+        time_limit_seconds: parseFloat(settings.bessLpTimeLimit) || 30.0
       };
 
       // Add arbitrage if enabled (no longer requires stacked_mode)
@@ -4401,6 +4410,15 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
         import_price_pln_mwh: 800,
         max_efc_per_year: bessConfig.max_efc_per_year || null,
         max_throughput_mwh_per_year: bessConfig.max_throughput_mwh_per_year || null,
+        // v7.0.0: LP only
+        solver: 'lp',
+      };
+
+      // LP params (v7.0.0)
+      requestBody.lp_params = {
+        forecast_hours: parseInt(settings.bessLpForecastHours, 10) || 34,
+        keep_hours: parseInt(settings.bessLpKeepHours, 10) || 24,
+        time_limit_seconds: parseFloat(settings.bessLpTimeLimit) || 30.0
       };
 
       // Add arbitrage config if enabled (no longer requires stacked_mode)
@@ -5995,7 +6013,17 @@ function buildSizingRequest(variantData) {
       objective: advancedConfig.objective,
       constraints: advancedConfig.constraints,
       constraint_penalty_weight: 0.3
-    }
+    },
+
+    // v7.0.0: LP only
+    solver: 'lp'
+  };
+
+  // LP params (v7.0.0: always included)
+  request.lp_params = {
+    forecast_hours: parseInt(settings.bessLpForecastHours, 10) || 34,
+    keep_hours: parseInt(settings.bessLpKeepHours, 10) || 24,
+    time_limit_seconds: parseFloat(settings.bessLpTimeLimit) || 30.0
   };
 
   // Add peak limit for load_only or stacked

@@ -79,6 +79,27 @@ class DegradationStatus(str, Enum):
     EXCEEDED = "exceeded"
 
 
+class SolverType(str, Enum):
+    """Dispatch solver algorithm (v7.0.0: LP only)"""
+    LP = "lp"             # Linear programming with rolling horizon
+
+
+class LPSolverParams(BaseModel):
+    """Configuration for LP solver"""
+    forecast_hours: int = Field(
+        34, ge=2, le=168,
+        description="Rolling horizon forecast window [hours]. Default 34h (Galileo-proven)."
+    )
+    keep_hours: int = Field(
+        24, ge=1, le=168,
+        description="Rolling horizon keep window [hours]. Default 24h."
+    )
+    time_limit_seconds: float = Field(
+        30.0, ge=1.0, le=300.0,
+        description="Time limit per LP window solve [seconds]."
+    )
+
+
 # =============================================================================
 # ANALYTICAL PERIOD - Time Axis Definition
 # =============================================================================
@@ -696,6 +717,16 @@ class DispatchRequest(BaseModel):
 
     # Dispatch mode
     mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
+
+    # Solver selection (v1.4.0 - LP optimization)
+    solver: SolverType = Field(
+        SolverType.LP,
+        description="Always 'lp' (v7.0.0). LP is the only dispatch algorithm."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        default_factory=LPSolverParams,
+        description="LP solver configuration. Defaults are Galileo-proven (34h/24h)."
+    )
 
     # Mode-specific parameters
     stacked_params: Optional[StackedModeParams] = None
@@ -2012,6 +2043,16 @@ class SizingRequest(BaseModel):
     mode: DispatchMode = Field(DispatchMode.PV_SURPLUS)
     stacked_params: Optional[StackedModeParams] = None
     peak_limit_kw: Optional[float] = None
+
+    # LP solver configuration (v7.0.0)
+    solver: SolverType = Field(
+        SolverType.LP,
+        description="Always 'lp' (v7.0.0). LP is the only dispatch algorithm."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        default_factory=LPSolverParams,
+        description="LP solver configuration. Defaults are Galileo-proven (34h/24h)."
+    )
 
     # Arbitrage configuration (optional, enables ToU arbitrage in sizing)
     arbitrage_config: Optional[ArbitrageConfig] = Field(

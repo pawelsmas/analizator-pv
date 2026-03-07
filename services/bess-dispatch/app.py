@@ -148,6 +148,9 @@ from models import (
     # v0.9.0 Caching
     CacheInfo,
     CacheStatus,
+    # v1.4.0 LP Solver
+    SolverType,
+    LPSolverParams,
 )
 from cache_helper import (
     compute_request_hash,
@@ -1624,6 +1627,16 @@ class DispatchRequestAPI(BaseModel):
     demand_charge_pln_kw_month: float = Field(0.0, ge=0, description="Monthly demand charge [PLN/kW/month]")
     demand_charge_pln_kw_year: float = Field(0.0, ge=0, description="Annual demand charge [PLN/kW/year]")
 
+    # LP Solver (v7.0.0 - LP only, no greedy)
+    solver: Optional[str] = Field(
+        None,
+        description="DEPRECATED: Ignored. LP is always used."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        None,
+        description="LP solver configuration. Defaults: 34h forecast, 24h keep, 30s timeout."
+    )
+
     # Options
     return_hourly: bool = Field(True, description="Include hourly arrays")
 
@@ -1754,6 +1767,8 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
             prices=prices,
             arbitrage_config=arb_config,
             start_date=request.start_date,
+            solver=SolverType.LP,  # v7.0.0: LP only
+            lp_params=request.lp_params or LPSolverParams(),
         )
 
         # Fetch import prices if arbitrage enabled
@@ -2014,6 +2029,16 @@ class SizingRequestAPI(BaseModel):
     include_ledger_timeseries: bool = Field(
         False,
         description="If True, include per-timestep cost ledger in response. Default: False."
+    )
+
+    # LP Solver (v7.0.0 - LP only, no greedy)
+    solver: Optional[str] = Field(
+        None,
+        description="DEPRECATED: Ignored. LP is always used."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        None,
+        description="LP solver configuration. Defaults: 34h forecast, 24h keep, 30s timeout."
     )
 
     @model_validator(mode='after')
@@ -2360,6 +2385,9 @@ async def run_sizing_optimization(
             grid_constraints=grid_constraints,
             # Sizing constraints (v0.8.0)
             constraints_config=constraints_config,
+            # LP Solver (v7.0.0)
+            solver=SolverType.LP,
+            lp_params=request.lp_params or LPSolverParams(),
         )
 
         # v0.9.0: Caching - compute request hash
@@ -2795,6 +2823,9 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         finance_config=finance_config,
         grid_constraints=grid_constraints,
         constraints_config=constraints_config,
+        # LP Solver (v7.0.0)
+        solver=SolverType.LP,
+        lp_params=getattr(api_request, 'lp_params', None) or LPSolverParams(),
     )
 
     return run_sizing(internal_request)

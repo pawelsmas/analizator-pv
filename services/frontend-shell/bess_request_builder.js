@@ -110,7 +110,17 @@
       prices: buildPricesConfig(settings, analyticalPeriod),
 
       // ===== DEMAND CHARGE =====
-      demand_charge_pln_kw_month: parseFloatSafe(settings.bessPowerChargePlnPerKwMonth, 50)
+      demand_charge_pln_kw_month: parseFloatSafe(settings.bessPowerChargePlnPerKwMonth, 50),
+
+      // ===== SOLVER (v7.0.0: LP only) =====
+      solver: 'lp'
+    };
+
+    // LP params (v7.0.0)
+    request.lp_params = {
+      forecast_hours: parseInt(settings.bessLpForecastHours, 10) || 34,
+      keep_hours: parseInt(settings.bessLpKeepHours, 10) || 24,
+      time_limit_seconds: parseFloatSafe(settings.bessLpTimeLimit, 30.0)
     };
 
     // Add data arrays
@@ -143,6 +153,8 @@
       analytical_period: request.analytical_period,
       mode: request.mode,
       topology: request.topology,
+      solver: request.solver,
+      lp_params: request.lp_params || null,
       peak_limit_kw: request.peak_limit_kw,
       demand_charge: request.demand_charge_pln_kw_month,
       eol_capacity_factor: request.eol_capacity_factor,

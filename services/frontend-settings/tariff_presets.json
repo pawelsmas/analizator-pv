@@ -1,0 +1,1151 @@
+{
+  "version": "2026-Q1",
+  "source": "PAGRA-Galileo 2026 + _taryfy_2025.py",
+  "commonFees": {
+    "ozeFee": 7.0,
+    "cogenerationFee": 10.0,
+    "exciseTax": 5.0
+  },
+  "operators": {
+    "PGE": {
+      "label": "PGE Dystrybucja",
+      "tariffs": {
+        "A23": {
+          "label": "A23 — WN, 3-strefowa",
+          "voltage": "A",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 14.85,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 16.79
+          },
+          "touRates": {
+            "flatRate": 31.2,
+            "dayRate": 75.62,
+            "nightRate": 16.79,
+            "peakRate": 75.62,
+            "partialRate": 29.79,
+            "offPeakRate": 16.79,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "A24": {
+          "label": "A24 — WN, 4-strefowa",
+          "voltage": "A",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 14.85,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 16.79
+          },
+          "touRates": {
+            "flatRate": 32.8,
+            "dayRate": 29.79,
+            "nightRate": 16.79,
+            "peakRate": 81.77,
+            "partialRate": 29.79,
+            "offPeakRate": 16.79,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "B21": {
+          "label": "B21 — SN, 1-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 18.43,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.13,
+            "distribution": 64.46
+          },
+          "touRates": {
+            "flatRate": 64.46,
+            "dayRate": 64.46,
+            "nightRate": 64.46,
+            "peakRate": 64.46,
+            "partialRate": 64.46,
+            "offPeakRate": 64.46,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B22": {
+          "label": "B22 — SN, 2-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 19.41,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 44.67
+          },
+          "touRates": {
+            "flatRate": 60.9,
+            "dayRate": 85.12,
+            "nightRate": 44.67,
+            "peakRate": 85.12,
+            "partialRate": 44.67,
+            "offPeakRate": 44.67,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "B23": {
+          "label": "B23 — SN, 3-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 20.39,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 22.98
+          },
+          "touRates": {
+            "flatRate": 51.9,
+            "dayRate": 124.38,
+            "nightRate": 22.98,
+            "peakRate": 124.38,
+            "partialRate": 66.11,
+            "offPeakRate": 22.98,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "B24": {
+          "label": "B24 — SN, 4-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 20.39,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 15.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 22.98
+          },
+          "touRates": {
+            "flatRate": 61.4,
+            "dayRate": 66.11,
+            "nightRate": 22.98,
+            "peakRate": 160.78,
+            "partialRate": 66.11,
+            "offPeakRate": 22.98,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "C21": {
+          "label": "C21 — nn, 1-strefowa",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 26.04,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 216.4
+          },
+          "touRates": {
+            "flatRate": 216.4,
+            "dayRate": 216.4,
+            "nightRate": 216.4,
+            "peakRate": 216.4,
+            "partialRate": 216.4,
+            "offPeakRate": 216.4,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22a": {
+          "label": "C22a — nn, 2-strefowa (szczytowa)",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 27.86,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 187.1
+          },
+          "touRates": {
+            "flatRate": 224.2,
+            "dayRate": 279.9,
+            "nightRate": 187.1,
+            "peakRate": 279.9,
+            "partialRate": 187.1,
+            "offPeakRate": 187.1,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "C22b": {
+          "label": "C22b — nn, 2-strefowa (dzienna)",
+          "voltage": "C",
+          "tariffType": "two_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 27.86,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 86.8
+          },
+          "touRates": {
+            "flatRate": 194.6,
+            "dayRate": 259.3,
+            "nightRate": 86.8,
+            "peakRate": 259.3,
+            "partialRate": 86.8,
+            "offPeakRate": 86.8,
+            "weekday": {
+              "dayStart": 6,
+              "dayEnd": 21
+            },
+            "weekend": {
+              "dayStart": 6,
+              "dayEnd": 21
+            }
+          }
+        },
+        "C23": {
+          "label": "C23 — nn, 3-strefowa",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 29.8,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 84.7
+          },
+          "touRates": {
+            "flatRate": 167.8,
+            "dayRate": 347.8,
+            "nightRate": 84.7,
+            "peakRate": 347.8,
+            "partialRate": 236.9,
+            "offPeakRate": 84.7,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "C24": {
+          "label": "C24 — nn, 4-strefowa",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 29.8,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 84.7
+          },
+          "touRates": {
+            "flatRate": 184.9,
+            "dayRate": 236.9,
+            "nightRate": 84.7,
+            "peakRate": 411.9,
+            "partialRate": 236.9,
+            "offPeakRate": 84.7,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        }
+      }
+    },
+    "Tauron": {
+      "label": "Tauron Dystrybucja",
+      "tariffs": {
+        "A21": {
+          "label": "A21 — WN, 1-strefowa",
+          "voltage": "A",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.78,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 29.38
+          },
+          "touRates": {
+            "flatRate": 29.38,
+            "dayRate": 29.38,
+            "nightRate": 29.38,
+            "peakRate": 29.38,
+            "partialRate": 29.38,
+            "offPeakRate": 29.38,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "A22": {
+          "label": "A22 — WN, 2-strefowa",
+          "voltage": "A",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.44,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 21.67
+          },
+          "touRates": {
+            "flatRate": 25.5,
+            "dayRate": 31.26,
+            "nightRate": 21.67,
+            "peakRate": 31.26,
+            "partialRate": 21.67,
+            "offPeakRate": 21.67,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "A23": {
+          "label": "A23 — WN, 3-strefowa",
+          "voltage": "A",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.44,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 18.93
+          },
+          "touRates": {
+            "flatRate": 25.0,
+            "dayRate": 35.84,
+            "nightRate": 18.93,
+            "peakRate": 35.84,
+            "partialRate": 32.5,
+            "offPeakRate": 18.93,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "B21": {
+          "label": "B21 — SN, 1-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 17.49,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 71.14
+          },
+          "touRates": {
+            "flatRate": 71.14,
+            "dayRate": 71.14,
+            "nightRate": 71.14,
+            "peakRate": 71.14,
+            "partialRate": 71.14,
+            "offPeakRate": 71.14,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B22": {
+          "label": "B22 — SN, 2-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 17.49,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 50.42
+          },
+          "touRates": {
+            "flatRate": 59.2,
+            "dayRate": 72.43,
+            "nightRate": 50.42,
+            "peakRate": 72.43,
+            "partialRate": 50.42,
+            "offPeakRate": 50.42,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "B23": {
+          "label": "B23 — SN, 3-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 17.93,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 18.0
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 37.48
+          },
+          "touRates": {
+            "flatRate": 43.6,
+            "dayRate": 56.1,
+            "nightRate": 37.48,
+            "peakRate": 56.1,
+            "partialRate": 49.64,
+            "offPeakRate": 37.48,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "C21": {
+          "label": "C21 — nn, 1-strefowa",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.69,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 215.3
+          },
+          "touRates": {
+            "flatRate": 215.3,
+            "dayRate": 215.3,
+            "nightRate": 215.3,
+            "peakRate": 215.3,
+            "partialRate": 215.3,
+            "offPeakRate": 215.3,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22a": {
+          "label": "C22a — nn, 2-strefowa (szczytowa)",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.69,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 196.8
+          },
+          "touRates": {
+            "flatRate": 228.4,
+            "dayRate": 275.8,
+            "nightRate": 196.8,
+            "peakRate": 275.8,
+            "partialRate": 196.8,
+            "offPeakRate": 196.8,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "C22b": {
+          "label": "C22b — nn, 2-strefowa (dzienna)",
+          "voltage": "C",
+          "tariffType": "two_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.69,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 95.4
+          },
+          "touRates": {
+            "flatRate": 208.0,
+            "dayRate": 275.5,
+            "nightRate": 95.4,
+            "peakRate": 275.5,
+            "partialRate": 95.4,
+            "offPeakRate": 95.4,
+            "weekday": {
+              "dayStart": 6,
+              "dayEnd": 21
+            },
+            "weekend": {
+              "dayStart": 6,
+              "dayEnd": 21
+            }
+          }
+        },
+        "C23": {
+          "label": "C23 — nn, 3-strefowa",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 16.69,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 9.5
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 178.0
+          },
+          "touRates": {
+            "flatRate": 229.0,
+            "dayRate": 361.3,
+            "nightRate": 178.0,
+            "peakRate": 361.3,
+            "partialRate": 249.8,
+            "offPeakRate": 178.0,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        }
+      }
+    },
+    "Enea": {
+      "label": "Enea Operator",
+      "tariffs": {
+        "A21": {
+          "label": "A21 — WN, 1-strefowa",
+          "voltage": "A",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 21.09,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 14.59
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 25.85
+          },
+          "touRates": {
+            "flatRate": 25.85,
+            "dayRate": 25.85,
+            "nightRate": 25.85,
+            "peakRate": 25.85,
+            "partialRate": 25.85,
+            "offPeakRate": 25.85,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "A23": {
+          "label": "A23 — WN, 3-strefowa",
+          "voltage": "A",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 21.09,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 14.59
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 25.85
+          },
+          "touRates": {
+            "flatRate": 25.85,
+            "dayRate": 25.85,
+            "nightRate": 25.85,
+            "peakRate": 25.85,
+            "partialRate": 25.85,
+            "offPeakRate": 25.85,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B21": {
+          "label": "B21 — SN, 1-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 25.44,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.59
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 67.5
+          },
+          "touRates": {
+            "flatRate": 67.5,
+            "dayRate": 67.5,
+            "nightRate": 67.5,
+            "peakRate": 67.5,
+            "partialRate": 67.5,
+            "offPeakRate": 67.5,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B22": {
+          "label": "B22 — SN, 2-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 25.44,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.59
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 67.5
+          },
+          "touRates": {
+            "flatRate": 67.5,
+            "dayRate": 67.5,
+            "nightRate": 67.5,
+            "peakRate": 67.5,
+            "partialRate": 67.5,
+            "offPeakRate": 67.5,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B23": {
+          "label": "B23 — SN, 3-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 25.44,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.59
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 67.5
+          },
+          "touRates": {
+            "flatRate": 67.5,
+            "dayRate": 67.5,
+            "nightRate": 67.5,
+            "peakRate": 67.5,
+            "partialRate": 67.5,
+            "offPeakRate": 67.5,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C21": {
+          "label": "C21 — nn, 1-strefowa",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 24.19,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 10.0
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 153.8
+          },
+          "touRates": {
+            "flatRate": 153.8,
+            "dayRate": 153.8,
+            "nightRate": 153.8,
+            "peakRate": 153.8,
+            "partialRate": 153.8,
+            "offPeakRate": 153.8,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22a": {
+          "label": "C22a — nn, 2-strefowa (szczytowa)",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 24.19,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 10.0
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 153.8
+          },
+          "touRates": {
+            "flatRate": 153.8,
+            "dayRate": 153.8,
+            "nightRate": 153.8,
+            "peakRate": 153.8,
+            "partialRate": 153.8,
+            "offPeakRate": 153.8,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22b": {
+          "label": "C22b — nn, 2-strefowa (dzienna)",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 24.19,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 10.0
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 153.8
+          },
+          "touRates": {
+            "flatRate": 153.8,
+            "dayRate": 153.8,
+            "nightRate": 153.8,
+            "peakRate": 153.8,
+            "partialRate": 153.8,
+            "offPeakRate": 153.8,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22w": {
+          "label": "C22w — nn, 2-strefowa (weekendowa)",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 29.49,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 10.0
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 145.1
+          },
+          "touRates": {
+            "flatRate": 145.1,
+            "dayRate": 145.1,
+            "nightRate": 145.1,
+            "peakRate": 145.1,
+            "partialRate": 145.1,
+            "offPeakRate": 145.1,
+            "weekday": {},
+            "weekend": {}
+          }
+        }
+      }
+    },
+    "Energa": {
+      "label": "Energa Operator",
+      "tariffs": {
+        "A23": {
+          "label": "A23 — WN, 3-strefowa",
+          "voltage": "A",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 19.49,
+            "transitionFeeMonth": 0.2,
+            "osdSubscriptionFeeMonth": 14.5
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 18.74
+          },
+          "touRates": {
+            "flatRate": 23.1,
+            "dayRate": 34.14,
+            "nightRate": 18.74,
+            "peakRate": 34.14,
+            "partialRate": 25.03,
+            "offPeakRate": 18.74,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "B21": {
+          "label": "B21 — SN, 1-strefowa",
+          "voltage": "B",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 23.32,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.5
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 104.4
+          },
+          "touRates": {
+            "flatRate": 104.4,
+            "dayRate": 104.4,
+            "nightRate": 104.4,
+            "peakRate": 104.4,
+            "partialRate": 104.4,
+            "offPeakRate": 104.4,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "B22": {
+          "label": "B22 — SN, 2-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 23.32,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.5
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 76.34
+          },
+          "touRates": {
+            "flatRate": 106.2,
+            "dayRate": 150.9,
+            "nightRate": 76.34,
+            "peakRate": 150.9,
+            "partialRate": 76.34,
+            "offPeakRate": 76.34,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "B23": {
+          "label": "B23 — SN, 3-strefowa",
+          "voltage": "B",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 25.05,
+            "transitionFeeMonth": 0.19,
+            "osdSubscriptionFeeMonth": 14.5
+          },
+          "variableFees": {
+            "qualityFee": 32.12,
+            "distribution": 38.01
+          },
+          "touRates": {
+            "flatRate": 61.1,
+            "dayRate": 105.66,
+            "nightRate": 38.01,
+            "peakRate": 105.66,
+            "partialRate": 85.93,
+            "offPeakRate": 38.01,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        },
+        "C21": {
+          "label": "C21 — nn, 1-strefowa",
+          "voltage": "C",
+          "tariffType": "flat",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 34.16,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 7.25
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 291.2
+          },
+          "touRates": {
+            "flatRate": 291.2,
+            "dayRate": 291.2,
+            "nightRate": 291.2,
+            "peakRate": 291.2,
+            "partialRate": 291.2,
+            "offPeakRate": 291.2,
+            "weekday": {},
+            "weekend": {}
+          }
+        },
+        "C22a": {
+          "label": "C22a — nn, 2-strefowa (szczytowa)",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 34.16,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 7.25
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 233.8
+          },
+          "touRates": {
+            "flatRate": 277.6,
+            "dayRate": 343.2,
+            "nightRate": 233.8,
+            "peakRate": 343.2,
+            "partialRate": 233.8,
+            "offPeakRate": 233.8,
+            "weekday": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 8,
+              "peak1End": 11,
+              "peak2Start": 16,
+              "peak2End": 21
+            }
+          }
+        },
+        "C22b": {
+          "label": "C22b — nn, 2-strefowa (dzienna)",
+          "voltage": "C",
+          "tariffType": "two_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 34.16,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 7.25
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 132.8
+          },
+          "touRates": {
+            "flatRate": 234.8,
+            "dayRate": 296.0,
+            "nightRate": 132.8,
+            "peakRate": 296.0,
+            "partialRate": 132.8,
+            "offPeakRate": 132.8,
+            "weekday": {
+              "dayStart": 6,
+              "dayEnd": 21
+            },
+            "weekend": {
+              "dayStart": 6,
+              "dayEnd": 21
+            }
+          }
+        },
+        "C23": {
+          "label": "C23 — nn, 3-strefowa",
+          "voltage": "C",
+          "tariffType": "three_zone",
+          "fixedFees": {
+            "distFixedRatePerKwMonth": 34.16,
+            "transitionFeeMonth": 0.08,
+            "osdSubscriptionFeeMonth": 7.25
+          },
+          "variableFees": {
+            "qualityFee": 32.1,
+            "distribution": 110.6
+          },
+          "touRates": {
+            "flatRate": 220.6,
+            "dayRate": 456.3,
+            "nightRate": 110.6,
+            "peakRate": 456.3,
+            "partialRate": 314.8,
+            "offPeakRate": 110.6,
+            "weekday": {
+              "peak1Start": 7,
+              "peak1End": 13,
+              "peak2Start": 16,
+              "peak2End": 21
+            },
+            "weekend": {
+              "peak1Start": 0,
+              "peak1End": 0,
+              "peak2Start": 0,
+              "peak2End": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}
