@@ -2030,6 +2030,15 @@ def run_dispatch(
     load = np.array(request.load_kw)
     dt_hours = request.dt_hours
 
+    # Cable pooling: aggregate additional PV/load profiles
+    if getattr(request, 'cable_pooling_profiles', None):
+        for profile in request.cable_pooling_profiles:
+            sf = profile.scale_factor
+            if profile.pv_kw and len(profile.pv_kw) == len(pv):
+                pv = pv + np.array(profile.pv_kw) * sf
+            if profile.load_kw and len(profile.load_kw) == len(load):
+                load = load + np.array(profile.load_kw) * sf
+
     # Validate arbitrage requirements
     arb_config = request.arbitrage_config
     if arb_config and arb_config.enabled:
@@ -2044,7 +2053,7 @@ def run_dispatch(
             )
 
     # === LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy) ===
-    from lp_dispatch import dispatch_lp, resolve_price_arrays
+    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_price_arrays
     import logging as _logging
     _lp_logger = _logging.getLogger("lp_dispatch")
 
@@ -2063,19 +2072,57 @@ def run_dispatch(
     else:
         _, sell_price_arr = resolve_price_arrays(request.prices, len(load))
 
-    result = dispatch_lp(
-        pv_kw=pv,
-        load_kw=load,
-        battery=request.battery,
-        dt_hours=dt_hours,
-        prices=request.prices,
-        mode=request.mode,
-        peak_limit_kw=lp_peak_limit,
-        lp_config=lp_config,
-        return_hourly=True,
-        buy_price_override=buy_price_arr,
-        sell_price_override=sell_price_arr,
+    # Check if capacity fee optimization is enabled
+    use_cap_fee_opt = (
+        getattr(request, 'optimize_capacity_fee', False) or
+        (request.prices and getattr(request.prices, 'capacity_fee_method', '') == 'dynamic')
     )
+
+    if use_cap_fee_opt:
+        # Build time_index for capacity fee calculation
+        from economics_helper import get_time_index_for_request
+        try:
+            time_index = get_time_index_for_request(request, len(load))
+        except Exception:
+            from economics_helper import build_time_index_cet_fixed
+            from datetime import date
+            start = getattr(request, 'start_date', None) or date(2025, 1, 1)
+            time_index = build_time_index_cet_fixed(start, len(load), int(dt_hours * 60))
+
+        from capacity_fee_pl.models import CapacityFeeConfig
+        cap_config = CapacityFeeConfig(
+            som_pln_per_kwh=getattr(request.prices, 'capacity_fee_som_pln_kwh', 0.2194) if request.prices else 0.2194,
+        )
+
+        result, cap_fee_info = dispatch_lp_with_capacity_optimization(
+            pv_kw=pv,
+            load_kw=load,
+            battery=request.battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=request.mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_config,
+            return_hourly=True,
+            buy_price_override=buy_price_arr,
+            sell_price_override=sell_price_arr,
+            time_index=time_index,
+            capacity_fee_config=cap_config,
+        )
+    else:
+        result = dispatch_lp(
+            pv_kw=pv,
+            load_kw=load,
+            battery=request.battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=request.mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_config,
+            return_hourly=True,
+            buy_price_override=buy_price_arr,
+            sell_price_override=sell_price_arr,
+        )
 
     # Post-processing: degradation budget + grid constraints
     if request.degradation_budget:

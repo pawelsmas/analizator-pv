@@ -486,6 +486,132 @@ class FlatPriceProvider:
 
 
 # =============================================================================
+# RDN Price Provider (Day-Ahead Market)
+# =============================================================================
+
+class RDNPriceConfig(BaseModel):
+    """Configuration for RDN (day-ahead market) price provider."""
+    add_other_fees_pln_kwh: float = Field(
+        0.0,
+        description="Other fees to add on top of RDN price [PLN/kWh]"
+    )
+    add_osd_variable_pln_kwh: float = Field(
+        0.0,
+        description="OSD variable fee to add on top of RDN price [PLN/kWh]"
+    )
+    export_price_pln_kwh: float = Field(
+        0.0,
+        description="Export price [PLN/kWh]. 0 = zero-export."
+    )
+    seller_margin_pct: float = Field(
+        0.0,
+        description="Seller margin [%] on RDN price."
+    )
+
+
+class RDNPriceProvider:
+    """
+    RDN (Rynek Dnia Następnego) price provider.
+
+    Fetches day-ahead market prices from PSE API or uses cached data.
+    Falls back to synthetic prices if API is unavailable.
+    """
+
+    def __init__(self, config: Optional[RDNPriceConfig] = None):
+        self.config = config or RDNPriceConfig()
+
+    def get_series(
+        self,
+        start_date: date,
+        end_date: date,
+        resolution_minutes: int = 60
+    ) -> PriceBundle:
+        """
+        Get RDN price series for date range.
+
+        Tries to fetch from PSE API, falls back to synthetic prices.
+        """
+        try:
+            from rdn_prices import fetch_rdn_prices, rdn_to_price_array
+            rdn_data = fetch_rdn_prices(start_date, end_date)
+
+            n_days = (end_date - start_date).days + 1
+            n_timesteps = n_days * 24 * (4 if resolution_minutes == 15 else 1)
+
+            # Build time_index for conversion
+            from economics_helper import build_time_index_cet_fixed
+            time_index = build_time_index_cet_fixed(start_date, n_timesteps, resolution_minutes)
+
+            rdn_prices_kwh = rdn_to_price_array(rdn_data, time_index, resolution_minutes)
+
+            # Apply margin
+            if self.config.seller_margin_pct > 0:
+                rdn_prices_kwh *= (1 + self.config.seller_margin_pct / 100.0)
+
+            # Add fees
+            import_total = (
+                rdn_prices_kwh +
+                self.config.add_other_fees_pln_kwh +
+                self.config.add_osd_variable_pln_kwh
+            )
+            export_total = np.full(n_timesteps, self.config.export_price_pln_kwh)
+
+            return PriceBundle(
+                import_total=import_total.tolist(),
+                export_total=export_total.tolist(),
+                breakdown=[],
+                source="rdn_pse",
+                steps=n_timesteps,
+                start_date=str(start_date),
+                resolution_minutes=resolution_minutes,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"RDN fetch failed: {e}, using synthetic prices")
+            return self._synthetic_fallback(start_date, end_date, resolution_minutes)
+
+    def _synthetic_fallback(self, start_date: date, end_date: date, resolution_minutes: int) -> PriceBundle:
+        """Generate synthetic RDN-like prices as fallback."""
+        n_days = (end_date - start_date).days + 1
+        steps_per_day = 24 * (4 if resolution_minutes == 15 else 1)
+        n_timesteps = n_days * steps_per_day
+
+        # Typical Polish RDN profile (PLN/MWh → PLN/kWh)
+        hourly_profile_pln_mwh = [
+            280, 265, 255, 250, 252, 275,  # 0-5h (night)
+            310, 360, 400, 420, 415, 390,  # 6-11h (morning ramp)
+            370, 350, 340, 355, 380, 430,  # 12-17h (afternoon)
+            470, 450, 410, 370, 330, 300,  # 18-23h (evening peak)
+        ]
+
+        prices = []
+        for day in range(n_days):
+            for h in range(24):
+                base = hourly_profile_pln_mwh[h] / 1000.0  # PLN/kWh
+                if resolution_minutes == 15:
+                    prices.extend([base] * 4)
+                else:
+                    prices.append(base)
+
+        import_arr = np.array(prices[:n_timesteps])
+        if self.config.seller_margin_pct > 0:
+            import_arr *= (1 + self.config.seller_margin_pct / 100.0)
+
+        import_arr += self.config.add_other_fees_pln_kwh + self.config.add_osd_variable_pln_kwh
+        export_arr = np.full(n_timesteps, self.config.export_price_pln_kwh)
+
+        return PriceBundle(
+            import_total=import_arr.tolist(),
+            export_total=export_arr.tolist(),
+            breakdown=[],
+            source="rdn_synthetic",
+            steps=n_timesteps,
+            start_date=str(start_date),
+            resolution_minutes=resolution_minutes,
+        )
+
+
+# =============================================================================
 # Economic Dispatch Config (for dispatch_economic)
 # =============================================================================
 

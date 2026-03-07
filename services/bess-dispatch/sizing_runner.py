@@ -286,6 +286,56 @@ def calculate_irr_from_cashflow(
     return ((lo + hi) / 2.0) * 100.0
 
 
+def _throughput_soh_factor(
+    year: int,
+    annual_throughput_mwh: float,
+    energy_kwh: float,
+    cycles_to_eol: float,
+    eol_soh_pct: float,
+    curve: str = "linear",
+    replacement_year: Optional[int] = None,
+) -> float:
+    """
+    Calculate SoH-based degradation factor for a given year.
+
+    Uses throughput-based SoH curve (pagra-galileo model):
+    - Track cumulative full equivalent cycles (FEC)
+    - Map FEC to SoH using linear or sqrt curve
+    - Return capacity factor (1.0 at start, eol_soh_pct/100 at cycles_to_eol)
+
+    After replacement_year, cycles reset to 0.
+    """
+    if energy_kwh <= 0:
+        return 1.0
+
+    # Annual FEC (full equivalent cycles)
+    annual_fec = (annual_throughput_mwh * 1000) / (2 * energy_kwh)  # charge+discharge = 2×capacity per cycle
+
+    # Cumulative cycles up to this year (reset after replacement)
+    if replacement_year and year > replacement_year:
+        effective_year = year - replacement_year
+    else:
+        effective_year = year
+
+    cumulative_fec = annual_fec * effective_year
+
+    # Normalized cycle progress (0 to 1+)
+    progress = min(cumulative_fec / cycles_to_eol, 2.0)  # cap at 2x EOL
+
+    # SoH factor
+    eol_factor = eol_soh_pct / 100.0
+    degradation_range = 1.0 - eol_factor
+
+    if curve == "sqrt":
+        # Fast degradation early, slow late (√x curve)
+        soh = 1.0 - degradation_range * (progress ** 0.5)
+    else:
+        # Linear: straight line from 1.0 to eol_factor
+        soh = 1.0 - degradation_range * progress
+
+    return max(soh, 0.1)  # Floor at 10% to avoid negative
+
+
 def build_cashflow_timeseries(
     capex: float,
     annual_savings: float,
@@ -296,35 +346,32 @@ def build_cashflow_timeseries(
     replacement_capex_pln: Optional[float] = None,
     bess_degradation_pct_per_year: float = 0.0,
     pv_degradation_pct_per_year: float = 0.0,
+    # Throughput-based degradation parameters
+    bess_degradation_model: str = "linear",
+    annual_throughput_mwh: float = 0.0,
+    energy_kwh: float = 0.0,
+    cycles_to_eol: float = 6000.0,
+    eol_soh_pct: float = 70.0,
+    degradation_curve: str = "linear",
+    # Seller margin
+    seller_margin_pct: float = 0.0,
 ) -> List[CashflowYear]:
     """
     Build year-by-year cashflow timeseries.
 
-    Args:
-        capex: Initial investment (positive value)
-        annual_savings: Annual savings (positive = revenue)
-        annual_opex: Annual operating expenses (positive value)
-        discount_rate: Discount rate (0.08 = 8%)
-        horizon_years: Analysis horizon in years
-        replacement_year: Year for battery replacement (1-30). If None, no replacement.
-        replacement_capex_pln: Replacement cost in PLN. If None, uses original capex.
-        bess_degradation_pct_per_year: BESS capacity degradation [%/year]. E.g., 2.0 = 2%.
-        pv_degradation_pct_per_year: PV output degradation [%/year]. E.g., 0.5 = 0.5%.
-
-    Returns:
-        List of CashflowYear from year 0 (investment) through horizon_years
-
-    Degradation model:
-        Combined degradation factor = (1 - bess_rate)^year * (1 - pv_rate)^year
-        Degraded savings = base_savings * combined_factor
+    Supports two degradation models:
+    - 'linear': (1 - bess_rate)^year × (1 - pv_rate)^year
+    - 'throughput': SoH curve based on cumulative FEC (pagra-galileo model)
     """
     cashflow_list = []
     cumulative = 0.0
 
-    # Determine replacement cost (use original capex if not specified)
+    # Apply seller margin to capex
+    if seller_margin_pct > 0:
+        capex = capex * (1 + seller_margin_pct / 100.0)
+
     actual_replacement_cost = replacement_capex_pln if replacement_capex_pln is not None else capex
 
-    # Convert degradation percentages to decimal rates
     bess_rate = bess_degradation_pct_per_year / 100.0
     pv_rate = pv_degradation_pct_per_year / 100.0
 
@@ -337,25 +384,31 @@ def build_cashflow_timeseries(
         opex_pln=0.0,
         net_cashflow_pln=net_cf_0,
         cumulative_cashflow_pln=cumulative,
-        discounted_cashflow_pln=net_cf_0,  # No discounting for year 0
-        nominal_cashflow_pln=net_cf_0,  # Undiscounted = net for IRR
+        discounted_cashflow_pln=net_cf_0,
+        nominal_cashflow_pln=net_cf_0,
     ))
 
-    # Years 1 to horizon_years: Operating cashflows
     for year in range(1, horizon_years + 1):
-        # Calculate degradation factor for this year
-        # Combined: (1 - bess_rate)^year * (1 - pv_rate)^year
-        bess_factor = (1.0 - bess_rate) ** year
+        # BESS degradation factor
+        if bess_degradation_model == "throughput" and annual_throughput_mwh > 0 and energy_kwh > 0:
+            bess_factor = _throughput_soh_factor(
+                year, annual_throughput_mwh, energy_kwh,
+                cycles_to_eol, eol_soh_pct, degradation_curve,
+                replacement_year,
+            )
+        else:
+            effective_year = year
+            if replacement_year and year > replacement_year:
+                effective_year = year - replacement_year
+            bess_factor = (1.0 - bess_rate) ** effective_year
+
+        # PV degradation (always linear)
         pv_factor = (1.0 - pv_rate) ** year
         combined_factor = bess_factor * pv_factor
 
-        # Apply degradation to savings (savings decrease over time)
         degraded_savings = annual_savings * combined_factor
-
-        # Base operating cashflow with degraded savings
         net_cf = degraded_savings - annual_opex
 
-        # Apply replacement cost in replacement year (if specified and within horizon)
         if replacement_year is not None and year == replacement_year:
             net_cf -= actual_replacement_cost
 
@@ -364,12 +417,12 @@ def build_cashflow_timeseries(
 
         cashflow_list.append(CashflowYear(
             year=year,
-            savings_pln=degraded_savings,  # Degraded savings shown in cashflow
+            savings_pln=degraded_savings,
             opex_pln=annual_opex,
             net_cashflow_pln=net_cf,
             cumulative_cashflow_pln=cumulative,
             discounted_cashflow_pln=discounted_cf,
-            nominal_cashflow_pln=net_cf,  # Undiscounted = net for IRR
+            nominal_cashflow_pln=net_cf,
         ))
 
     return cashflow_list
@@ -1158,7 +1211,7 @@ def run_sizing_for_variant(
     include_timeseries = request.include_energy_flows_timeseries
 
     # LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy)
-    from lp_dispatch import dispatch_lp, resolve_price_arrays
+    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_price_arrays
 
     lp_params = getattr(request, 'lp_params', None) or LPSolverParams()
 
@@ -1173,19 +1226,51 @@ def run_sizing_for_variant(
     else:
         _, sell_arr = resolve_price_arrays(request.prices, len(load_kw))
 
-    result = dispatch_lp(
-        pv_kw=pv_kw,
-        load_kw=load_kw,
-        battery=battery,
-        dt_hours=dt_hours,
-        prices=request.prices,
-        mode=mode,
-        peak_limit_kw=lp_peak_limit,
-        lp_config=lp_params,
-        return_hourly=True,
-        buy_price_override=buy_arr,
-        sell_price_override=sell_arr,
+    # Check if capacity fee optimization is enabled
+    use_cap_fee_opt = (
+        getattr(request, 'optimize_capacity_fee', False) or
+        (request.prices and getattr(request.prices, 'capacity_fee_method', '') == 'dynamic')
     )
+
+    if use_cap_fee_opt:
+        try:
+            time_index = get_time_index_for_request(request, len(load_kw))
+        except Exception:
+            from datetime import date as _date
+            start = getattr(request, 'start_date', None) or _date(2025, 1, 1)
+            time_index = build_time_index_cet_fixed(start, len(load_kw), int(dt_hours * 60))
+
+        from capacity_fee_pl.models import CapacityFeeConfig
+        cap_config = CapacityFeeConfig(
+            som_pln_per_kwh=getattr(request.prices, 'capacity_fee_som_pln_kwh', 0.2194) if request.prices else 0.2194,
+        )
+
+        # Use fewer premiums for sizing (performance)
+        sizing_premiums = [0.0, cap_config.som_pln_per_kwh * 0.5, cap_config.som_pln_per_kwh * 1.0]
+
+        result, _ = dispatch_lp_with_capacity_optimization(
+            pv_kw=pv_kw, load_kw=load_kw, battery=battery,
+            dt_hours=dt_hours, prices=request.prices, mode=mode,
+            peak_limit_kw=lp_peak_limit, lp_config=lp_params,
+            return_hourly=True,
+            buy_price_override=buy_arr, sell_price_override=sell_arr,
+            time_index=time_index, capacity_fee_config=cap_config,
+            premium_levels=sizing_premiums,
+        )
+    else:
+        result = dispatch_lp(
+            pv_kw=pv_kw,
+            load_kw=load_kw,
+            battery=battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_params,
+            return_hourly=True,
+            buy_price_override=buy_arr,
+            sell_price_override=sell_arr,
+        )
 
     # Check degradation budget
     if request.degradation_budget:
@@ -2044,6 +2129,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     # Use effective_pv_kw which returns zeros for LOAD_ONLY topology
     pv_kw = np.array(request.effective_pv_kw)
     load_kw = np.array(request.load_kw)
+
+    # Cable pooling: aggregate additional PV/load profiles
+    if getattr(request, 'cable_pooling_profiles', None):
+        for profile in request.cable_pooling_profiles:
+            sf = profile.scale_factor
+            if profile.pv_kw and len(profile.pv_kw) == len(pv_kw):
+                pv_kw = pv_kw + np.array(profile.pv_kw) * sf
+            if profile.load_kw and len(profile.load_kw) == len(load_kw):
+                load_kw = load_kw + np.array(profile.load_kw) * sf
+        logger.info(f"Cable pooling: aggregated {len(request.cable_pooling_profiles)} additional profiles")
+
     dt_hours = request.interval_minutes / 60.0
     n = len(load_kw)  # Use load length as reference (more reliable)
 
@@ -2092,12 +2188,34 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         4.0: (SizingVariant.LARGE, "Large (4h)"),
     }
 
+    # Parallel or sequential grid search across durations
+    parallel_workers = getattr(request, 'parallel_workers', 1)
+    if parallel_workers > 1 and len(request.durations_h) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(f"Parallel sizing: {parallel_workers} workers for {len(request.durations_h)} durations")
+
+        def _search_duration(dur_h):
+            return dur_h, find_optimal_power_for_duration(
+                pv_kw, load_kw, dt_hours, request.mode, dur_h, request,
+                import_prices=import_prices
+            )
+
+        duration_results = {}
+        with ThreadPoolExecutor(max_workers=min(parallel_workers, len(request.durations_h))) as executor:
+            futures = {executor.submit(_search_duration, d): d for d in request.durations_h}
+            for future in as_completed(futures):
+                dur_h, result_tuple = future.result()
+                duration_results[dur_h] = result_tuple
+    else:
+        duration_results = {}
+        for dur_h in request.durations_h:
+            duration_results[dur_h] = find_optimal_power_for_duration(
+                pv_kw, load_kw, dt_hours, request.mode, dur_h, request,
+                import_prices=import_prices
+            )
+
     for duration_h in request.durations_h:
-        # Find optimal power for this duration
-        power_kw, energy_kwh, dispatch_result, score, constraint_violations = find_optimal_power_for_duration(
-            pv_kw, load_kw, dt_hours, request.mode, duration_h, request,
-            import_prices=import_prices
-        )
+        power_kw, energy_kwh, dispatch_result, score, constraint_violations = duration_results[duration_h]
 
         # =========================================================================
         # EOL (End-of-Life) Degradation Adjustment
@@ -2185,6 +2303,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         cashflow_ts = None
         fs_irr = irr  # Default to simple IRR calculation
         if fc and fc.include_cashflow_timeseries:
+            # Get throughput for throughput-based degradation model
+            _annual_throughput = dispatch_result.degradation.throughput_total_mwh if dispatch_result.degradation else 0.0
+            _energy_kwh = dispatch_result.battery_energy_kwh
+
             cashflow_ts = build_cashflow_timeseries(
                 capex=capex,
                 annual_savings=dispatch_result.annual_savings_pln,
@@ -2195,6 +2317,13 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 replacement_capex_pln=fc.replacement_capex_pln,
                 bess_degradation_pct_per_year=fc.bess_degradation_pct_per_year,
                 pv_degradation_pct_per_year=fc.pv_degradation_pct_per_year,
+                bess_degradation_model=getattr(fc, 'bess_degradation_model', 'linear'),
+                annual_throughput_mwh=_annual_throughput,
+                energy_kwh=_energy_kwh,
+                cycles_to_eol=getattr(fc, 'cycles_to_eol', 6000.0),
+                eol_soh_pct=getattr(fc, 'eol_soh_pct', 70.0),
+                degradation_curve=getattr(fc, 'degradation_curve', 'linear'),
+                seller_margin_pct=getattr(fc, 'seller_margin_pct', 0.0),
             )
             # When cashflow is available, calculate IRR from cashflow using bisection
             # This ensures consistency: irr_pct is the rate where NPV of cashflow = 0
@@ -2206,7 +2335,9 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             has_lifecycle_effects = (
                 fc.replacement_year is not None or
                 fc.bess_degradation_pct_per_year > 0 or
-                fc.pv_degradation_pct_per_year > 0
+                fc.pv_degradation_pct_per_year > 0 or
+                getattr(fc, 'bess_degradation_model', 'linear') == 'throughput' or
+                getattr(fc, 'seller_margin_pct', 0) > 0
             )
             if has_lifecycle_effects:
                 fs_npv = sum(cf.discounted_cashflow_pln for cf in cashflow_ts)

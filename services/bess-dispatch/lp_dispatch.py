@@ -18,7 +18,8 @@ Version: 1.4.0 (LP solver integration)
 
 import numpy as np
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
+from datetime import datetime
 from scipy.optimize import linprog, OptimizeResult
 
 from models import (
@@ -888,3 +889,151 @@ def dispatch_lp(
     )
 
     return result
+
+
+# =============================================================================
+# Capacity Fee Multi-Solve (Flatness Constraint)
+# =============================================================================
+
+def dispatch_lp_with_capacity_optimization(
+    pv_kw: np.ndarray,
+    load_kw: np.ndarray,
+    battery: BatteryParams,
+    dt_hours: float,
+    prices: Optional[PriceConfig] = None,
+    mode: DispatchMode = DispatchMode.PV_SURPLUS,
+    peak_limit_kw: Optional[float] = None,
+    lp_config: Optional[LPSolverParams] = None,
+    return_hourly: bool = True,
+    buy_price_override: Optional[np.ndarray] = None,
+    sell_price_override: Optional[np.ndarray] = None,
+    time_index: Optional[List[datetime]] = None,
+    capacity_fee_config: Optional[Any] = None,
+    premium_levels: Optional[List[float]] = None,
+) -> Tuple['DispatchResult', Optional[Dict[str, Any]]]:
+    """
+    Multi-solve LP dispatch with capacity fee (opłata mocowa) optimization.
+
+    Inspired by pagra-galileo's flatness constraint approach:
+    instead of adding hard constraints (infeasible in rolling horizon),
+    we internalize the capacity fee into the price signal by adding
+    premiums to buy_price during selected hours.
+
+    Each premium level incentivizes the LP to shape grid demand differently.
+    The run with lowest total cost (energy + capacity fee) wins.
+
+    Returns:
+        Tuple of (best_dispatch_result, capacity_fee_info_dict)
+    """
+    from capacity_fee_pl.calculator import (
+        compute_capacity_fee,
+        build_selected_hours_mask,
+    )
+    from capacity_fee_pl.models import CapacityFeeConfig
+
+    n = len(pv_kw)
+
+    if capacity_fee_config is None:
+        capacity_fee_config = CapacityFeeConfig()
+
+    if time_index is None or len(time_index) != n:
+        logger.warning("No time_index for cap-fee optimization, falling back to standard dispatch")
+        result = dispatch_lp(
+            pv_kw, load_kw, battery, dt_hours, prices, mode,
+            peak_limit_kw, lp_config, return_hourly,
+            buy_price_override, sell_price_override,
+        )
+        return result, None
+
+    selected_mask = build_selected_hours_mask(time_index, capacity_fee_config)
+    som = capacity_fee_config.som_pln_per_kwh
+
+    if buy_price_override is not None and sell_price_override is not None:
+        base_buy = buy_price_override.copy()
+        base_sell = sell_price_override.copy()
+    else:
+        base_buy, base_sell = resolve_price_arrays(prices, n)
+
+    if premium_levels is None:
+        premium_levels = [
+            0.0,
+            som * 0.25,
+            som * 0.50,
+            som * 0.83,
+            som * 1.20,
+        ]
+
+    best_result = None
+    best_total_cost = float('inf')
+    best_cap_fee_info = None
+    best_premium = 0.0
+    all_attempts = []
+
+    for premium in premium_levels:
+        modified_buy = base_buy.copy()
+        modified_buy[selected_mask] += premium
+
+        result = dispatch_lp(
+            pv_kw=pv_kw, load_kw=load_kw, battery=battery,
+            dt_hours=dt_hours, prices=prices, mode=mode,
+            peak_limit_kw=peak_limit_kw, lp_config=lp_config,
+            return_hourly=True,
+            buy_price_override=modified_buy,
+            sell_price_override=base_sell,
+        )
+
+        grid_import_kw = np.array(result.hourly_grid_import_kw)
+        grid_import_kwh = grid_import_kw * dt_hours
+        cap_fee = compute_capacity_fee(grid_import_kwh, time_index, capacity_fee_config)
+
+        grid_export_kw = np.array(result.hourly_grid_export_kw) if result.hourly_grid_export_kw else np.zeros(n)
+        energy_cost = (
+            float(np.sum(grid_import_kw * base_buy) * dt_hours) -
+            float(np.sum(grid_export_kw * base_sell) * dt_hours)
+        )
+        total_cost = energy_cost + cap_fee.total_fee_pln
+
+        attempt = {
+            'premium': premium,
+            'energy_cost': energy_cost,
+            'capacity_fee': cap_fee.total_fee_pln,
+            'total_cost': total_cost,
+            'avg_delta_s': cap_fee.avg_delta_s,
+            'k_histogram': cap_fee.k_histogram,
+        }
+        all_attempts.append(attempt)
+
+        logger.info(
+            f"Cap-fee multi-solve: premium={premium:.4f}, "
+            f"energy={energy_cost:.0f}, cap_fee={cap_fee.total_fee_pln:.0f}, "
+            f"total={total_cost:.0f}, Δs={cap_fee.avg_delta_s:.1f}%"
+        )
+
+        if total_cost < best_total_cost:
+            best_total_cost = total_cost
+            best_result = result
+            best_cap_fee_info = {
+                'total_fee_pln': cap_fee.total_fee_pln,
+                'avg_delta_s': cap_fee.avg_delta_s,
+                'k_histogram': cap_fee.k_histogram,
+                'monthly_results': [
+                    {'month': m.month, 'fee_pln': m.total_fee_pln, 'avg_delta_s': m.avg_delta_s}
+                    for m in cap_fee.monthly_results
+                ],
+            }
+            best_premium = premium
+
+    if best_result:
+        best_result.info = best_result.info or {}
+        best_result.info['capacity_fee_optimization'] = {
+            'method': 'multi_solve_premium',
+            'best_premium_pln_kwh': best_premium,
+            'total_cost_pln': best_total_cost,
+            'capacity_fee_pln': best_cap_fee_info['total_fee_pln'] if best_cap_fee_info else 0,
+            'avg_delta_s': best_cap_fee_info['avg_delta_s'] if best_cap_fee_info else 0,
+            'k_histogram': best_cap_fee_info['k_histogram'] if best_cap_fee_info else {},
+            'premiums_tried': len(premium_levels),
+            'all_attempts': all_attempts,
+        }
+
+    return best_result, best_cap_fee_info

@@ -514,6 +514,33 @@ class ArbitrageConfig(BaseModel):
 
 
 # =============================================================================
+# Cable Pooling
+# =============================================================================
+
+class CablePoolingProfile(BaseModel):
+    """
+    Additional PV/load profile for cable pooling configuration.
+
+    Cable pooling aggregates multiple generation and consumption profiles
+    behind a single grid connection point. The BESS optimizes for the
+    combined (summed) net load.
+    """
+    label: str = Field(..., description="Profile label (e.g., 'PV Roof East', 'EV Charger')")
+    pv_kw: Optional[List[float]] = Field(
+        None,
+        description="Additional PV generation [kW_avg]. Same length as main profile."
+    )
+    load_kw: Optional[List[float]] = Field(
+        None,
+        description="Additional load [kW_avg]. Same length as main profile."
+    )
+    scale_factor: float = Field(
+        1.0, ge=0, le=100,
+        description="Scaling factor applied to this profile. 1.0 = as-is."
+    )
+
+
+# =============================================================================
 # Price Configuration (future-ready for time-varying)
 # =============================================================================
 
@@ -750,6 +777,13 @@ class DispatchRequest(BaseModel):
     # Pricing
     prices: PriceConfig = Field(default_factory=PriceConfig)
 
+    # Cable pooling: multiple PV/load profiles behind single connection point
+    cable_pooling_profiles: Optional[List["CablePoolingProfile"]] = Field(
+        None,
+        description="Additional PV/load profiles for cable pooling. "
+                    "Profiles are summed with main pv_generation_kw/load_kw before dispatch."
+    )
+
     # Energy flows SSoT control (new in v0.3)
     include_energy_flows_timeseries: bool = Field(
         False,
@@ -769,6 +803,14 @@ class DispatchRequest(BaseModel):
         False,
         description="Include per-timestep battery trace in response. "
                     "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
+    )
+
+    # Capacity fee optimization (flatness constraint multi-solve)
+    optimize_capacity_fee: bool = Field(
+        False,
+        description="Enable capacity fee optimization via multi-solve LP. "
+                    "Runs LP multiple times with different price premiums on selected hours "
+                    "to find dispatch minimizing total cost (energy + opłata mocowa)."
     )
 
     # Grid constraints (v0.7.0)
@@ -2127,6 +2169,28 @@ class SizingRequest(BaseModel):
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
 
+    # Capacity fee optimization (flatness constraint multi-solve)
+    optimize_capacity_fee: bool = Field(
+        False,
+        description="Enable capacity fee optimization via multi-solve LP."
+    )
+
+    # Cable pooling: multiple PV/load profiles behind single connection point
+    cable_pooling_profiles: Optional[List["CablePoolingProfile"]] = Field(
+        None,
+        description="Additional PV/load profiles for cable pooling. "
+                    "Main pv_generation_kw/load_kw is always included. "
+                    "Additional profiles are summed before dispatch."
+    )
+
+    # Parallel sizing
+    parallel_workers: int = Field(
+        1,
+        ge=1, le=8,
+        description="Number of parallel workers for sizing grid search. "
+                    "Set >1 to parallelize across power levels."
+    )
+
     # Optimization configuration (optional)
     # Note: OptimizationConfig is defined later in file, using forward reference
     optimization: Optional["OptimizationConfig"] = Field(
@@ -2460,6 +2524,34 @@ class FinanceConfig(BaseModel):
         ge=0, le=5.0,
         description="PV output degradation [%/year]. Applied to savings as (1 - rate)^year. "
                     "E.g., 0.5 = 0.5% annual degradation."
+    )
+    # Throughput-based degradation (pagra-galileo SoH curve model)
+    bess_degradation_model: str = Field(
+        "linear",
+        description="Degradation model: 'linear' (% per year) or 'throughput' (cycle-based SoH curve). "
+                    "When 'throughput', uses cycles_to_eol and eol_soh_pct to build SoH curve."
+    )
+    cycles_to_eol: float = Field(
+        6000.0,
+        ge=100, le=20000,
+        description="Number of full equivalent cycles to end-of-life SoH. "
+                    "Typical LFP: 6000, NMC: 3000-4000."
+    )
+    eol_soh_pct: float = Field(
+        70.0,
+        ge=50, le=90,
+        description="State of Health at end-of-life [%]. Typically 70% or 80%."
+    )
+    degradation_curve: str = Field(
+        "linear",
+        description="SoH curve shape: 'linear' (straight line) or 'sqrt' (fast early, slow late)."
+    )
+    # Seller margin
+    seller_margin_pct: float = Field(
+        0.0,
+        ge=0, le=50.0,
+        description="Seller/integrator margin [%] applied on top of CAPEX. "
+                    "E.g., 15.0 = 15% margin added to equipment cost."
     )
     # Sensitivity sweeps (v0.6.0 PR4)
     energy_price_multiplier_sweep: Optional[List[float]] = Field(
