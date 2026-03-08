@@ -810,6 +810,250 @@
       </div>
     </div>
 
+    <!-- Ancillary Services Panel (v2.0) -->
+    <div class="stats-section full-width ancillary-section" id="ancillarySection" style="display:none;">
+      <h2>Zrodla przychodow z magazynu energii</h2>
+      <div class="chart-info">
+        Kazde zaznaczone zrodlo przychodow jest wliczane do NPV i payback w grid search.
+        Wylaczone zrodla = konserwatywna wycena (tylko pewne przychody).
+      </div>
+
+      <!-- ══════════ STREFA 1: MAINSTREAM - pewne przychody w PL ══════════ -->
+      <div style="margin-bottom:12px;padding:16px;background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border-radius:8px;border:2px solid #4caf50;">
+        <div style="font-size:13px;font-weight:700;color:#1b5e20;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+          <span style="background:#4caf50;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">PEWNE</span>
+          Standardowe zrodla przychodow C&amp;I w Polsce
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+
+          <!-- Autokonsumpcja -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <div style="font-weight:600;color:#2e7d32;font-size:12px;">Autokonsumpcja (BTM)</div>
+            <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+              Magazyn laduje sie z nadwyzki PV, rozladowuje gdy potrzebujesz pradu.
+              Unikasz zakupu z sieci po pelnej cenie (~0.80 PLN/kWh).
+            </div>
+            <div style="font-size:10px;margin-top:4px;color:#2e7d32;font-weight:600;">Zawsze wlaczone &mdash; to podstawa business case</div>
+          </div>
+
+          <!-- Peak Shaving -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <div style="font-weight:600;color:#2e7d32;font-size:12px;">Redukcja szczytow (Peak Shaving)</div>
+            <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+              Bateria rozladowuje sie w godzinach szczytu, obnizajac moc zamowiona.
+              Oszczednosci na oplacie mocowej (SOM) i dystrybucyjnej.
+            </div>
+            <div style="font-size:10px;margin-top:4px;color:#2e7d32;font-weight:600;">Zawsze wlaczone w trybie STACKED</div>
+          </div>
+
+          <!-- Arbitraz Taryfowy -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="arbTariffToggle" onchange="toggleTariffArbitrage()" style="margin-top:2px;width:16px;height:16px;">
+              <div>
+                <div style="font-weight:600;color:#2e7d32;font-size:12px;">Arbitraz taryfowy OSD</div>
+                <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+                  Laduj w strefie taniej (noc/weekend), rozladuj w drozszej (dzien).
+                  Wymaga taryfy C12a/C22a. Spread ~0.20-0.30 PLN/kWh.
+                </div>
+                <div style="font-size:10px;margin-top:4px;color:#1565c0;font-weight:500;">Wlacz w Ustawieniach &rarr; Arbitraz Taryfowy</div>
+              </div>
+            </label>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ══════════ STREFA 2: WCZESNA FAZA - pilotaze w PL ══════════ -->
+      <div style="margin-bottom:12px;padding:16px;background:linear-gradient(135deg,#fff8e1,#ffecb3);border-radius:8px;border:2px solid #ffa726;">
+        <div style="font-size:13px;font-weight:700;color:#e65100;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+          <span style="background:#ff9800;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">WCZESNA FAZA</span>
+          Uslugi bilansujace &mdash; pilotaze w PL, mainstream w DE
+        </div>
+        <div style="font-size:11px;color:#795548;margin-bottom:10px;">
+          PSE otwiera rynek (PICASSO/MARI od 2024), ale aktywnych agregatorow dla C&amp;I jest garstka.
+          Wlacz tylko jesli masz konkretnogo agregatora. Przychody oznaczone jako <b>niepewne</b> w tabelach.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+
+          <!-- aFRR Up -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcAfrrUp" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Regulacja czestotliwosci w gore (aFRR+)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Bateria rozladowuje sie na zadanie PSE. ~200 PLN/MW/h za gotowosc.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+          <!-- aFRR Down -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcAfrrDown" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Regulacja czestotliwosci w dol (aFRR-)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Bateria laduje sie na zadanie PSE. ~130 PLN/MW/h za gotowosc.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+          <!-- mFRR Up -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcMfrrUp" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Rezerwa reczna w gore (mFRR+)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Rezerwa awaryjna. ~95 PLN/MW/h, aktywacja kilka razy/rok.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+        </div>
+
+        <!-- Aggregator margin -->
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #ffe0b2;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:#795548;"><b>Marza agregatora</b> (np. Polenergia, Enel X):</span>
+          <input type="number" id="ancAggregatorMargin" value="20" min="0" max="50" step="1"
+                 style="width:50px;padding:3px 5px;border:1px solid #ffcc80;border-radius:4px;font-size:12px;font-weight:600;text-align:center;"
+                 onchange="updateAncillaryConfig()">
+          <span style="font-size:12px;font-weight:600;">%</span>
+          <span style="font-size:10px;color:#9e9e9e;">typowo 15-25%</span>
+        </div>
+      </div>
+
+      <!-- ══════════ STREFA 3: NIEREALNE dla C&I ══════════ -->
+      <details style="margin-bottom:16px;">
+        <summary style="cursor:pointer;padding:12px 16px;background:linear-gradient(135deg,#fafafa,#f0f0f0);border-radius:8px;border:1px solid #e0e0e0;font-size:13px;font-weight:600;color:#9e9e9e;">
+          <span style="background:#e0e0e0;color:#757575;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">UTILITY-SCALE</span>
+          Uslugi tylko dla duzych magazynow standalone (&gt;1 MW) &mdash; nieadekwatne dla C&amp;I
+        </summary>
+        <div style="padding:12px 16px;background:#fafafa;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+
+            <!-- FCR -->
+            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #eee;opacity:0.7;">
+              <input type="checkbox" id="ancSvcFcr" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+              <div>
+                <div style="font-weight:600;color:#757575;">Rezerwa pierwotna (FCR)</div>
+                <div style="font-size:10px;color:#999;line-height:1.3;">Automatyczna reakcja na odchylenia czestotliwosci. Min. 1 MW, certyfikacja PSE, telemetria &lt;1s.</div>
+                <div style="font-size:10px;margin-top:2px;color:#c62828;">Nie dla C&amp;I &mdash; tylko standalone &gt;1 MW</div>
+              </div>
+            </label>
+
+            <!-- Rynek Mocy -->
+            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #eee;opacity:0.7;">
+              <input type="checkbox" id="ancSvcCapMarket" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+              <div>
+                <div style="font-weight:600;color:#757575;">Rynek Mocy (Capacity Market)</div>
+                <div style="font-size:10px;color:#999;line-height:1.3;">~280 tys. PLN/MW/rok. Wymaga aukcji PSE na lata wprzod, min. 2 MW, certyfikacja JGW.</div>
+                <div style="font-size:10px;margin-top:2px;color:#c62828;">Nie dla C&amp;I &mdash; tylko standalone &gt;2 MW + aukcja</div>
+              </div>
+            </label>
+
+          </div>
+        </div>
+      </details>
+
+      <!-- Revenue cards -->
+      <div class="stats-cards">
+        <div class="stat-card bess-green">
+          <div class="stat-icon">&#9889;</div>
+          <div class="stat-content">
+            <div class="stat-label">Regulacja czestotliwosci (aFRR)</div>
+            <div class="stat-value" id="ancAfrrRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail">Platnosc za gotowosc + aktywacje</div>
+          </div>
+        </div>
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">&#128296;</div>
+          <div class="stat-content">
+            <div class="stat-label">Rezerwa reczna (mFRR)</div>
+            <div class="stat-value" id="ancMfrrRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail">Platnosc za gotowosc awaryjnej mocy</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">&#128176;</div>
+          <div class="stat-content">
+            <div class="stat-label">Uslugi sieciowe razem</div>
+            <div class="stat-value" id="ancTotalRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail" id="ancTotalInfo">po odliczeniu prowizji agregatora</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">&#128200;</div>
+          <div class="stat-content">
+            <div class="stat-label">Laczny przychod z magazynu</div>
+            <div class="stat-value" id="ancStackedTotal">0</div>
+            <div class="stat-unit">tys. PLN/rok</div>
+            <div class="stat-detail">Autokonsumpcja + uslugi sieciowe</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Run optimization button -->
+      <div style="margin-top:12px;text-align:center;">
+        <button id="ancRunOptBtn" onclick="runAncillaryOptimization()" style="
+          background:linear-gradient(135deg,#1565c0 0%,#0d47a1 100%);
+          color:white;border:none;padding:10px 24px;border-radius:8px;
+          font-size:13px;font-weight:600;cursor:pointer;
+          display:inline-flex;align-items:center;gap:8px;
+          box-shadow:0 2px 8px rgba(21,101,192,0.3);transition:all 0.2s;">
+          Oblicz przychody z uslug pomocniczych
+        </button>
+        <div id="ancStatus" style="margin-top:6px;font-size:12px;color:#666;"></div>
+      </div>
+    </div>
+
+    <!-- Stacked Revenue Summary (shows after ancillary optimization) -->
+    <div class="stats-section full-width" id="stackedRevenueSummary" style="display:none;">
+      <h2>Podsumowanie przychodow (Revenue Stacking)</h2>
+      <div class="chart-info">
+        Zestawienie oszczednosci BTM + przychodow z uslug pomocniczych + cykle i degradacja przez lata
+      </div>
+
+      <!-- Revenue breakdown table -->
+      <div style="margin-bottom:16px;">
+        <table class="bess-monthly-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th style="text-align:left;">Zrodlo przychodu</th>
+              <th style="text-align:right;">PLN/rok</th>
+              <th style="text-align:right;">% calkowitego</th>
+            </tr>
+          </thead>
+          <tbody id="stackedRevenueBody"></tbody>
+          <tfoot>
+            <tr style="font-weight:bold;border-top:2px solid #333;">
+              <td>SUMA ROCZNA</td>
+              <td style="text-align:right;" id="stackedRevenueTotal">0</td>
+              <td style="text-align:right;">100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Degradation over years -->
+      <h3 style="margin:16px 0 8px 0;font-size:15px;">Cykle, degradacja i przychody przez lata</h3>
+      <div style="overflow-x:auto;">
+        <table class="bess-monthly-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th>Rok</th>
+              <th style="text-align:right;">Pojemnosc [%]</th>
+              <th style="text-align:right;">Cykle/rok</th>
+              <th style="text-align:right;">Przychod BTM [PLN]</th>
+              <th style="text-align:right;">Przychod uslugi [PLN]</th>
+              <th style="text-align:right;">RAZEM [PLN]</th>
+              <th style="text-align:right;">Skumulowany [PLN]</th>
+            </tr>
+          </thead>
+          <tbody id="stackedDegradationBody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Economic KPIs -->
     <div class="stats-section full-width">
       <h2>Ekonomia BESS</h2>
@@ -908,138 +1152,85 @@
       <div class="sizing-variants-grid" id="sizingVariantsGrid">
         <!-- Dynamically filled by JS -->
       </div>
+
+      <!-- Full Grid Search Results -->
+      <div id="gridSearchSection" style="display:none;margin-top:20px;">
+        <h3 style="margin:0 0 8px 0;font-size:15px;cursor:pointer;" onclick="toggleGridSearch()">
+          Wszystkie warianty (grid search) <span id="gridSearchToggle">&#9660;</span>
+        </h3>
+        <div class="chart-info" style="margin-bottom:8px;">
+          Pelna siatka przeszukanych konfiguracji moc x czas magazynowania, posortowana wg NPV/kWh
+        </div>
+        <div id="gridSearchTableWrap" style="overflow-x:auto;max-height:400px;overflow-y:auto;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;border:1px solid #dee2e6;" id="gridSearchTable">
+            <thead style="position:sticky;top:0;z-index:1;">
+              <tr style="background:#1565c0;color:#fff;">
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('power_kw')">Moc [kW]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('energy_kwh')">Energia [kWh]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('duration_h')">Czas [h]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('capex_pln')">CAPEX [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#1b5e20;" onclick="sortGridSearch('energy_savings_pln')" title="Autokonsumpcja PV surplus">Autokon. [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#e65100;" onclick="sortGridSearch('arbitrage_savings_pln')" title="Arbitraz taryfowy OSD / cenowy RDN">Arbitraz [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#4a148c;" onclick="sortGridSearch('peak_shaving_savings_pln')" title="Obnizenie mocy szczytowej (demand charge)">Peak [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#bf360c;" onclick="sortGridSearch('capacity_fee_savings_pln')" title="Oszczednosci na oplacie mocowej">Op.moc. [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('ancillary_revenue_pln')">Usl.siec.* [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;font-weight:bold;background:#0d47a1;" onclick="sortGridSearch('annual_savings_pln')">RAZEM [PLN/rok]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('npv_pln')">NPV [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;font-weight:bold;background:#0d47a1;" onclick="sortGridSearch('npv_per_kwh')">NPV/kWh</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('payback_years')">Payback [lat]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('lifetime_years')" title="Zywotnosc magazynu do EOL (cykle/rok -> lata)">Żywotność [lat]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('efc_total')">EFC [cykli/rok]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('efc_penalty_pln')">Kara EFC [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('self_consumption_pct')">Autokons. [%]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('peak_reduction_pct')">Peak red. [%]</th>
+              </tr>
+            </thead>
+            <tbody id="gridSearchBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
-    <!-- NEW v3.0: BESS Advisor Recommendations -->
-    <div class="stats-section full-width advisor-section" id="advisorSection" style="display:none;">
-      <h2>🤖 BESS Advisor - Rekomendacje</h2>
+    <!-- TOP PICKS: Best configurations from LP grid search -->
+    <div class="stats-section full-width" id="topPicksSection" style="display:none;">
+      <h2>Najlepsze konfiguracje BESS</h2>
       <div class="chart-info">
-        Inteligentne rekomendacje doboru BESS ze snap-to-SKU (produkty rynkowe)
+        Top 3 warianty z pelnej siatki przeszukanych konfiguracji (LP dispatch) wg roznych kryteriow
       </div>
 
-      <!-- v4.0.0: Calculation Mode Toggle -->
-      <div class="calculation-mode-toggle" id="calculationModeToggle" style="margin: 16px 0; padding: 12px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 8px; border: 1px solid #90caf9;">
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 18px;">⚡</span>
-            <span style="font-weight: 600; color: #1565c0;">Tryb kalkulacji:</span>
-          </div>
-          <div class="mode-buttons" style="display: flex; gap: 8px;">
-            <button class="mode-btn active" data-mode="standard" onclick="setCalculationMode('standard')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: #1565c0; color: white; font-weight: 500; cursor: pointer; transition: all 0.2s;">
-              🚀 Standardowy
-            </button>
-            <button class="mode-btn" data-mode="verified" onclick="setCalculationMode('verified')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: white; color: #1565c0; font-weight: 500; cursor: pointer; transition: all 0.2s;">
-              ✅ Zweryfikowany
-            </button>
-            <button class="mode-btn" data-mode="diagnostic" onclick="setCalculationMode('diagnostic')" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #1565c0; background: white; color: #1565c0; font-weight: 500; cursor: pointer; transition: all 0.2s;">
-              🔬 Diagnostyka
-            </button>
-          </div>
-          <div id="calculationModeInfo" style="font-size: 12px; color: #546e7a;">
-            <span id="modeDescription">Szybka kalkulacja z rodzimym silnikiem</span>
-          </div>
-        </div>
-        <!-- Confidence indicator (shown for verified/diagnostic modes) -->
-        <div id="confidenceIndicator" style="display: none; margin-top: 12px; padding: 10px; background: white; border-radius: 6px;">
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-weight: 600;">Poziom pewności:</span>
-            <div id="confidenceBadge" style="padding: 4px 12px; border-radius: 4px; font-weight: 600; background: #4caf50; color: white;">WYSOKI</div>
-            <span id="confidenceScore" style="color: #546e7a;">95%</span>
-            <span id="enginesUsed" style="font-size: 11px; color: #78909c;">Silniki: native, reopt</span>
-          </div>
-          <div id="confidenceIssues" style="display: none; margin-top: 8px; font-size: 12px; color: #f57c00;"></div>
-        </div>
+      <!-- Top picks cards - filled dynamically -->
+      <div class="stats-cards" id="topPicksCards" style="margin-top:12px;">
       </div>
 
-      <!-- Advisor Summary Cards -->
-      <div class="stats-cards" id="advisorSummaryCards">
-        <div class="stat-card bess-green">
-          <div class="stat-icon">🎯</div>
-          <div class="stat-content">
-            <div class="stat-label">Rekomendowany SKU</div>
-            <div class="stat-value" id="advisorSkuPower">-</div>
-            <div class="stat-unit" id="advisorSkuEnergy">-</div>
-            <div class="stat-detail" id="advisorVariantLabel">-</div>
-          </div>
-        </div>
-        <div class="stat-card bess-blue">
-          <div class="stat-icon">💰</div>
-          <div class="stat-content">
-            <div class="stat-label">CAPEX (SKU)</div>
-            <div class="stat-value" id="advisorCapex">-</div>
-            <div class="stat-unit">PLN</div>
-            <div class="stat-detail" id="advisorCapexDelta">-</div>
-          </div>
-        </div>
-        <div class="stat-card bess-purple">
-          <div class="stat-icon">📈</div>
-          <div class="stat-content">
-            <div class="stat-label">NPV (post-snap)</div>
-            <div class="stat-value" id="advisorNpv">-</div>
-            <div class="stat-unit">PLN</div>
-            <div class="stat-detail" id="advisorIrr">IRR: -</div>
-          </div>
-        </div>
-        <div class="stat-card" id="advisorStatusCard">
-          <div class="stat-icon" id="advisorStatusIcon">✅</div>
-          <div class="stat-content">
-            <div class="stat-label">SKU Snap Status</div>
-            <div class="stat-value" id="advisorSnapStatus">-</div>
-            <div class="stat-detail" id="advisorSnapDetail">-</div>
-          </div>
+      <!-- Top 5 comparison table -->
+      <div style="margin-top:16px;">
+        <h3 style="margin:0 0 8px 0;font-size:14px;">Top 5 wg NPV/kWh</h3>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;border:1px solid #dee2e6;" id="topPicksTable">
+            <thead>
+              <tr style="background:#1565c0;color:#fff;">
+                <th style="padding:6px 8px;border:1px solid #1255a0;text-align:center;">#</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Moc [kW]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Energia [kWh]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Czas</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">CAPEX [tys.]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#1b5e20;">Autokon.</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#e65100;">Arbitraz</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#4a148c;">Peak</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#bf360c;">Op.moc.</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Usl.siec.*</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;font-weight:bold;background:#0d47a1;">RAZEM/rok</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">NPV [tys.]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;font-weight:bold;background:#0d47a1;">NPV/kWh</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Payback</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">EFC/rok</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Autokons.</th>
+              </tr>
+            </thead>
+            <tbody id="topPicksBody"></tbody>
+          </table>
         </div>
       </div>
-
-      <!-- Alternatives Table -->
-      <div class="advisor-alternatives" id="advisorAlternatives" style="margin-top: 20px;">
-        <h3>📦 Alternatywne konfiguracje SKU</h3>
-        <table class="data-table" id="advisorAlternativesTable">
-          <thead>
-            <tr>
-              <th>Model PCS</th>
-              <th>Moc [kW]</th>
-              <th>Pojemność [kWh]</th>
-              <th>Duration [h]</th>
-              <th>Bateria</th>
-            </tr>
-          </thead>
-          <tbody id="advisorAlternativesBody">
-            <!-- Dynamically filled -->
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Savings Comparison -->
-      <div class="advisor-savings" id="advisorSavings" style="margin-top: 20px;">
-        <h3>📊 Porównanie scenariuszy oszczędności</h3>
-        <div class="savings-comparison-grid" id="savingsComparisonGrid">
-          <!-- Dynamically filled -->
-        </div>
-      </div>
-
-      <!-- Tariff Recommendation (only when arbitrage) -->
-      <div class="advisor-tariff" id="advisorTariff" style="margin-top: 20px; display: none;">
-        <h3>💡 Rekomendacja taryfowa</h3>
-        <div id="advisorTariffContent">
-          <!-- Dynamically filled -->
-        </div>
-      </div>
-
-      <!-- Warnings -->
-      <div class="advisor-warnings" id="advisorWarnings" style="margin-top: 20px; display: none;">
-        <h3>⚠️ Uwagi</h3>
-        <ul id="advisorWarningsList">
-          <!-- Dynamically filled -->
-        </ul>
-      </div>
-
-      <!-- Assumptions (collapsible) -->
-      <details class="advisor-assumptions" id="advisorAssumptions" style="margin-top: 20px;">
-        <summary>📋 Założenia kalkulacji</summary>
-        <div id="advisorAssumptionsContent">
-          <!-- Dynamically filled -->
-        </div>
-      </details>
     </div>
 
     <!-- NEW v3.3: Degradation Budget Status -->

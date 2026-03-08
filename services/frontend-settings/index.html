@@ -1426,7 +1426,7 @@
           🎯 Scenariusz pracy magazynu
         </div>
         <div style="font-size:12px;color:#666;margin-bottom:16px">
-          Wybierz główny cel optymalizacji BESS. Scenariusz ustawi domyślne parametry.
+          Wybierz bazowy scenariusz pracy magazynu. Arbitraż i inne opcje możesz <strong>łączyć</strong> z dowolnym scenariuszem poniżej.
         </div>
 
         <!-- Scenario Tiles Container -->
@@ -1437,15 +1437,48 @@
         <!-- Hidden input for scenario ID -->
         <input type="hidden" id="bessScenarioId" value="">
 
-        <!-- Capacity Fee Overlay Checkbox (Scenario 6 equivalent) -->
-        <div style="margin-top:16px;padding:12px;background:#f5f5f5;border-radius:6px;display:flex;align-items:center;gap:12px">
-          <input type="checkbox" id="bessCapacityFeeOverlay" style="width:18px;height:18px;cursor:pointer">
-          <label for="bessCapacityFeeOverlay" style="cursor:pointer;font-size:13px;color:#333">
-            <strong>📊 Pokaż oszczędności opłaty mocowej</strong>
-            <span style="display:block;font-size:11px;color:#666;margin-top:2px">
-              Po symulacji wyświetli overlay z analizą opłaty mocowej (przed/po BESS)
-            </span>
-          </label>
+        <!-- Combinable overlays (can be added to any base scenario) -->
+        <div style="margin-top:16px;padding:16px;background:#f0f7ff;border-radius:8px;border:1px solid #bbdefb">
+          <div style="font-weight:600;color:#1565c0;font-size:13px;margin-bottom:12px">
+            ➕ Dodatkowe opcje (łączone z wybranym scenariuszem)
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <!-- OSD Tariff Arbitrage overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessOsdArbitrageOverlay" style="width:18px;height:18px;cursor:pointer"
+                     onchange="document.getElementById('bessOsdArbitrageEnabled').checked=this.checked; markUnsaved();">
+              <label for="bessOsdArbitrageOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>💹 Arbitraż taryfowy OSD (ToU)</strong>
+                <span style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Ładuj w taniej strefie, rozładuj w drogiej (C12a/C12b). Konfiguracja stawek poniżej.
+                </span>
+              </label>
+            </div>
+
+            <!-- RDN Spot Arbitrage overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessPriceArbitrageOverlay" style="width:18px;height:18px;cursor:pointer"
+                     onchange="document.getElementById('bessPriceArbitrageEnabled').checked=this.checked; if(typeof checkRdnDataForArbitrage==='function') checkRdnDataForArbitrage(); markUnsaved();">
+              <label for="bessPriceArbitrageOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>📈 Arbitraż cenowy RDN (Spot)</strong>
+                <span id="rdnOverlayStatus" style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Kupuj tanio / sprzedaj drogo. Ceny z widgetu "Ceny RDN" poniżej.
+                </span>
+              </label>
+            </div>
+
+            <!-- Capacity Fee overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessCapacityFeeOverlay" style="width:18px;height:18px;cursor:pointer">
+              <label for="bessCapacityFeeOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>📊 Oszczędności opłaty mocowej</strong>
+                <span style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Pokaż analizę opłaty mocowej przed/po BESS (godz. 7-22 Pn-Pt)
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1509,9 +1542,9 @@
           <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
             <div class="settings-grid">
               <div class="setting-item">
-                <label>Sprawność roundtrip</label>
-                <input type="number" id="bessRoundtripEfficiency" value="90" min="80" max="98" step="1">
-                <span class="setting-hint">% (typowo 88-92% dla Li-ion)</span>
+                <label>Sprawność roundtrip AC-AC</label>
+                <input type="number" id="bessRoundtripEfficiency" value="85" min="75" max="95" step="1">
+                <span class="setting-hint">% AC-DC-AC (ogniwa + falownik + transformator)</span>
               </div>
               <div class="setting-item">
                 <label>SOC min</label>
@@ -1556,9 +1589,9 @@
                 <span class="setting-hint">% (pozostałe lata)</span>
               </div>
               <div class="setting-item">
-                <label>Straty pomocnicze</label>
-                <input type="number" id="bessAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('light')">
-                <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
+                <label>Pobór pomocniczy (house load)</label>
+                <input type="number" id="bessHouseLoadKwPerMwh" value="2.75" min="0" max="10" step="0.25" onchange="syncDegradationParams('light')">
+                <span class="setting-hint">kW / MWh pojemności (HVAC, BMS, PCS standby). Typowo: LFP 2.5-3.0</span>
               </div>
             </div>
           </div>
@@ -1707,10 +1740,32 @@
               <span class="setting-hint">% (pozostałe lata)</span>
             </div>
             <div class="setting-item">
-              <label>Straty pomocnicze</label>
-              <input type="number" id="bessProAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('pro')">
-              <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
+              <label>Pobór pomocniczy (house load)</label>
+              <input type="number" id="bessProHouseLoadKwPerMwh" value="2.75" min="0" max="10" step="0.25" onchange="syncDegradationParams('pro')">
+              <span class="setting-hint">kW / MWh pojemności (HVAC, BMS, PCS standby). Typowo: LFP 2.5-3.0</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BESS Constraints - Grid Connection & Cycle Limits -->
+      <div id="bessConstraintsSection" style="display:none; margin-bottom:16px; padding:16px; background:linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius:8px; border:1px solid #ffb74d">
+        <div style="font-weight:600;color:#e65100;margin-bottom:12px;font-size:14px">
+          ⚡ Ograniczenia fizyczne
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:16px">
+          Parametry ograniczające pracę magazynu wynikające z warunków przyłączenia i gwarancji producenta.
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Moc przyłączeniowa [kW]</label>
+            <input type="number" id="bessGridConnectionKw" value="" min="0" step="1" placeholder="np. 500">
+            <span class="setting-hint">Limit poboru z sieci (z umowy przyłączeniowej). Puste = bez limitu.</span>
+          </div>
+          <div class="setting-item">
+            <label>Max cykli EFC / rok</label>
+            <input type="number" id="bessMaxEfcPerYear" value="" min="0" max="5000" step="10" placeholder="np. 600">
+            <span class="setting-hint">Limit cykli z gwarancji producenta (np. BYD: 750, CATL: 1000). Puste = bez limitu.</span>
           </div>
         </div>
       </div>
@@ -1776,7 +1831,8 @@
           <div class="settings-grid">
             <div class="setting-item">
               <label style="display:flex;align-items:center;gap:8px">
-                <input type="checkbox" id="bessOsdArbitrageEnabled" style="width:18px;height:18px">
+                <input type="checkbox" id="bessOsdArbitrageEnabled" style="width:18px;height:18px"
+                       onchange="var o=document.getElementById('bessOsdArbitrageOverlay'); if(o) o.checked=this.checked;">
                 Włącz Arbitraż Taryfowy
               </label>
               <span class="setting-hint">Optymalizacja pod strefy czasowe OSD</span>
@@ -1821,61 +1877,184 @@
           </div>
         </div>
 
-        <!-- Price Arbitrage Section (RDN - spot market) -->
+        <!-- Price Arbitrage Section (RDN - spot market) - simplified, uses Ceny RDN widget -->
         <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%);border-radius:8px;border:1px solid #f48fb1">
-          <div style="font-weight:600;color:#c2185b;margin-bottom:12px;font-size:14px">
+          <div style="font-weight:600;color:#c2185b;margin-bottom:8px;font-size:14px">
             💹 Arbitraż Cenowy RDN (Spot)
           </div>
-          <div style="font-size:11px;color:#666;margin-bottom:16px">
-            Kupuj energię tanio (ładuj BESS), sprzedawaj drogo (rozładuj BESS) na rynku spot.
-            Wymaga dostępu do cen godzinowych z TGE (Rynek Dnia Następnego).
-            Zysk = Σ(cena_sprzedaży - cena_kupna) × energia × sprawność.
+          <div style="font-size:12px;color:#555;margin-bottom:12px">
+            Kupuj tanio / sprzedaj drogo na rynku dnia następnego.<br>
+            Ceny godzinowe pobierane z widgetu <strong>Ceny RDN</strong> poniżej.
           </div>
 
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+            <input type="checkbox" id="bessPriceArbitrageEnabled" style="width:18px;height:18px"
+                   onchange="var o=document.getElementById('bessPriceArbitrageOverlay'); if(o) o.checked=this.checked; checkRdnDataForArbitrage();">
+            <label for="bessPriceArbitrageEnabled" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+              <strong>Włącz Arbitraż RDN</strong>
+              <span id="rdnArbitrageStatus" style="display:block;font-size:11px;color:#666;margin-top:2px">
+                Wymaga wgranych cen w sekcji "Ceny RDN" poniżej
+              </span>
+            </label>
+          </div>
+          <!-- Hidden fields for backward compatibility -->
+          <input type="hidden" id="bessPriceArbitrageSource" value="rdn_widget">
+          <input type="hidden" id="bessPriceArbitrageBuyThreshold" value="300">
+          <input type="hidden" id="bessPriceArbitrageSellThreshold" value="600">
+          <input type="hidden" id="bessPriceArbitrageSpread" value="100">
+          <input type="hidden" id="bessRdnPriceFlat" value="500">
+          <input type="hidden" id="bessRdnPriceMultiplier" value="1.0">
+        </div>
+      </div>
+    </div>
+
+    <!-- Ancillary Services (Revenue Stacking) -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">⚡</span>
+        <h2>Uslugi Pomocnicze (Revenue Stacking)</h2>
+        <span class="section-info">Konfiguracja uslug bilansujacych i rynku mocy dla BESS</span>
+      </div>
+
+      <div style="margin-bottom:20px;padding:14px;background:linear-gradient(135deg, #e8eaf6 0%, #c5cae9 100%);border-radius:10px;border-left:4px solid #3f51b5">
+        <div style="font-size:12px;color:#283593;line-height:1.6">
+          <strong>Uslugi pomocnicze</strong> pozwalaja na dodatkowe przychody z baterii poprzez udzial w rynkach bilansujacych PSE.<br>
+          Bateria jest wirtualnie dzielona na segmenty: BTM (peak shaving, arbitraz) + ancillary (aFRR, mFRR, FCR, Rynek Mocy).<br>
+          Przychody sa optymalizowane godzinowo przez solver LP (HiGHS).
+        </div>
+      </div>
+
+      <!-- Master toggle -->
+      <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <input type="checkbox" id="ancillaryServicesEnabled" style="width:20px;height:20px;cursor:pointer" onchange="toggleAncillaryDetail()">
+          <label for="ancillaryServicesEnabled" style="cursor:pointer;font-weight:600;font-size:15px;color:#1a237e">
+            Wlacz uslugi pomocnicze (Revenue Stacking)
+          </label>
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:8px">
+          Po wlaczeniu, sizing BESS uwzgledni dodatkowe przychody z uslug bilansujacych w NPV/payback/IRR.
+        </div>
+      </div>
+
+      <!-- Services selection -->
+      <div id="ancillarySettingsDetail" style="display:none">
+        <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+          <div style="font-weight:600;color:#1a237e;font-size:14px;margin-bottom:12px">Wybor uslug</div>
           <div class="settings-grid">
             <div class="setting-item">
               <label style="display:flex;align-items:center;gap:8px">
-                <input type="checkbox" id="bessPriceArbitrageEnabled" style="width:18px;height:18px">
-                Włącz Arbitraż Cenowy
+                <input type="checkbox" id="ancSvcAfrrUp" checked style="width:18px;height:18px">
+                aFRR Up (rezerwa wtorna w gore)
               </label>
-              <span class="setting-hint">Optymalizacja pod różnice cen RDN</span>
+              <span class="setting-hint">Rozladowanie baterii na zadanie PSE</span>
             </div>
             <div class="setting-item">
-              <label>Źródło cen RDN</label>
-              <select id="bessPriceArbitrageSource" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
-                <option value="manual">Ręczne progi (buy/sell)</option>
-                <option value="tge_api">TGE API (auto)</option>
-                <option value="csv_upload">Upload CSV (8760 cen)</option>
-              </select>
-              <span class="setting-hint">TGE = Towarowa Giełda Energii</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcAfrrDown" checked style="width:18px;height:18px">
+                aFRR Down (rezerwa wtorna w dol)
+              </label>
+              <span class="setting-hint">Ladowanie baterii na zadanie PSE</span>
             </div>
             <div class="setting-item">
-              <label>Próg kupna [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageBuyThreshold" value="300" min="0" max="1000" step="10">
-              <span class="setting-hint">Ładuj gdy cena &lt; próg</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcMfrrUp" checked style="width:18px;height:18px">
+                mFRR Up (rezerwa trojciowa w gore)
+              </label>
+              <span class="setting-hint">Szybka rezerwa mocy</span>
             </div>
             <div class="setting-item">
-              <label>Próg sprzedaży [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageSellThreshold" value="600" min="100" max="2000" step="10">
-              <span class="setting-hint">Rozładuj gdy cena &gt; próg</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcFcr" style="width:18px;height:18px">
+                FCR (regulacja czestotliwosci)
+              </label>
+              <span class="setting-hint">Symetryczna rezerwa mocy</span>
             </div>
             <div class="setting-item">
-              <label>Min. spread [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageSpread" value="100" min="0" max="500" step="10">
-              <span class="setting-hint">Min. różnica cen do arbitrażu</span>
-            </div>
-            <div class="setting-item">
-              <label>Cena bazowa RDN [PLN/MWh]</label>
-              <input type="number" id="bessRdnPriceFlat" value="500" min="100" max="1500" step="10">
-              <span class="setting-hint">Dla trybu ręcznego</span>
-            </div>
-            <div class="setting-item">
-              <label>Mnożnik cen RDN</label>
-              <input type="number" id="bessRdnPriceMultiplier" value="1.0" min="0.5" max="2.0" step="0.1">
-              <span class="setting-hint">Scenariusze: 1.2 = +20% cen</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcCapMarket" style="width:18px;height:18px">
+                Rynek Mocy (Capacity Market)
+              </label>
+              <span class="setting-hint">Obowiazek mocowy — KWD=0.133</span>
             </div>
           </div>
         </div>
+
+        <!-- Market parameters -->
+        <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+          <div style="font-weight:600;color:#1a237e;font-size:14px;margin-bottom:12px">Parametry rynkowe</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Rok rynkowy</label>
+              <select id="ancillaryMarketYear" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="2025">2025</option>
+                <option value="2026" selected>2026</option>
+                <option value="2027">2027</option>
+                <option value="2028">2028</option>
+              </select>
+              <span class="setting-hint">Rok dla cen referencyjnych PSE</span>
+            </div>
+            <div class="setting-item">
+              <label>Marza agregatora [%]</label>
+              <input type="number" id="ancillaryAggregatorMarginPct" value="20" min="0" max="50" step="1">
+              <span class="setting-hint">Prowizja agregatora (typowo 15-25%)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena aFRR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryAfrrPrice" value="200" min="50" max="500" step="10">
+              <span class="setting-hint">Srednia cena zdolnosci aFRR (2026: ~200)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena mFRR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryMfrrPrice" value="95" min="20" max="300" step="5">
+              <span class="setting-hint">Srednia cena zdolnosci mFRR (2026: ~95)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena FCR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryFcrPrice" value="150" min="50" max="400" step="10">
+              <span class="setting-hint">Srednia cena zdolnosci FCR</span>
+            </div>
+            <div class="setting-item">
+              <label>Rynek Mocy [PLN/MW/rok]</label>
+              <input type="number" id="ancillaryCapMarketPrice" value="280000" min="100000" max="500000" step="10000">
+              <span class="setting-hint">Stawka capacity market (2026: ~280k)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced -->
+        <details style="margin-bottom:20px">
+          <summary style="cursor:pointer;padding:12px;background:#f5f5f5;border-radius:6px;font-weight:600;color:#555">
+            Parametry zaawansowane
+          </summary>
+          <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
+            <div class="settings-grid">
+              <div class="setting-item">
+                <label>KWD (wsp. dyspozycyjnosci mocy)</label>
+                <input type="number" id="ancillaryKwd" value="0.133" min="0.05" max="0.5" step="0.001">
+                <span class="setting-hint">Dla BESS domyslnie 0.133</span>
+              </div>
+              <div class="setting-item">
+                <label>Min. dostepnosc uslug [%]</label>
+                <input type="number" id="ancillaryMinAvailability" value="95" min="80" max="100" step="1">
+                <span class="setting-hint">Wymagana dostepnosc techniczna</span>
+              </div>
+              <div class="setting-item">
+                <label>Max udzial ancillary w mocy [%]</label>
+                <input type="number" id="ancillaryMaxCapacityShare" value="80" min="30" max="100" step="5">
+                <span class="setting-hint">Ile % mocy baterii na uslugi (reszta BTM)</span>
+              </div>
+              <div class="setting-item">
+                <label>Tryb optymalizacji</label>
+                <select id="ancillaryOptimizeMode" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                  <option value="year">Roczny (8760h LP)</option>
+                  <option value="sample_days" selected>16 dni probkowych (szybki)</option>
+                </select>
+                <span class="setting-hint">sample_days = 4 dni/sezon, skalowane x365</span>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 

@@ -3292,9 +3292,24 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   const irrMode = useInflation ? 'nominal' : 'real';
 
   // Total energy price in PLN/MWh (same unit as params)
-  const totalEnergyPrice = params.energy_active + params.distribution + params.quality_fee +
-                            params.oze_fee + params.cogeneration_fee + params.capacity_fee +
-                            params.excise_tax; // PLN/MWh
+  // SPLIT: energy price WITHOUT capacity fee (for per-MWh savings)
+  //        + capacity fee handled separately via K-class scenarios
+  const energyPriceWithoutCapacity = params.energy_active + params.distribution + params.quality_fee +
+                                      params.oze_fee + params.cogeneration_fee +
+                                      params.excise_tax; // PLN/MWh (NO capacity_fee!)
+  const totalEnergyPrice = energyPriceWithoutCapacity + params.capacity_fee; // Full price (backward compat)
+
+  // K-class capacity fee data from pv-calculation (v3.0)
+  const hasKClassData = variant.capacity_fee_baseline_pln != null && variant.capacity_fee_baseline_pln !== undefined;
+  const capacityFeeSavingsPV = variant.capacity_fee_savings_pv_pln || 0;       // S0 - S1
+  const capacityFeeSavingsBESS = variant.capacity_fee_savings_bess_pln || 0;   // S1 - S2
+  const capacityFeeSavingsTotal = variant.capacity_fee_savings_total_pln || 0; // S0 - S2
+
+  // BESS additional savings from bess-dispatch (arbitrage, peak shaving)
+  const bessArbitrageSavingsYear1 = variant.savings_breakdown?.arbitrage_savings_pln || 0;
+  const bessPeakShavingSavingsYear1 = variant.savings_breakdown?.demand_charge_savings_pln || 0;
+  // Note: energy_savings from bess-dispatch is already captured in bessSelfConsumedMwh × energyPrice
+  // So we do NOT add it here to avoid double-counting
 
   // ========== CAPEX MODEL CALCULATION ==========
   console.log('🔢 CENTRALIZED CAPEX NPV Calculation:');
@@ -3304,6 +3319,12 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   console.log(`  📉 PV Degradation from settings: Year1=${(pvDegradationYear1*100).toFixed(1)}% (raw: ${rawPvDegYear1}), Years2+=${(degradationRate*100).toFixed(2)}%/yr`);
   console.log('  💰 Initial CAPEX:', (-capex / 1000000).toFixed(2), 'mln PLN');
   console.log('  📊 IRR Mode:', irrMode, useInflation ? '(inflation-indexed cash flows)' : '(constant prices)');
+  console.log(`  📊 K-class data: ${hasKClassData ? 'YES' : 'NO (fallback to flat rate)'}`);
+  if (hasKClassData) {
+    console.log(`     K-class: ${variant.k_class_baseline} -> ${variant.k_class_with_pv} -> ${variant.k_class_with_pv_bess || 'N/A'}`);
+    console.log(`     Capacity fee savings: PV=${capacityFeeSavingsPV.toFixed(0)}, BESS=${capacityFeeSavingsBESS.toFixed(0)}, Total=${capacityFeeSavingsTotal.toFixed(0)} PLN`);
+    console.log(`     BESS extra: arbitrage=${bessArbitrageSavingsYear1.toFixed(0)}, peak_shaving=${bessPeakShavingSavingsYear1.toFixed(0)} PLN`);
+  }
 
   let capexNPV = -capex;
   let capexCashFlows = [];
@@ -3337,22 +3358,43 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     const yearBessMwh = bessSelfConsumedMwh * bessDegradation;
     const yearSelfConsumedMwh = yearPvDirectMwh + yearBessMwh;
 
-    const adjustedEnergyPrice = totalEnergyPrice * savingsCpiEscalation; // PLN/MWh
-
     // OPEX = PV OPEX + BESS OPEX — ALWAYS inflated (operational costs grow with CPI)
     const adjustedOpexPV = capacityKwp * params.opex_per_kwp * opexCpiEscalation;
     const adjustedOpexBESS = opexBESS * opexCpiEscalation;
     const adjustedOpex = adjustedOpexPV + adjustedOpexBESS;
 
-    // --- Savings calculation: tariff vs RDN mode ---
+    // --- Savings calculation: per-component streams ---
     let yearSavings, yearEnergyFeesSavings = 0, yearCapacitySavings = 0;
+    let yearBessArbitrage = 0, yearBessPeakShaving = 0;
     if (pricingMode === 'rdn' && rdnBaseline) {
       // RDN mode: two separate savings streams from TCSL year-1 data
       const cpiEscalation = Math.pow(1 + inflationRate, year - 1);
       yearEnergyFeesSavings = rdnBaseline.energyFeesSavingsYear1 * pvDegradation * cpiEscalation;
       yearCapacitySavings = rdnBaseline.capacitySavingsYear1 * cpiEscalation;
       yearSavings = yearEnergyFeesSavings + yearCapacitySavings;
+    } else if (hasKClassData) {
+      // ===== NEW: Per-component savings with real K-class data =====
+      // Stream 1: Energy savings (autokonsumpcja × cena BEZ opłaty mocowej)
+      const adjustedEnergyPriceNoCapacity = energyPriceWithoutCapacity * savingsCpiEscalation;
+      yearEnergyFeesSavings = yearSelfConsumedMwh * adjustedEnergyPriceNoCapacity;
+
+      // Stream 2: K-class capacity fee savings (PV component) — degrades with PV
+      yearCapacitySavings = capacityFeeSavingsPV * pvDegradation * savingsCpiEscalation;
+
+      // Stream 3: K-class capacity fee savings (BESS component) — degrades with BESS
+      const yearBessCapacitySavings = capacityFeeSavingsBESS * bessDegradation * savingsCpiEscalation;
+
+      // Stream 4: BESS arbitrage savings — degrades with BESS SoH
+      yearBessArbitrage = bessArbitrageSavingsYear1 * bessDegradation * savingsCpiEscalation;
+
+      // Stream 5: BESS peak shaving savings — degrades with BESS SoH
+      yearBessPeakShaving = bessPeakShavingSavingsYear1 * bessDegradation * savingsCpiEscalation;
+
+      yearSavings = yearEnergyFeesSavings + yearCapacitySavings + yearBessCapacitySavings
+                  + yearBessArbitrage + yearBessPeakShaving;
     } else {
+      // Fallback: flat rate (old behavior — capacity_fee included in energy price)
+      const adjustedEnergyPrice = totalEnergyPrice * savingsCpiEscalation;
       yearSavings = yearSelfConsumedMwh * adjustedEnergyPrice; // MWh * PLN/MWh = PLN
     }
 
@@ -3365,16 +3407,19 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       savings: yearSavings,
       energyFeesSavings: yearEnergyFeesSavings,
       capacitySavings: yearCapacitySavings,
+      bessArbitrage: yearBessArbitrage,
+      bessPeakShaving: yearBessPeakShaving,
       opex: adjustedOpex,
       net_cash_flow: yearCashFlow,
       production: productionMwh * pvDegradation * 1000,
       selfConsumed: yearSelfConsumedMwh * 1000,
       selfConsumedPvDirect: yearPvDirectMwh * 1000,
       selfConsumedBess: yearBessMwh * 1000,
-      energyPrice: adjustedEnergyPrice,
+      energyPrice: (hasKClassData ? energyPriceWithoutCapacity : totalEnergyPrice) * savingsCpiEscalation,
       pvDegradationPct: pvDegradation * 100,
       bessDegradationPct: bessDegradation * 100,
-      pricingMode: pricingMode
+      pricingMode: pricingMode,
+      hasKClassData: hasKClassData
     });
 
     // Log sample years
@@ -3583,11 +3628,19 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       productionKwh: productionMwh * 1000,
       selfConsumedKwh: selfConsumedMwh * 1000,
       totalEnergyPrice: totalEnergyPrice,
+      energyPriceWithoutCapacity: energyPriceWithoutCapacity,
       discountRate: discountRate,
       inflationRate: inflationRate,
       analysisPeriod: analysisPeriod,
       useInflation: useInflation,
-      pricingMode: pricingMode
+      pricingMode: pricingMode,
+      hasKClassData: hasKClassData,
+      kClassBaseline: variant.k_class_baseline || null,
+      kClassWithPV: variant.k_class_with_pv || null,
+      kClassWithPVBess: variant.k_class_with_pv_bess || null,
+      capacityFeeSavingsPV: capacityFeeSavingsPV,
+      capacityFeeSavingsBESS: capacityFeeSavingsBESS,
+      capacityFeeSavingsTotal: capacityFeeSavingsTotal
     }
   };
 }
@@ -7477,6 +7530,27 @@ async function calculateEaaS() {
   console.log('CENTRALIZED METRICS stored:', centralizedCalc);
   console.log('  - CAPEX NPV:', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
   console.log('  - EaaS NPV:', ((centralizedCalc.eaas?.npv || 0) / 1000000).toFixed(2), 'mln PLN');
+
+  // K-class warning banner
+  const kclassBanner = document.getElementById('kclassWarningBanner');
+  if (kclassBanner) {
+    if (centralizedCalc.common.hasKClassData) {
+      const kBase = centralizedCalc.common.kClassBaseline || '?';
+      const kPV = centralizedCalc.common.kClassWithPV || '?';
+      const kBESS = centralizedCalc.common.kClassWithPVBess;
+      const savPV = Math.round(centralizedCalc.common.capacityFeeSavingsPV || 0).toLocaleString('pl-PL');
+      const savBESS = Math.round(centralizedCalc.common.capacityFeeSavingsBESS || 0).toLocaleString('pl-PL');
+      kclassBanner.style.display = 'block';
+      kclassBanner.style.background = '#1a3a1a';
+      kclassBanner.style.borderColor = '#4caf50';
+      kclassBanner.innerHTML = `<b>K-class:</b> ${kBase} &rarr; ${kPV}${kBESS ? ' &rarr; ' + kBESS : ''} | Oszcz. opl. mocowa: PV: ${savPV} PLN${kBESS ? ', BESS: ' + savBESS + ' PLN' : ''}`;
+    } else {
+      kclassBanner.style.display = 'block';
+      kclassBanner.style.background = '#3a2a0a';
+      kclassBanner.style.borderColor = '#ff9800';
+      kclassBanner.innerHTML = 'Brak danych K-class — obliczenia z ryczaltowa oplata mocowa (' + (params.capacity_fee || 219) + ' PLN/MWh). Uruchom analiz\u0119 PV dla dokladnych oblicze\u0144.';
+    }
+  }
 
   const annualConsumption = getAnnualConsumptionKwh();
   const eaasParams = {

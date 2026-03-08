@@ -475,6 +475,14 @@ class ArbitrageConfig(BaseModel):
         description="Degradation cost per kWh throughput [PLN/kWh]"
     )
 
+    # RDN hourly prices (passed from frontend "Ceny RDN" widget)
+    # When provided, these are used directly instead of looking up OSD tariff presets
+    hourly_prices_pln_mwh: Optional[List[float]] = Field(
+        None,
+        description="Hourly RDN prices [PLN/MWh] from Ceny RDN widget (8760 values). "
+                    "When provided, used directly for arbitrage dispatch."
+    )
+
     # Price components to include in import_total (for dispatch steering)
     # NOTE: capacity_fee should be 0 here - it's calculated post-dispatch!
     capacity_fee_pln_kwh: float = Field(
@@ -1019,18 +1027,26 @@ class SavingsBreakdown(BaseModel):
     # Battery throughput (for degradation calculation)
     battery_throughput_mwh: float = Field(0.0, description="Total battery throughput [MWh] (discharge only)")
 
+    # Ancillary services revenue (v2.0 — uslugi pomocnicze)
+    ancillary_afrr_revenue_pln: float = Field(0.0, description="aFRR capacity + energy revenue [PLN/year]")
+    ancillary_mfrr_revenue_pln: float = Field(0.0, description="mFRR capacity + energy revenue [PLN/year]")
+    ancillary_fcr_revenue_pln: float = Field(0.0, description="FCR capacity revenue [PLN/year]")
+    ancillary_capacity_market_pln: float = Field(0.0, description="Rynek Mocy revenue [PLN/year]")
+    ancillary_aggregator_fee_pln: float = Field(0.0, description="Aggregator margin deducted [PLN/year]")
+    ancillary_total_net_pln: float = Field(0.0, description="Total ancillary net revenue after aggregator [PLN/year]")
+
     # Negative (costs)
     degradation_cost_pln: float = Field(0.0, description="Cost of battery degradation (throughput-based)")
     unserved_load_penalty_pln: float = Field(0.0, description="Penalty for unserved load due to import cap [PLN]")
 
     # Net
-    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta - degradation - unserved_penalty")
+    net_savings_pln: float = Field(0.0, description="Net annual savings = energy + demand + arbitrage + capacity_fee + export_delta + ancillary - degradation - unserved_penalty")
 
     def calculate_net(self) -> float:
         """
         Calculate net savings from components.
 
-        Formula: net = energy + arbitrage + capacity_fee + demand + export_delta - degradation - unserved_penalty
+        Formula: net = energy + arbitrage + capacity_fee + demand + export_delta + ancillary_net - degradation - unserved_penalty
 
         Note: export_revenue_savings_pln is typically NEGATIVE (battery uses PV that would be exported)
         so adding it reduces net savings, which is correct behavior.
@@ -1040,7 +1056,8 @@ class SavingsBreakdown(BaseModel):
             self.arbitrage_savings_pln +
             self.capacity_fee_savings_pln +
             self.demand_charge_savings_pln +
-            self.export_revenue_savings_pln -  # delta = project - baseline (usually negative)
+            self.export_revenue_savings_pln +  # delta = project - baseline (usually negative)
+            self.ancillary_total_net_pln -      # ancillary services net revenue
             abs(self.degradation_cost_pln) -
             abs(self.unserved_load_penalty_pln)
         )
@@ -1747,6 +1764,7 @@ class DispatchResult(BaseModel):
     # Hourly arrays (optional, for charts)
     hourly_charge_kw: Optional[List[float]] = None
     hourly_discharge_kw: Optional[List[float]] = None
+    hourly_charge_from_grid_kw: Optional[List[float]] = None
     hourly_soc_pct: Optional[List[float]] = None
     hourly_grid_import_kw: Optional[List[float]] = None
     hourly_grid_export_kw: Optional[List[float]] = None
@@ -2125,7 +2143,7 @@ class SizingRequest(BaseModel):
     # Battery constraints
     min_power_kw: float = Field(10.0, ge=0)
     max_power_kw: float = Field(10000.0, ge=0)
-    power_steps: int = Field(10, ge=5, le=50, description="Number of power levels to test")
+    power_steps: int = Field(15, ge=5, le=50, description="Number of power levels to test in grid search")
 
     # Duration variants
     durations_h: List[float] = Field([1.0, 2.0, 4.0], description="Duration variants [h]")
@@ -2156,6 +2174,14 @@ class SizingRequest(BaseModel):
     discount_rate: float = Field(0.07, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
 
+    # House load / auxiliary consumption (HVAC, BMS, PCS standby)
+    house_load_kw_per_mwh: float = Field(
+        2.75,
+        ge=0, le=10.0,
+        description="Continuous auxiliary power draw per MWh of battery capacity [kW/MWh]. "
+                    "Covers HVAC, BMS, PCS standby, SCADA. Typical LFP container: 2.5-3.0 kW/MWh."
+    )
+
     # Pricing
     prices: PriceConfig = Field(default_factory=PriceConfig)
 
@@ -2168,6 +2194,14 @@ class SizingRequest(BaseModel):
 
     # Degradation budget
     degradation_budget: Optional[DegradationBudget] = None
+
+    # Grid connection limit [kW] - limits battery charging from grid
+    # At each hour: grid_import <= grid_connection_kw
+    # Battery can only charge from grid up to: grid_connection_kw - current_load_kw
+    grid_connection_kw: Optional[float] = Field(
+        None, ge=0,
+        description="Grid connection capacity [kW]. Limits battery charging from grid."
+    )
 
     # Capacity fee optimization (flatness constraint multi-solve)
     optimize_capacity_fee: bool = Field(
@@ -2189,6 +2223,13 @@ class SizingRequest(BaseModel):
         ge=1, le=8,
         description="Number of parallel workers for sizing grid search. "
                     "Set >1 to parallelize across power levels."
+    )
+
+    # Include hourly BESS profiles in response (for K-class capacity fee calculation)
+    include_hourly_profiles: bool = Field(
+        False,
+        description="Include hourly charge_from_grid_kw and discharge_kw arrays in variant response. "
+                    "Required for accurate K-class capacity fee scenarios (profile-analysis integration)."
     )
 
     # Optimization configuration (optional)
@@ -2292,6 +2333,18 @@ class SizingRequest(BaseModel):
         None,
         description="User-defined constraints for variant selection (max_capex, max_payback, min_npv). "
                     "Variants violating constraints are marked as not feasible but still returned."
+    )
+
+    # Ancillary services (v2.0 — uslugi pomocnicze)
+    ancillary_services_enabled: bool = Field(
+        False,
+        description="Enable ancillary services revenue in sizing economics (aFRR, mFRR, FCR, capacity market)"
+    )
+    ancillary_market_year: int = Field(2026, description="Market preset year for ancillary services")
+    ancillary_aggregator_margin_pct: float = Field(20.0, ge=0, le=50, description="Aggregator margin [%]")
+    ancillary_services_list: Optional[List[str]] = Field(
+        None,
+        description="List of enabled services: aFRR_up, aFRR_down, mFRR_up, peak_shaving, energy_arbitrage, fcr, capacity_market"
     )
 
     @property
@@ -2404,6 +2457,18 @@ class SizingVariantResult(BaseModel):
                     "Shows soc_kwh, charge_kw, discharge_kw at each timestep for dispatch debugging."
     )
 
+    # Hourly BESS profiles for K-class capacity fee calculation (v3.0)
+    hourly_charge_from_grid_kw: Optional[List[float]] = Field(
+        None,
+        description="Hourly BESS charging from grid [kW]. Excludes PV-sourced charging. "
+                    "Required for accurate K-class capacity fee scenarios."
+    )
+    hourly_discharge_kw: Optional[List[float]] = Field(
+        None,
+        description="Hourly BESS discharge [kW]. "
+                    "Required for accurate K-class capacity fee scenarios."
+    )
+
     def model_post_init(self, __context):
         """Pydantic v2: populate alias fields after init"""
         if self.dispatch_summary:
@@ -2512,11 +2577,17 @@ class FinanceConfig(BaseModel):
         ge=0,
         description="Replacement cost in PLN. If None, uses original CAPEX."
     )
-    # Performance degradation (v0.6.0 PR3)
+    # Performance degradation (v0.6.0 PR3, v1.2.0: calendar aging year 1)
+    bess_degradation_year1_pct: float = Field(
+        5.0,
+        ge=0, le=20.0,
+        description="BESS calendar degradation in year 1 [%]. Formation loss - typically higher than subsequent years. "
+                    "E.g., 5.0 = 5% capacity loss in first year."
+    )
     bess_degradation_pct_per_year: float = Field(
-        0.0,
+        2.0,
         ge=0, le=10.0,
-        description="BESS capacity degradation [%/year]. Applied to savings as (1 - rate)^year. "
+        description="BESS calendar degradation [%/year] for years 2+. "
                     "E.g., 2.0 = 2% annual degradation."
     )
     pv_degradation_pct_per_year: float = Field(
@@ -2861,6 +2932,15 @@ class SizingResult(BaseModel):
         description="For STACKED mode: decomposition into Peak Shaving and Arbitrage components. "
                     "Shows how total BESS size = peak_shaving + arbitrage. "
                     "Enables transparent sizing rationale for dual-service BESS."
+    )
+
+    # Grid search results - ALL evaluated power x duration combinations
+    grid_search_results: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="All evaluated grid points (power x duration). Each point has: "
+                    "power_kw, energy_kwh, duration_h, capex_pln, annual_savings_pln, "
+                    "npv_pln, npv_per_kwh, payback_years, efc_total, self_consumption_pct, "
+                    "peak_reduction_pct. Sorted by npv_per_kwh descending."
     )
 
     # Warnings

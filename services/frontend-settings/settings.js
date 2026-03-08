@@ -322,7 +322,7 @@ const DEFAULT_CONFIG = {
                                        // 'auto' = system tests 1h/2h/4h and picks best NPV
 
   // BESS Technical Defaults (used by LIGHT and PRO modes)
-  bessRoundtripEfficiency: 0.90,       // Round-trip efficiency (88-92% typical for Li-ion)
+  bessRoundtripEfficiency: 0.85,       // Round-trip efficiency AC-DC-AC (cells + inverter + transformer)
   bessSocMin: 0.10,                    // Minimum SOC (10% = protect battery health)
   bessSocMax: 0.90,                    // Maximum SOC (90% = protect battery health)
   bessSocInitial: 0.50,                // Initial SOC at start of simulation
@@ -335,7 +335,7 @@ const DEFAULT_CONFIG = {
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
   bessDegradationYear1: 3.0,           // First year degradation [%] (higher due to initial settling)
   bessDegradationPctPerYear: 2.0,      // Annual capacity degradation for years 2+ [%/year]
-  bessAuxiliaryLossPctPerDay: 0.1,     // Standby losses [% of capacity/day] (BMS, cooling, etc.)
+  bessHouseLoadKwPerMwh: 2.75,         // House load [kW per MWh capacity] (HVAC, BMS, PCS standby)
 
   // ============================================================================
   // BESS PRO - Advanced LP/MIP Optimization (PyPSA + HiGHS)
@@ -386,6 +386,26 @@ const DEFAULT_CONFIG = {
   bessPriceArbitrageSpread: 100,       // Minimum spread to trigger arbitrage [PLN/MWh]
   bessRdnPriceFlat: 500,               // Flat RDN price [PLN/MWh] (for manual mode without profile)
   bessRdnPriceMultiplier: 1.0,         // RDN price multiplier (for scenario analysis)
+
+  // ============================================================================
+  // Ancillary Services (Revenue Stacking)
+  // ============================================================================
+  ancillaryServicesEnabled: false,       // Master toggle for ancillary revenue
+  ancSvcAfrrUp: true,                    // aFRR Up (secondary reserve up)
+  ancSvcAfrrDown: true,                  // aFRR Down (secondary reserve down)
+  ancSvcMfrrUp: true,                    // mFRR Up (tertiary reserve up)
+  ancSvcFcr: false,                      // FCR (frequency containment reserve)
+  ancSvcCapMarket: false,                // Capacity Market (Rynek Mocy)
+  ancillaryMarketYear: 2026,             // Reference year for PSE prices
+  ancillaryAggregatorMarginPct: 20,      // Aggregator margin [%]
+  ancillaryAfrrPrice: 200,              // aFRR capacity price [PLN/MW/h]
+  ancillaryMfrrPrice: 95,               // mFRR capacity price [PLN/MW/h]
+  ancillaryFcrPrice: 150,               // FCR capacity price [PLN/MW/h]
+  ancillaryCapMarketPrice: 280000,       // Capacity market [PLN/MW/year]
+  ancillaryKwd: 0.133,                  // KWD (power availability factor for BESS)
+  ancillaryMinAvailability: 95,          // Min technical availability [%]
+  ancillaryMaxCapacityShare: 80,         // Max % of battery power for ancillary
+  ancillaryOptimizeMode: 'sample_days',  // 'year' or 'sample_days'
 
   // ============================================================================
   // BESS Scenarios - Work mode selection (MVP v3.17)
@@ -469,40 +489,8 @@ const BESS_SCENARIOS = {
     kpiLabels: ['Peak reduction', 'Monthly savings'],
     icon: '📉'
   },
-  4: {
-    id: 4,
-    name: 'ToU + Analiza kosztów',
-    shortName: 'ToU Analiza',
-    description: 'Raport kosztów wg stref taryfowych OSD (analiza po stronie FE)',
-    topologies: ['pv_bess'],
-    modes: ['light', 'pro'],
-    baseMode: 'stacked',
-    presets: {
-      bessOsdArbitrageEnabled: true,
-      bessOsdTariffGroup: 'C12a'
-    },
-    requiredFields: ['bessOsdTariffGroup'],
-    feAnalysis: true,  // Analiza kosztów po stronie frontend
-    kpiLabels: ['Cost by zone', 'Savings vs flat'],
-    icon: '🕐'
-  },
-  5: {
-    id: 5,
-    name: 'ToU Arbitrage',
-    shortName: 'Arbitraż',
-    description: 'Arbitraż cenowy na strefach taryfowych OSD (C12a/C12b) - ładuj tanio, rozładuj drogo',
-    topologies: ['pv_bess', 'bess_only'],
-    modes: ['pro'],
-    baseMode: 'stacked',  // Arbitraż działa w trybie stacked (3. priorytet po peak shaving i PV shifting)
-    presets: {
-      bessMode: 'pro',  // Auto-enable BESS in PRO mode
-      bessOsdArbitrageEnabled: true,
-      bessOsdTariffGroup: 'C12a'
-    },
-    requiredFields: ['bessOsdTariffGroup'],
-    kpiLabels: ['Arbitrage savings', 'ToU spread'],
-    icon: '💹'
-  },
+  // Scenarios 4 and 5 removed from tiles - arbitrage is now an overlay checkbox
+  // (combinable with any base scenario, like capacity fee overlay)
   // Scenariusz 6 NIE jest kafelkiem - to checkbox overlay
   // Definicja tylko dla dokumentacji
   7: {
@@ -617,6 +605,13 @@ function setBessMode(mode) {
  * Toggle BESS configuration sections based on bessMode
  * Shows/hides duration, economics, technical, and PRO parameters
  */
+// Toggle ancillary services detail section based on master checkbox
+function toggleAncillaryDetail() {
+  const enabled = document.getElementById('ancillaryServicesEnabled')?.checked ?? false;
+  const detail = document.getElementById('ancillarySettingsDetail');
+  if (detail) detail.style.display = enabled ? 'block' : 'none';
+}
+
 function toggleBessSection() {
   const bessMode = document.getElementById('bessMode')?.value || 'off';
   const durationSection = document.getElementById('bessDurationSection');
@@ -654,6 +649,10 @@ function toggleBessSection() {
   // Advanced features section (Peak Shaving & Arbitrage - shown for both LIGHT and PRO)
   const advancedSection = document.getElementById('bessAdvancedFeaturesSection');
   if (advancedSection) advancedSection.style.display = isEnabled ? 'block' : 'none';
+
+  // Constraints section (Grid connection & EFC limit)
+  const constraintsSection = document.getElementById('bessConstraintsSection');
+  if (constraintsSection) constraintsSection.style.display = isEnabled ? 'block' : 'none';
 
   console.log(`🔋 BESS mode: ${bessMode} (enabled: ${isEnabled}, pro: ${isPro})`);
 }
@@ -861,7 +860,7 @@ function syncDegradationParams(source) {
   const fieldMappings = {
     'bessDegradationYear1': 'bessProDegradationYear1',
     'bessDegradationPctPerYear': 'bessProDegradationPctPerYear',
-    'bessAuxiliaryLossPctPerDay': 'bessProAuxiliaryLossPctPerDay'
+    'bessHouseLoadKwPerMwh': 'bessProHouseLoadKwPerMwh'
   };
 
   if (source === 'light') {
@@ -1301,7 +1300,7 @@ function applySettingsToUI(config) {
     // BESS economic parameters
     'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
     // BESS technical parameters
-    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear', 'bessAuxiliaryLossPctPerDay',
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear', 'bessHouseLoadKwPerMwh',
     // BESS PRO parameters
     'bessProMinPowerKw', 'bessProMaxPowerKw', 'bessProMinEnergyKwh', 'bessProMaxEnergyKwh',
     'bessProDurationMin', 'bessProDurationMax', 'bessProTypicalDays', 'bessProExportPenalty'
@@ -1353,6 +1352,16 @@ function applySettingsToUI(config) {
     bessProZeroExportEl.checked = config.bessProZeroExport !== false;  // Default true
   }
 
+  // BESS Physical Constraints (grid connection & EFC limit)
+  const bessGridConnectionKwEl = document.getElementById('bessGridConnectionKw');
+  if (bessGridConnectionKwEl && config.bessGridConnectionKw) {
+    bessGridConnectionKwEl.value = config.bessGridConnectionKw;
+  }
+  const bessMaxEfcPerYearEl = document.getElementById('bessMaxEfcPerYear');
+  if (bessMaxEfcPerYearEl && config.bessMaxEfcPerYear) {
+    bessMaxEfcPerYearEl.value = config.bessMaxEfcPerYear;
+  }
+
   // BESS Peak Shaving checkbox and fields
   const bessPeakShavingEnabledEl = document.getElementById('bessPeakShavingEnabled');
   if (bessPeakShavingEnabledEl) {
@@ -1379,6 +1388,9 @@ function applySettingsToUI(config) {
   const bessOsdArbitrageEnabledEl = document.getElementById('bessOsdArbitrageEnabled');
   if (bessOsdArbitrageEnabledEl) {
     bessOsdArbitrageEnabledEl.checked = config.bessOsdArbitrageEnabled ?? false;
+    // Sync overlay checkbox in scenario section
+    const osdOverlay = document.getElementById('bessOsdArbitrageOverlay');
+    if (osdOverlay) osdOverlay.checked = bessOsdArbitrageEnabledEl.checked;
   }
   const bessOsdOperatorEl = document.getElementById('bessOsdOperator');
   if (bessOsdOperatorEl) {
@@ -1405,6 +1417,9 @@ function applySettingsToUI(config) {
   const bessPriceArbitrageEnabledEl = document.getElementById('bessPriceArbitrageEnabled');
   if (bessPriceArbitrageEnabledEl) {
     bessPriceArbitrageEnabledEl.checked = config.bessPriceArbitrageEnabled ?? false;
+    // Sync overlay checkbox in scenario section
+    const rdnOverlay = document.getElementById('bessPriceArbitrageOverlay');
+    if (rdnOverlay) rdnOverlay.checked = bessPriceArbitrageEnabledEl.checked;
   }
   const bessPriceArbitrageSourceEl = document.getElementById('bessPriceArbitrageSource');
   if (bessPriceArbitrageSourceEl) {
@@ -1436,6 +1451,31 @@ function applySettingsToUI(config) {
   if (bessEnabledEl) {
     bessEnabledEl.value = config.bessMode !== 'off' ? 'true' : 'false';
   }
+
+  // Ancillary Services
+  const ancillaryEnabledEl = document.getElementById('ancillaryServicesEnabled');
+  if (ancillaryEnabledEl) {
+    ancillaryEnabledEl.checked = config.ancillaryServicesEnabled ?? false;
+  }
+  const ancCheckboxes = ['ancSvcAfrrUp', 'ancSvcAfrrDown', 'ancSvcMfrrUp', 'ancSvcFcr', 'ancSvcCapMarket'];
+  ancCheckboxes.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  const ancSimple = ['ancillaryAggregatorMarginPct', 'ancillaryAfrrPrice', 'ancillaryMfrrPrice',
+    'ancillaryFcrPrice', 'ancillaryCapMarketPrice', 'ancillaryKwd', 'ancillaryMinAvailability',
+    'ancillaryMaxCapacityShare'];
+  ancSimple.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  const ancSelects = ['ancillaryMarketYear', 'ancillaryOptimizeMode'];
+  ancSelects.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  // Toggle ancillary detail section visibility
+  toggleAncillaryDetail();
 
   // Fields that are stored as decimals but displayed as percentages in UI
   const percentageFields = ['bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax'];
@@ -1804,7 +1844,7 @@ function getCurrentSettings() {
     bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
     bessDegradationYear1: parseFloat(document.getElementById('bessDegradationYear1')?.value || DEFAULT_CONFIG.bessDegradationYear1),
     bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
-    bessAuxiliaryLossPctPerDay: parseFloat(document.getElementById('bessAuxiliaryLossPctPerDay')?.value || DEFAULT_CONFIG.bessAuxiliaryLossPctPerDay),
+    bessHouseLoadKwPerMwh: parseFloat(document.getElementById('bessHouseLoadKwPerMwh')?.value || DEFAULT_CONFIG.bessHouseLoadKwPerMwh),
 
     // BESS PRO - Advanced LP/MIP Optimization
     bessProMinPowerKw: parseFloat(document.getElementById('bessProMinPowerKw')?.value || DEFAULT_CONFIG.bessProMinPowerKw),
@@ -1835,6 +1875,10 @@ function getCurrentSettings() {
     bessOsdOffPeakRate: parseFloat(document.getElementById('bessOsdOffPeakRate')?.value || DEFAULT_CONFIG.bessOsdOffPeakRate),
     bessOsdMinSpread: parseFloat(document.getElementById('bessOsdMinSpread')?.value || DEFAULT_CONFIG.bessOsdMinSpread),
 
+    // BESS Physical Constraints (grid connection & cycle limits)
+    bessGridConnectionKw: parseFloat(document.getElementById('bessGridConnectionKw')?.value) || null,
+    bessMaxEfcPerYear: parseFloat(document.getElementById('bessMaxEfcPerYear')?.value) || null,
+
     // BESS RDN Price Arbitrage (Spot)
     bessPriceArbitrageEnabled: document.getElementById('bessPriceArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessPriceArbitrageEnabled,
     bessPriceArbitrageSource: document.getElementById('bessPriceArbitrageSource')?.value || DEFAULT_CONFIG.bessPriceArbitrageSource,
@@ -1847,6 +1891,24 @@ function getCurrentSettings() {
     // BESS Scenarios (MVP v3.17)
     bessScenarioId: parseInt(document.getElementById('bessScenarioId')?.value) || currentBessScenarioId || null,
     bessCapacityFeeOverlay: document.getElementById('bessCapacityFeeOverlay')?.checked ?? DEFAULT_CONFIG.bessCapacityFeeOverlay,
+
+    // Ancillary Services (Revenue Stacking)
+    ancillaryServicesEnabled: document.getElementById('ancillaryServicesEnabled')?.checked ?? DEFAULT_CONFIG.ancillaryServicesEnabled,
+    ancSvcAfrrUp: document.getElementById('ancSvcAfrrUp')?.checked ?? DEFAULT_CONFIG.ancSvcAfrrUp,
+    ancSvcAfrrDown: document.getElementById('ancSvcAfrrDown')?.checked ?? DEFAULT_CONFIG.ancSvcAfrrDown,
+    ancSvcMfrrUp: document.getElementById('ancSvcMfrrUp')?.checked ?? DEFAULT_CONFIG.ancSvcMfrrUp,
+    ancSvcFcr: document.getElementById('ancSvcFcr')?.checked ?? DEFAULT_CONFIG.ancSvcFcr,
+    ancSvcCapMarket: document.getElementById('ancSvcCapMarket')?.checked ?? DEFAULT_CONFIG.ancSvcCapMarket,
+    ancillaryMarketYear: parseInt(document.getElementById('ancillaryMarketYear')?.value || DEFAULT_CONFIG.ancillaryMarketYear),
+    ancillaryAggregatorMarginPct: parseFloat(document.getElementById('ancillaryAggregatorMarginPct')?.value || DEFAULT_CONFIG.ancillaryAggregatorMarginPct),
+    ancillaryAfrrPrice: parseFloat(document.getElementById('ancillaryAfrrPrice')?.value || DEFAULT_CONFIG.ancillaryAfrrPrice),
+    ancillaryMfrrPrice: parseFloat(document.getElementById('ancillaryMfrrPrice')?.value || DEFAULT_CONFIG.ancillaryMfrrPrice),
+    ancillaryFcrPrice: parseFloat(document.getElementById('ancillaryFcrPrice')?.value || DEFAULT_CONFIG.ancillaryFcrPrice),
+    ancillaryCapMarketPrice: parseFloat(document.getElementById('ancillaryCapMarketPrice')?.value || DEFAULT_CONFIG.ancillaryCapMarketPrice),
+    ancillaryKwd: parseFloat(document.getElementById('ancillaryKwd')?.value || DEFAULT_CONFIG.ancillaryKwd),
+    ancillaryMinAvailability: parseFloat(document.getElementById('ancillaryMinAvailability')?.value || DEFAULT_CONFIG.ancillaryMinAvailability),
+    ancillaryMaxCapacityShare: parseFloat(document.getElementById('ancillaryMaxCapacityShare')?.value || DEFAULT_CONFIG.ancillaryMaxCapacityShare),
+    ancillaryOptimizeMode: document.getElementById('ancillaryOptimizeMode')?.value || DEFAULT_CONFIG.ancillaryOptimizeMode,
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
@@ -4484,6 +4546,49 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ============================================================================
+// RDN Arbitrage ↔ Ceny RDN widget validation
+// ============================================================================
+
+/**
+ * Check if RDN hourly prices are available for BESS arbitrage.
+ * Called when user toggles the RDN arbitrage checkbox.
+ */
+function checkRdnDataForArbitrage() {
+  const statusEl = document.getElementById('rdnArbitrageStatus');
+  const overlayStatusEl = document.getElementById('rdnOverlayStatus');
+
+  const checkbox = document.getElementById('bessPriceArbitrageEnabled');
+  const isEnabled = checkbox?.checked;
+
+  // Check if RDN prices are cached from "Ceny RDN" widget
+  let hasData = false;
+  let dataLabel = '';
+  try {
+    const cachedInfo = localStorage.getItem('rdn_scenario_info');
+    const cachedPrices = localStorage.getItem('rdn_hourly_prices');
+    if (cachedInfo && cachedPrices) {
+      const info = JSON.parse(cachedInfo);
+      const prices = JSON.parse(cachedPrices);
+      if (prices.length >= 8000) {
+        hasData = true;
+        dataLabel = `${info.scenarioName || 'RDN'} — ${prices.length} godz., śr. ${(info.avgPrice || 0).toFixed(0)} PLN/MWh`;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  const okMsg = `<span style="color:#2e7d32">✓ ${dataLabel}</span>`;
+  const noDataMsg = '<span style="color:#c62828">⚠ Brak danych RDN — wgraj ceny w sekcji "Ceny RDN" poniżej</span>';
+  const offMsg = 'Ceny z widgetu "Ceny RDN" poniżej';
+
+  if (statusEl) {
+    statusEl.innerHTML = !isEnabled ? offMsg : (hasData ? okMsg : noDataMsg);
+  }
+  if (overlayStatusEl) {
+    overlayStatusEl.innerHTML = !isEnabled ? offMsg : (hasData ? okMsg : noDataMsg);
+  }
+}
+
+// ============================================================================
 // RDN Dynamic Pricing - Rynek Dnia Następnego (Day-Ahead Market)
 // ============================================================================
 
@@ -4845,6 +4950,8 @@ function restoreRdnState() {
         }
       });
     }
+    // Update arbitrage status after RDN state is restored
+    setTimeout(() => checkRdnDataForArbitrage(), 500);
   } catch (e) {
     console.error('Error restoring RDN state:', e);
   }

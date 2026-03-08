@@ -2657,6 +2657,166 @@ def calculate_capacity_fee(
     return result
 
 
+# =============================================================================
+# Capacity Fee Scenarios (K-class) — multi-scenario endpoint
+# =============================================================================
+
+class CapacityFeeScenarioResult(BaseModel):
+    """K-class result for a single scenario."""
+    scenario: str
+    annual_fee_pln: float
+    k_class: str
+    k_coefficient: float
+    delta_s: float
+    total_zs_mwh: float
+    monthly_fees: List[float]
+    stochastic: Optional[dict] = None
+
+
+class CapacityFeeScenariosRequest(BaseModel):
+    """Request for multi-scenario capacity fee calculation."""
+    load_kwh: List[float] = Field(..., description="Hourly load profile [kWh], 8760 values")
+    pv_kwh: Optional[List[float]] = Field(None, description="Hourly PV production [kWh], 8760 values")
+    bess_charge_from_grid_kwh: Optional[List[float]] = Field(None, description="Hourly BESS charging from grid [kWh]")
+    bess_discharge_kwh: Optional[List[float]] = Field(None, description="Hourly BESS discharge [kWh]")
+    som_rate_pln_kwh: float = Field(0.2194, description="SOM rate [PLN/kWh]")
+    selected_start: int = Field(7, ge=0, le=23, description="Selected hours start (e.g. 7)")
+    selected_end: int = Field(22, ge=1, le=24, description="Selected hours end (e.g. 22)")
+    start_year: int = Field(2026, description="Calendar year for workday/holiday detection")
+    data_start_date: Optional[str] = Field(None, description="Actual start date ISO YYYY-MM-DD")
+
+
+class CapacityFeeScenariosResult(BaseModel):
+    """Multi-scenario K-class calculation result."""
+    baseline: CapacityFeeScenarioResult
+    with_pv: Optional[CapacityFeeScenarioResult] = None
+    with_pv_bess: Optional[CapacityFeeScenarioResult] = None
+
+    # Savings (deltas)
+    savings_pv_only_pln: float = 0.0
+    savings_pv_bess_pln: float = 0.0
+    savings_bess_incremental_pln: float = 0.0
+
+
+@app.post("/compute-capacity-fee-scenarios", response_model=CapacityFeeScenariosResult)
+async def compute_capacity_fee_scenarios(request: CapacityFeeScenariosRequest):
+    """
+    Oblicz opłatę mocową (K-class) dla max 3 scenariuszy:
+      S0: Baseline (sam load)
+      S1: Z PV (load - pv)
+      S2: Z PV + BESS (load - pv - discharge + charge_from_grid)
+
+    Zwraca K-class, współczynnik, opłatę roczną i oszczędności per scenariusz.
+    """
+    import logging
+    logger = logging.getLogger("profile-analysis")
+
+    load = np.array(request.load_kwh, dtype=np.float64)
+    n = len(load)
+
+    # --- S0: Baseline (no PV, no BESS) ---
+    grid_baseline = load.copy()
+    s0 = calculate_capacity_fee(
+        grid_baseline, request.som_rate_pln_kwh,
+        request.selected_start, request.selected_end,
+        request.start_year, request.data_start_date
+    )
+    baseline = CapacityFeeScenarioResult(
+        scenario="baseline", annual_fee_pln=s0["annual_fee_pln"],
+        k_class=s0["k_class"], k_coefficient=s0["k_coefficient"],
+        delta_s=s0["delta_s"], total_zs_mwh=s0["total_zs_mwh"],
+        monthly_fees=s0["monthly_fees"], stochastic=s0.get("stochastic")
+    )
+    logger.info(f"K-class S0 (baseline): {s0['k_class']} coeff={s0['k_coefficient']:.4f} fee={s0['annual_fee_pln']:.0f} PLN")
+
+    result = CapacityFeeScenariosResult(baseline=baseline)
+
+    # --- S1: With PV (if pv_kwh provided) ---
+    if request.pv_kwh and len(request.pv_kwh) > 0:
+        pv = np.array(request.pv_kwh[:n], dtype=np.float64)
+        if len(pv) < n:
+            pv = np.pad(pv, (0, n - len(pv)), constant_values=0)
+        grid_pv = np.maximum(load - pv, 0.0)
+
+        s1 = calculate_capacity_fee(
+            grid_pv, request.som_rate_pln_kwh,
+            request.selected_start, request.selected_end,
+            request.start_year, request.data_start_date
+        )
+        result.with_pv = CapacityFeeScenarioResult(
+            scenario="with_pv", annual_fee_pln=s1["annual_fee_pln"],
+            k_class=s1["k_class"], k_coefficient=s1["k_coefficient"],
+            delta_s=s1["delta_s"], total_zs_mwh=s1["total_zs_mwh"],
+            monthly_fees=s1["monthly_fees"], stochastic=s1.get("stochastic")
+        )
+        result.savings_pv_only_pln = round(s0["annual_fee_pln"] - s1["annual_fee_pln"], 2)
+        logger.info(f"K-class S1 (PV): {s1['k_class']} coeff={s1['k_coefficient']:.4f} fee={s1['annual_fee_pln']:.0f} PLN, savings={result.savings_pv_only_pln:.0f}")
+
+        # --- S2: With PV + BESS (if bess profiles provided) ---
+        if request.bess_discharge_kwh and len(request.bess_discharge_kwh) > 0:
+            discharge = np.array(request.bess_discharge_kwh[:n], dtype=np.float64)
+            if len(discharge) < n:
+                discharge = np.pad(discharge, (0, n - len(discharge)), constant_values=0)
+
+            charge_from_grid = np.zeros(n, dtype=np.float64)
+            if request.bess_charge_from_grid_kwh and len(request.bess_charge_from_grid_kwh) > 0:
+                cfg = np.array(request.bess_charge_from_grid_kwh[:n], dtype=np.float64)
+                if len(cfg) < n:
+                    cfg = np.pad(cfg, (0, n - len(cfg)), constant_values=0)
+                charge_from_grid = cfg
+
+            # Grid import with PV + BESS:
+            # BESS discharge reduces grid import, BESS charging from grid increases it
+            grid_pv_bess = np.maximum(load - pv - discharge + charge_from_grid, 0.0)
+
+            s2 = calculate_capacity_fee(
+                grid_pv_bess, request.som_rate_pln_kwh,
+                request.selected_start, request.selected_end,
+                request.start_year, request.data_start_date
+            )
+            result.with_pv_bess = CapacityFeeScenarioResult(
+                scenario="with_pv_bess", annual_fee_pln=s2["annual_fee_pln"],
+                k_class=s2["k_class"], k_coefficient=s2["k_coefficient"],
+                delta_s=s2["delta_s"], total_zs_mwh=s2["total_zs_mwh"],
+                monthly_fees=s2["monthly_fees"], stochastic=s2.get("stochastic")
+            )
+            result.savings_pv_bess_pln = round(s0["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+            result.savings_bess_incremental_pln = round(s1["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+            logger.info(f"K-class S2 (PV+BESS): {s2['k_class']} coeff={s2['k_coefficient']:.4f} fee={s2['annual_fee_pln']:.0f} PLN, bess_incremental={result.savings_bess_incremental_pln:.0f}")
+
+    elif request.bess_discharge_kwh and len(request.bess_discharge_kwh) > 0:
+        # BESS without PV (load_only mode)
+        discharge = np.array(request.bess_discharge_kwh[:n], dtype=np.float64)
+        if len(discharge) < n:
+            discharge = np.pad(discharge, (0, n - len(discharge)), constant_values=0)
+
+        charge_from_grid = np.zeros(n, dtype=np.float64)
+        if request.bess_charge_from_grid_kwh and len(request.bess_charge_from_grid_kwh) > 0:
+            cfg = np.array(request.bess_charge_from_grid_kwh[:n], dtype=np.float64)
+            if len(cfg) < n:
+                cfg = np.pad(cfg, (0, n - len(cfg)), constant_values=0)
+            charge_from_grid = cfg
+
+        grid_bess = np.maximum(load - discharge + charge_from_grid, 0.0)
+
+        s2 = calculate_capacity_fee(
+            grid_bess, request.som_rate_pln_kwh,
+            request.selected_start, request.selected_end,
+            request.start_year, request.data_start_date
+        )
+        result.with_pv_bess = CapacityFeeScenarioResult(
+            scenario="bess_only", annual_fee_pln=s2["annual_fee_pln"],
+            k_class=s2["k_class"], k_coefficient=s2["k_coefficient"],
+            delta_s=s2["delta_s"], total_zs_mwh=s2["total_zs_mwh"],
+            monthly_fees=s2["monthly_fees"], stochastic=s2.get("stochastic")
+        )
+        result.savings_pv_bess_pln = round(s0["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+        result.savings_bess_incremental_pln = result.savings_pv_bess_pln
+        logger.info(f"K-class S2 (BESS only): {s2['k_class']} coeff={s2['k_coefficient']:.4f} fee={s2['annual_fee_pln']:.0f} PLN")
+
+    return result
+
+
 def build_hourly_tariff_prices(tariff_config: dict, num_hours: int, start_year: int, data_start_date: str = None) -> np.ndarray:
     """
     Generate hourly tariff energy-active prices based on tariff config.

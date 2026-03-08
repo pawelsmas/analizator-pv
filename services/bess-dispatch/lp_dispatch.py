@@ -67,6 +67,7 @@ def _build_power_constraints(
     load_kw: np.ndarray,
     mode: DispatchMode,
     peak_limit_kw: Optional[float] = None,
+    grid_connection_kw: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """
     Build power rate constraints incorporating C-rate limits and mode-specific bounds.
@@ -122,6 +123,24 @@ def _build_power_constraints(
         # AND where it still allows the LP to be feasible (ub >= lb)
         peak_ub_clipped = np.maximum(peak_ub, lb)  # Don't make ub < lb
         ub = np.minimum(ub, peak_ub_clipped)
+
+    # Grid connection limit: battery charging from grid limited by available connection capacity
+    # At each timestep: grid_import = load - pv + P_charge_from_grid
+    # Total grid import cannot exceed grid_connection_kw
+    # So P_charge_from_grid <= grid_connection_kw - (load - pv) when load > pv
+    # In normalized units: dSoC/dt <= (grid_connection_kw - max(0, load - pv)) * eta_ch / cap
+    if grid_connection_kw is not None and grid_connection_kw > 0:
+        # Available grid capacity for battery charging (after serving load)
+        net_load = load_kw - pv_kw  # Positive when load > PV (grid covers deficit)
+        available_for_charge = grid_connection_kw - np.maximum(net_load, 0)
+        # Only limit charging (positive dSoC), not discharging
+        grid_ub = np.where(
+            available_for_charge > 0,
+            available_for_charge * eta_ch / cap,
+            0.0  # No grid charging capacity available
+        )
+        grid_ub_clipped = np.maximum(grid_ub, lb)  # Feasibility
+        ub = np.minimum(ub, grid_ub_clipped)
 
     # Build A_ub for power constraints
     A_diff = _build_difference_matrix(n, dt_hours)
@@ -278,6 +297,7 @@ def _try_solve_lp_core(
     time_limit: float = 30.0,
     soc_min_override: Optional[float] = None,
     soc_max_override: Optional[float] = None,
+    grid_connection_kw: Optional[float] = None,
 ) -> Optional[np.ndarray]:
     """
     Core LP solver — single attempt with given parameters.
@@ -295,7 +315,8 @@ def _try_solve_lp_core(
     c[n:] = cap
 
     A_power, b_power, _ = _build_power_constraints(
-        n, dt_hours, soc_init, battery, pv_kw, load_kw, mode, peak_limit_kw
+        n, dt_hours, soc_init, battery, pv_kw, load_kw, mode, peak_limit_kw,
+        grid_connection_kw=grid_connection_kw,
     )
     A_cost, b_cost, _ = _build_cost_constraints(
         n, dt_hours, soc_init, battery, buy_price, sell_price, pv_kw, load_kw
@@ -341,6 +362,7 @@ def solve_lp_window(
     mode: DispatchMode,
     peak_limit_kw: Optional[float] = None,
     time_limit: float = 30.0,
+    grid_connection_kw: Optional[float] = None,
 ) -> Optional[np.ndarray]:
     """
     Solve LP for a single time window with progressive constraint relaxation.
@@ -361,6 +383,7 @@ def solve_lp_window(
     result = _try_solve_lp_core(
         pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
         soc_init, mode, peak_limit_kw, time_limit,
+        grid_connection_kw=grid_connection_kw,
     )
     if result is not None:
         return result
@@ -370,6 +393,7 @@ def solve_lp_window(
         result = _try_solve_lp_core(
             pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
             soc_init, mode, peak_limit_kw * 1.5, time_limit,
+            grid_connection_kw=grid_connection_kw,
         )
         if result is not None:
             logger.info(f"LP window solved with relaxed peak limit (x1.5)")
@@ -380,19 +404,21 @@ def solve_lp_window(
         result = _try_solve_lp_core(
             pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
             soc_init, mode, None, time_limit,
+            grid_connection_kw=grid_connection_kw,
         )
         if result is not None:
             logger.info(f"LP window solved without peak limit constraint")
             return result
 
-    # Level 3: no peak limit + full SoC range
+    # Level 3: no peak limit + full SoC range + no grid limit
     result = _try_solve_lp_core(
         pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
         soc_init, mode, None, time_limit,
         soc_min_override=0.0, soc_max_override=1.0,
+        grid_connection_kw=None,  # Drop grid limit as last resort
     )
     if result is not None:
-        logger.info(f"LP window solved with relaxed SoC bounds + no peak limit")
+        logger.info(f"LP window solved with relaxed SoC bounds + no peak/grid limit")
         return result
 
     return None
@@ -412,6 +438,7 @@ def lp_dispatch_rolling(
     mode: DispatchMode,
     peak_limit_kw: Optional[float] = None,
     lp_config: Optional[LPSolverParams] = None,
+    grid_connection_kw: Optional[float] = None,
 ) -> np.ndarray:
     """
     Rolling horizon LP dispatch (v7.0.0: always succeeds).
@@ -462,6 +489,7 @@ def lp_dispatch_rolling(
             mode=mode,
             peak_limit_kw=peak_limit_kw,
             time_limit=config.time_limit_seconds,
+            grid_connection_kw=grid_connection_kw,
         )
 
         if soc_win is None:
@@ -654,6 +682,7 @@ def dispatch_lp(
     return_hourly: bool = True,
     buy_price_override: Optional[np.ndarray] = None,
     sell_price_override: Optional[np.ndarray] = None,
+    grid_connection_kw: Optional[float] = None,
 ) -> DispatchResult:
     """
     Main LP dispatch entry point (v7.0.0: self-sufficient, never returns None).
@@ -692,6 +721,7 @@ def dispatch_lp(
     """
     from dispatch_engine import (
         calculate_degradation_metrics,
+        calculate_degradation_metrics_stacked,
         create_savings_breakdown,
         create_prices_summary,
         calculate_energy_cost,
@@ -719,6 +749,7 @@ def dispatch_lp(
         mode=mode,
         peak_limit_kw=peak_limit_kw,
         lp_config=lp_config,
+        grid_connection_kw=grid_connection_kw,
     )
 
     # Post-process: SoC → power arrays
@@ -755,10 +786,51 @@ def dispatch_lp(
     self_consumption_pct = (self_consumption / total_pv * 100) if total_pv > 0 else 0.0
     grid_independence = ((total_load - total_import) / total_load * 100) if total_load > 0 else 0.0
 
-    # Degradation
-    degradation = calculate_degradation_metrics(
-        total_charge, total_discharge, battery, n * dt_hours
-    )
+    # --- Classify discharge: peak shaving vs PV surplus ---
+    # Peak shaving discharge = when load exceeds PV + peak_limit (battery MUST discharge to meet peak constraint)
+    # PV surplus discharge = all other discharge (energy optimization, self-consumption)
+    if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING) and peak_limit_kw is not None:
+        net_load = load_kw - pv_kw  # net load (positive = needs grid/battery)
+        peak_excess = np.maximum(net_load - peak_limit_kw, 0.0)  # kW over limit
+        # Peak shaving discharge: min(actual discharge, what's needed for peak shaving)
+        discharge_peak_kw = np.minimum(discharge, peak_excess)
+        discharge_pv_kw = discharge - discharge_peak_kw
+        discharge_peak_kwh = float(np.sum(discharge_peak_kw) * dt_hours)
+        discharge_pv_kwh = float(np.sum(discharge_pv_kw) * dt_hours)
+        peak_events = int(np.sum(discharge_peak_kw > 0.1))
+        peak_max_dis_kw = float(np.max(discharge_peak_kw)) if peak_events > 0 else 0.0
+    else:
+        discharge_peak_kwh = 0.0
+        discharge_pv_kwh = total_discharge
+        peak_events = 0
+        peak_max_dis_kw = 0.0
+
+    # Degradation - use stacked version for STACKED mode
+    surplus_kw_deg = np.maximum(pv_kw - load_kw, 0.0)
+    charge_from_pv_deg = np.minimum(charge, surplus_kw_deg)
+    charge_from_grid_deg = np.maximum(charge - charge_from_pv_deg, 0.0)
+    charge_from_pv_kwh = float(np.sum(charge_from_pv_deg) * dt_hours)
+    charge_from_grid_kwh = float(np.sum(charge_from_grid_deg) * dt_hours)
+
+    if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING):
+        degradation = calculate_degradation_metrics_stacked(
+            total_charge=total_charge,
+            total_discharge=total_discharge,
+            discharge_peak=discharge_peak_kwh,
+            discharge_pv=discharge_pv_kwh,
+            battery=battery,
+            total_hours=n * dt_hours,
+            peak_events_count=peak_events,
+            peak_max_discharge_kw=peak_max_dis_kw,
+            charge_from_pv_kwh=charge_from_pv_kwh,
+            charge_from_grid_kwh=charge_from_grid_kwh,
+            discharge_hourly=discharge,
+            dt_hours=dt_hours,
+        )
+    else:
+        degradation = calculate_degradation_metrics(
+            total_charge, total_discharge, battery, n * dt_hours
+        )
 
     # Economics
     import_price_scalar = prices.import_price_pln_mwh / 1000.0
@@ -773,22 +845,52 @@ def dispatch_lp(
     project_cost = calculate_energy_cost(grid_import, buy_price, dt_hours) \
                    - calculate_energy_cost(grid_export, sell_price, dt_hours)
 
-    # Savings breakdown
-    energy_savings_pln = baseline_cost - project_cost
+    # --- Split savings: energy vs peak shaving vs arbitrage ---
+    # Total savings from LP optimization
+    total_savings_pln = baseline_cost - project_cost
 
+    # Peak shaving savings (demand charge reduction)
     baseline_peak = float(np.max(baseline_import))
     project_peak = float(np.max(grid_import))
     demand_charge_rate_annual = prices.annual_demand_charge_pln_kw
     demand_charge_savings_pln = (baseline_peak - project_peak) * demand_charge_rate_annual
 
-    annual_savings = energy_savings_pln + demand_charge_savings_pln
+    # Arbitrage savings: compute by comparing LP result with flat-price-only dispatch
+    # If buy/sell prices vary over time, the LP captures time-of-use spread
+    price_spread = buy_price - sell_price
+    has_price_variation = float(np.std(buy_price)) > 1e-6
+    if has_price_variation:
+        # Arbitrage = savings from buying low / discharging high vs flat average
+        avg_buy = float(np.mean(buy_price))
+        # Discharge-weighted price vs average: savings from smart timing
+        discharge_energy = discharge * dt_hours
+        total_dis_energy = np.sum(discharge_energy)
+        if total_dis_energy > 0:
+            weighted_buy_at_discharge = float(np.sum(buy_price * discharge_energy)) / total_dis_energy
+            arbitrage_savings_pln = (weighted_buy_at_discharge - avg_buy) * total_dis_energy
+            arbitrage_savings_pln = max(arbitrage_savings_pln, 0.0)
+        else:
+            arbitrage_savings_pln = 0.0
+    else:
+        arbitrage_savings_pln = 0.0
+
+    # Energy savings = total savings minus demand charge and arbitrage
+    energy_savings_pln = total_savings_pln - demand_charge_savings_pln - arbitrage_savings_pln
+    # Ensure non-negative (rounding)
+    energy_savings_pln = max(energy_savings_pln, 0.0)
+
+    # Degradation cost
+    degradation_cost_pln = degradation.throughput_total_mwh * 30.0  # ~30 PLN/MWh throughput cost
+
+    # annual_savings for NPV: energy + demand_charge + arbitrage (total_savings already includes energy part)
+    annual_savings = energy_savings_pln + demand_charge_savings_pln + arbitrage_savings_pln
 
     savings_breakdown = create_savings_breakdown(
         energy_savings_pln=energy_savings_pln,
         demand_charge_savings_pln=demand_charge_savings_pln,
-        arbitrage_savings_pln=0.0,
+        arbitrage_savings_pln=arbitrage_savings_pln,
         capacity_fee_savings_pln=0.0,
-        degradation_cost_pln=0.0,
+        degradation_cost_pln=degradation_cost_pln,
     )
 
     prices_summary = create_prices_summary(prices, tariff_type="flat")
@@ -848,6 +950,31 @@ def dispatch_lp(
         result.hourly_soc_pct = (soc[:-1] * 100.0).tolist()
         result.hourly_grid_import_kw = grid_import.tolist()
         result.hourly_grid_export_kw = grid_export.tolist()
+
+    # Compute charge_from_grid (shared by battery_trace and hourly profiles)
+    surplus_kw_bt = np.maximum(pv_kw - load_kw, 0.0)
+    charge_from_pv_bt = np.minimum(charge, surplus_kw_bt)
+    charge_from_grid_bt = np.maximum(charge - charge_from_pv_bt, 0.0)
+
+    # Always populate charge_from_grid for K-class capacity fee calculations
+    result.hourly_charge_from_grid_kw = charge_from_grid_bt.tolist()
+
+    # Battery trace (v2.2.0) - always generate for sizing (SOC histogram needs it)
+    from battery_trace_helper import create_battery_trace_from_dispatch_result
+    discharge_to_load_bt = discharge.copy()
+    discharge_to_grid_bt = np.zeros(n)
+    result.battery_trace = create_battery_trace_from_dispatch_result(
+        soc_array=soc * battery.energy_kwh,
+        charge_array=charge,
+        discharge_array=discharge,
+        charge_from_pv_array=charge_from_pv_bt,
+        charge_from_grid_array=charge_from_grid_bt,
+        discharge_to_load_array=discharge_to_load_bt,
+        discharge_to_grid_array=discharge_to_grid_bt,
+        interval_minutes=int(dt_hours * 60),
+        battery_energy_kwh=battery.energy_kwh,
+        battery_power_kw=battery.power_kw,
+    )
 
     # Energy flows
     pv_to_load_kwh_arr = direct_pv * dt_hours
@@ -910,6 +1037,7 @@ def dispatch_lp_with_capacity_optimization(
     time_index: Optional[List[datetime]] = None,
     capacity_fee_config: Optional[Any] = None,
     premium_levels: Optional[List[float]] = None,
+    grid_connection_kw: Optional[float] = None,
 ) -> Tuple['DispatchResult', Optional[Dict[str, Any]]]:
     """
     Multi-solve LP dispatch with capacity fee (opłata mocowa) optimization.
@@ -942,6 +1070,7 @@ def dispatch_lp_with_capacity_optimization(
             pv_kw, load_kw, battery, dt_hours, prices, mode,
             peak_limit_kw, lp_config, return_hourly,
             buy_price_override, sell_price_override,
+            grid_connection_kw=grid_connection_kw,
         )
         return result, None
 
@@ -980,6 +1109,7 @@ def dispatch_lp_with_capacity_optimization(
             return_hourly=True,
             buy_price_override=modified_buy,
             sell_price_override=base_sell,
+            grid_connection_kw=grid_connection_kw,
         )
 
         grid_import_kw = np.array(result.hourly_grid_import_kw)

@@ -191,8 +191,9 @@
       return 'load_only';
     }
 
-    // Check if stacked mode is enabled
-    if (settings.bessStackedMode || settings.bessPeakShavingEnabled) {
+    // Check if stacked mode is enabled (peak shaving or arbitrage)
+    if (settings.bessStackedMode || settings.bessPeakShavingEnabled ||
+        settings.bessOsdArbitrageEnabled || settings.bessPriceArbitrageEnabled) {
       return 'stacked';
     }
 

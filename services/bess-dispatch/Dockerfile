@@ -28,6 +28,7 @@ COPY observability/ ./observability/
 COPY middleware/ ./middleware/
 COPY worker/ ./worker/
 COPY engine_adapters/ ./engine_adapters/
+COPY ancillary_services/ ./ancillary_services/
 
 # Copy alembic migrations
 COPY alembic/ ./alembic/
