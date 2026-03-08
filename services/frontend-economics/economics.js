@@ -97,6 +97,11 @@ let breakevenMode = 'npv'; // 'npv' (Max NPV) or 'payback' (Min Payback) - for v
 // All UI sections should read from this object
 let centralizedMetrics = {};
 let centralizedMetricsRdn = {};
+
+// PRECISE ANNUAL SAVINGS from backend (hourly K-class methodology, same as Excel)
+// Populated by fetchPreciseAnnualSavings(), consumed by calculateCentralizedFinancialMetrics()
+let preciseAnnualSavings = null; // { year1_savings, baseline, project, energy, effective_price_pln_mwh, monthly }
+window.preciseAnnualSavings = preciseAnnualSavings;
 // Expose to window for cross-file access (capex-export.js)
 window.centralizedMetricsRdn = centralizedMetricsRdn;
 
@@ -1581,6 +1586,213 @@ function calculateTouAverageRate() {
 
   console.log(`💰 ToU Average Rate (${type}): ${avgRate.toFixed(0)} PLN/MWh`);
   return avgRate;
+}
+
+/**
+ * Compute weighted average energy price (PLN/MWh) based on actual self-consumption profile.
+ * For hybrid_monthly: weights OSD and RDN prices by real hourly self-consumption.
+ * Returns { weightedEnergyActive, weightedTotalNoCapacity, weightedTotal } in PLN/MWh
+ * or null if hourly data not available.
+ */
+function computeWeightedEnergyPrice(params) {
+  const settings = systemSettings || {};
+  const pricingMode = settings.pricingMode || 'single';
+
+  // Only compute for hybrid_monthly or full RDN
+  if (pricingMode !== 'hybrid_monthly') return null;
+
+  const monthlyPriceSources = settings.monthlyPriceSources || {};
+
+  // Get hourly profiles (same source as PULS DNIA)
+  const sd = window.sharedData || window.parent?.sharedData || {};
+  const pvHourly = cachedHourlyProduction?.values || sd.pvData || sd.analysisResults?.hourly_production || [];
+  const loadHourly = cachedHourlyConsumption?.values || sd.loadData || sd.consumptionData?.values || [];
+
+  if (pvHourly.length < 720 || loadHourly.length < 720) {
+    console.warn('⚠️ computeWeightedEnergyPrice: insufficient hourly data, pvH=', pvHourly.length, 'loadH=', loadHourly.length);
+    return null;
+  }
+
+  // Get RDN hourly prices
+  let rdnPrices = null;
+  try {
+    const cached = localStorage.getItem('rdn_hourly_prices');
+    if (cached) rdnPrices = JSON.parse(cached);
+  } catch (e) { /* ignore */ }
+
+  const n = Math.min(pvHourly.length, loadHourly.length);
+  const startDate = new Date(sd.analyticalPeriod?.start_datetime || '2024-01-01');
+
+  // Fixed fees (always the same regardless of energy source)
+  const fixedFeesPerMwh = (params.distribution || 0) + (params.quality_fee || 0) +
+                          (params.oze_fee || 0) + (params.cogeneration_fee || 0) +
+                          (params.excise_tax || 0);
+
+  let totalSelfConsumedKwh = 0;
+  let weightedEnergyActiveSumPln = 0; // sum of (selfConsumed_kWh * energyActiveRate_PLN/kWh)
+
+  for (let i = 0; i < n; i++) {
+    const load = loadHourly[i] || 0;
+    const pv = pvHourly[i] || 0;
+    const selfConsumed = Math.min(pv, load); // kWh (1h intervals)
+    if (selfConsumed <= 0) continue;
+
+    // Determine hour's date
+    const hourDate = new Date(startDate.getTime() + i * 3600000);
+    const month = hourDate.getMonth() + 1; // 1-12
+    const h = hourDate.getHours();
+    const dayOfWeek = hourDate.getDay(); // 0=Sun
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    // Get energy active rate for this hour (PLN/kWh)
+    const source = monthlyPriceSources[month] || 'osd';
+    let energiaRatePerKwh;
+
+    if (source === 'rdn' && rdnPrices && i < rdnPrices.length) {
+      energiaRatePerKwh = rdnPrices[i] / 1000; // PLN/MWh -> PLN/kWh
+    } else {
+      // OSD ToU rate
+      energiaRatePerKwh = getHourlyEnergyRate(h, month, 1, isWeekend); // PLN/kWh
+    }
+
+    totalSelfConsumedKwh += selfConsumed;
+    weightedEnergyActiveSumPln += selfConsumed * energiaRatePerKwh;
+  }
+
+  if (totalSelfConsumedKwh <= 0) return null;
+
+  // Weighted average energy active rate in PLN/MWh
+  const weightedEnergyActive = (weightedEnergyActiveSumPln / totalSelfConsumedKwh) * 1000;
+  const weightedTotalNoCapacity = weightedEnergyActive + fixedFeesPerMwh;
+  const weightedTotal = weightedTotalNoCapacity + (params.capacity_fee || 0);
+
+  console.log(`💰 Weighted Energy Price (hybrid_monthly): energyActive=${weightedEnergyActive.toFixed(1)}, noCapacity=${weightedTotalNoCapacity.toFixed(1)}, total=${weightedTotal.toFixed(1)} PLN/MWh`);
+  console.log(`   Based on ${totalSelfConsumedKwh.toFixed(0)} kWh self-consumed across ${n} hours`);
+
+  return { weightedEnergyActive, weightedTotalNoCapacity, weightedTotal };
+}
+
+/**
+ * Fetch precise annual savings from backend (hourly K-class methodology, same as Excel).
+ * Populates global `preciseAnnualSavings` cache.
+ * Returns the data or null on failure.
+ */
+async function fetchPreciseAnnualSavings(variant) {
+  if (!variant) return null;
+
+  const settings = systemSettings || {};
+  const tariffConfig = settings.tariffConfig || {};
+
+  // Ensure hourly data is loaded (with proper waiting for concurrent loads)
+  if (!cachedHourlyConsumption || !cachedHourlyProduction) {
+    try { await fetchRealHourlyData(); } catch (e) { console.warn('fetchRealHourlyData error:', e); }
+  }
+
+  const sd = window.sharedData || window.parent?.sharedData || {};
+
+  // Try multiple sources for PV profile
+  let pvProfile = cachedHourlyProduction?.values || sd.pvData || sd.analysisResults?.hourly_production || [];
+  if (pvProfile.length < 720) {
+    // Try localStorage variants
+    try {
+      const storedVariants = JSON.parse(localStorage.getItem('pv_variants') || '{}');
+      const vKey = variant.variant || window.currentVariant || 'B';
+      const sv = storedVariants[vKey];
+      if (sv?.hourly_production?.length >= 720) pvProfile = sv.hourly_production;
+    } catch (e) { /* ignore */ }
+  }
+
+  // Try multiple sources for load profile
+  let loadProfile = cachedHourlyConsumption?.values || sd.loadData || sd.consumptionData?.values || [];
+  if (loadProfile.length < 720) {
+    // Try localStorage
+    try {
+      const stored = JSON.parse(localStorage.getItem('hourly_consumption') || 'null');
+      if (stored?.values?.length >= 720) loadProfile = stored.values;
+    } catch (e) { /* ignore */ }
+  }
+
+  console.log(`📊 fetchPreciseAnnualSavings: pvProfile=${pvProfile.length}, loadProfile=${loadProfile.length}`);
+
+  if (pvProfile.length < 720 || loadProfile.length < 720) {
+    console.warn('⚠️ fetchPreciseAnnualSavings: insufficient hourly data, pvH=', pvProfile.length, 'loadH=', loadProfile.length);
+    return null;
+  }
+
+  const n = Math.min(pvProfile.length, loadProfile.length);
+  const payload = {
+    load_kw: loadProfile.slice(0, n),
+    pv_kw: pvProfile.slice(0, n),
+    start_date: sd.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+    interval_minutes: 60,
+    tariff_type: tariffConfig.type || 'two_zone',
+    flat_rate: tariffConfig.flatRate || 750,
+    day_rate: tariffConfig.twoZone?.dayRate || 850,
+    night_rate: tariffConfig.twoZone?.nightRate || 450,
+    peak_rate: tariffConfig.threeZone?.peakRate || 950,
+    partial_rate: tariffConfig.threeZone?.partialRate || 700,
+    off_peak_rate: tariffConfig.threeZone?.offPeakRate || 400,
+    weekday_day_start: tariffConfig.twoZone?.weekday?.start || 6,
+    weekday_day_end: tariffConfig.twoZone?.weekday?.end || 22,
+    weekend_day_start: tariffConfig.twoZone?.weekend?.start || 6,
+    weekend_day_end: tariffConfig.twoZone?.weekend?.end || 13,
+    peak1_start: tariffConfig.threeZone?.peak1?.start || 7,
+    peak1_end: tariffConfig.threeZone?.peak1?.end || 13,
+    peak2_start: tariffConfig.threeZone?.peak2?.start || 17,
+    peak2_end: tariffConfig.threeZone?.peak2?.end || 21,
+    distribution: settings.distribution || 200,
+    quality_fee: settings.qualityFee || 10,
+    oze_fee: settings.ozeFee || 7,
+    cogeneration_fee: settings.cogenerationFee || 10,
+    excise_tax: settings.exciseTax || 5,
+    capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
+    is_osd_all_in: settings.isOsdAllIn || false,
+    project_name: `PV ${variant.capacity} kWp`,
+    pv_capacity_kwp: variant.capacity || 0,
+  };
+
+  // Hybrid monthly pricing
+  const pricingMode = settings.pricingMode || 'single';
+  if (pricingMode === 'hybrid_monthly' && settings.monthlyPriceSources) {
+    const sources = {};
+    for (const [k, v] of Object.entries(settings.monthlyPriceSources)) {
+      sources[parseInt(k)] = v;
+    }
+    payload.monthly_price_sources = sources;
+  }
+
+  // RDN hourly prices
+  try {
+    const rdnStr = localStorage.getItem('rdn_hourly_prices');
+    if (rdnStr) {
+      const rdnPrices = JSON.parse(rdnStr);
+      if (rdnPrices && rdnPrices.length >= 720) payload.hourly_prices_pln_mwh = rdnPrices;
+    }
+  } catch (e) { /* ignore */ }
+
+  try {
+    console.log('📊 fetchPreciseAnnualSavings: calling /pv-annual-summary...');
+    const resp = await fetch('/api/bess-dispatch/pv-annual-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    preciseAnnualSavings = data;
+    window.preciseAnnualSavings = data;
+    console.log('✅ Precise annual savings loaded:', {
+      total: data.year1_savings?.total_pln,
+      energia: data.year1_savings?.energia_pln,
+      mocowa: data.year1_savings?.mocowa_pln,
+      effectivePrice: data.effective_price_pln_mwh,
+      selfConsumedMwh: data.energy?.self_consumed_mwh,
+    });
+    return data;
+  } catch (err) {
+    console.error('❌ fetchPreciseAnnualSavings failed:', err);
+    return null;
+  }
 }
 
 // Calculate total energy price (PLN/MWh) - PEŁNA cena zakupu energii z sieci
@@ -3204,9 +3416,11 @@ function hideNoData() {
  * @returns {object} - Complete financial metrics for both CAPEX and EaaS models
  */
 function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null, options = {}) {
-  const pricingMode = options.pricingMode || 'tariff';
+  // Auto-detect hybrid_monthly from settings if not explicitly set
+  const settingsPricingMode = (systemSettings || {}).pricingMode;
+  const pricingMode = options.pricingMode || (settingsPricingMode === 'hybrid_monthly' ? 'hybrid_monthly' : 'tariff');
   const rdnBaseline = options.rdnBaseline || null;
-  console.log('💰 CENTRALIZED CALCULATION for variant:', variant.capacity, 'kWp');
+  console.log('💰 CENTRALIZED CALCULATION for variant:', variant.capacity, 'kWp', '| pricingMode:', pricingMode);
 
   // Apply production scenario factor
   const scenarioFactor = window.currentScenarioFactor || 1.0;
@@ -3294,10 +3508,35 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   // Total energy price in PLN/MWh (same unit as params)
   // SPLIT: energy price WITHOUT capacity fee (for per-MWh savings)
   //        + capacity fee handled separately via K-class scenarios
-  const energyPriceWithoutCapacity = params.energy_active + params.distribution + params.quality_fee +
+  let energyPriceWithoutCapacity = params.energy_active + params.distribution + params.quality_fee +
                                       params.oze_fee + params.cogeneration_fee +
                                       params.excise_tax; // PLN/MWh (NO capacity_fee!)
-  const totalEnergyPrice = energyPriceWithoutCapacity + params.capacity_fee; // Full price (backward compat)
+  let totalEnergyPrice = energyPriceWithoutCapacity + params.capacity_fee; // Full price (backward compat)
+
+  // PRECISE BACKEND SAVINGS: if available, use hourly K-class calculations (same as Excel)
+  const hasPreciseSavings = preciseAnnualSavings && preciseAnnualSavings.year1_savings;
+  let preciseYear1TotalSavings = 0;
+  let preciseYear1EnergySavings = 0;
+  let preciseYear1CapacitySavings = 0;
+  if (hasPreciseSavings) {
+    preciseYear1TotalSavings = preciseAnnualSavings.year1_savings.total_pln;
+    preciseYear1EnergySavings = preciseAnnualSavings.year1_savings.energia_pln +
+                                 preciseAnnualSavings.year1_savings.dystrybucja_pln +
+                                 preciseAnnualSavings.year1_savings.other_pln;
+    preciseYear1CapacitySavings = preciseAnnualSavings.year1_savings.mocowa_pln;
+    totalEnergyPrice = preciseAnnualSavings.effective_price_pln_mwh || totalEnergyPrice;
+    energyPriceWithoutCapacity = totalEnergyPrice - (params.capacity_fee || 0);
+    console.log(`  ✅ PRECISE SAVINGS from backend: total=${preciseYear1TotalSavings.toFixed(0)} PLN (energia=${preciseYear1EnergySavings.toFixed(0)}, mocowa=${preciseYear1CapacitySavings.toFixed(0)})`);
+    console.log(`     Effective price: ${totalEnergyPrice.toFixed(1)} PLN/MWh`);
+  } else {
+    // Fallback: HYBRID MONTHLY weighted average or flat rate
+    const weightedPrice = (pricingMode === 'hybrid_monthly') ? computeWeightedEnergyPrice(params) : null;
+    if (weightedPrice) {
+      console.log(`  🔀 HYBRID MONTHLY fallback: flat ${energyPriceWithoutCapacity.toFixed(0)} → weighted ${weightedPrice.weightedTotalNoCapacity.toFixed(0)} PLN/MWh`);
+      energyPriceWithoutCapacity = weightedPrice.weightedTotalNoCapacity;
+      totalEnergyPrice = weightedPrice.weightedTotal;
+    }
+  }
 
   // K-class capacity fee data from pv-calculation (v3.0)
   const hasKClassData = variant.capacity_fee_baseline_pln != null && variant.capacity_fee_baseline_pln !== undefined;
@@ -3366,7 +3605,22 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     // --- Savings calculation: per-component streams ---
     let yearSavings, yearEnergyFeesSavings = 0, yearCapacitySavings = 0;
     let yearBessArbitrage = 0, yearBessPeakShaving = 0;
-    if (pricingMode === 'rdn' && rdnBaseline) {
+    if (hasPreciseSavings && !hasBess) {
+      // PRECISE MODE: backend hourly K-class calculations (same as Excel).
+      // Backend computed savings for full production (no degradation applied there).
+      // We scale by pvDegradation relative to year-1 degradation factor.
+      const year1PvDeg = (1 - pvDegradationYear1); // Year 1 = 0.98
+      const relDeg = pvDegradation / year1PvDeg; // relative to year 1 (1.0 for year 1)
+      const cpiEscalation = savingsCpiEscalation;
+      // Energy savings scale with PV degradation + CPI
+      yearEnergyFeesSavings = preciseYear1EnergySavings * relDeg * cpiEscalation;
+      // Capacity fee savings scale with PV degradation + CPI
+      yearCapacitySavings = preciseYear1CapacitySavings * relDeg * cpiEscalation;
+      // BESS streams
+      yearBessArbitrage = bessArbitrageSavingsYear1 * bessDegradation * cpiEscalation;
+      yearBessPeakShaving = bessPeakShavingSavingsYear1 * bessDegradation * cpiEscalation;
+      yearSavings = yearEnergyFeesSavings + yearCapacitySavings + yearBessArbitrage + yearBessPeakShaving;
+    } else if (pricingMode === 'rdn' && rdnBaseline) {
       // RDN mode: two separate savings streams from TCSL year-1 data
       const cpiEscalation = Math.pow(1 + inflationRate, year - 1);
       yearEnergyFeesSavings = rdnBaseline.energyFeesSavingsYear1 * pvDegradation * cpiEscalation;
@@ -3496,9 +3750,17 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       const adjustedLandLeaseCost = baseLandLeaseCost * inflationFactor;
       const adjustedBessOpex = opexBESS * inflationFactor; // BESS OPEX after EaaS contract
 
-      // --- GridCost / savings calculation: tariff vs RDN mode ---
+      // --- GridCost / savings calculation: precise > RDN > tariff ---
       let gridCost, eaasEnergyFeesSavings = 0, eaasCapacitySavings = 0;
-      if (pricingMode === 'rdn' && rdnBaseline) {
+      if (hasPreciseSavings && !hasBess) {
+        // PRECISE MODE: use backend hourly K-class (same as Excel)
+        const year1PvDeg = (1 - pvDegradationYear1);
+        const relDeg = pvDegradation / year1PvDeg;
+        const cpiEscalation = inflationFactor;
+        eaasEnergyFeesSavings = preciseYear1EnergySavings * relDeg * cpiEscalation;
+        eaasCapacitySavings = preciseYear1CapacitySavings * relDeg * cpiEscalation;
+        gridCost = eaasEnergyFeesSavings + eaasCapacitySavings;
+      } else if (pricingMode === 'rdn' && rdnBaseline) {
         const cpiEscalation = Math.pow(1 + inflationRate, year - 1);
         eaasEnergyFeesSavings = rdnBaseline.energyFeesSavingsYear1 * pvDegradation * cpiEscalation;
         eaasCapacitySavings = rdnBaseline.capacitySavingsYear1 * cpiEscalation;
@@ -3992,6 +4254,13 @@ async function performEconomicAnalysis() {
     // Generate charts (don't need centralizedMetrics)
     generateCashFlowChart(economicData);
     generateRevenueChart(economicData);
+
+    // PRECISE MODE: fetch backend-computed hourly savings (same methodology as Excel)
+    // This populates preciseAnnualSavings which is then used by calculateCentralizedFinancialMetrics()
+    if (!hasBess) {
+      console.log('📊 Fetching precise annual savings from backend (Excel-consistent)...');
+      await fetchPreciseAnnualSavings(variant);
+    }
 
     // CRITICAL: calculateEaaS() MUST run FIRST - it populates centralizedMetrics[currentVariant]
     // ALL tables below depend on centralizedMetrics being set!
@@ -4515,9 +4784,16 @@ async function fetchRealHourlyData() {
   }
 
   if (pulsDniaDataLoading) {
-    console.log('📊 Data already loading, waiting...');
-    // Wait for loading to complete
-    await new Promise(resolve => setTimeout(resolve, 500));
+    console.log('📊 Data already loading, waiting for completion...');
+    // Poll until loading finishes (up to 10 seconds)
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (cachedHourlyConsumption) {
+        console.log('📊 Data loaded after waiting', (i + 1) * 500, 'ms');
+        return { consumption: cachedHourlyConsumption, production: cachedHourlyProduction };
+      }
+    }
+    console.warn('📊 Timed out waiting for hourly data load');
     return { consumption: cachedHourlyConsumption, production: cachedHourlyProduction };
   }
 
@@ -4729,6 +5005,74 @@ function getSolarParametersForDay(month, day) {
 }
 
 /**
+ * Get the correct energy rate for a specific hour based on pricing mode.
+ * Returns rate in PLN/kWh (energia czynna only, without fixed fees).
+ */
+function getHourlyEnergyRate(h, month, dayOfMonth, isWeekend) {
+  const settings = systemSettings || {};
+  const pricingMode = settings.pricingMode || 'single';
+  const monthlyPriceSources = settings.monthlyPriceSources || {};
+
+  // Determine source for this month
+  let useRdn = false;
+  if (pricingMode === 'hybrid_monthly') {
+    useRdn = (monthlyPriceSources[month] === 'rdn');
+  } else if (settings.bessPriceArbitrageEnabled && !settings.bessOsdArbitrageEnabled) {
+    useRdn = true;
+  }
+
+  // RDN path: get hourly price from localStorage
+  if (useRdn) {
+    try {
+      const cached = localStorage.getItem('rdn_hourly_prices');
+      if (cached) {
+        const rdnPrices = JSON.parse(cached);
+        // Calculate hour index in year
+        const dayOfYear = getDayOfYear(month, dayOfMonth);
+        const hourIndex = (dayOfYear - 1) * 24 + h;
+        if (rdnPrices && hourIndex < rdnPrices.length) {
+          return rdnPrices[hourIndex] / 1000; // PLN/MWh -> PLN/kWh
+        }
+      }
+    } catch (e) { /* fallback to OSD */ }
+  }
+
+  // OSD path: use ToU tariff zones
+  const tc = settings.tariffConfig;
+  if (!tc) return 0.51; // fallback
+
+  const type = tc.type || 'two_zone';
+
+  if (type === 'flat') {
+    return (tc.flatRate || 750) / 1000;
+  } else if (type === 'two_zone') {
+    const dayStart = isWeekend ? (tc.twoZone?.weekend?.start || 6) : (tc.twoZone?.weekday?.start || 6);
+    const dayEnd = isWeekend ? (tc.twoZone?.weekend?.end || 13) : (tc.twoZone?.weekday?.end || 22);
+    const isDayZone = h >= dayStart && h < dayEnd;
+    return isDayZone ? (tc.twoZone?.dayRate || 850) / 1000 : (tc.twoZone?.nightRate || 450) / 1000;
+  } else if (type === 'three_zone') {
+    const p1s = tc.threeZone?.peak1?.start || 7;
+    const p1e = tc.threeZone?.peak1?.end || 13;
+    const p2s = tc.threeZone?.peak2?.start || 17;
+    const p2e = tc.threeZone?.peak2?.end || 21;
+    const isPeak = (h >= p1s && h < p1e) || (h >= p2s && h < p2e);
+    if (isPeak) return (tc.threeZone?.peakRate || 950) / 1000;
+    // Partial = daytime non-peak
+    const isNight = h < 6 || h >= 22;
+    if (isNight) return (tc.threeZone?.offPeakRate || 400) / 1000;
+    return (tc.threeZone?.partialRate || 700) / 1000;
+  }
+  return 0.51;
+}
+
+function getDayOfYear(month, day) {
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let doy = day;
+  for (let m = 0; m < month - 1; m++) doy += daysInMonth[m];
+  return doy;
+}
+
+/**
  * Generate daily profiles using REAL data from API
  * If real data is not available, falls back to synthetic profiles
  *
@@ -4756,8 +5100,9 @@ function generateTypicalDayProfiles(monthOrDayType = 6, day = 15, realDayData = 
 
   // Get economic parameters
   const params = getEconomicParameters();
+  // Legacy flat rate (kept for backward compat, real hourly rates used in loop below)
   const totalPricePerMwh = calculateTotalEnergyPrice(params); // PLN/MWh
-  const energyPricePerKwh = totalPricePerMwh / 1000; // PLN/kWh
+  const energyPricePerKwh = totalPricePerMwh / 1000; // PLN/kWh — NOTE: overridden per-hour below
 
   // ============================================
   // USE REAL DATA IF AVAILABLE
@@ -4930,13 +5275,21 @@ function generateTypicalDayProfiles(monthOrDayType = 6, day = 15, realDayData = 
 
     bessSOC = newSOC;
 
-    // Cost/savings calculation
-    // Capacity fee applies 7-21 (peak hours)
+    // Cost/savings calculation with real ToU/RDN rates
     const isPeakHour = h >= 7 && h < 21;
-    const capacityFeePerKwh = (params.capacity_fee || 0) / 1000; // PLN/MWh -> PLN/kWh
-    const hourlyRate = isPeakHour
-      ? energyPricePerKwh + capacityFeePerKwh
-      : energyPricePerKwh;
+    const isWeekend = false; // Typical day = weekday
+    const energiaRate = getHourlyEnergyRate(h, month, day, isWeekend); // PLN/kWh (energia czynna)
+
+    // Fixed fees per kWh (distribution + quality + OZE + cogeneration + excise)
+    const fixedFeesPerKwh = ((params.distribution || 0) + (params.quality_fee || 0) +
+                             (params.oze_fee || 0) + (params.cogeneration_fee || 0) +
+                             (params.excise_tax || 0)) / 1000; // PLN/MWh -> PLN/kWh
+
+    // Capacity fee only during selected hours (7-22 weekdays)
+    const capacityFeePerKwh = isPeakHour ? ((params.capacity_fee || 0) / 1000) : 0;
+
+    // Total hourly rate = energia czynna + opłaty stałe + opłata mocowa
+    const hourlyRate = energiaRate + fixedFeesPerKwh + capacityFeePerKwh;
 
     const hourlySavings = selfConsumed * hourlyRate + (bessDischarge * hourlyRate);
     const hourlyCost = gridImport * hourlyRate;
@@ -4954,7 +5307,9 @@ function generateTypicalDayProfiles(monthOrDayType = 6, day = 15, realDayData = 
       bessSOCPercent: hasBess ? (bessSOC / bessEnergyKwh) * 100 : 0,
       savings: hourlySavings,
       cost: hourlyCost,
-      isPeakHour: isPeakHour
+      isPeakHour: isPeakHour,
+      energyRate: energiaRate * 1000, // PLN/MWh for display
+      totalRate: hourlyRate * 1000,    // PLN/MWh for display
     });
 
     totalSelfConsumed += selfConsumed;
@@ -5610,7 +5965,7 @@ function exportPulsDniaToExcel() {
   lines.push('DANE GODZINOWE');
 
   // Header
-  let header = 'Godzina;Produkcja PV [kWh];Konsumpcja [kWh];Autokonsumpcja [kWh];Pobor z sieci [kWh];Nadwyzka [kWh];Oszczednosc [PLN];Koszt [PLN]';
+  let header = 'Godzina;Produkcja PV [kWh];Konsumpcja [kWh];Autokonsumpcja [kWh];Pobor z sieci [kWh];Nadwyzka [kWh];Cena energii [PLN/MWh];Cena calkowita [PLN/MWh];Oszczednosc [PLN];Koszt [PLN]';
   if (dayData.summary.hasBess) {
     header += ';BESS Ladowanie [kWh];BESS Rozladowanie [kWh];BESS SOC [%]';
   }
@@ -5625,6 +5980,8 @@ function exportPulsDniaToExcel() {
       h.selfConsumed.toFixed(2).replace('.', ','),
       h.gridImport.toFixed(2).replace('.', ','),
       h.gridExport.toFixed(2).replace('.', ','),
+      (h.energyRate || 0).toFixed(1).replace('.', ','),
+      (h.totalRate || 0).toFixed(1).replace('.', ','),
       h.savings.toFixed(2).replace('.', ','),
       h.cost.toFixed(2).replace('.', ',')
     ];
@@ -5651,9 +6008,137 @@ function exportPulsDniaToExcel() {
   console.log('📥 PULS DNIA exported to CSV');
 }
 
+/**
+ * Export full-year (8760h) PV economics to Excel via bess-dispatch /pv-export-excel endpoint.
+ * Uses real ToU/RDN hourly pricing based on current pricing mode settings.
+ */
+async function exportPvYearlyExcel() {
+  const variant = variants[currentVariant];
+  if (!variant) {
+    alert('Brak wybranego wariantu PV. Najpierw wybierz wariant.');
+    return;
+  }
+
+  const settings = systemSettings || {};
+  const tariffConfig = settings.tariffConfig || {};
+
+  // Ensure hourly data is loaded (same cache as PULS DNIA uses)
+  if (!cachedHourlyConsumption || !cachedHourlyProduction) {
+    try {
+      await fetchRealHourlyData();
+    } catch (e) {
+      console.warn('⚠️ fetchRealHourlyData failed:', e);
+    }
+  }
+
+  // Get full-year profiles - prefer economics.js cache, fallback to sharedData
+  const sd = window.sharedData || window.parent?.sharedData || {};
+  const pvProfile = cachedHourlyProduction?.values ||
+                    sd.pvData ||
+                    sd.analysisResults?.hourly_production || [];
+  const loadProfile = cachedHourlyConsumption?.values ||
+                      sd.loadData ||
+                      sd.consumptionData?.values || [];
+
+  if (pvProfile.length < 720 || loadProfile.length < 720) {
+    alert('Brak danych profili godzinowych (PV i/lub konsumpcja). Upewnij się, że dane zostały załadowane i wyświetlono PULS DNIA.');
+    return;
+  }
+
+  const n = Math.min(pvProfile.length, loadProfile.length);
+
+  // Build payload matching PvExcelExportRequest schema
+  const payload = {
+    load_kw: loadProfile.slice(0, n),
+    pv_kw: pvProfile.slice(0, n),
+    start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+    interval_minutes: 60,
+    tariff_type: tariffConfig.type || 'two_zone',
+    flat_rate: tariffConfig.flatRate || 750,
+    day_rate: tariffConfig.twoZone?.dayRate || 850,
+    night_rate: tariffConfig.twoZone?.nightRate || 450,
+    peak_rate: tariffConfig.threeZone?.peakRate || 950,
+    partial_rate: tariffConfig.threeZone?.partialRate || 700,
+    off_peak_rate: tariffConfig.threeZone?.offPeakRate || 400,
+    weekday_day_start: tariffConfig.twoZone?.weekday?.start || 6,
+    weekday_day_end: tariffConfig.twoZone?.weekday?.end || 22,
+    weekend_day_start: tariffConfig.twoZone?.weekend?.start || 6,
+    weekend_day_end: tariffConfig.twoZone?.weekend?.end || 13,
+    peak1_start: tariffConfig.threeZone?.peak1?.start || 7,
+    peak1_end: tariffConfig.threeZone?.peak1?.end || 13,
+    peak2_start: tariffConfig.threeZone?.peak2?.start || 17,
+    peak2_end: tariffConfig.threeZone?.peak2?.end || 21,
+    distribution: settings.distribution || 200,
+    quality_fee: settings.qualityFee || 10,
+    oze_fee: settings.ozeFee || 7,
+    cogeneration_fee: settings.cogenerationFee || 10,
+    excise_tax: settings.exciseTax || 5,
+    capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
+    is_osd_all_in: settings.isOsdAllIn || false,
+    project_name: `PV ${variant.capacity} kWp - Analiza Roczna`,
+    pv_capacity_kwp: variant.capacity || 0,
+  };
+
+  // Hybrid monthly pricing
+  const pricingMode = settings.pricingMode || 'single';
+  if (pricingMode === 'hybrid_monthly' && settings.monthlyPriceSources) {
+    const sources = {};
+    for (const [k, v] of Object.entries(settings.monthlyPriceSources)) {
+      sources[parseInt(k)] = v;
+    }
+    payload.monthly_price_sources = sources;
+  }
+
+  // RDN hourly prices (for RDN or hybrid months)
+  try {
+    const rdnPricesStr = localStorage.getItem('rdn_hourly_prices');
+    if (rdnPricesStr) {
+      const rdnPrices = JSON.parse(rdnPricesStr);
+      if (rdnPrices && rdnPrices.length >= 720) {
+        payload.hourly_prices_pln_mwh = rdnPrices;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  console.log('📊 PV Yearly Excel export: sending request...', {
+    pvPoints: pvProfile.length,
+    loadPoints: loadProfile.length,
+    pricingMode,
+    capacity: variant.capacity,
+  });
+
+  try {
+    const resp = await fetch('/api/bess-dispatch/pv-export-excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText}`);
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const cd = resp.headers.get('Content-Disposition');
+    const fnMatch = cd && cd.match(/filename="?([^"]+)"?/);
+    a.download = fnMatch ? fnMatch[1] : `PV_Economics_${variant.capacity}kWp.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log('📥 PV Yearly Excel downloaded successfully');
+  } catch (err) {
+    console.error('❌ PV Excel export error:', err);
+    alert(`Błąd eksportu Excel: ${err.message}`);
+  }
+}
+
 // Expose PULS DNIA functions globally
 window.generatePulsDniaChart = generatePulsDniaChart;
 window.exportPulsDniaToExcel = exportPulsDniaToExcel;
+window.exportPvYearlyExcel = exportPvYearlyExcel;
 window.updatePulsDniaCalendar = updatePulsDniaCalendar;
 
 // Initialize PULS DNIA calendar and event listeners
@@ -6774,7 +7259,15 @@ function calculateEaaSFinancialMetrics(params) {
     omCostPerKWp
   } = params;
 
-  const gridPricePLNperKWh = calculateGridEnergyPrice(tariffComponents);
+  let gridPricePLNperKWh = calculateGridEnergyPrice(tariffComponents);
+
+  // Override with weighted price for hybrid monthly pricing
+  const econParams = getEconomicParameters();
+  const hybridWeighted = computeWeightedEnergyPrice(econParams);
+  if (hybridWeighted) {
+    gridPricePLNperKWh = hybridWeighted.weightedTotal / 1000; // PLN/MWh -> PLN/kWh
+    console.log(`💰 EaaS grid price overridden with hybrid weighted: ${(gridPricePLNperKWh * 1000).toFixed(1)} PLN/MWh`);
+  }
 
   const eaasResult = calculateEaaSEffectivePrice({
     annualPVProductionKWh,
@@ -7401,8 +7894,10 @@ async function calculateEaaS() {
     // Annual subscription (fixed for all scenarios)
     const annualSubscriptionPLN = fullModelResult.annualSubscriptionPLN || fullModelResult.annualSubscription;
 
-    // Grid price for comparison (PLN/MWh)
-    const gridPricePLN = calculateTotalEnergyPrice(params);
+    // Grid price for comparison (PLN/MWh) - use weighted price for hybrid monthly
+    let gridPricePLN = calculateTotalEnergyPrice(params);
+    const hybridGridPrice = computeWeightedEnergyPrice(params);
+    if (hybridGridPrice) gridPricePLN = hybridGridPrice.weightedTotal;
 
     // Calculate metrics for each scenario
     const scenarios = {

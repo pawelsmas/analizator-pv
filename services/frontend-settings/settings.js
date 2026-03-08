@@ -378,6 +378,13 @@ const DEFAULT_CONFIG = {
   bessOsdOffPeakRate: 0.45,            // Off-peak zone rate [PLN/kWh]
   bessOsdMinSpread: 0.15,              // Minimum spread to trigger arbitrage [PLN/kWh]
 
+  // Hybrid Monthly Pricing (miks OSD + RDN per miesiąc)
+  pricingMode: 'single',               // 'single' = one source all year, 'hybrid_monthly' = per-month mix
+  monthlyPriceSources: {               // Per-month: 'osd' or 'rdn' (only used when pricingMode='hybrid_monthly')
+    1: 'osd', 2: 'osd', 3: 'osd', 4: 'osd', 5: 'osd', 6: 'osd',
+    7: 'osd', 8: 'osd', 9: 'osd', 10: 'osd', 11: 'osd', 12: 'osd'
+  },
+
   // RDN Price Arbitrage (arbitraż cenowy RDN/spot - kupuj tanio, sprzedawaj drogo)
   bessPriceArbitrageEnabled: false,    // Enable RDN price arbitrage optimization
   bessPriceArbitrageSource: 'manual',  // 'manual' | 'tge_api' | 'csv_upload'
@@ -1413,6 +1420,16 @@ function applySettingsToUI(config) {
     bessOsdMinSpreadEl.value = config.bessOsdMinSpread ?? 0.15;
   }
 
+  // Hybrid Monthly Pricing
+  const pricingModeEl = document.getElementById('pricingMode');
+  if (pricingModeEl) {
+    pricingModeEl.value = config.pricingMode || 'single';
+    toggleHybridMonthlySection();
+  }
+  if (config.monthlyPriceSources) {
+    applyMonthlyPriceSources(config.monthlyPriceSources);
+  }
+
   // BESS RDN Price Arbitrage (Spot) checkbox and fields
   const bessPriceArbitrageEnabledEl = document.getElementById('bessPriceArbitrageEnabled');
   if (bessPriceArbitrageEnabledEl) {
@@ -1879,6 +1896,10 @@ function getCurrentSettings() {
     bessGridConnectionKw: parseFloat(document.getElementById('bessGridConnectionKw')?.value) || null,
     bessMaxEfcPerYear: parseFloat(document.getElementById('bessMaxEfcPerYear')?.value) || null,
 
+    // Hybrid Monthly Pricing
+    pricingMode: document.getElementById('pricingMode')?.value || DEFAULT_CONFIG.pricingMode,
+    monthlyPriceSources: collectMonthlyPriceSources(),
+
     // BESS RDN Price Arbitrage (Spot)
     bessPriceArbitrageEnabled: document.getElementById('bessPriceArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessPriceArbitrageEnabled,
     bessPriceArbitrageSource: document.getElementById('bessPriceArbitrageSource')?.value || DEFAULT_CONFIG.bessPriceArbitrageSource,
@@ -2073,6 +2094,88 @@ function notifySettingsChanged(settings) {
     }, '*');
     console.log('Notified shell about settings change');
   }
+}
+
+// Collect monthly price sources from UI dropdowns
+function collectMonthlyPriceSources() {
+  const sources = {};
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    sources[m] = el ? el.value : (DEFAULT_CONFIG.monthlyPriceSources?.[m] || 'osd');
+  }
+  return sources;
+}
+
+// Apply monthly price sources to UI dropdowns
+function applyMonthlyPriceSources(sources) {
+  if (!sources) return;
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    if (el) el.value = sources[m] || 'osd';
+  }
+  updateHybridMonthlyPreview();
+}
+
+// Quick-set all months to a preset pattern
+function setMonthlyPreset(preset) {
+  const sources = {};
+  for (let m = 1; m <= 12; m++) {
+    if (preset === 'all_osd') {
+      sources[m] = 'osd';
+    } else if (preset === 'all_rdn') {
+      sources[m] = 'rdn';
+    } else if (preset === 'q2q3_rdn') {
+      sources[m] = (m >= 4 && m <= 9) ? 'rdn' : 'osd';
+    } else if (preset === 'q1q4_rdn') {
+      sources[m] = (m <= 3 || m >= 10) ? 'rdn' : 'osd';
+    } else if (preset === 'summer_rdn') {
+      sources[m] = (m >= 5 && m <= 8) ? 'rdn' : 'osd';
+    }
+  }
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    if (el) el.value = sources[m];
+  }
+  updateHybridMonthlyPreview();
+  markUnsaved();
+}
+
+// Update visual preview of monthly pricing
+function updateHybridMonthlyPreview() {
+  const preview = document.getElementById('hybridMonthlyPreview');
+  if (!preview) return;
+  const monthNames = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+  let rdnCount = 0, osdCount = 0;
+  let html = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">';
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    const src = el ? el.value : 'osd';
+    const isRdn = src === 'rdn';
+    if (isRdn) rdnCount++; else osdCount++;
+    const color = isRdn ? '#c2185b' : '#e65100';
+    const bg = isRdn ? '#fce4ec' : '#fff3e0';
+    html += `<span style="padding:2px 6px;border-radius:4px;font-size:11px;background:${bg};color:${color};font-weight:600">${monthNames[m-1]}: ${src.toUpperCase()}</span>`;
+  }
+  html += '</div>';
+  html += `<div style="font-size:11px;color:#666;margin-top:4px">OSD: ${osdCount} mies. | RDN: ${rdnCount} mies.</div>`;
+  preview.innerHTML = html;
+}
+
+// Toggle hybrid monthly pricing section visibility
+function toggleHybridMonthlySection() {
+  const mode = document.getElementById('pricingMode')?.value || 'single';
+  const section = document.getElementById('hybridMonthlySection');
+  if (section) {
+    section.style.display = mode === 'hybrid_monthly' ? 'block' : 'none';
+  }
+  // In hybrid mode, ensure both OSD and RDN are enabled
+  if (mode === 'hybrid_monthly') {
+    const osdEl = document.getElementById('bessOsdArbitrageEnabled');
+    const rdnEl = document.getElementById('bessPriceArbitrageEnabled');
+    if (osdEl && !osdEl.checked) { osdEl.checked = true; const o = document.getElementById('bessOsdArbitrageOverlay'); if (o) o.checked = true; }
+    if (rdnEl && !rdnEl.checked) { rdnEl.checked = true; const o = document.getElementById('bessPriceArbitrageOverlay'); if (o) o.checked = true; }
+  }
+  markUnsaved();
 }
 
 // Mark settings as unsaved

@@ -413,6 +413,7 @@ def calculate_hourly_costs(
     start_date: date,
     interval_minutes: int = 60,
     import_prices_pln_mwh: Optional[np.ndarray] = None,
+    monthly_price_sources: Optional[Dict[int, str]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Calculate detailed hourly costs with full breakdown.
@@ -452,8 +453,19 @@ def calculate_hourly_costs(
 
         # Get energia czynna zone and rate
         zone_name, tou_rate = get_energia_zone(dt, tou_config)
-        # Use RDN hourly price if provided, otherwise OSD ToU rate
-        if import_prices_pln_mwh is not None and i < len(import_prices_pln_mwh):
+
+        # Determine price source for this hour
+        month = dt.month
+        if monthly_price_sources:
+            # Hybrid monthly: check per-month source
+            source = monthly_price_sources.get(month, monthly_price_sources.get(str(month), 'osd'))
+            if source == 'rdn' and import_prices_pln_mwh is not None and i < len(import_prices_pln_mwh):
+                energia_rate = float(import_prices_pln_mwh[i])
+                zone_name = f"RDN ({energia_rate:.0f})"
+            else:
+                energia_rate = tou_rate
+        elif import_prices_pln_mwh is not None and i < len(import_prices_pln_mwh):
+            # Full-year RDN
             energia_rate = float(import_prices_pln_mwh[i])
             zone_name = f"RDN ({energia_rate:.0f})"
         else:
@@ -549,14 +561,21 @@ def generate_economics_excel(
     if import_prices_pln_mwh is not None:
         import_prices_pln_mwh = np.asarray(import_prices_pln_mwh, dtype=float)
 
+    monthly_price_sources = kwargs.get('monthly_price_sources', None)
+    # Normalize keys to int if provided
+    if monthly_price_sources:
+        monthly_price_sources = {int(k): v for k, v in monthly_price_sources.items()}
+
     # We still need capacity fee from Python (K-class is too complex for Excel formulas)
     baseline_df, baseline_cap_details = calculate_hourly_costs(
         baseline_import_kw, tou_config, fixed_config, start_date, interval_minutes,
         import_prices_pln_mwh=import_prices_pln_mwh,
+        monthly_price_sources=monthly_price_sources,
     )
     project_df, project_cap_details = calculate_hourly_costs(
         project_import_kw, tou_config, fixed_config, start_date, interval_minutes,
         import_prices_pln_mwh=import_prices_pln_mwh,
+        monthly_price_sources=monthly_price_sources,
     )
 
     n_timesteps = len(baseline_import_kw)
@@ -570,6 +589,25 @@ def generate_economics_excel(
     pj_mocowa = project_df['mocowa_pln'].values
 
     has_rdn = import_prices_pln_mwh is not None and len(import_prices_pln_mwh) >= n_timesteps
+    is_pv_only = bess_power_kw < 0.1 and bess_energy_kwh < 0.1
+
+    # For hybrid monthly: determine which hours use RDN vs OSD
+    def _get_hour_price_and_zone(dt_cet, idx):
+        """Return (zone_name, price_pln_mwh) respecting hybrid monthly sources."""
+        month = dt_cet.month
+        if monthly_price_sources:
+            source = monthly_price_sources.get(month, monthly_price_sources.get(str(month), 'osd'))
+            if source == 'rdn' and has_rdn:
+                price = float(import_prices_pln_mwh[idx])
+                return f"RDN ({price:.0f})", price
+            else:
+                zone_name, rate = get_energia_zone(dt_cet, tou_config)
+                return zone_name, rate
+        elif has_rdn:
+            price = float(import_prices_pln_mwh[idx])
+            return f"RDN ({price:.0f})", price
+        else:
+            return get_energia_zone(dt_cet, tou_config)
 
     wb = Workbook()
 
@@ -600,17 +638,36 @@ def generate_economics_excel(
     ws['A2'] = f"Wygenerowano: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     ws['A3'] = f"Okres analizy: {start_date} - {end_date} ({period_days} dni)"
 
-    ws['A5'] = "Konfiguracja magazynu"
-    ws['A5'].font = sec_font; ws['A5'].fill = sec_fill
-    ws.merge_cells('A5:D5')
-    ws['A6'] = "Moc [kW]"; ws['B6'] = bess_power_kw
-    ws['A7'] = "Pojemność [kWh]"; ws['B7'] = bess_energy_kwh
+    if is_pv_only:
+        pv_kw_arr = kwargs.get('pv_kw', None)
+        pv_capacity = kwargs.get('pv_capacity_kwp', 0)
+        if pv_capacity == 0 and pv_kw_arr is not None:
+            pv_capacity = round(float(np.max(pv_kw_arr)), 1)
+        ws['A5'] = "Konfiguracja PV"
+        ws['A5'].font = sec_font; ws['A5'].fill = sec_fill
+        ws.merge_cells('A5:D5')
+        ws['A6'] = "Moc PV [kWp]"; ws['B6'] = pv_capacity
+    else:
+        ws['A5'] = "Konfiguracja magazynu"
+        ws['A5'].font = sec_font; ws['A5'].fill = sec_fill
+        ws.merge_cells('A5:D5')
+        ws['A6'] = "Moc [kW]"; ws['B6'] = bess_power_kw
+        ws['A7'] = "Pojemność [kWh]"; ws['B7'] = bess_energy_kwh
 
     ws['A9'] = "Stawki energii"
     ws['A9'].font = sec_font; ws['A9'].fill = sec_fill
     ws.merge_cells('A9:D9')
 
-    if has_rdn:
+    if monthly_price_sources:
+        ws['A10'] = "Źródło cen"
+        osd_months = [m for m, s in monthly_price_sources.items() if s == 'osd']
+        rdn_months = [m for m, s in monthly_price_sources.items() if s == 'rdn']
+        ws['B10'] = f"Miks: OSD ({len(osd_months)} mies.) + RDN ({len(rdn_months)} mies.)"
+        ws['B10'].font = Font(bold=True, color="1565C0")
+        ws['A11'] = "Miesiące OSD"; ws['B11'] = ', '.join(str(m) for m in sorted(osd_months))
+        ws['A12'] = "Miesiące RDN"; ws['B12'] = ', '.join(str(m) for m in sorted(rdn_months))
+        ws['B12'].font = Font(bold=True, color="D32F2F")
+    elif has_rdn:
         ws['A10'] = "Źródło cen"
         ws['B10'] = "RDN (ceny godzinowe z rynku)"
         ws['B10'].font = Font(bold=True, color="D32F2F")
@@ -659,7 +716,9 @@ def generate_economics_excel(
     ws[f'A{r}'].font = sec_font; ws[f'A{r}'].fill = sec_fill
     ws.merge_cells(f'A{r}:D{r}'); r += 1
 
-    for c, label in [(2, "Bez magazynu"), (3, "Z magazynem"), (4, "Oszczędności")]:
+    bl_label = "Bez PV" if is_pv_only else "Bez magazynu"
+    pj_label = "Z PV" if is_pv_only else "Z magazynem"
+    for c, label in [(2, bl_label), (3, pj_label), (4, "Oszczędności")]:
         cell = ws.cell(row=r, column=c, value=label)
         cell.fill = hdr_fill; cell.font = hdr_font
     r += 1
@@ -684,7 +743,9 @@ def generate_economics_excel(
     ws[f'A{r}'].font = sec_font; ws[f'A{r}'].fill = sec_fill
     ws.merge_cells(f'A{r}:D{r}'); r += 1
 
-    for c, label in [(1, ""), (2, "Bez magazynu (tylko PV)"), (3, "Z magazynem (PV+BESS)"), (4, "Oszczędności")]:
+    bl_sum_label = "Bez PV (pełny pobór)" if is_pv_only else "Bez magazynu (tylko PV)"
+    pj_sum_label = "Z PV (z autokonsumpcją)" if is_pv_only else "Z magazynem (PV+BESS)"
+    for c, label in [(1, ""), (2, bl_sum_label), (3, pj_sum_label), (4, "Oszczędności")]:
         cell = ws.cell(row=r, column=c, value=label)
         cell.fill = hdr_fill; cell.font = hdr_font
     r += 1
@@ -755,17 +816,29 @@ def generate_economics_excel(
     ws_h = wb.create_sheet("Rozliczenie Godzinowe")
 
     # Row 1: explanation
-    ws_h['A1'] = ('Objaśnienie: Kolumny z fioletowym tłem zawierają FORMUŁY - możesz je zweryfikować. '
-                  '"Bez mag." = tylko PV, "Z mag." = PV + magazyn energii.')
+    if is_pv_only:
+        ws_h['A1'] = ('Objaśnienie: Kolumny z fioletowym tłem zawierają FORMUŁY - możesz je zweryfikować. '
+                      '"Bez PV" = pełny pobór z sieci, "Z PV" = pobór z uwzględnieniem autokonsumpcji PV.')
+    else:
+        ws_h['A1'] = ('Objaśnienie: Kolumny z fioletowym tłem zawierają FORMUŁY - możesz je zweryfikować. '
+                      '"Bez mag." = tylko PV, "Z mag." = PV + magazyn energii.')
     ws_h['A1'].font = Font(italic=True, color="666666")
     ws_h.merge_cells('A1:X1')
 
     # Row 2: rate reference
-    ws_h['A2'] = (f'Stawki [PLN/MWh]: Dystrybucja={fixed_config.distribution}, '
-                  f'Jakość={fixed_config.quality_fee}, OZE={fixed_config.oze_fee}, '
-                  f'Kogeneracja={fixed_config.cogeneration_fee}, Akcyza={fixed_config.excise_tax}')
+    rate_info = f'Stawki [PLN/MWh]: Dystrybucja={fixed_config.distribution}, Jakość={fixed_config.quality_fee}, OZE={fixed_config.oze_fee}, Kogeneracja={fixed_config.cogeneration_fee}, Akcyza={fixed_config.excise_tax}'
+    if monthly_price_sources:
+        osd_m = sorted([m for m, s in monthly_price_sources.items() if s == 'osd'])
+        rdn_m = sorted([m for m, s in monthly_price_sources.items() if s == 'rdn'])
+        rate_info += f' | Miks cenowy: OSD mies.={osd_m}, RDN mies.={rdn_m}'
+    ws_h['A2'] = rate_info
     ws_h['A2'].font = Font(italic=True, color="999999", size=9)
     ws_h.merge_cells('A2:X2')
+
+    # Determine labels
+    bl_tag = "Bez PV" if is_pv_only else "Bez mag."
+    pj_tag = "Z PV" if is_pv_only else "Z mag."
+    zone_hdr = "Strefa / Źródło ceny" if monthly_price_sources else ("Strefa / Cena RDN" if has_rdn else "Strefa taryfowa")
 
     # Headers row 3
     # A=datetime, B=weekday, C=capacity_hour, D=zone
@@ -777,31 +850,42 @@ def generate_economics_excel(
         ('Data i godzina', 18),
         ('Dzień tyg.', 10),
         ('Godz. mocowa', 10),
-        ('Strefa / Cena RDN', 16),
-        # Bez magazynu
-        ('Bez mag.\nPobór [kWh]', 14),
-        ('Bez mag.\nCena energii\n[PLN/MWh]', 14),
-        ('Bez mag.\nKoszt energii\n[PLN]', 14),
-        ('Bez mag.\nDystrybucja\n[PLN]', 14),
-        ('Bez mag.\nOpł. jakość\n[PLN]', 12),
-        ('Bez mag.\nOpł. OZE\n[PLN]', 12),
-        ('Bez mag.\nOpł. kogen.\n[PLN]', 12),
-        ('Bez mag.\nAkcyza\n[PLN]', 12),
-        ('Bez mag.\nOpł. mocowa\n[PLN]', 14),
-        ('Bez mag.\nKOSZT RAZEM\n[PLN]', 14),
-        # Z magazynem
-        ('Z mag.\nPobór [kWh]', 14),
-        ('Z mag.\nKoszt energii\n[PLN]', 14),
-        ('Z mag.\nDystrybucja\n[PLN]', 14),
-        ('Z mag.\nOpł. jakość\n[PLN]', 12),
-        ('Z mag.\nOpł. OZE\n[PLN]', 12),
-        ('Z mag.\nOpł. kogen.\n[PLN]', 12),
-        ('Z mag.\nAkcyza\n[PLN]', 12),
-        ('Z mag.\nOpł. mocowa\n[PLN]', 14),
-        ('Z mag.\nKOSZT RAZEM\n[PLN]', 14),
+        (zone_hdr, 16),
+        # Baseline
+        (f'{bl_tag}\nPobór [kWh]', 14),
+        (f'{bl_tag}\nCena energii\n[PLN/MWh]', 14),
+        (f'{bl_tag}\nKoszt energii\n[PLN]', 14),
+        (f'{bl_tag}\nDystrybucja\n[PLN]', 14),
+        (f'{bl_tag}\nOpł. jakość\n[PLN]', 12),
+        (f'{bl_tag}\nOpł. OZE\n[PLN]', 12),
+        (f'{bl_tag}\nOpł. kogen.\n[PLN]', 12),
+        (f'{bl_tag}\nAkcyza\n[PLN]', 12),
+        (f'{bl_tag}\nOpł. mocowa\n[PLN]', 14),
+        (f'{bl_tag}\nKOSZT RAZEM\n[PLN]', 14),
+        # Project
+        (f'{pj_tag}\nPobór [kWh]', 14),
+        (f'{pj_tag}\nKoszt energii\n[PLN]', 14),
+        (f'{pj_tag}\nDystrybucja\n[PLN]', 14),
+        (f'{pj_tag}\nOpł. jakość\n[PLN]', 12),
+        (f'{pj_tag}\nOpł. OZE\n[PLN]', 12),
+        (f'{pj_tag}\nOpł. kogen.\n[PLN]', 12),
+        (f'{pj_tag}\nAkcyza\n[PLN]', 12),
+        (f'{pj_tag}\nOpł. mocowa\n[PLN]', 14),
+        (f'{pj_tag}\nKOSZT RAZEM\n[PLN]', 14),
         # Savings
         ('OSZCZĘDNOŚĆ\n[PLN]', 14),
     ]
+
+    # PV-only: add PV profile columns
+    pv_kw_arr = kwargs.get('pv_kw', None)
+    load_kw_arr = kwargs.get('load_kw', None)
+    if is_pv_only and pv_kw_arr is not None:
+        headers.extend([
+            ('Konsumpcja\n[kWh]', 14),
+            ('Produkcja PV\n[kWh]', 14),
+            ('Autokonsumpcja\n[kWh]', 14),
+            ('Nadwyżka PV\n[kWh]', 14),
+        ])
 
     for ci, (h, w) in enumerate(headers, 1):
         cell = ws_h.cell(row=3, column=ci, value=h)
@@ -827,22 +911,15 @@ def generate_economics_excel(
         ws_h.cell(row=r, column=2, value=['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Nd'][dt.weekday()])
         # C: capacity hour
         ws_h.cell(row=r, column=3, value="TAK" if is_capacity_fee_hour(dt) else "")
-        # D: zone/price
-        if has_rdn:
-            ws_h.cell(row=r, column=4, value=round(float(import_prices_pln_mwh[i]), 1))
-        else:
-            zone_name, _ = get_energia_zone(dt, tou_config)
-            ws_h.cell(row=r, column=4, value=zone_name)
+        # D: zone/price (respects hybrid monthly)
+        zone_name, price = _get_hour_price_and_zone(dt, i)
+        ws_h.cell(row=r, column=4, value=zone_name)
 
-        # E: Bez mag - Pobór [kWh] (STATIC from solver)
+        # E: Baseline - Pobór [kWh] (STATIC from solver)
         bl_kwh = float(baseline_import_kw[i]) * dt_hours
         ws_h.cell(row=r, column=5, value=round(bl_kwh, 4))
 
-        # F: Bez mag - Cena energii [PLN/MWh] (STATIC)
-        if has_rdn:
-            price = float(import_prices_pln_mwh[i])
-        else:
-            _, price = get_energia_zone(dt, tou_config)
+        # F: Baseline - Cena energii [PLN/MWh] (STATIC, respects hybrid monthly)
         ws_h.cell(row=r, column=6, value=round(price, 2))
 
         # G: Bez mag - Koszt energii = E * F / 1000 (FORMULA!)
@@ -915,6 +992,19 @@ def generate_economics_excel(
         c = ws_h.cell(row=r, column=24, value=f'=N{r}-W{r}')
         c.number_format = nfmt4; c.fill = savings_fill; c.font = Font(bold=True)
 
+        # PV-only extra columns: Y=Load, Z=PV, AA=SelfConsumed, AB=Surplus
+        if is_pv_only and pv_kw_arr is not None:
+            load_val = float(load_kw_arr[i]) * dt_hours if load_kw_arr is not None and i < len(load_kw_arr) else 0
+            pv_val = float(pv_kw_arr[i]) * dt_hours if i < len(pv_kw_arr) else 0
+            ws_h.cell(row=r, column=25, value=round(load_val, 2)).number_format = nfmt
+            ws_h.cell(row=r, column=26, value=round(pv_val, 2)).number_format = nfmt
+            # Autokonsumpcja = MIN(PV, Load) (FORMULA)
+            c = ws_h.cell(row=r, column=27, value=f'=MIN(Y{r},Z{r})')
+            c.number_format = nfmt; c.fill = formula_fill
+            # Nadwyżka PV = MAX(0, PV - Load) (FORMULA)
+            c = ws_h.cell(row=r, column=28, value=f'=MAX(0,Z{r}-Y{r})')
+            c.number_format = nfmt; c.fill = formula_fill
+
     ws_h.freeze_panes = 'A4'
 
     # =====================================================================
@@ -924,10 +1014,10 @@ def generate_economics_excel(
 
     m_headers = [
         'Miesiąc',
-        'Bez mag.\nPobór [kWh]', 'Bez mag.\nKoszt energii', 'Bez mag.\nDystrybucja',
-        'Bez mag.\nOpł. mocowa', 'Bez mag.\nRazem [PLN]',
-        'Z mag.\nPobór [kWh]', 'Z mag.\nKoszt energii', 'Z mag.\nDystrybucja',
-        'Z mag.\nOpł. mocowa', 'Z mag.\nRazem [PLN]',
+        f'{bl_tag}\nPobór [kWh]', f'{bl_tag}\nKoszt energii', f'{bl_tag}\nDystrybucja',
+        f'{bl_tag}\nOpł. mocowa', f'{bl_tag}\nRazem [PLN]',
+        f'{pj_tag}\nPobór [kWh]', f'{pj_tag}\nKoszt energii', f'{pj_tag}\nDystrybucja',
+        f'{pj_tag}\nOpł. mocowa', f'{pj_tag}\nRazem [PLN]',
         'Oszczędność\nna energii', 'Oszczędność\nna mocowej',
         'Oszczędność\nRAZEM [PLN]',
     ]

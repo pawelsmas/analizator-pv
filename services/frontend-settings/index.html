@@ -343,6 +343,125 @@
       </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- GLOBAL: Tryb cenowy (OSD / RDN / Miks) — dotyczy PV, BESS, PV+BESS -->
+    <!-- ============================================================ -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">🔀</span>
+        <h2>Tryb cenowy (OSD / RDN / Miks)</h2>
+        <span class="section-info">Globalny model cen energii — dotyczy PV, BESS i PV+BESS</span>
+      </div>
+
+      <div class="info-box blue" style="margin-bottom:16px">
+        <p style="margin:0;font-size:13px">
+          <strong>Wspólne ustawienie</strong> — tryb cenowy jest stosowany przy każdej analizie: PV, BESS, PV+BESS.<br>
+          Wybierz jeden tryb na cały rok lub <strong>miks miesięczny</strong> — np. Q1+Q4 stała cena OSD, Q2+Q3 ceny RDN spot.<br>
+          <em style="color:#666">Wymaga skonfigurowania taryfy OSD (powyżej) oraz cen RDN (sekcja BESS → Ceny RDN).</em>
+        </p>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <select id="pricingMode" onchange="toggleHybridMonthlySection(); markUnsaved();"
+                style="padding:10px 14px;border-radius:6px;border:1px solid #9fa8da;font-size:14px;width:100%;background:#fff;font-weight:600">
+          <option value="single">Jeden tryb na cały rok (OSD lub RDN — wybierz w sekcji BESS)</option>
+          <option value="hybrid_monthly">Miks miesięczny OSD + RDN (konfiguracja per miesiąc)</option>
+        </select>
+      </div>
+
+      <div id="hybridMonthlySection" style="display:none">
+        <div style="font-size:13px;color:#283593;font-weight:600;margin-bottom:10px">Źródło cen per miesiąc:</div>
+
+        <!-- Quick presets -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+          <button onclick="setMonthlyPreset('all_osd')" style="padding:5px 12px;border-radius:4px;border:1px solid #e65100;background:#fff3e0;color:#e65100;cursor:pointer;font-size:12px">Cały rok OSD</button>
+          <button onclick="setMonthlyPreset('all_rdn')" style="padding:5px 12px;border-radius:4px;border:1px solid #c2185b;background:#fce4ec;color:#c2185b;cursor:pointer;font-size:12px">Cały rok RDN</button>
+          <button onclick="setMonthlyPreset('q2q3_rdn')" style="padding:5px 12px;border-radius:4px;border:1px solid #283593;background:#e8eaf6;color:#283593;cursor:pointer;font-size:12px;font-weight:600">Q2+Q3 RDN, reszta OSD</button>
+          <button onclick="setMonthlyPreset('q1q4_rdn')" style="padding:5px 12px;border-radius:4px;border:1px solid #283593;background:#e8eaf6;color:#283593;cursor:pointer;font-size:12px">Q1+Q4 RDN, reszta OSD</button>
+          <button onclick="setMonthlyPreset('summer_rdn')" style="padding:5px 12px;border-radius:4px;border:1px solid #283593;background:#e8eaf6;color:#283593;cursor:pointer;font-size:12px">Lato RDN (V-VIII)</button>
+        </div>
+
+        <!-- Monthly dropdowns in 3-column grid -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Sty</span>
+            <select id="monthPriceSource_1" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Lut</span>
+            <select id="monthPriceSource_2" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Mar</span>
+            <select id="monthPriceSource_3" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Kwi</span>
+            <select id="monthPriceSource_4" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Maj</span>
+            <select id="monthPriceSource_5" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Cze</span>
+            <select id="monthPriceSource_6" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Lip</span>
+            <select id="monthPriceSource_7" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Sie</span>
+            <select id="monthPriceSource_8" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Wrz</span>
+            <select id="monthPriceSource_9" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Paź</span>
+            <select id="monthPriceSource_10" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Lis</span>
+            <select id="monthPriceSource_11" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px;width:28px;font-weight:700">Gru</span>
+            <select id="monthPriceSource_12" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:5px 8px;border-radius:4px;border:1px solid #ccc;font-size:12px">
+              <option value="osd">OSD</option><option value="rdn">RDN</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Preview -->
+        <div id="hybridMonthlyPreview" style="padding:10px;background:#fff;border-radius:6px;border:1px solid #c5cae9"></div>
+      </div>
+    </div>
+
     <!-- Capacity Fee (Opłata Mocowa) Section -->
     <div class="settings-section">
       <div class="section-header">

@@ -483,6 +483,16 @@ class ArbitrageConfig(BaseModel):
                     "When provided, used directly for arbitrage dispatch."
     )
 
+    # Hybrid monthly pricing: per-month price source selection
+    # Keys: month number (1-12), Values: 'osd' or 'rdn'
+    # When set, overrides global OSD/RDN selection with per-month granularity
+    # Example: {1:'osd', 2:'osd', 3:'osd', 4:'rdn', 5:'rdn', ..., 12:'osd'}
+    monthly_price_sources: Optional[Dict[int, str]] = Field(
+        None,
+        description="Per-month price source: {1:'osd', 2:'rdn', ...}. "
+                    "Requires both tariff_id (for OSD months) and hourly_prices_pln_mwh (for RDN months)."
+    )
+
     # Price components to include in import_total (for dispatch steering)
     # NOTE: capacity_fee should be 0 here - it's calculated post-dispatch!
     capacity_fee_pln_kwh: float = Field(

@@ -3575,6 +3575,7 @@ from fastapi.responses import StreamingResponse
 from datetime import date as date_type
 from excel_export import (
     generate_economics_excel,
+    calculate_hourly_costs,
     ToUConfig,
     FixedChargesConfig,
 )
@@ -3644,6 +3645,9 @@ class ExcelExportRequest(BaseModel):
 
     # RDN hourly prices (optional - overrides ToU energia rates when provided)
     hourly_prices_pln_mwh: Optional[List[float]] = Field(None, description="RDN hourly energy prices [PLN/MWh] - overrides ToU rates for energia czynna")
+
+    # Hybrid monthly pricing: per-month price source selection
+    monthly_price_sources: Optional[Dict[int, str]] = Field(None, description="Per-month price source: {1:'osd', 4:'rdn', ...}")
 
     # Sizing variants comparison data (optional - adds comparison sheets)
     sizing_variants: Optional[List[Dict[str, Any]]] = Field(None, description="S/M/L variant summaries for comparison sheet")
@@ -3742,6 +3746,7 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
             project_name=request.project_name,
             battery_trace=battery_trace_data,
             import_prices_pln_mwh=request.hourly_prices_pln_mwh,
+            monthly_price_sources=request.monthly_price_sources,
             sizing_variants=request.sizing_variants,
             grid_search_results=request.grid_search_results,
         )
@@ -3761,6 +3766,269 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
         raise
     except Exception as e:
         raise HTTPException(500, f"Excel export error: {str(e)}")
+
+
+# =============================================================================
+# PV-only Excel Export
+# =============================================================================
+
+class PvExcelExportRequest(BaseModel):
+    """Request for PV-only Excel export with hourly pricing breakdown."""
+    # Load and PV profiles
+    load_kw: List[float] = Field(..., description="Load profile [kW] per timestep")
+    pv_kw: List[float] = Field(..., description="PV generation profile [kW] per timestep")
+
+    # Time config
+    start_date: str = Field("2024-01-01", description="Start date (YYYY-MM-DD)")
+    interval_minutes: int = Field(60)
+
+    # ToU tariff (for OSD months)
+    tariff_type: str = Field("two_zone")
+    flat_rate: float = Field(750.0)
+    day_rate: float = Field(850.0)
+    night_rate: float = Field(450.0)
+    peak_rate: float = Field(950.0)
+    partial_rate: float = Field(700.0)
+    off_peak_rate: float = Field(400.0)
+    weekday_day_start: int = Field(6)
+    weekday_day_end: int = Field(22)
+    weekend_day_start: int = Field(6)
+    weekend_day_end: int = Field(13)
+    peak1_start: int = Field(7)
+    peak1_end: int = Field(13)
+    peak2_start: int = Field(17)
+    peak2_end: int = Field(21)
+
+    # Fixed charges
+    distribution: float = Field(200.0)
+    quality_fee: float = Field(10.0)
+    oze_fee: float = Field(7.0)
+    cogeneration_fee: float = Field(10.0)
+    excise_tax: float = Field(5.0)
+    capacity_fee_som: float = Field(0.2194)
+    is_osd_all_in: bool = Field(False)
+
+    # Project info
+    project_name: str = Field("Analiza PV")
+    pv_capacity_kwp: float = Field(0, description="PV capacity [kWp] for report")
+
+    # Hybrid monthly pricing
+    hourly_prices_pln_mwh: Optional[List[float]] = Field(None)
+    monthly_price_sources: Optional[Dict[int, str]] = Field(None)
+
+
+@app.post("/pv-export-excel")
+async def export_pv_to_excel(request: PvExcelExportRequest):
+    """Export PV-only economics to Excel with hourly pricing breakdown."""
+    try:
+        start_date = date_type.fromisoformat(request.start_date)
+        load = np.array(request.load_kw)
+        pv = np.array(request.pv_kw)
+        n = min(len(load), len(pv))
+
+        # Baseline = pure consumption (no PV) = load
+        # Project = consumption - PV self-consumed = max(0, load - pv)
+        baseline_import = load[:n].copy()
+        project_import = np.maximum(0, load[:n] - pv[:n])
+
+        tou_config = ToUConfig(
+            tariff_type=request.tariff_type,
+            flat_rate=request.flat_rate,
+            day_rate=request.day_rate,
+            night_rate=request.night_rate,
+            peak_rate=request.peak_rate,
+            partial_rate=request.partial_rate,
+            off_peak_rate=request.off_peak_rate,
+            weekday_day_start=request.weekday_day_start,
+            weekday_day_end=request.weekday_day_end,
+            weekend_day_start=request.weekend_day_start,
+            weekend_day_end=request.weekend_day_end,
+            peak1_start=request.peak1_start,
+            peak1_end=request.peak1_end,
+            peak2_start=request.peak2_start,
+            peak2_end=request.peak2_end,
+        )
+
+        fixed_config = FixedChargesConfig(
+            distribution=request.distribution,
+            quality_fee=request.quality_fee,
+            oze_fee=request.oze_fee,
+            cogeneration_fee=request.cogeneration_fee,
+            excise_tax=request.excise_tax,
+            capacity_fee_som=request.capacity_fee_som,
+            is_osd_all_in=request.is_osd_all_in,
+        )
+
+        excel_bytes = generate_economics_excel(
+            baseline_import_kw=baseline_import,
+            project_import_kw=project_import,
+            tou_config=tou_config,
+            fixed_config=fixed_config,
+            start_date=start_date,
+            bess_power_kw=0.001,
+            bess_energy_kwh=0.001,
+            interval_minutes=request.interval_minutes,
+            project_name=request.project_name,
+            import_prices_pln_mwh=request.hourly_prices_pln_mwh,
+            monthly_price_sources=request.monthly_price_sources,
+            pv_kw=pv[:n],
+            load_kw=load[:n],
+            pv_capacity_kwp=request.pv_capacity_kwp,
+        )
+
+        filename = f"PV_Economics_{request.pv_capacity_kwp:.0f}kWp_{start_date.year}.xlsx"
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"PV Excel export error: {str(e)}")
+
+
+@app.post("/pv-annual-summary")
+async def pv_annual_summary(request: PvExcelExportRequest):
+    """
+    Compute precise annual savings using hourly methodology (same as Excel).
+    Returns JSON summary — single source of truth for all frontend calculations.
+    """
+    try:
+        start_date = date_type.fromisoformat(request.start_date)
+        load = np.array(request.load_kw)
+        pv = np.array(request.pv_kw)
+        n = min(len(load), len(pv))
+
+        baseline_import = load[:n].copy()
+        project_import = np.maximum(0, load[:n] - pv[:n])
+
+        tou_config = ToUConfig(
+            tariff_type=request.tariff_type,
+            flat_rate=request.flat_rate,
+            day_rate=request.day_rate,
+            night_rate=request.night_rate,
+            peak_rate=request.peak_rate,
+            partial_rate=request.partial_rate,
+            off_peak_rate=request.off_peak_rate,
+            weekday_day_start=request.weekday_day_start,
+            weekday_day_end=request.weekday_day_end,
+            weekend_day_start=request.weekend_day_start,
+            weekend_day_end=request.weekend_day_end,
+            peak1_start=request.peak1_start,
+            peak1_end=request.peak1_end,
+            peak2_start=request.peak2_start,
+            peak2_end=request.peak2_end,
+        )
+
+        fixed_config = FixedChargesConfig(
+            distribution=request.distribution,
+            quality_fee=request.quality_fee,
+            oze_fee=request.oze_fee,
+            cogeneration_fee=request.cogeneration_fee,
+            excise_tax=request.excise_tax,
+            capacity_fee_som=request.capacity_fee_som,
+            is_osd_all_in=request.is_osd_all_in,
+        )
+
+        import_prices = None
+        if request.hourly_prices_pln_mwh:
+            import_prices = np.asarray(request.hourly_prices_pln_mwh, dtype=float)
+
+        monthly_sources = None
+        if request.monthly_price_sources:
+            monthly_sources = {int(k): v for k, v in request.monthly_price_sources.items()}
+
+        # Compute hourly costs — same logic as Excel export
+        baseline_df, bl_cap = calculate_hourly_costs(
+            baseline_import, tou_config, fixed_config, start_date,
+            request.interval_minutes, import_prices, monthly_sources,
+        )
+        project_df, pj_cap = calculate_hourly_costs(
+            project_import, tou_config, fixed_config, start_date,
+            request.interval_minutes, import_prices, monthly_sources,
+        )
+
+        # Aggregate annual totals
+        bl_total = float(baseline_df['total_pln'].sum())
+        pj_total = float(project_df['total_pln'].sum())
+        bl_energia = float(baseline_df['energia_pln'].sum())
+        pj_energia = float(project_df['energia_pln'].sum())
+        bl_mocowa = float(baseline_df['mocowa_pln'].sum())
+        pj_mocowa = float(project_df['mocowa_pln'].sum())
+        bl_dystr = float(baseline_df['dystrybucja_pln'].sum())
+        pj_dystr = float(project_df['dystrybucja_pln'].sum())
+        bl_import_kwh = float(baseline_df['import_kwh'].sum())
+        pj_import_kwh = float(project_df['import_kwh'].sum())
+
+        # Self-consumed energy
+        self_consumed_kwh = float(np.minimum(pv[:n], load[:n]).sum())
+        surplus_kwh = float(np.maximum(0, pv[:n] - load[:n]).sum())
+
+        total_savings = bl_total - pj_total
+        energia_savings = bl_energia - pj_energia
+        mocowa_savings = bl_mocowa - pj_mocowa
+        dystr_savings = bl_dystr - pj_dystr
+        other_savings = total_savings - energia_savings - mocowa_savings - dystr_savings
+
+        # Monthly breakdown
+        baseline_df['month'] = baseline_df['datetime'].apply(lambda dt: dt.month)
+        project_df['month'] = project_df['datetime'].apply(lambda dt: dt.month)
+        monthly = []
+        for m in range(1, 13):
+            bl_m = baseline_df[baseline_df['month'] == m]
+            pj_m = project_df[project_df['month'] == m]
+            if len(bl_m) == 0:
+                continue
+            monthly.append({
+                'month': m,
+                'baseline_total_pln': round(float(bl_m['total_pln'].sum()), 2),
+                'project_total_pln': round(float(pj_m['total_pln'].sum()), 2),
+                'savings_pln': round(float(bl_m['total_pln'].sum() - pj_m['total_pln'].sum()), 2),
+                'baseline_import_kwh': round(float(bl_m['import_kwh'].sum()), 1),
+                'project_import_kwh': round(float(pj_m['import_kwh'].sum()), 1),
+                'price_source': monthly_sources.get(m, 'osd') if monthly_sources else 'osd',
+            })
+
+        # Effective weighted average price (what self-consumed energy was actually worth)
+        effective_price_pln_mwh = (total_savings / (self_consumed_kwh / 1000)) if self_consumed_kwh > 0 else 0
+
+        return {
+            'status': 'ok',
+            'year1_savings': {
+                'total_pln': round(total_savings, 2),
+                'energia_pln': round(energia_savings, 2),
+                'mocowa_pln': round(mocowa_savings, 2),
+                'dystrybucja_pln': round(dystr_savings, 2),
+                'other_pln': round(other_savings, 2),
+            },
+            'baseline': {
+                'total_cost_pln': round(bl_total, 2),
+                'import_kwh': round(bl_import_kwh, 1),
+                'import_mwh': round(bl_import_kwh / 1000, 2),
+                'capacity_fee_pln': round(bl_mocowa, 2),
+                'k_class': bl_cap.get('k_class', 'N/A'),
+                'avg_delta_s_pct': round(bl_cap.get('avg_delta_s', 0), 2),
+            },
+            'project': {
+                'total_cost_pln': round(pj_total, 2),
+                'import_kwh': round(pj_import_kwh, 1),
+                'import_mwh': round(pj_import_kwh / 1000, 2),
+                'capacity_fee_pln': round(pj_mocowa, 2),
+                'k_class': pj_cap.get('k_class', 'N/A'),
+                'avg_delta_s_pct': round(pj_cap.get('avg_delta_s', 0), 2),
+            },
+            'energy': {
+                'self_consumed_kwh': round(self_consumed_kwh, 1),
+                'self_consumed_mwh': round(self_consumed_kwh / 1000, 2),
+                'surplus_kwh': round(surplus_kwh, 1),
+                'pv_capacity_kwp': request.pv_capacity_kwp,
+            },
+            'effective_price_pln_mwh': round(effective_price_pln_mwh, 1),
+            'monthly': monthly,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"PV annual summary error: {str(e)}")
 
 
 # =============================================================================
