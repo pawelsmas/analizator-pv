@@ -29,6 +29,7 @@ COPY middleware/ ./middleware/
 COPY worker/ ./worker/
 COPY engine_adapters/ ./engine_adapters/
 COPY ancillary_services/ ./ancillary_services/
+COPY monte_carlo_bess/ ./monte_carlo_bess/
 
 # Copy alembic migrations
 COPY alembic/ ./alembic/

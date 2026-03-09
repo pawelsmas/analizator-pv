@@ -6456,6 +6456,170 @@ async def get_market_presets():
 
 
 # =============================================================================
+# Monte Carlo BESS — Stochastic Investment Analysis
+# =============================================================================
+
+# In-memory job store for async MC jobs (with TTL cleanup)
+_mc_jobs: Dict[str, Any] = {}
+_MC_JOB_TTL_SECONDS = 3600  # 1 hour
+
+
+class MCStartResponse(BaseModel):
+    job_id: str
+    message: str
+
+
+@app.post("/api/bess-dispatch/monte-carlo/start", response_model=MCStartResponse)
+async def start_monte_carlo_bess(request_body: Dict[str, Any]):
+    """
+    Start async Monte Carlo BESS simulation.
+
+    Returns job_id immediately. Poll /monte-carlo/status/{job_id} for progress.
+    """
+    import asyncio
+
+    try:
+        from monte_carlo_bess.models import MCBessRequest, MCBessJobStatus, SimulationMode
+        from monte_carlo_bess.models import JobState
+        from monte_carlo_bess.engine import MonteCarlosBessEngine
+    except ImportError as e:
+        raise HTTPException(500, f"Monte Carlo BESS module not available: {e}")
+
+    # Parse and validate request
+    try:
+        mc_request = MCBessRequest(**request_body)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid request: {e}")
+
+    job_id = str(uuid.uuid4())[:12]
+
+    # Initialize job status
+    _mc_jobs[job_id] = {
+        "state": "running",
+        "progress_pct": 0.0,
+        "iterations_done": 0,
+        "iterations_target": 0,
+        "message": "Inicjalizacja symulacji...",
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+
+    async def _run_mc():
+        try:
+            engine = MonteCarlosBessEngine()
+
+            def on_progress(done, total, partial):
+                _mc_jobs[job_id]["iterations_done"] = done
+                _mc_jobs[job_id]["iterations_target"] = total
+                _mc_jobs[job_id]["progress_pct"] = round(done / max(total, 1) * 100, 1)
+                _mc_jobs[job_id]["message"] = f"Iteracja {done}/{total}..."
+
+            # Run in thread to avoid blocking event loop
+            import concurrent.futures
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = await loop.run_in_executor(
+                    pool,
+                    lambda: engine.run(mc_request, progress_callback=on_progress)
+                )
+
+            _mc_jobs[job_id]["state"] = "done"
+            _mc_jobs[job_id]["progress_pct"] = 100.0
+            _mc_jobs[job_id]["result"] = result.model_dump()
+            _mc_jobs[job_id]["message"] = f"Zakończono w {result.computation_time_ms:.0f} ms"
+
+        except Exception as e:
+            import traceback
+            _mc_jobs[job_id]["state"] = "failed"
+            _mc_jobs[job_id]["error"] = str(e)
+            _mc_jobs[job_id]["message"] = f"Błąd: {e}"
+            print(f"[MC BESS] Job {job_id} failed: {traceback.format_exc()}")
+
+    # Fire and forget
+    asyncio.create_task(_run_mc())
+
+    return MCStartResponse(job_id=job_id, message="Symulacja Monte Carlo BESS uruchomiona")
+
+
+@app.get("/api/bess-dispatch/monte-carlo/status/{job_id}")
+async def get_monte_carlo_status(job_id: str):
+    """Poll Monte Carlo BESS job status and partial/final results."""
+    if job_id not in _mc_jobs:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    job = _mc_jobs[job_id]
+    return {
+        "job_id": job_id,
+        "state": job["state"],
+        "progress_pct": job["progress_pct"],
+        "iterations_done": job["iterations_done"],
+        "iterations_target": job["iterations_target"],
+        "message": job["message"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "elapsed_ms": (time.time() - job["created_at"]) * 1000,
+    }
+
+
+@app.post("/api/bess-dispatch/monte-carlo/sync")
+async def run_monte_carlo_bess_sync(request_body: Dict[str, Any]):
+    """
+    Synchronous Monte Carlo BESS (for small simulations / quick mode).
+
+    Use /monte-carlo/start for large simulations.
+    """
+    try:
+        from monte_carlo_bess.models import MCBessRequest
+        from monte_carlo_bess.engine import MonteCarlosBessEngine
+    except ImportError as e:
+        raise HTTPException(500, f"Monte Carlo BESS module not available: {e}")
+
+    try:
+        mc_request = MCBessRequest(**request_body)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid request: {e}")
+
+    engine = MonteCarlosBessEngine()
+    result = engine.run(mc_request)
+    return result.model_dump()
+
+
+@app.delete("/api/bess-dispatch/monte-carlo/jobs:cleanup")
+async def cleanup_mc_jobs():
+    """Remove MC jobs older than TTL (1 hour)."""
+    now = time.time()
+    expired = [
+        jid for jid, job in _mc_jobs.items()
+        if now - job.get("created_at", 0) > _MC_JOB_TTL_SECONDS
+    ]
+    for jid in expired:
+        del _mc_jobs[jid]
+    return {"deleted": len(expired), "remaining": len(_mc_jobs)}
+
+
+# Background TTL cleanup task
+async def _mc_ttl_cleanup_loop():
+    """Periodic cleanup of expired MC jobs (runs every 60s)."""
+    import asyncio
+    while True:
+        await asyncio.sleep(60)
+        now = time.time()
+        expired = [
+            jid for jid, job in _mc_jobs.items()
+            if now - job.get("created_at", 0) > _MC_JOB_TTL_SECONDS
+        ]
+        for jid in expired:
+            del _mc_jobs[jid]
+
+
+@app.on_event("startup")
+async def _start_mc_cleanup():
+    import asyncio
+    asyncio.create_task(_mc_ttl_cleanup_loop())
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
