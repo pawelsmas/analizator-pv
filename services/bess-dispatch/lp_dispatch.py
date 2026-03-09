@@ -1167,3 +1167,285 @@ def dispatch_lp_with_capacity_optimization(
         }
 
     return best_result, best_cap_fee_info
+
+
+# =============================================================================
+# NLP Solver Fallback (SLSQP for nonlinear constraints)
+# =============================================================================
+
+def _nlp_dispatch_fallback(
+    pv_kw: np.ndarray,
+    load_kw: np.ndarray,
+    battery: BatteryParams,
+    dt_hours: float,
+    buy_price: np.ndarray,
+    sell_price: np.ndarray,
+    soc_init: float,
+    mode: DispatchMode,
+    peak_limit_kw: Optional[float] = None,
+    time_limit: float = 30.0,
+) -> Optional[np.ndarray]:
+    """
+    NLP solver fallback using scipy.optimize.minimize (SLSQP).
+
+    Used when LP relaxation fails at level 2+.
+    Handles nonlinear constraints better (e.g., SoH-dependent degradation).
+
+    Returns SoC trajectory (normalized 0-1) or None if fails.
+    """
+    from scipy.optimize import minimize
+
+    n = len(pv_kw)
+    cap = battery.energy_kwh
+    eta_ch = battery.eta_charge
+    eta_dis = battery.eta_discharge
+    c_rate = battery.power_kw / cap if cap > 0 else 0.0
+
+    if cap <= 0 or n == 0:
+        return None
+
+    soc_lo = battery.soc_min
+    soc_hi = battery.soc_max
+
+    # Objective: minimize energy cost
+    def objective(soc_vec):
+        cost = 0.0
+        prev_soc = soc_init
+        for t in range(n):
+            dsoc = soc_vec[t] - prev_soc
+            if dsoc > 0:
+                # Charging
+                power_from_source = dsoc * cap / (eta_ch * dt_hours)
+                net_power = load_kw[t] - pv_kw[t] + power_from_source
+            else:
+                # Discharging
+                power_delivered = -dsoc * cap * eta_dis / dt_hours
+                net_power = load_kw[t] - pv_kw[t] - power_delivered
+
+            if net_power > 0:
+                cost += net_power * buy_price[t] * dt_hours
+            else:
+                cost += net_power * sell_price[t] * dt_hours
+            prev_soc = soc_vec[t]
+        return cost
+
+    # Constraints
+    constraints = []
+
+    # C-rate constraint
+    def c_rate_constraint(soc_vec):
+        violations = np.zeros(2 * n)
+        prev_soc = soc_init
+        for t in range(n):
+            dsoc_dt = (soc_vec[t] - prev_soc) / dt_hours
+            violations[t] = c_rate - dsoc_dt       # dsoc/dt <= c_rate
+            violations[n + t] = c_rate + dsoc_dt    # dsoc/dt >= -c_rate
+            prev_soc = soc_vec[t]
+        return violations
+
+    constraints.append({'type': 'ineq', 'fun': c_rate_constraint})
+
+    # Peak shaving constraint
+    if peak_limit_kw is not None and mode in (DispatchMode.PEAK_SHAVING, DispatchMode.STACKED):
+        def peak_constraint(soc_vec):
+            violations = np.zeros(n)
+            prev_soc = soc_init
+            for t in range(n):
+                dsoc = soc_vec[t] - prev_soc
+                if dsoc < 0:
+                    power_delivered = -dsoc * cap * eta_dis / dt_hours
+                else:
+                    power_delivered = 0.0
+                grid_import = load_kw[t] - pv_kw[t] - power_delivered
+                violations[t] = peak_limit_kw - grid_import
+                prev_soc = soc_vec[t]
+            return violations
+
+        constraints.append({'type': 'ineq', 'fun': peak_constraint})
+
+    # Initial guess: hold SoC
+    x0 = np.full(n, soc_init)
+    bounds = [(soc_lo, soc_hi)] * n
+
+    try:
+        result = minimize(
+            objective, x0, method='SLSQP',
+            bounds=bounds, constraints=constraints,
+            options={'maxiter': 200, 'ftol': 1e-6, 'disp': False},
+        )
+        if result.success or result.fun < objective(x0):
+            return result.x
+    except Exception as e:
+        logger.warning(f"NLP solver exception: {e}")
+
+    return None
+
+
+# =============================================================================
+# Enhanced solve_lp_window with NLP fallback
+# =============================================================================
+
+def solve_lp_window_enhanced(
+    pv_kw: np.ndarray,
+    load_kw: np.ndarray,
+    battery: BatteryParams,
+    dt_hours: float,
+    buy_price: np.ndarray,
+    sell_price: np.ndarray,
+    soc_init: float,
+    mode: DispatchMode,
+    peak_limit_kw: Optional[float] = None,
+    time_limit: float = 30.0,
+    grid_connection_kw: Optional[float] = None,
+    use_nlp_fallback: bool = True,
+) -> Optional[np.ndarray]:
+    """
+    Enhanced LP solver with NLP fallback.
+
+    Relaxation levels:
+      0. Original LP constraints
+      1. Relaxed peak limit (+50%)
+      2. NLP solver (SLSQP) — NEW
+      3. No peak limit LP
+      4. No peak limit + full SoC range LP
+
+    Returns SoC trajectory or None.
+    """
+    n = len(pv_kw)
+    if battery.energy_kwh <= 0 or n == 0:
+        return None
+
+    # Level 0: original LP
+    result = _try_solve_lp_core(
+        pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
+        soc_init, mode, peak_limit_kw, time_limit,
+        grid_connection_kw=grid_connection_kw,
+    )
+    if result is not None:
+        return result
+
+    # Level 1: relaxed peak limit
+    if peak_limit_kw is not None:
+        result = _try_solve_lp_core(
+            pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
+            soc_init, mode, peak_limit_kw * 1.5, time_limit,
+            grid_connection_kw=grid_connection_kw,
+        )
+        if result is not None:
+            logger.info("Enhanced LP: solved with relaxed peak (x1.5)")
+            return result
+
+    # Level 2: NLP fallback (SLSQP)
+    if use_nlp_fallback and n <= 96:  # NLP only for short windows (≤4 days)
+        result = _nlp_dispatch_fallback(
+            pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
+            soc_init, mode, peak_limit_kw, time_limit,
+        )
+        if result is not None:
+            logger.info("Enhanced LP: solved with NLP fallback (SLSQP)")
+            return result
+
+    # Level 3: no peak limit LP
+    if peak_limit_kw is not None:
+        result = _try_solve_lp_core(
+            pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
+            soc_init, mode, None, time_limit,
+            grid_connection_kw=grid_connection_kw,
+        )
+        if result is not None:
+            logger.info("Enhanced LP: solved without peak limit")
+            return result
+
+    # Level 4: full relaxation
+    result = _try_solve_lp_core(
+        pv_kw, load_kw, battery, dt_hours, buy_price, sell_price,
+        soc_init, mode, None, time_limit,
+        soc_min_override=0.0, soc_max_override=1.0,
+        grid_connection_kw=None,
+    )
+    if result is not None:
+        logger.info("Enhanced LP: solved with full relaxation")
+        return result
+
+    return None
+
+
+# =============================================================================
+# Peak Shaving Optimizer
+# =============================================================================
+
+def optimize_peak_shaving(
+    load_kw: np.ndarray,
+    pv_kw: np.ndarray,
+    battery: BatteryParams,
+    dt_hours: float = 1.0,
+    target_reduction_pct: float = 20.0,
+    n_iterations: int = 10,
+    lp_config: Optional[LPSolverParams] = None,
+    grid_connection_kw: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Iterative peak shaving optimizer.
+
+    Finds the minimum achievable peak by binary search on peak_limit_kw.
+    Uses LP dispatch at each iteration to check feasibility.
+
+    Returns:
+        Dict with optimal_peak_kw, reduction_pct, reduction_kw,
+        annual_demand_charge_savings_pln, iterations.
+    """
+    original_peak = float(np.max(load_kw - pv_kw))
+    if original_peak <= 0:
+        return {
+            "original_peak_kw": 0,
+            "optimal_peak_kw": 0,
+            "reduction_kw": 0,
+            "reduction_pct": 0,
+            "feasible": True,
+            "iterations": 0,
+        }
+
+    # Binary search for minimum feasible peak
+    lo = max(original_peak * 0.3, battery.power_kw * 0.1)  # Don't go below 30% or battery can't help
+    hi = original_peak
+    best_feasible_peak = original_peak
+
+    buy_price = np.full(len(load_kw), 0.5)   # Dummy prices for feasibility check
+    sell_price = np.full(len(load_kw), 0.05)
+
+    for i in range(n_iterations):
+        mid = (lo + hi) / 2
+
+        soc = solve_lp_window(
+            pv_kw=pv_kw[:min(len(pv_kw), 168)],  # Test on 1 week
+            load_kw=load_kw[:min(len(load_kw), 168)],
+            battery=battery,
+            dt_hours=dt_hours,
+            buy_price=buy_price[:min(len(buy_price), 168)],
+            sell_price=sell_price[:min(len(sell_price), 168)],
+            soc_init=battery.soc_initial,
+            mode=DispatchMode.PEAK_SHAVING,
+            peak_limit_kw=mid,
+            time_limit=5.0,
+            grid_connection_kw=grid_connection_kw,
+        )
+
+        if soc is not None:
+            # Feasible — try lower
+            best_feasible_peak = mid
+            hi = mid
+        else:
+            # Infeasible — try higher
+            lo = mid
+
+    reduction_kw = original_peak - best_feasible_peak
+    reduction_pct = reduction_kw / original_peak * 100 if original_peak > 0 else 0
+
+    return {
+        "original_peak_kw": round(original_peak, 2),
+        "optimal_peak_kw": round(best_feasible_peak, 2),
+        "reduction_kw": round(reduction_kw, 2),
+        "reduction_pct": round(reduction_pct, 1),
+        "feasible": best_feasible_peak < original_peak,
+        "iterations": n_iterations,
+    }

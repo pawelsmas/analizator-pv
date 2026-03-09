@@ -49,6 +49,12 @@ class DispatchMode(str, Enum):
     STACKED = "stacked"                 # PV + Peak (dual-service)
     ARBITRAGE = "arbitrage"             # Price arbitrage only (requires time-varying prices)
     LOAD_ONLY = "load_only"             # Stand-alone BESS without PV (peak shaving focus)
+    # --- Arithmetic modes (no solver required) ---
+    ZERO_EXPORT = "zero_export"         # No grid export, PV surplus -> BESS
+    ZERO_IMPORT = "zero_import"         # Minimize grid import, BESS -> load
+    MAX_AUTOCONSUMPTION = "max_autoconsumption"  # Minimize both import and export
+    NAIVE_ARBITRAGE = "naive_arbitrage"           # Percentile-based buy/sell
+    FIXED_HOURS = "fixed_hours"                  # Charge/discharge at fixed hours
 
 
 class ArbitrageStrategy(str, Enum):
