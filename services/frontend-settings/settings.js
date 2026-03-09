@@ -16,16 +16,42 @@ const API_URLS = USE_PROXY ? {
 
 // Default configuration values
 const DEFAULT_CONFIG = {
+  // OSD Operator + Tariff Group ('' = manual mode)
+  osdOperator: '',
+  osdTariffGroup: '',
   // Fixed Charges (PLN/MWh) - WITHOUT active energy (defined in ToU section)
   // These charges are the same for all hours, except capacityFee (7-22 workdays only)
   energyActive: 0,  // DEPRECATED: Now defined per zone in ToU tariff section
-  distribution: 200,
-  qualityFee: 10,
-  ozeFee: 7,
-  cogenerationFee: 10,
-  capacityFee: 219,  // Auto-calculated from SOM rate × 1000 (only 7-22 Pn-Pt)
+  distribution: 200,        // weighted average (computed, readonly)
+  distributionPeak: 200,     // PLN/MWh - szczyt
+  distributionDay: 200,      // PLN/MWh - dzień/pośrednia
+  distributionNight: 200,    // PLN/MWh - noc/pozaszczyt
+  distributionValley: 13.50, // PLN/MWh - dolina obciążenia (głęboka noc + weekendy, only four_zone)
+
+  // Distribution Time Windows (separate from energy ToU — OSD tariff zones)
+  distributionConfig: {
+    type: 'three_zone',       // 'flat', 'two_zone', 'three_zone', 'four_zone'
+    twoZone: {
+      weekday: { start: 6, end: 22 },
+      weekend: { start: 6, end: 22 }
+    },
+    threeZone: {
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      weekendOffPeak: true       // weekends = off-peak (night rate)
+    },
+    fourZone: {
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      valley: { start: 1, end: 5 } // deep night only: 1:00-4:59 weekdays; weekends = full valley
+    }
+  },
+  qualityFee: 33.10,
+  ozeFee: 7.30,
+  cogenerationFee: 3,
+  capacityFee: 219.40,  // Auto-calculated from SOM rate × 1000 (only 7-22 Pn-Pt)
   exciseTax: 5,
-  totalFixedCharges: 451,  // Sum of fixed charges (200+10+7+10+219+5)
+  totalFixedCharges: 467.80,  // Sum of fixed charges (200+33.10+7.30+3+219.40+5)
 
   // Capacity Fee (Opłata Mocowa) - Polish Capacity Market
   capacityFeeConfig: {
@@ -1272,10 +1298,19 @@ function loadSettings() {
 
 // Apply configuration to UI inputs
 function applySettingsToUI(config) {
+  // Backward compat: if no zonal distribution, use flat distribution for all zones
+  if (config.distribution && !config.distributionPeak) {
+    config.distributionPeak = config.distribution;
+    config.distributionDay = config.distribution;
+    config.distributionNight = config.distribution;
+    config.distributionValley = config.distribution;
+  }
+
   // Simple fields (inputs with numeric or text values)
   // Note: energyActive removed - now defined per zone in ToU section
   const simpleFields = [
-    'distribution', 'qualityFee', 'ozeFee', 'cogenerationFee',
+    'distribution', 'distributionPeak', 'distributionDay', 'distributionNight', 'distributionValley',
+    'qualityFee', 'ozeFee', 'cogenerationFee',
     'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate', 'landLeasePerKwp',
     'discountRate', 'pvDegradationYear1', 'degradationRate', 'analysisPeriod', 'inflationRate',
     // EaaS basic
@@ -1418,6 +1453,25 @@ function applySettingsToUI(config) {
   const bessOsdMinSpreadEl = document.getElementById('bessOsdMinSpread');
   if (bessOsdMinSpreadEl) {
     bessOsdMinSpreadEl.value = config.bessOsdMinSpread ?? 0.15;
+  }
+
+  // OSD Operator + Tariff Group selector restore
+  const savedOsdOperator = config.osdOperator || '';
+  const savedOsdTariffGroup = config.osdTariffGroup || '';
+  if (savedOsdOperator) {
+    loadTariffPresets().then(() => {
+      const opSelect = document.getElementById('osdOperator');
+      if (opSelect) {
+        opSelect.value = savedOsdOperator;
+        onOsdOperatorChange().then(() => {
+          const tgSelect = document.getElementById('osdTariffGroup');
+          if (tgSelect && savedOsdTariffGroup) {
+            tgSelect.value = savedOsdTariffGroup;
+            // Don't trigger onOsdTariffGroupChange — values already loaded from saved config
+          }
+        });
+      }
+    });
   }
 
   // Hybrid Monthly Pricing
@@ -1633,6 +1687,51 @@ function applySettingsToUI(config) {
     console.log('✅ Tariff config applied from import:', tc);
   }
 
+  // Apply Distribution Config (OSD time windows — separate from energy ToU)
+  if (config.distributionConfig) {
+    const dc = config.distributionConfig;
+    const distTypeEl = document.getElementById('distTariffType');
+    if (distTypeEl) distTypeEl.value = dc.type || 'three_zone';
+    if (dc.twoZone) {
+      if (dc.twoZone.weekday) {
+        setValueById('distDayStartWeekday', dc.twoZone.weekday.start);
+        setValueById('distDayEndWeekday', dc.twoZone.weekday.end);
+      }
+      if (dc.twoZone.weekend) {
+        setValueById('distDayStartWeekend', dc.twoZone.weekend.start);
+        setValueById('distDayEndWeekend', dc.twoZone.weekend.end);
+      }
+    }
+    if (dc.threeZone) {
+      if (dc.threeZone.peak1) {
+        setValueById('distPeak1Start', dc.threeZone.peak1.start);
+        setValueById('distPeak1End', dc.threeZone.peak1.end);
+      }
+      if (dc.threeZone.peak2) {
+        setValueById('distPeak2Start', dc.threeZone.peak2.start);
+        setValueById('distPeak2End', dc.threeZone.peak2.end);
+      }
+      const woeEl = document.getElementById('distWeekendOffPeak');
+      if (woeEl) woeEl.checked = dc.threeZone.weekendOffPeak !== false;
+    }
+    if (dc.fourZone) {
+      if (dc.fourZone.peak1) {
+        setValueById('distFourPeak1Start', dc.fourZone.peak1.start);
+        setValueById('distFourPeak1End', dc.fourZone.peak1.end);
+      }
+      if (dc.fourZone.peak2) {
+        setValueById('distFourPeak2Start', dc.fourZone.peak2.start);
+        setValueById('distFourPeak2End', dc.fourZone.peak2.end);
+      }
+      if (dc.fourZone.valley) {
+        setValueById('distValleyStart', dc.fourZone.valley.start);
+        setValueById('distValleyEnd', dc.fourZone.valley.end);
+      }
+    }
+    onDistTariffTypeChange();
+    console.log('✅ Distribution config applied:', dc);
+  }
+
   // Apply Fixed Monthly Fees Configuration
   if (config.fixedMonthlyFees) {
     const fmf = config.fixedMonthlyFees;
@@ -1700,7 +1799,13 @@ function getCurrentSettings() {
   const settings = {
     // Energy Tariff
     energyActive: parseFloat(document.getElementById('energyActive')?.value || DEFAULT_CONFIG.energyActive),
+    osdOperator: document.getElementById('osdOperator')?.value || '',
+    osdTariffGroup: document.getElementById('osdTariffGroup')?.value || '',
     distribution: parseFloat(document.getElementById('distribution')?.value || DEFAULT_CONFIG.distribution),
+    distributionPeak: parseFloat(document.getElementById('distributionPeak')?.value || DEFAULT_CONFIG.distributionPeak),
+    distributionDay: parseFloat(document.getElementById('distributionDay')?.value || DEFAULT_CONFIG.distributionDay),
+    distributionNight: parseFloat(document.getElementById('distributionNight')?.value || DEFAULT_CONFIG.distributionNight),
+    distributionValley: parseFloat(document.getElementById('distributionValley')?.value || DEFAULT_CONFIG.distributionValley),
     qualityFee: parseFloat(document.getElementById('qualityFee')?.value || DEFAULT_CONFIG.qualityFee),
     ozeFee: parseFloat(document.getElementById('ozeFee')?.value || DEFAULT_CONFIG.ozeFee),
     cogenerationFee: parseFloat(document.getElementById('cogenerationFee')?.value || DEFAULT_CONFIG.cogenerationFee),
@@ -1953,6 +2058,9 @@ function getCurrentSettings() {
 
     // Fixed Monthly Fees Configuration
     fixedMonthlyFees: getFixedMonthlyFeesConfig(),
+
+    // Distribution Time Windows (OSD tariff zones — separate from energy ToU)
+    distributionConfig: getDistributionConfig(),
 
     // Time-of-Use Tariff Configuration
     tariffConfig: getTariffConfig(),
@@ -2538,7 +2646,10 @@ function getPolishHolidays(year) {
   holidays.push(new Date(year, 10, 11)); // Święto Niepodległości
   holidays.push(new Date(year, 11, 25)); // Boże Narodzenie (1 dzień)
   holidays.push(new Date(year, 11, 26)); // Boże Narodzenie (2 dzień)
-  holidays.push(new Date(year, 11, 24)); // Wigilia (treated as holiday for capacity fee)
+  // Wigilia — only from 2025 (Dz.U. 2024 poz. 1911)
+  if (year >= 2025) {
+    holidays.push(new Date(year, 11, 24));
+  }
 
   // Movable holidays (Easter-based)
   const easter = getEasterDate(year);
@@ -2610,7 +2721,7 @@ function isPeakHour(date) {
 // ============================================================================
 
 // Calculate consumption profile (ratio of peak vs off-peak consumption)
-function calculateConsumptionProfile(hourlyData, startDate = '2024-01-01') {
+function calculateConsumptionProfile(hourlyData, startDate = '2025-01-01') {
   let peakConsumption = 0;
   let offPeakConsumption = 0;
 
@@ -2678,7 +2789,7 @@ function classifyCapacityFeeGroup(peakRatio) {
 }
 
 // Calculate capacity fee using new K1-K4 system
-function calculateCapacityFee(hourlyData, startDate = '2024-01-01') {
+function calculateCapacityFee(hourlyData, startDate = '2025-01-01') {
   const settings = getCurrentSettings();
 
   // Calculate profile
@@ -4309,10 +4420,12 @@ function onTariffTypeChange() {
   const flatZone = document.getElementById('tariffFlatZone');
   const twoZone = document.getElementById('tariffTwoZone');
   const threeZone = document.getElementById('tariffThreeZone');
+  const fourZone = document.getElementById('tariffFourZone');
 
   if (flatZone) flatZone.style.display = type === 'flat' ? 'block' : 'none';
   if (twoZone) twoZone.style.display = type === 'two_zone' ? 'block' : 'none';
   if (threeZone) threeZone.style.display = type === 'three_zone' ? 'block' : 'none';
+  if (fourZone) fourZone.style.display = type === 'four_zone' ? 'block' : 'none';
 
   // Update tariff name suggestion
   const nameEl = document.getElementById('tariffName');
@@ -4320,6 +4433,7 @@ function onTariffTypeChange() {
     if (type === 'flat') nameEl.value = 'C11';
     else if (type === 'two_zone') nameEl.value = 'C12a';
     else if (type === 'three_zone') nameEl.value = 'C12b';
+    else if (type === 'four_zone') nameEl.value = 'C24';
   }
 
   updateTariffVisualization();
@@ -4420,6 +4534,59 @@ function updateTariffVisualization() {
         segmentStart = h;
       }
     }
+
+    // Update dynamic peak hours label
+    const threeZonePeakLabel = document.getElementById('threeZonePeakHoursLabel');
+    if (threeZonePeakLabel) threeZonePeakLabel.textContent = `${String(peak1Start).padStart(2,'0')}-${String(peak1End).padStart(2,'0')}, ${String(peak2Start).padStart(2,'0')}-${String(peak2End).padStart(2,'0')}`;
+  } else if (type === 'four_zone') {
+    const peak1Start = parseInt(document.getElementById('tariffFourPeakStart')?.value || 7);
+    const peak1End = parseInt(document.getElementById('tariffFourPeakEnd')?.value || 13);
+    const peak2Start = parseInt(document.getElementById('tariffFourPeakStart2')?.value || 16);
+    const peak2End = parseInt(document.getElementById('tariffFourPeakEnd2')?.value || 21);
+    const valleyStart = parseInt(document.getElementById('tariffFourValleyStart')?.value || 1);
+    const valleyEnd = parseInt(document.getElementById('tariffFourValleyEnd')?.value || 5);
+
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+
+    // Build hour-by-hour zone array
+    const zones = [];
+    for (let h = 0; h < 24; h++) {
+      if (h >= valleyStart && h < valleyEnd) {
+        zones.push({ zone: 'valley', rate: valleyRate });
+      } else if ((h >= peak1Start && h < peak1End) || (h >= peak2Start && h < peak2End)) {
+        zones.push({ zone: 'peak', rate: peakRate });
+      } else {
+        zones.push({ zone: 'day', rate: dayRate });
+      }
+    }
+
+    // Render segments
+    let currentZone = zones[0].zone;
+    let segmentStart = 0;
+    for (let h = 1; h <= 24; h++) {
+      const nextZone = h < 24 ? zones[h].zone : null;
+      if (nextZone !== currentZone) {
+        const width = ((h - segmentStart) / 24) * 100;
+        const left = (segmentStart / 24) * 100;
+        const rate = zones[segmentStart].rate;
+        const label = currentZone === 'peak' ? 'Szczyt' : currentZone === 'valley' ? 'Dolina' : 'Pozost.';
+        const zoneClass = currentZone === 'valley' ? 'zone-valley' : `zone-${currentZone}`;
+        html += `<div class="timeline-segment ${zoneClass}" style="left:${left}%;width:${width}%">
+          <span>${label} ${rate}</span>
+        </div>`;
+        currentZone = nextZone;
+        segmentStart = h;
+      }
+    }
+
+    // Update dynamic labels
+    const peakLabel = document.getElementById('fourZonePeakHoursLabel');
+    if (peakLabel) peakLabel.textContent = `${String(peak1Start).padStart(2,'0')}-${String(peak1End).padStart(2,'0')}, ${String(peak2Start).padStart(2,'0')}-${String(peak2End).padStart(2,'0')}`;
+    const valleyLabel = document.getElementById('fourZoneValleyHoursLabel');
+    if (valleyLabel) valleyLabel.textContent = `${String(valleyStart).padStart(2,'0')}-${String(valleyEnd).padStart(2,'0')} + weekendy`;
   }
 
   container.innerHTML = html;
@@ -4457,6 +4624,15 @@ function updateTariffStats() {
     avgRate = peakRate * 0.35 + partialRate * 0.25 + offPeakRate * 0.40;
     nightSavings = Math.round((1 - offPeakRate / peakRate) * 100);
     peakHours = 10; // Typical 3-zone peak hours
+  } else if (type === 'four_zone') {
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+
+    avgRate = peakRate * 0.18 + dayRate * 0.15 + offPeakRate * 0.10 + valleyRate * 0.57;
+    nightSavings = Math.round((1 - valleyRate / peakRate) * 100);
+    peakHours = 11;
   }
 
   // Update display
@@ -4493,6 +4669,12 @@ function updateTariffAverageRate() {
     const offPeakRate = parseFloat(document.getElementById('tariffOffPeakRate')?.value || 400);
     // Assuming 40% peak / 25% partial / 35% off-peak
     avgRate = peakRate * 0.4 + partialRate * 0.25 + offPeakRate * 0.35;
+  } else if (type === 'four_zone') {
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+    avgRate = peakRate * 0.18 + dayRate * 0.15 + offPeakRate * 0.10 + valleyRate * 0.57;
   }
 
   const avgEl = document.getElementById('tariffAverageRate');
@@ -4502,6 +4684,70 @@ function updateTariffAverageRate() {
 /**
  * Get current tariff configuration
  */
+/**
+ * Build distributionConfig from UI fields (distribution time windows).
+ * Separate from energy tariffConfig — these define OSD distribution zones.
+ */
+function getDistributionConfig() {
+  const type = document.getElementById('distTariffType')?.value || 'three_zone';
+  return {
+    type: type,
+    twoZone: {
+      weekday: {
+        start: parseInt(document.getElementById('distDayStartWeekday')?.value || 6),
+        end: parseInt(document.getElementById('distDayEndWeekday')?.value || 22)
+      },
+      weekend: {
+        start: parseInt(document.getElementById('distDayStartWeekend')?.value || 6),
+        end: parseInt(document.getElementById('distDayEndWeekend')?.value || 22)
+      }
+    },
+    threeZone: {
+      peak1: {
+        start: parseInt(document.getElementById('distPeak1Start')?.value || 7),
+        end: parseInt(document.getElementById('distPeak1End')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('distPeak2Start')?.value || 16),
+        end: parseInt(document.getElementById('distPeak2End')?.value || 21)
+      },
+      weekendOffPeak: document.getElementById('distWeekendOffPeak')?.checked !== false
+    },
+    fourZone: {
+      peak1: {
+        start: parseInt(document.getElementById('distFourPeak1Start')?.value || 7),
+        end: parseInt(document.getElementById('distFourPeak1End')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('distFourPeak2Start')?.value || 16),
+        end: parseInt(document.getElementById('distFourPeak2End')?.value || 21)
+      },
+      valley: {
+        start: parseInt(document.getElementById('distValleyStart')?.value || 1),
+        end: parseInt(document.getElementById('distValleyEnd')?.value || 5)
+      }
+    }
+  };
+}
+
+/**
+ * Toggle visibility of distribution zone panels based on distTariffType.
+ */
+function onDistTariffTypeChange() {
+  const type = document.getElementById('distTariffType')?.value || 'three_zone';
+  const twoZoneEl = document.getElementById('distTwoZonePanel');
+  const threeZoneEl = document.getElementById('distThreeZonePanel');
+  const fourZoneEl = document.getElementById('distFourZonePanel');
+  const valleyItemEl = document.getElementById('distributionValleyItem');
+  if (twoZoneEl) twoZoneEl.style.display = type === 'two_zone' ? '' : 'none';
+  if (threeZoneEl) threeZoneEl.style.display = type === 'three_zone' ? '' : 'none';
+  if (fourZoneEl) fourZoneEl.style.display = type === 'four_zone' ? '' : 'none';
+  if (valleyItemEl) valleyItemEl.style.display = type === 'four_zone' ? '' : 'none';
+  // Update distribution average weights
+  updateDistributionAverage();
+  markUnsaved();
+}
+
 function getTariffConfig() {
   const type = document.getElementById('tariffType')?.value || 'two_zone';
 
@@ -4536,6 +4782,24 @@ function getTariffConfig() {
       partial: {
         start: parseInt(document.getElementById('tariffPartialStart')?.value || 13),
         end: parseInt(document.getElementById('tariffPartialEnd')?.value || 17)
+      }
+    },
+    fourZone: {
+      peakRate: parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950),
+      dayRate: parseFloat(document.getElementById('tariffFourDayRate')?.value || 700),
+      offPeakRate: parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400),
+      valleyRate: parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200),
+      peak1: {
+        start: parseInt(document.getElementById('tariffFourPeakStart')?.value || 7),
+        end: parseInt(document.getElementById('tariffFourPeakEnd')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('tariffFourPeakStart2')?.value || 16),
+        end: parseInt(document.getElementById('tariffFourPeakEnd2')?.value || 21)
+      },
+      valley: {
+        start: parseInt(document.getElementById('tariffFourValleyStart')?.value || 1),
+        end: parseInt(document.getElementById('tariffFourValleyEnd')?.value || 5)
       }
     }
   };
@@ -4575,6 +4839,17 @@ function getTariffHourlyRates(dayType = 'weekday') {
         rates[h] = config.threeZone.offPeakRate;
       }
     }
+  } else if (config.type === 'four_zone') {
+    const { peak1, peak2, valley } = config.fourZone;
+    for (let h = 0; h < 24; h++) {
+      if (h >= valley.start && h < valley.end) {
+        rates[h] = config.fourZone.valleyRate;
+      } else if ((h >= peak1.start && h < peak1.end) || (h >= peak2.start && h < peak2.end)) {
+        rates[h] = config.fourZone.peakRate;
+      } else {
+        rates[h] = config.fourZone.dayRate;
+      }
+    }
   }
 
   return rates;
@@ -4609,6 +4884,234 @@ function updateFixedMonthlyTotal() {
   if (el) el.value = total.toFixed(2);
 }
 
+// ============================================================================
+// OSD Operator + Tariff Group Selector (auto-fill from tariff_presets.json)
+// ============================================================================
+
+let tariffPresetsData = null;
+
+async function loadTariffPresets() {
+  if (tariffPresetsData) return tariffPresetsData;
+  try {
+    const response = await fetch('tariff_presets.json');
+    tariffPresetsData = await response.json();
+    console.log('📋 Tariff presets loaded:', Object.keys(tariffPresetsData.operators));
+    return tariffPresetsData;
+  } catch (e) {
+    console.error('Failed to load tariff presets:', e);
+    return null;
+  }
+}
+
+async function populateOsdOperatorDropdown() {
+  const data = await loadTariffPresets();
+  if (!data) return;
+
+  const select = document.getElementById('osdOperator');
+  if (!select) return;
+
+  // Keep the "manual" option, clear the rest
+  select.innerHTML = '<option value="">-- Wybierz ręcznie --</option>';
+
+  for (const [key, op] of Object.entries(data.operators)) {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = op.label;
+    select.appendChild(option);
+  }
+}
+
+async function onOsdOperatorChange() {
+  const operatorKey = document.getElementById('osdOperator')?.value;
+  const tariffSelect = document.getElementById('osdTariffGroup');
+  if (!tariffSelect) return;
+
+  // Clear tariff dropdown
+  tariffSelect.innerHTML = '';
+
+  if (!operatorKey) {
+    tariffSelect.innerHTML = '<option value="">-- Najpierw wybierz operatora --</option>';
+    return;
+  }
+
+  const data = await loadTariffPresets();
+  if (!data || !data.operators[operatorKey]) return;
+
+  const tariffs = data.operators[operatorKey].tariffs;
+  tariffSelect.innerHTML = '<option value="">-- Wybierz taryfę --</option>';
+
+  for (const [tariffKey, tariff] of Object.entries(tariffs)) {
+    const option = document.createElement('option');
+    option.value = tariffKey;
+    option.textContent = `${tariffKey} — ${tariff.label.split('—')[1]?.trim() || tariff.voltage}`;
+    tariffSelect.appendChild(option);
+  }
+
+  markUnsaved();
+}
+
+async function onOsdTariffGroupChange() {
+  const operatorKey = document.getElementById('osdOperator')?.value;
+  const tariffKey = document.getElementById('osdTariffGroup')?.value;
+
+  if (!operatorKey || !tariffKey) return;
+
+  const data = await loadTariffPresets();
+  if (!data) return;
+
+  const tariff = data.operators[operatorKey]?.tariffs[tariffKey];
+  if (!tariff) return;
+
+  console.log(`📋 Auto-filling from preset: ${operatorKey} / ${tariffKey}`, tariff);
+
+  // 1. Distribution zone rates from touRates
+  if (tariff.touRates) {
+    setValueById('distributionPeak', tariff.touRates.peakRate || tariff.touRates.flatRate);
+    setValueById('distributionDay', tariff.touRates.partialRate || tariff.touRates.dayRate || tariff.touRates.flatRate);
+    setValueById('distributionNight', tariff.touRates.offPeakRate || tariff.touRates.nightRate || tariff.touRates.flatRate);
+    if (tariff.touRates.valleyRate !== undefined) {
+      setValueById('distributionValley', tariff.touRates.valleyRate);
+    }
+  }
+  // Weighted average (from preset)
+  setValueById('distribution', tariff.variableFees.distribution);
+  setValueById('qualityFee', tariff.variableFees.qualityFee);
+
+  // 2. Common fees from presets (OZE, kogeneracja, akcyza) - statutory 2026
+  if (data.commonFees) {
+    setValueById('ozeFee', data.commonFees.ozeFee);
+    setValueById('cogenerationFee', data.commonFees.cogenerationFee);
+    setValueById('exciseTax', data.commonFees.exciseTax);
+  }
+
+  // 3. Fixed monthly fees (section "Opłaty Stałe Miesięczne")
+  if (tariff.fixedFees) {
+    setValueById('distFixedRatePerKw', tariff.fixedFees.distFixedRatePerKwMonth);
+    setValueById('osdSubscriptionFee', tariff.fixedFees.osdSubscriptionFeeMonth);
+    setValueById('transitionFee', tariff.fixedFees.transitionFeeMonth);
+  }
+
+  // 4. Distribution time windows (OSD tariff zones — separate from energy ToU)
+  if (tariff.touRates) {
+    const mappedType = tariff.tariffType || 'flat';
+
+    // Fill DISTRIBUTION time windows from OSD preset
+    setValueById('distTariffType', mappedType);
+    if (mappedType === 'two_zone') {
+      if (tariff.touRates.weekday) {
+        setValueById('distDayStartWeekday', tariff.touRates.weekday.dayStart || 6);
+        setValueById('distDayEndWeekday', tariff.touRates.weekday.dayEnd || 22);
+      }
+      if (tariff.touRates.weekend) {
+        setValueById('distDayStartWeekend', tariff.touRates.weekend.dayStart || 6);
+        setValueById('distDayEndWeekend', tariff.touRates.weekend.dayEnd || 22);
+      }
+    } else if (mappedType === 'three_zone') {
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('distPeak1Start', tariff.touRates.weekday.peak1Start);
+          setValueById('distPeak1End', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('distPeak2Start', tariff.touRates.weekday.peak2Start);
+          setValueById('distPeak2End', tariff.touRates.weekday.peak2End);
+        }
+      }
+      // 3-zone weekends = off-peak by default (most OSD tariffs)
+      const woeEl = document.getElementById('distWeekendOffPeak');
+      const weekendIsOffPeak = !tariff.touRates.weekend?.peak1Start;
+      if (woeEl) woeEl.checked = weekendIsOffPeak;
+    } else if (mappedType === 'four_zone') {
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('distFourPeak1Start', tariff.touRates.weekday.peak1Start);
+          setValueById('distFourPeak1End', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('distFourPeak2Start', tariff.touRates.weekday.peak2Start);
+          setValueById('distFourPeak2End', tariff.touRates.weekday.peak2End);
+        }
+        if (tariff.touRates.weekday.valleyStart !== undefined) {
+          setValueById('distValleyStart', tariff.touRates.weekday.valleyStart);
+          setValueById('distValleyEnd', tariff.touRates.weekday.valleyEnd);
+        }
+      }
+    }
+    onDistTariffTypeChange();
+  }
+
+  // 5. Sync Energy ToU tariff type with OSD tariff type
+  if (tariff.tariffType) {
+    // Map OSD type to energy ToU type
+    const energyTouType = tariff.tariffType;
+    const tariffTypeEl = document.getElementById('tariffType');
+    if (tariffTypeEl) {
+      tariffTypeEl.value = energyTouType;
+      onTariffTypeChange();
+    }
+
+    // If four_zone, populate energy four_zone fields from preset
+    if (tariff.tariffType === 'four_zone' && tariff.touRates) {
+      setValueById('tariffFourPeakRate', tariff.touRates.peakRate || 950);
+      setValueById('tariffFourDayRate', tariff.touRates.partialRate || tariff.touRates.dayRate || 700);
+      setValueById('tariffFourOffPeakRate', tariff.touRates.offPeakRate || tariff.touRates.nightRate || 400);
+      setValueById('tariffFourValleyRate', tariff.touRates.valleyRate || 200);
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('tariffFourPeakStart', tariff.touRates.weekday.peak1Start);
+          setValueById('tariffFourPeakEnd', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('tariffFourPeakStart2', tariff.touRates.weekday.peak2Start);
+          setValueById('tariffFourPeakEnd2', tariff.touRates.weekday.peak2End);
+        }
+        if (tariff.touRates.weekday.valleyStart !== undefined) {
+          setValueById('tariffFourValleyStart', tariff.touRates.weekday.valleyStart);
+          setValueById('tariffFourValleyEnd', tariff.touRates.weekday.valleyEnd);
+        }
+      }
+      updateTariffVisualization();
+    }
+
+    // Fill energy ToU time windows from OSD preset
+    if (tariff.touRates?.weekday) {
+      const wd = tariff.touRates.weekday;
+      if (energyTouType === 'two_zone') {
+        setValueById('tariffDayStartWeekday', wd.dayStart || 6);
+        setValueById('tariffDayEndWeekday', wd.dayEnd || 21);
+        if (tariff.touRates.weekend) {
+          setValueById('tariffDayStartWeekend', tariff.touRates.weekend.dayStart || 6);
+          setValueById('tariffDayEndWeekend', tariff.touRates.weekend.dayEnd || 21);
+        }
+      } else if (energyTouType === 'three_zone') {
+        if (wd.peak1Start !== undefined) {
+          setValueById('tariffPeakStart', wd.peak1Start);
+          setValueById('tariffPeakEnd', wd.peak1End);
+        }
+        if (wd.peak2Start !== undefined) {
+          setValueById('tariffPeakStart2', wd.peak2Start);
+          setValueById('tariffPeakEnd2', wd.peak2End);
+        }
+      }
+    }
+  }
+
+  // 6. Update tariff name
+  setValueById('tariffName', tariffKey);
+
+  // 7. Trigger visualization and average recalculation for energy ToU
+  if (typeof updateTariffVisualization === 'function') updateTariffVisualization();
+  if (typeof updateTariffAverageRate === 'function') updateTariffAverageRate();
+
+  // 6. Recalculate totals
+  updateTotalEnergyPrice();
+  updateFixedMonthlyTotal();
+
+  markUnsaved();
+  updateEnergyCostSummary();
+  console.log(`✅ Preset applied: ${operatorKey} ${tariffKey} — dystr.szczyt=${tariff.touRates?.peakRate}, dzień=${tariff.touRates?.partialRate}, noc=${tariff.touRates?.offPeakRate}, jakość=${tariff.variableFees.qualityFee}`);
+}
+
 // Make tariff functions globally available
 window.onTariffTypeChange = onTariffTypeChange;
 window.getTariffConfig = getTariffConfig;
@@ -4616,10 +5119,113 @@ window.getTariffHourlyRates = getTariffHourlyRates;
 window.updateTariffVisualization = updateTariffVisualization;
 window.updateTariffAverageRate = updateTariffAverageRate;
 window.updateFixedMonthlyTotal = updateFixedMonthlyTotal;
+window.onOsdOperatorChange = onOsdOperatorChange;
+window.onOsdTariffGroupChange = onOsdTariffGroupChange;
+window.updateDistributionAverage = updateDistributionAverage;
+window.onDistTariffTypeChange = onDistTariffTypeChange;
+window.getDistributionConfig = getDistributionConfig;
+window.switchEnergyTab = switchEnergyTab;
+window.navigateToEnergyTab = navigateToEnergyTab;
+window.updateEnergyCostSummary = updateEnergyCostSummary;
+
+/**
+ * Switch between energy cost tabs in the unified panel.
+ */
+function switchEnergyTab(tabId, btn) {
+  document.querySelectorAll('.energy-tab-panel').forEach(p => p.style.display = 'none');
+  const panel = document.getElementById('energyTab_' + tabId);
+  if (panel) panel.style.display = '';
+  document.querySelectorAll('#energyTabBar .energy-tab').forEach(t => {
+    t.style.color = '#666'; t.style.fontWeight = '600'; t.style.borderBottomColor = 'transparent';
+  });
+  if (btn) {
+    btn.style.color = '#1565c0'; btn.style.fontWeight = '700'; btn.style.borderBottomColor = '#1565c0';
+  }
+}
+
+/**
+ * Navigate to a specific energy tab from the summary tiles.
+ * Finds the correct tab button and triggers switchEnergyTab with scroll.
+ */
+function navigateToEnergyTab(tabId) {
+  const tabBar = document.getElementById('energyTabBar');
+  if (!tabBar) return;
+  const buttons = tabBar.querySelectorAll('.energy-tab');
+  const tabMap = ['dist', 'tou', 'pricing', 'fees', 'capacity', 'monthly'];
+  const idx = tabMap.indexOf(tabId);
+  const btn = idx >= 0 ? buttons[idx] : null;
+  switchEnergyTab(tabId, btn);
+  const panel = document.getElementById('energyTab_' + tabId);
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * Update the summary card in the unified energy cost panel.
+ */
+function updateEnergyCostSummary() {
+  const v = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  const distP = v('distributionPeak'), distD = v('distributionDay'), distN = v('distributionNight'), distV = v('distributionValley');
+  const quality = v('qualityFee'), oze = v('ozeFee'), cogen = v('cogenerationFee'), excise = v('exciseTax');
+  const tariffAvgEl = document.getElementById('tariffAverageRate');
+  const distAvg = Math.round(v('distribution'));
+  const energyAvg = tariffAvgEl ? Math.round(parseFloat(tariffAvgEl.textContent) || 0) : 0;
+  const statutory = Math.round(quality + oze + cogen + excise);
+  const som = v('somRate') || 0.2194;
+  const capacityVal = Math.round(som * 1000);
+  const total = distAvg + energyAvg + statutory + capacityVal;
+
+  el('summDistAvg', distAvg);
+  el('summEnergyAvg', energyAvg);
+  el('summStatutory', statutory);
+  el('summCapacityVal', capacityVal);
+  el('summTotal', total);
+  el('summFixedMonthly', Math.round(v('totalFixedMonthly')));
+  const distType = document.getElementById('distTariffType')?.value || 'three_zone';
+  const valleyStr = distType === 'four_zone' ? ` | dolina ${Math.round(distV)}` : '';
+  el('summDistZones', `szczyt ${Math.round(distP)} | dzień ${Math.round(distD)} | noc ${Math.round(distN)}${valleyStr}`);
+  const sH = parseInt(document.getElementById('selectedHoursStart')?.value) || 7;
+  const eH = parseInt(document.getElementById('selectedHoursEnd')?.value) || 22;
+  el('summCapacity', `${capacityVal} PLN/MWh (${sH}-${eH} Pn-Pt)`);
+}
+
+/**
+ * Compute weighted average distribution from 3 zone fields.
+ * Approximate weights: peak ~20%, day ~40%, night ~40% (typical Polish tariff).
+ * For flat tariffs all 3 are equal so weights don't matter.
+ */
+function updateDistributionAverage() {
+  const peak = parseFloat(document.getElementById('distributionPeak')?.value) || 0;
+  const day = parseFloat(document.getElementById('distributionDay')?.value) || 0;
+  const night = parseFloat(document.getElementById('distributionNight')?.value) || 0;
+  const valley = parseFloat(document.getElementById('distributionValley')?.value) || 0;
+
+  // Use distribution zone type to determine weights
+  const distType = document.getElementById('distTariffType')?.value || 'flat';
+  let avg;
+  if (distType === 'flat') {
+    avg = peak; // all zones should be equal for flat
+  } else if (distType === 'two_zone') {
+    // day ~60%, night ~40%
+    avg = day * 0.6 + night * 0.4;
+  } else if (distType === 'four_zone') {
+    // four_zone: peak ~18%, day ~15%, night ~10%, valley ~57% (deep night + weekends)
+    avg = peak * 0.18 + day * 0.15 + night * 0.10 + valley * 0.57;
+  } else {
+    // three_zone: peak ~20%, day ~35%, night ~45%
+    avg = peak * 0.20 + day * 0.35 + night * 0.45;
+  }
+
+  setValueById('distribution', Math.round(avg * 100) / 100);
+  updateTotalEnergyPrice();
+  markUnsaved();
+}
 
 // Initialize tariff section and add event listeners
 document.addEventListener('DOMContentLoaded', function() {
   initTariffSection();
+  populateOsdOperatorDropdown();
+  setTimeout(updateEnergyCostSummary, 500); // update summary after init
 
   // Add change listeners for visualization updates
   const tariffInputs = [

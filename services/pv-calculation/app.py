@@ -2530,7 +2530,7 @@ def call_bess_dispatch_sizing(
             'degradation_cost_pln_kwh': 0.02,  # Default degradation cost
         }
         # start_date is required when arbitrage is enabled (for ToU zone assignment)
-        payload['start_date'] = bess_settings.get('start_date', '2024-01-01')
+        payload['start_date'] = bess_settings.get('start_date', '2025-01-01')
         print(f"   📊 Arbitrage enabled: tariff_id={tariff_id}, day={day_rate:.3f}/night={night_rate:.3f} PLN/kWh, start_date={payload['start_date']}")
 
     try:

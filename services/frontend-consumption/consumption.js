@@ -3098,13 +3098,16 @@ function getPolishHolidays(year) {
     new Date(year, 4, 3),             // Święto Konstytucji
     new Date(easterMs + 49 * oneDay), // Zielone Świątki
     new Date(easterMs + 60 * oneDay), // Boże Ciało
-    new Date(year, 7, 15),            // Święto Wojska Polskiego
+    new Date(year, 7, 15),            // Wniebowzięcie NMP
     new Date(year, 10, 1),            // Wszystkich Świętych
     new Date(year, 10, 11),           // Święto Niepodległości
-    new Date(year, 11, 24),           // Wigilia (od 2025)
     new Date(year, 11, 25),           // Boże Narodzenie 1
     new Date(year, 11, 26),           // Boże Narodzenie 2
   ];
+  // Wigilia — only from 2025 (Dz.U. 2024 poz. 1911)
+  if (year >= 2025) {
+    dates.push(new Date(year, 11, 24));
+  }
 
   return new Set(dates.map(d => {
     const yy = d.getFullYear();
@@ -4709,9 +4712,25 @@ function initKClassAnalysis() {
     }
   } catch (e) {}
 
+  // Diagnostic: log data stats for comparison with backend Excel export
+  const loadSum = hourlyLoad.reduce((a, b) => a + b, 0);
+  const pvSum = pvHourly ? pvHourly.reduce((a, b) => a + b, 0) : 0;
+  console.log(`⚡ K-class: DATA DIAGNOSTIC — loadHourly: ${hourlyLoad.length} pts, sum=${loadSum.toFixed(0)} kWh, avg=${(loadSum/hourlyLoad.length).toFixed(1)} kW`);
+  console.log(`⚡ K-class: DATA DIAGNOSTIC — pvHourly: ${pvHourly?.length || 0} pts, sum=${pvSum.toFixed(0)} kWh`);
+  console.log(`⚡ K-class: DATA DIAGNOSTIC — SOM=${somPLNperKWh} PLN/kWh, year=2025`);
+  console.log(`⚡ K-class: DATA DIAGNOSTIC — sample load[0..5]:`, hourlyLoad.slice(0, 6).map(v => v.toFixed(1)));
+
+  // Use actual data year (from timestamps) instead of hardcoding
+  const dataYear = consumptionData.year || 2025;
+
   // Calculate and update (use hourlyLoad which handles 15-min conversion)
-  const analysis = calculateKClassAnalysis(hourlyLoad, pvHourly, 2025, somPLNperKWh);
+  const analysis = calculateKClassAnalysis(hourlyLoad, pvHourly, dataYear, somPLNperKWh);
   updateKClassWidget(analysis);
+
+  if (analysis) {
+    console.log(`⚡ K-class: RESULT — feeBefore=${analysis.totalFeeBefore?.toFixed(0)}, feeAfter=${analysis.totalFeeAfter?.toFixed(0)}, savings=${analysis.totalSavings?.toFixed(0)}`);
+    console.log(`⚡ K-class: RESULT — ZS_before=${analysis.totalZsBefore?.toFixed(1)} MWh, ZS_after=${analysis.totalZsAfter?.toFixed(1)} MWh`);
+  }
 
   console.log('⚡ K-class: Analysis complete');
 }
@@ -4753,9 +4772,14 @@ window.addEventListener('message', (event) => {
       }
     } catch (e) {}
 
-    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, 2025, somPLNperKWh);
+    const loadSum = loadHourly.reduce((a, b) => a + b, 0);
+    const pvSum2 = pvHourly.reduce((a, b) => a + b, 0);
+    console.log(`⚡ K-class: RE-RUN DATA — load: ${loadHourly.length} pts, sum=${loadSum.toFixed(0)}, pv: ${pvHourly.length} pts, sum=${pvSum2.toFixed(0)}`);
+
+    const rerunYear = consumptionData?.year || 2025;
+    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, rerunYear, somPLNperKWh);
     updateKClassWidget(analysis);
-    console.log('⚡ K-class: Re-ran analysis with PV data - savings:', analysis.totalSavingsPLN?.toFixed(0), 'PLN');
+    console.log(`⚡ K-class: RE-RUN RESULT — feeBefore=${analysis?.totalFeeBefore?.toFixed(0)}, feeAfter=${analysis?.totalFeeAfter?.toFixed(0)}, savings=${analysis?.totalSavings?.toFixed(0)} PLN`);
   }
 });
 

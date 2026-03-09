@@ -2238,7 +2238,7 @@ async function exportEconomicsToExcel() {
       project_import_kw: projectImport,
       bess_power_kw: variant.bess_power_kw,
       bess_energy_kwh: variant.bess_energy_kwh,
-      start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+      start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2025-01-01',
       interval_minutes: 60,
 
       // ToU configuration from settings
@@ -2262,11 +2262,29 @@ async function exportEconomicsToExcel() {
 
       // Fixed charges from settings
       distribution: settings.distribution || 200,
+      distribution_peak: settings.distributionPeak || settings.distribution || 200,
+      distribution_day: settings.distributionDay || settings.distribution || 200,
+      distribution_night: settings.distributionNight || settings.distribution || 200,
       quality_fee: settings.qualityFee || 10,
       oze_fee: settings.ozeFee || 7,
       cogeneration_fee: settings.cogenerationFee || 10,
       excise_tax: settings.exciseTax || 5,
       capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
+
+      // Distribution time windows (OSD zones)
+      dist_zone_type: settings.distributionConfig?.type || 'three_zone',
+      dist_two_zone_weekday_start: settings.distributionConfig?.twoZone?.weekday?.start ?? 6,
+      dist_two_zone_weekday_end: settings.distributionConfig?.twoZone?.weekday?.end ?? 22,
+      dist_two_zone_weekend_start: settings.distributionConfig?.twoZone?.weekend?.start ?? 6,
+      dist_two_zone_weekend_end: settings.distributionConfig?.twoZone?.weekend?.end ?? 22,
+      dist_peak1_start: (settings.distributionConfig?.type === 'four_zone' ? settings.distributionConfig?.fourZone?.peak1?.start : settings.distributionConfig?.threeZone?.peak1?.start) ?? 7,
+      dist_peak1_end: (settings.distributionConfig?.type === 'four_zone' ? settings.distributionConfig?.fourZone?.peak1?.end : settings.distributionConfig?.threeZone?.peak1?.end) ?? 13,
+      dist_peak2_start: (settings.distributionConfig?.type === 'four_zone' ? settings.distributionConfig?.fourZone?.peak2?.start : settings.distributionConfig?.threeZone?.peak2?.start) ?? 16,
+      dist_peak2_end: (settings.distributionConfig?.type === 'four_zone' ? settings.distributionConfig?.fourZone?.peak2?.end : settings.distributionConfig?.threeZone?.peak2?.end) ?? 21,
+      dist_weekend_off_peak: settings.distributionConfig?.threeZone?.weekendOffPeak !== false,
+      distribution_valley: settings.distributionValley || settings.distributionNight || 13.5,
+      dist_valley_start: settings.distributionConfig?.fourZone?.valley?.start ?? 1,
+      dist_valley_end: settings.distributionConfig?.fourZone?.valley?.end ?? 5,
 
       // Report title
       project_name: `Analiza BESS Wariant ${currentVariant} - ${variant.bess_power_kw} kW / ${variant.bess_energy_kwh} kWh`,
@@ -3147,7 +3165,7 @@ async function exportVariantToXlsx(variantLabel) {
     project_import_kw: projectImport,
     bess_power_kw: variant.power_kw,
     bess_energy_kwh: variant.energy_kwh,
-    start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+    start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2025-01-01',
     interval_minutes: 60,
     tariff_type: tariffConfig.type || 'two_zone',
     flat_rate: tariffConfig.flatRate || 750,
@@ -3232,6 +3250,15 @@ async function exportVariantToXlsx(variantLabel) {
       }
     }
   } catch (e) { console.warn('Could not include sizing variants:', e); }
+
+  // Pass hybrid monthly pricing config if active
+  try {
+    const settings = window.systemSettings || systemSettings || {};
+    if (settings.pricingMode === 'hybrid_monthly' && settings.monthlyPriceSources) {
+      payload.monthly_price_sources = settings.monthlyPriceSources;
+      console.log('📊 Excel export: hybrid monthly pricing', settings.monthlyPriceSources);
+    }
+  } catch (e) { /* ignore */ }
 
   console.log(`📊 Exporting variant ${variantLabel} to XLSX with battery trace:`, n, 'timesteps');
 
@@ -6006,6 +6033,27 @@ function collectArbitrageConfig() {
       buyP25: buyThreshold.toFixed(0),
       sellP75: sellThreshold.toFixed(0),
     });
+  }
+
+  // Check for hybrid monthly pricing mode
+  const pricingMode = settings.pricingMode || 'single';
+  const monthlyPriceSources = settings.monthlyPriceSources || null;
+
+  if (pricingMode === 'hybrid_monthly' && monthlyPriceSources && osdConfig && rdnConfig) {
+    // Hybrid mode: both OSD and RDN configs needed, with per-month source mapping
+    console.log('🔀 Hybrid monthly pricing:', monthlyPriceSources);
+    return {
+      enabled: true,
+      ...osdConfig,  // Base config uses OSD tariff for OSD months
+      // RDN prices for RDN months
+      hourly_prices_pln_mwh: rdnConfig.hourly_prices_pln_mwh,
+      // Per-month source selection
+      monthly_price_sources: monthlyPriceSources,
+      // Flags
+      osd_enabled: true,
+      rdn_enabled: true,
+      pricing_mode: 'hybrid_monthly',
+    };
   }
 
   // Primary config = OSD (predictable zones) takes priority for LP dispatch

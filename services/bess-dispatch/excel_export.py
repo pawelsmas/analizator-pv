@@ -32,7 +32,7 @@ from openpyxl.utils import get_column_letter
 
 from common.time_utils import CET_FIXED_OFFSET
 from common.calendar_pl import get_day_type, DayType, is_polish_holiday
-from capacity_fee_pl.models import CapacityFeeConfig, KClass, K_COEFFICIENTS
+from capacity_fee_pl.models import CapacityFeeConfig, KClass, K_COEFFICIENTS, K_THRESHOLDS
 from capacity_fee_pl.calculator import (
     compute_capacity_fee,
     compute_capacity_fee_savings,
@@ -55,12 +55,29 @@ class FixedChargesConfig:
     def __init__(
         self,
         distribution: float = 200.0,
+        distribution_peak: float = None,
+        distribution_day: float = None,
+        distribution_night: float = None,
+        distribution_valley: float = None,
         quality_fee: float = 10.0,
         oze_fee: float = 7.0,
         cogeneration_fee: float = 10.0,
         excise_tax: float = 5.0,
         capacity_fee_som: float = 0.2194,  # SOM rate PLN/kWh
         is_osd_all_in: bool = False,  # If True, ToU rates include distribution
+        # Distribution time windows (OSD zones — separate from energy ToU)
+        dist_zone_type: str = 'three_zone',  # 'flat', 'two_zone', 'three_zone', 'four_zone'
+        dist_two_zone_weekday_start: int = 6,
+        dist_two_zone_weekday_end: int = 22,
+        dist_two_zone_weekend_start: int = 6,
+        dist_two_zone_weekend_end: int = 22,
+        dist_peak1_start: int = 7,
+        dist_peak1_end: int = 13,
+        dist_peak2_start: int = 16,
+        dist_peak2_end: int = 21,
+        dist_weekend_off_peak: bool = True,
+        dist_valley_start: int = 1,
+        dist_valley_end: int = 5,
     ):
         self.quality_fee = quality_fee     # Opłata jakościowa
         self.oze_fee = oze_fee             # Opłata OZE
@@ -69,11 +86,34 @@ class FixedChargesConfig:
         self.capacity_fee_som = capacity_fee_som  # SOM rate for capacity fee
         self.is_osd_all_in = is_osd_all_in
 
+        # Distribution time windows (OSD zones)
+        self.dist_zone_type = dist_zone_type
+        self.dist_two_zone_weekday_start = dist_two_zone_weekday_start
+        self.dist_two_zone_weekday_end = dist_two_zone_weekday_end
+        self.dist_two_zone_weekend_start = dist_two_zone_weekend_start
+        self.dist_two_zone_weekend_end = dist_two_zone_weekend_end
+        self.dist_peak1_start = dist_peak1_start
+        self.dist_peak1_end = dist_peak1_end
+        self.dist_peak2_start = dist_peak2_start
+        self.dist_peak2_end = dist_peak2_end
+        self.dist_weekend_off_peak = dist_weekend_off_peak
+        self.dist_valley_start = dist_valley_start
+        self.dist_valley_end = dist_valley_end
+
         # If OSD_ALL_IN, distribution is already in ToU rates
         if is_osd_all_in:
             self.distribution = 0.0
+            self.distribution_peak = 0.0
+            self.distribution_day = 0.0
+            self.distribution_night = 0.0
+            self.distribution_valley = 0.0
         else:
-            self.distribution = distribution  # Dystrybucja
+            self.distribution = distribution  # Dystrybucja (weighted avg)
+            # Zonal distribution: fallback to flat if not provided
+            self.distribution_peak = distribution_peak if distribution_peak is not None else distribution
+            self.distribution_day = distribution_day if distribution_day is not None else distribution
+            self.distribution_night = distribution_night if distribution_night is not None else distribution
+            self.distribution_valley = distribution_valley if distribution_valley is not None else (distribution_night if distribution_night is not None else distribution)
 
     @property
     def other_fees_total(self) -> float:
@@ -225,6 +265,68 @@ def get_energia_zone(
     return "Nieznana", tou_config.flat_rate
 
 
+def get_distribution_rate(
+    dt: datetime,
+    tou_config: ToUConfig,
+    fixed_config: FixedChargesConfig,
+) -> float:
+    """
+    Get distribution rate for a given hour based on OSD distribution time windows.
+
+    Uses fixed_config.dist_* fields (separate from energy ToU zones).
+    Returns distribution rate in PLN/MWh.
+    """
+    h = dt.hour
+    is_weekend = dt.weekday() >= 5
+    zone_type = fixed_config.dist_zone_type
+
+    if zone_type == 'flat':
+        return fixed_config.distribution_night  # flat = all same
+
+    if zone_type == 'two_zone':
+        if is_weekend:
+            day_start = fixed_config.dist_two_zone_weekend_start
+            day_end = fixed_config.dist_two_zone_weekend_end
+        else:
+            day_start = fixed_config.dist_two_zone_weekday_start
+            day_end = fixed_config.dist_two_zone_weekday_end
+        if day_start <= h < day_end:
+            return fixed_config.distribution_day
+        return fixed_config.distribution_night
+
+    if zone_type == 'four_zone':
+        # Weekend = full valley (Strefa 4)
+        if is_weekend:
+            return fixed_config.distribution_valley
+        # Weekday: valley = deep night only (e.g. 1:00-4:59)
+        v_start = fixed_config.dist_valley_start
+        v_end = fixed_config.dist_valley_end
+        if v_start <= h < v_end:
+            return fixed_config.distribution_valley
+        # Peak zones (Strefa 1+2)
+        p1s = fixed_config.dist_peak1_start
+        p1e = fixed_config.dist_peak1_end
+        p2s = fixed_config.dist_peak2_start
+        p2e = fixed_config.dist_peak2_end
+        if (p1s <= h < p1e) or (p2s <= h < p2e):
+            return fixed_config.distribution_peak
+        # Remaining hours = Strefa 3 (fall through: 13-16, 21-1, 5-7)
+        return fixed_config.distribution_day
+
+    # three_zone (default)
+    if is_weekend and fixed_config.dist_weekend_off_peak:
+        return fixed_config.distribution_night
+    p1s = fixed_config.dist_peak1_start
+    p1e = fixed_config.dist_peak1_end
+    p2s = fixed_config.dist_peak2_start
+    p2e = fixed_config.dist_peak2_end
+    if (p1s <= h < p1e) or (p2s <= h < p2e):
+        return fixed_config.distribution_peak
+    if h < p1s or h >= p2e:
+        return fixed_config.distribution_night
+    return fixed_config.distribution_day  # between peaks
+
+
 def is_capacity_fee_hour(dt: datetime) -> bool:
     """
     Check if capacity fee (opłata mocowa) applies at given hour.
@@ -363,15 +465,13 @@ def calculate_capacity_fee_dynamic(
                 a_coeff = 1.0
             else:
                 delta_s = (avg_s / avg_ps - 1) * 100
-                # Thresholds per Dz.U. 2023 poz. 503
-                if delta_s < -10:
-                    a_coeff = 0.17  # K1
-                elif delta_s < 10:
-                    a_coeff = 0.50  # K2
-                elif delta_s < 30:
-                    a_coeff = 0.83  # K3
-                else:
-                    a_coeff = 1.00  # K4
+                # Classify using K_THRESHOLDS from models.py
+                a_coeff = 1.00  # K4 default
+                for kc in [KClass.K1, KClass.K2, KClass.K3, KClass.K4]:
+                    low, high = K_THRESHOLDS[kc]
+                    if low <= delta_s < high:
+                        a_coeff = K_COEFFICIENTS[kc]
+                        break
 
         # Calculate day fee
         day_fee = a_coeff * som_pln_kwh * zs
@@ -472,8 +572,9 @@ def calculate_hourly_costs(
             energia_rate = tou_rate
         energia_pln = import_mwh * energia_rate
 
-        # Fixed charges (distribution may be 0 if OSD_ALL_IN)
-        dystrybucja_pln = import_mwh * fixed_config.distribution
+        # Fixed charges (distribution zonal — may be 0 if OSD_ALL_IN)
+        dist_rate = get_distribution_rate(dt, tou_config, fixed_config)
+        dystrybucja_pln = import_mwh * dist_rate
         jakosc_pln = import_mwh * fixed_config.quality_fee
         oze_pln = import_mwh * fixed_config.oze_fee
         kog_pln = import_mwh * fixed_config.cogeneration_fee
@@ -514,7 +615,7 @@ def calculate_hourly_costs(
             'import_mwh': round(import_mwh, 6),
             # Rates (PLN/MWh)
             'energia_rate': energia_rate,
-            'dystrybucja_rate': fixed_config.distribution,
+            'dystrybucja_rate': dist_rate,
             'jakosc_rate': fixed_config.quality_fee,
             'oze_rate': fixed_config.oze_fee,
             'kog_rate': fixed_config.cogeneration_fee,
@@ -696,7 +797,9 @@ def generate_economics_excel(
     # Store rate rows for reference
     rate_rows = {}
     for name, val in [
-        ("Dystrybucja", fixed_config.distribution),
+        ("Dystrybucja szczyt", fixed_config.distribution_peak),
+        ("Dystrybucja dzień", fixed_config.distribution_day),
+        ("Dystrybucja noc", fixed_config.distribution_night),
         ("Opłata jakościowa", fixed_config.quality_fee),
         ("Opłata OZE", fixed_config.oze_fee),
         ("Opłata kogeneracyjna", fixed_config.cogeneration_fee),
@@ -826,7 +929,7 @@ def generate_economics_excel(
     ws_h.merge_cells('A1:X1')
 
     # Row 2: rate reference
-    rate_info = f'Stawki [PLN/MWh]: Dystrybucja={fixed_config.distribution}, Jakość={fixed_config.quality_fee}, OZE={fixed_config.oze_fee}, Kogeneracja={fixed_config.cogeneration_fee}, Akcyza={fixed_config.excise_tax}'
+    rate_info = f'Stawki [PLN/MWh]: Dystr.szczyt={fixed_config.distribution_peak}, Dystr.dzień={fixed_config.distribution_day}, Dystr.noc={fixed_config.distribution_night}, Jakość={fixed_config.quality_fee}, OZE={fixed_config.oze_fee}, Kogeneracja={fixed_config.cogeneration_fee}, Akcyza={fixed_config.excise_tax}'
     if monthly_price_sources:
         osd_m = sorted([m for m, s in monthly_price_sources.items() if s == 'osd'])
         rdn_m = sorted([m for m, s in monthly_price_sources.items() if s == 'rdn'])
@@ -894,7 +997,7 @@ def generate_economics_excel(
         ws_h.column_dimensions[get_column_letter(ci)].width = w
 
     # Rate constants (PLN/MWh) for formulas
-    dist_rate = fixed_config.distribution
+    # NOTE: dist_rate is per-hour (zonal), computed inside the loop
     qual_rate = fixed_config.quality_fee
     oze_rate = fixed_config.oze_fee
     kog_rate = fixed_config.cogeneration_fee
@@ -922,12 +1025,15 @@ def generate_economics_excel(
         # F: Baseline - Cena energii [PLN/MWh] (STATIC, respects hybrid monthly)
         ws_h.cell(row=r, column=6, value=round(price, 2))
 
+        # Distribution rate for this hour (zonal)
+        dist_rate_h = get_distribution_rate(dt, tou_config, fixed_config)
+
         # G: Bez mag - Koszt energii = E * F / 1000 (FORMULA!)
         c = ws_h.cell(row=r, column=7, value=f'=E{r}*F{r}/1000')
         c.number_format = nfmt4; c.fill = formula_fill
 
-        # H: Bez mag - Dystrybucja = E / 1000 * rate (FORMULA!)
-        c = ws_h.cell(row=r, column=8, value=f'=E{r}/1000*{dist_rate}')
+        # H: Bez mag - Dystrybucja = E / 1000 * rate (FORMULA with zonal rate!)
+        c = ws_h.cell(row=r, column=8, value=f'=E{r}/1000*{dist_rate_h}')
         c.number_format = nfmt4; c.fill = formula_fill
 
         # I: Bez mag - Jakość (FORMULA)
@@ -961,8 +1067,8 @@ def generate_economics_excel(
         c = ws_h.cell(row=r, column=16, value=f'=O{r}*F{r}/1000')
         c.number_format = nfmt4; c.fill = formula_fill
 
-        # Q: Z mag - Dystrybucja (FORMULA)
-        c = ws_h.cell(row=r, column=17, value=f'=O{r}/1000*{dist_rate}')
+        # Q: Z mag - Dystrybucja (FORMULA with zonal rate!)
+        c = ws_h.cell(row=r, column=17, value=f'=O{r}/1000*{dist_rate_h}')
         c.number_format = nfmt4; c.fill = formula_fill
 
         # R: Z mag - Jakość (FORMULA)

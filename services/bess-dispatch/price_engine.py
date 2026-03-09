@@ -612,6 +612,100 @@ class RDNPriceProvider:
 
 
 # =============================================================================
+# Hybrid Monthly Price Provider (OSD + RDN per month)
+# =============================================================================
+
+class HybridMonthlyPriceProvider:
+    """
+    Hybrid price provider that stitches OSD tariff and RDN spot prices
+    on a per-month basis.
+
+    Example: Q1+Q4 use fixed OSD tariff, Q2+Q3 use RDN spot prices.
+
+    Args:
+        tou_provider: ToUPriceProvider for OSD months
+        rdn_prices_pln_kwh: numpy array of RDN hourly prices [PLN/kWh]
+        monthly_sources: dict mapping month number (1-12) to 'osd' or 'rdn'
+        start_date: first date of the analysis period
+    """
+
+    def __init__(
+        self,
+        tou_provider: ToUPriceProvider,
+        rdn_prices_pln_kwh: np.ndarray,
+        monthly_sources: Dict[int, str],
+        start_date: date,
+    ):
+        self.tou_provider = tou_provider
+        self.rdn_prices = rdn_prices_pln_kwh
+        self.monthly_sources = monthly_sources
+        self.start_date = start_date
+
+    def get_series(
+        self,
+        start_date: date,
+        end_date: date,
+        resolution_minutes: int = 60
+    ) -> PriceBundle:
+        """
+        Build stitched price series: OSD for OSD-months, RDN for RDN-months.
+        """
+        # Get full OSD price series as baseline
+        tou_bundle = self.tou_provider.get_series(start_date, end_date, resolution_minutes)
+        tou_prices = np.array(tou_bundle.import_total)
+
+        n_days = (end_date - start_date).days + 1
+        steps_per_day = 24 * (4 if resolution_minutes == 15 else 1)
+        n_timesteps = n_days * steps_per_day
+
+        # Ensure arrays match
+        if len(tou_prices) < n_timesteps:
+            tou_prices = np.pad(tou_prices, (0, n_timesteps - len(tou_prices)),
+                                'edge')
+
+        rdn = self.rdn_prices
+        if len(rdn) < n_timesteps:
+            repeats = (n_timesteps + len(rdn) - 1) // len(rdn)
+            rdn = np.tile(rdn, repeats)[:n_timesteps]
+        else:
+            rdn = rdn[:n_timesteps]
+
+        # Build result: pick source per timestep based on month
+        result = np.copy(tou_prices)
+        step = 0
+        current_date = start_date
+        delta_day = timedelta(days=1)
+
+        for _ in range(n_days):
+            month = current_date.month
+            source = self.monthly_sources.get(month, 'osd')
+            if source == 'rdn':
+                end_step = min(step + steps_per_day, n_timesteps)
+                result[step:end_step] = rdn[step:end_step]
+            step += steps_per_day
+            current_date += delta_day
+
+        # Build source label
+        rdn_months = [m for m, s in self.monthly_sources.items() if s == 'rdn']
+        osd_months = [m for m, s in self.monthly_sources.items() if s != 'rdn']
+        source_label = f"hybrid_monthly(RDN:{rdn_months},OSD:{osd_months})"
+
+        export_total = tou_bundle.export_total
+        if len(export_total) < n_timesteps:
+            export_total = export_total + [0.0] * (n_timesteps - len(export_total))
+
+        return PriceBundle(
+            import_total=result[:n_timesteps].tolist(),
+            export_total=export_total[:n_timesteps],
+            breakdown=[],
+            source=source_label,
+            start_date=start_date,
+            end_date=end_date,
+            resolution_minutes=resolution_minutes,
+        )
+
+
+# =============================================================================
 # Economic Dispatch Config (for dispatch_economic)
 # =============================================================================
 

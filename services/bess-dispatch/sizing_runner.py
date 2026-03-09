@@ -681,6 +681,69 @@ def get_price_bundle_for_sizing(
         return None
 
     # =========================================================================
+    # Path 0: Hybrid monthly (OSD + RDN per month)
+    # =========================================================================
+    if arb_config.monthly_price_sources and arb_config.hourly_prices_pln_mwh and len(arb_config.hourly_prices_pln_mwh) > 100:
+        try:
+            from price_engine import ToUPriceProvider, ToUPriceConfig, HybridMonthlyPriceProvider
+            from osd_tariffs.presets.templates import ALL_PRESETS, TARIFF_ALIASES
+
+            # RDN prices: PLN/MWh → PLN/kWh
+            rdn_raw = np.array(arb_config.hourly_prices_pln_mwh, dtype=float) / 1000.0
+            if len(rdn_raw) >= n_hours:
+                rdn_prices = rdn_raw[:n_hours]
+            else:
+                repeats = (n_hours + len(rdn_raw) - 1) // len(rdn_raw)
+                rdn_prices = np.tile(rdn_raw, repeats)[:n_hours]
+
+            # OSD tariff lookup
+            tariff_id = arb_config.tariff_id
+            resolved_id = TARIFF_ALIASES.get(tariff_id, tariff_id)
+            tariff = ALL_PRESETS.get(resolved_id) or ALL_PRESETS.get(tariff_id)
+            if tariff is None:
+                for t in ALL_PRESETS.values():
+                    if t.id == tariff_id or t.id == resolved_id:
+                        tariff = t
+                        break
+
+            if tariff is None:
+                logger.warning(f"Hybrid monthly: tariff not found: {tariff_id}, falling back to RDN-only")
+            else:
+                start_date = datetime.strptime(request.start_date, "%Y-%m-%d").date()
+                n_days = (n_hours + 23) // 24
+                end_date = start_date + timedelta(days=n_days - 1)
+
+                price_config = ToUPriceConfig(
+                    osd_tariff=tariff,
+                    capacity_fee_pln_kwh=0.0,
+                    other_components_pln_kwh=arb_config.other_components_pln_kwh,
+                )
+                tou_provider = ToUPriceProvider(price_config)
+
+                # Normalize monthly_price_sources keys to int
+                monthly_sources = {int(k): v for k, v in arb_config.monthly_price_sources.items()}
+
+                hybrid = HybridMonthlyPriceProvider(
+                    tou_provider=tou_provider,
+                    rdn_prices_pln_kwh=rdn_prices,
+                    monthly_sources=monthly_sources,
+                    start_date=start_date,
+                )
+                bundle = hybrid.get_series(start_date, end_date, request.interval_minutes)
+                import_prices = np.array(bundle.import_total[:n_hours])
+
+                rdn_months = [m for m, s in monthly_sources.items() if s == 'rdn']
+                osd_months = [m for m, s in monthly_sources.items() if s != 'rdn']
+                logger.info(
+                    f"Hybrid monthly pricing: RDN months={rdn_months}, OSD months={osd_months}, "
+                    f"avg={np.mean(import_prices)*1000:.0f} PLN/MWh"
+                )
+                return import_prices, bundle
+
+        except Exception as e:
+            logger.error(f"Hybrid monthly pricing failed: {e}, falling back to standard path")
+
+    # =========================================================================
     # Path 1: RDN hourly prices passed directly from frontend
     # =========================================================================
     if arb_config.hourly_prices_pln_mwh and len(arb_config.hourly_prices_pln_mwh) > 100:

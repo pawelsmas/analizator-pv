@@ -18,11 +18,11 @@ class KClass(str, Enum):
 
     Δs = (avg_consumption_in_selected_hours / avg_consumption_outside - 1) × 100%
 
-    Thresholds (Dz.U. 2023 poz. 503):
-    - K1: Δs < -10%    → A = 0.17 (83% discount)
-    - K2: Δs ∈ [-10%, 10%) → A = 0.50 (50% discount)
-    - K3: Δs ∈ [10%, 30%) → A = 0.83 (17% discount)
-    - K4: Δs ≥ 30% OR ZPS=0 → A = 1.00 (no discount)
+    Thresholds (portal configuration, aligned with frontend):
+    - K1: Δs < 5%     → A = 0.17 (83% discount)
+    - K2: Δs ∈ [5%, 10%)  → A = 0.50 (50% discount)
+    - K3: Δs ∈ [10%, 15%) → A = 0.83 (17% discount)
+    - K4: Δs ≥ 15% OR ZPS=0 → A = 1.00 (no discount)
     """
     K1 = "K1"
     K2 = "K2"

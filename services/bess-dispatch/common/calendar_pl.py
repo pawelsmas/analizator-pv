@@ -33,6 +33,7 @@ class DayType(str, Enum):
 
 
 # Fixed Polish public holidays (month, day)
+# These apply to ALL years
 POLISH_HOLIDAYS_FIXED = [
     (1, 1),    # Nowy Rok
     (1, 6),    # Trzech Króli (Objawienie Pańskie)
@@ -44,6 +45,9 @@ POLISH_HOLIDAYS_FIXED = [
     (12, 25),  # Boże Narodzenie (pierwszy dzień)
     (12, 26),  # Boże Narodzenie (drugi dzień)
 ]
+
+# Wigilia — holiday only from 2025 (Dz.U. 2024 poz. 1911)
+WIGILIA_START_YEAR = 2025
 
 
 def _calculate_easter(year: int) -> date:
@@ -92,8 +96,11 @@ def get_polish_holidays(year: int) -> Set[date]:
         try:
             holidays.add(date(year, month, day))
         except ValueError:
-            # Invalid date (shouldn't happen with valid holidays)
             pass
+
+    # Wigilia — only from 2025 (Dz.U. 2024 poz. 1911)
+    if year >= WIGILIA_START_YEAR:
+        holidays.add(date(year, 12, 24))
 
     # Calculate Easter-based moveable holidays
     easter = _calculate_easter(year)

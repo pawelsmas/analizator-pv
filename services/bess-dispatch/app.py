@@ -3619,7 +3619,10 @@ class ExcelExportRequest(BaseModel):
     peak2_end: int = Field(21, ge=0, le=24)
 
     # Fixed charges [PLN/MWh]
-    distribution: float = Field(200.0, ge=0, description="Dystrybucja [PLN/MWh]")
+    distribution: float = Field(200.0, ge=0, description="Dystrybucja avg [PLN/MWh]")
+    distribution_peak: Optional[float] = Field(None, ge=0, description="Dystrybucja szczyt [PLN/MWh]")
+    distribution_day: Optional[float] = Field(None, ge=0, description="Dystrybucja dzień [PLN/MWh]")
+    distribution_night: Optional[float] = Field(None, ge=0, description="Dystrybucja noc [PLN/MWh]")
     quality_fee: float = Field(10.0, ge=0, description="Opłata jakościowa [PLN/MWh]")
     oze_fee: float = Field(7.0, ge=0, description="Opłata OZE [PLN/MWh]")
     cogeneration_fee: float = Field(10.0, ge=0, description="Opłata kogeneracyjna [PLN/MWh]")
@@ -3628,6 +3631,21 @@ class ExcelExportRequest(BaseModel):
 
     # OSD_ALL_IN mode: if True, ToU rates already include distribution (no double counting)
     is_osd_all_in: bool = Field(False, description="If True, ToU rates include distribution")
+
+    # Distribution time windows (OSD zones — separate from energy ToU)
+    dist_zone_type: str = Field('three_zone', description="Distribution zone type: flat/two_zone/three_zone/four_zone")
+    dist_two_zone_weekday_start: int = Field(6, ge=0, le=23)
+    dist_two_zone_weekday_end: int = Field(22, ge=0, le=24)
+    dist_two_zone_weekend_start: int = Field(6, ge=0, le=23)
+    dist_two_zone_weekend_end: int = Field(22, ge=0, le=24)
+    dist_peak1_start: int = Field(7, ge=0, le=23)
+    dist_peak1_end: int = Field(13, ge=0, le=24)
+    dist_peak2_start: int = Field(16, ge=0, le=23)
+    dist_peak2_end: int = Field(21, ge=0, le=24)
+    dist_weekend_off_peak: bool = Field(True, description="Weekends = off-peak for 3-zone dist")
+    distribution_valley: Optional[float] = Field(None, ge=0, description="Dystrybucja dolina [PLN/MWh] (four_zone)")
+    dist_valley_start: int = Field(1, ge=0, le=23, description="Valley start hour on weekdays (e.g. 1)")
+    dist_valley_end: int = Field(5, ge=0, le=24, description="Valley end hour on weekdays (e.g. 5)")
 
     # Report configuration
     project_name: str = Field("Analiza BESS", description="Report title")
@@ -3710,12 +3728,28 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
         # Build fixed charges config
         fixed_config = FixedChargesConfig(
             distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
             quality_fee=request.quality_fee,
             oze_fee=request.oze_fee,
             cogeneration_fee=request.cogeneration_fee,
             excise_tax=request.excise_tax,
             capacity_fee_som=request.capacity_fee_som,
             is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
         )
 
         # Build battery trace dict if data provided
@@ -3779,7 +3813,7 @@ class PvExcelExportRequest(BaseModel):
     pv_kw: List[float] = Field(..., description="PV generation profile [kW] per timestep")
 
     # Time config
-    start_date: str = Field("2024-01-01", description="Start date (YYYY-MM-DD)")
+    start_date: str = Field("2025-01-01", description="Start date (YYYY-MM-DD)")
     interval_minutes: int = Field(60)
 
     # ToU tariff (for OSD months)
@@ -3801,12 +3835,30 @@ class PvExcelExportRequest(BaseModel):
 
     # Fixed charges
     distribution: float = Field(200.0)
+    distribution_peak: Optional[float] = Field(None)
+    distribution_day: Optional[float] = Field(None)
+    distribution_night: Optional[float] = Field(None)
     quality_fee: float = Field(10.0)
     oze_fee: float = Field(7.0)
     cogeneration_fee: float = Field(10.0)
     excise_tax: float = Field(5.0)
     capacity_fee_som: float = Field(0.2194)
     is_osd_all_in: bool = Field(False)
+
+    # Distribution time windows (OSD zones)
+    dist_zone_type: str = Field('three_zone')
+    dist_two_zone_weekday_start: int = Field(6)
+    dist_two_zone_weekday_end: int = Field(22)
+    dist_two_zone_weekend_start: int = Field(6)
+    dist_two_zone_weekend_end: int = Field(22)
+    dist_peak1_start: int = Field(7)
+    dist_peak1_end: int = Field(13)
+    dist_peak2_start: int = Field(16)
+    dist_peak2_end: int = Field(21)
+    dist_weekend_off_peak: bool = Field(True)
+    distribution_valley: Optional[float] = Field(None)
+    dist_valley_start: int = Field(1)
+    dist_valley_end: int = Field(5)
 
     # Project info
     project_name: str = Field("Analiza PV")
@@ -3851,12 +3903,28 @@ async def export_pv_to_excel(request: PvExcelExportRequest):
 
         fixed_config = FixedChargesConfig(
             distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
             quality_fee=request.quality_fee,
             oze_fee=request.oze_fee,
             cogeneration_fee=request.cogeneration_fee,
             excise_tax=request.excise_tax,
             capacity_fee_som=request.capacity_fee_som,
             is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
         )
 
         excel_bytes = generate_economics_excel(
@@ -3923,12 +3991,28 @@ async def pv_annual_summary(request: PvExcelExportRequest):
 
         fixed_config = FixedChargesConfig(
             distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
             quality_fee=request.quality_fee,
             oze_fee=request.oze_fee,
             cogeneration_fee=request.cogeneration_fee,
             excise_tax=request.excise_tax,
             capacity_fee_som=request.capacity_fee_som,
             is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
         )
 
         import_prices = None

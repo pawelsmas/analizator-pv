@@ -1545,6 +1545,10 @@ function getEconomicParameters() {
     energy_active: touAverageRate,
     // Opłaty stałe (z sekcji USTAWIENIA -> Opłaty Stałe)
     distribution: systemSettings?.distribution || parseFloat(document.getElementById('distribution')?.value || 200),
+    distribution_peak: systemSettings?.distributionPeak || parseFloat(document.getElementById('distributionPeak')?.value || 200),
+    distribution_day: systemSettings?.distributionDay || parseFloat(document.getElementById('distributionDay')?.value || 200),
+    distribution_night: systemSettings?.distributionNight || parseFloat(document.getElementById('distributionNight')?.value || 200),
+    distribution_valley: systemSettings?.distributionValley || parseFloat(document.getElementById('distributionValley')?.value || 13.5),
     quality_fee: systemSettings?.qualityFee || parseFloat(document.getElementById('qualityFee')?.value || 10),
     oze_fee: systemSettings?.ozeFee || parseFloat(document.getElementById('ozeFee')?.value || 7),
     cogeneration_fee: systemSettings?.cogenerationFee || parseFloat(document.getElementById('cogenerationFee')?.value || 10),
@@ -1621,15 +1625,16 @@ function computeWeightedEnergyPrice(params) {
   } catch (e) { /* ignore */ }
 
   const n = Math.min(pvHourly.length, loadHourly.length);
-  const startDate = new Date(sd.analyticalPeriod?.start_datetime || '2024-01-01');
+  const startDate = new Date(cachedHourlyConsumption?.timestamps?.[0] ||
+                             sd.analyticalPeriod?.start_datetime || '2025-01-01');
 
-  // Fixed fees (always the same regardless of energy source)
-  const fixedFeesPerMwh = (params.distribution || 0) + (params.quality_fee || 0) +
-                          (params.oze_fee || 0) + (params.cogeneration_fee || 0) +
-                          (params.excise_tax || 0);
+  // Other fixed fees (excluding distribution — distribution is zonal)
+  const otherFeesPerMwh = (params.quality_fee || 0) + (params.oze_fee || 0) +
+                          (params.cogeneration_fee || 0) + (params.excise_tax || 0);
 
   let totalSelfConsumedKwh = 0;
   let weightedEnergyActiveSumPln = 0; // sum of (selfConsumed_kWh * energyActiveRate_PLN/kWh)
+  let weightedDistributionSumPln = 0; // sum of (selfConsumed_kWh * distRate_PLN/kWh)
 
   for (let i = 0; i < n; i++) {
     const load = loadHourly[i] || 0;
@@ -1643,6 +1648,7 @@ function computeWeightedEnergyPrice(params) {
     const h = hourDate.getHours();
     const dayOfWeek = hourDate.getDay(); // 0=Sun
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const dayOfMonth = hourDate.getDate();
 
     // Get energy active rate for this hour (PLN/kWh)
     const source = monthlyPriceSources[month] || 'osd';
@@ -1652,18 +1658,23 @@ function computeWeightedEnergyPrice(params) {
       energiaRatePerKwh = rdnPrices[i] / 1000; // PLN/MWh -> PLN/kWh
     } else {
       // OSD ToU rate
-      energiaRatePerKwh = getHourlyEnergyRate(h, month, 1, isWeekend); // PLN/kWh
+      energiaRatePerKwh = getHourlyEnergyRate(h, month, dayOfMonth, isWeekend); // PLN/kWh
     }
+
+    // Distribution rate for this hour (zonal)
+    const distRatePerKwh = getHourlyDistributionRate(h, month, dayOfMonth, isWeekend, params);
 
     totalSelfConsumedKwh += selfConsumed;
     weightedEnergyActiveSumPln += selfConsumed * energiaRatePerKwh;
+    weightedDistributionSumPln += selfConsumed * distRatePerKwh;
   }
 
   if (totalSelfConsumedKwh <= 0) return null;
 
-  // Weighted average energy active rate in PLN/MWh
+  // Weighted average rates in PLN/MWh
   const weightedEnergyActive = (weightedEnergyActiveSumPln / totalSelfConsumedKwh) * 1000;
-  const weightedTotalNoCapacity = weightedEnergyActive + fixedFeesPerMwh;
+  const weightedDistribution = (weightedDistributionSumPln / totalSelfConsumedKwh) * 1000;
+  const weightedTotalNoCapacity = weightedEnergyActive + weightedDistribution + otherFeesPerMwh;
   const weightedTotal = weightedTotalNoCapacity + (params.capacity_fee || 0);
 
   console.log(`💰 Weighted Energy Price (hybrid_monthly): energyActive=${weightedEnergyActive.toFixed(1)}, noCapacity=${weightedTotalNoCapacity.toFixed(1)}, total=${weightedTotal.toFixed(1)} PLN/MWh`);
@@ -1712,6 +1723,16 @@ async function fetchPreciseAnnualSavings(variant) {
     } catch (e) { /* ignore */ }
   }
 
+  // Convert 15-min to hourly if needed (sd.consumptionData may be raw 15-min)
+  if (loadProfile.length > 10000) {
+    const hourlyLoad = [];
+    for (let h = 0; h < Math.floor(loadProfile.length / 4); h++) {
+      const s = h * 4;
+      hourlyLoad.push(((loadProfile[s] || 0) + (loadProfile[s+1] || 0) + (loadProfile[s+2] || 0) + (loadProfile[s+3] || 0)) / 4);
+    }
+    loadProfile = hourlyLoad;
+  }
+
   console.log(`📊 fetchPreciseAnnualSavings: pvProfile=${pvProfile.length}, loadProfile=${loadProfile.length}`);
 
   if (pvProfile.length < 720 || loadProfile.length < 720) {
@@ -1723,7 +1744,8 @@ async function fetchPreciseAnnualSavings(variant) {
   const payload = {
     load_kw: loadProfile.slice(0, n),
     pv_kw: pvProfile.slice(0, n),
-    start_date: sd.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+    start_date: cachedHourlyConsumption?.timestamps?.[0]?.slice(0, 10) ||
+                sd.analyticalPeriod?.start_datetime?.slice(0, 10) || '2025-01-01',
     interval_minutes: 60,
     tariff_type: tariffConfig.type || 'two_zone',
     flat_rate: tariffConfig.flatRate || 750,
@@ -1741,12 +1763,18 @@ async function fetchPreciseAnnualSavings(variant) {
     peak2_start: tariffConfig.threeZone?.peak2?.start || 17,
     peak2_end: tariffConfig.threeZone?.peak2?.end || 21,
     distribution: settings.distribution || 200,
+    distribution_peak: settings.distributionPeak || settings.distribution || 200,
+    distribution_day: settings.distributionDay || settings.distribution || 200,
+    distribution_night: settings.distributionNight || settings.distribution || 200,
+    distribution_valley: settings.distributionValley || settings.distributionNight || 13.5,
     quality_fee: settings.qualityFee || 10,
     oze_fee: settings.ozeFee || 7,
     cogeneration_fee: settings.cogenerationFee || 10,
     excise_tax: settings.exciseTax || 5,
     capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
     is_osd_all_in: settings.isOsdAllIn || false,
+    // Distribution time windows (OSD zones)
+    ...getDistConfigPayload(settings),
     project_name: `PV ${variant.capacity} kWp`,
     pv_capacity_kwp: variant.capacity || 0,
   };
@@ -4815,8 +4843,28 @@ async function fetchRealHourlyData() {
 
     if (consResponse.ok) {
       cachedHourlyConsumption = await consResponse.json();
-      console.log(`📊 PULS DNIA: Loaded ${cachedHourlyConsumption.values?.length || 0} hourly consumption points`);
+      const rawLen = cachedHourlyConsumption.values?.length || 0;
+      console.log(`📊 PULS DNIA: Loaded ${rawLen} consumption points`);
       console.log(`📊 PULS DNIA: Sample timestamps:`, cachedHourlyConsumption.timestamps?.slice(0, 3));
+
+      // Convert 15-min data to hourly by averaging (power kW → kWh per hour)
+      // This ensures all downstream code (export, K-class, LDC) gets consistent hourly data
+      if (rawLen > 10000 && cachedHourlyConsumption.values) {
+        console.log(`📊 PULS DNIA: Converting ${rawLen} 15-min points to hourly`);
+        const vals = cachedHourlyConsumption.values;
+        const hourlyVals = [];
+        const hourlyTs = [];
+        for (let h = 0; h < Math.floor(rawLen / 4); h++) {
+          const s = h * 4;
+          hourlyVals.push(((vals[s] || 0) + (vals[s+1] || 0) + (vals[s+2] || 0) + (vals[s+3] || 0)) / 4);
+          if (cachedHourlyConsumption.timestamps) {
+            hourlyTs.push(cachedHourlyConsumption.timestamps[s]);
+          }
+        }
+        cachedHourlyConsumption.values = hourlyVals;
+        if (hourlyTs.length > 0) cachedHourlyConsumption.timestamps = hourlyTs;
+        console.log(`📊 PULS DNIA: Converted to ${hourlyVals.length} hourly points`);
+      }
     } else {
       console.warn('📊 PULS DNIA: Could not fetch consumption data:', consResponse.status);
       pulsDniaDataLoading = false;
@@ -5061,8 +5109,105 @@ function getHourlyEnergyRate(h, month, dayOfMonth, isWeekend) {
     const isNight = h < 6 || h >= 22;
     if (isNight) return (tc.threeZone?.offPeakRate || 400) / 1000;
     return (tc.threeZone?.partialRate || 700) / 1000;
+  } else if (type === 'four_zone') {
+    if (isWeekend) return (tc.fourZone?.valleyRate || 200) / 1000;
+    const vStart = tc.fourZone?.valley?.start ?? 1;
+    const vEnd = tc.fourZone?.valley?.end ?? 5;
+    if (h >= vStart && h < vEnd) return (tc.fourZone?.valleyRate || 200) / 1000;
+    const p1s = tc.fourZone?.peak1?.start || 7;
+    const p1e = tc.fourZone?.peak1?.end || 13;
+    const p2s = tc.fourZone?.peak2?.start || 16;
+    const p2e = tc.fourZone?.peak2?.end || 21;
+    if ((h >= p1s && h < p1e) || (h >= p2s && h < p2e)) return (tc.fourZone?.peakRate || 950) / 1000;
+    return (tc.fourZone?.dayRate || 700) / 1000;
   }
   return 0.51;
+}
+
+/**
+ * Build distribution config payload for backend API from settings.
+ */
+function getDistConfigPayload(settings) {
+  const dc = settings?.distributionConfig || {};
+  const type = dc.type || 'three_zone';
+  const payload = {
+    dist_zone_type: type,
+    dist_two_zone_weekday_start: dc.twoZone?.weekday?.start ?? 6,
+    dist_two_zone_weekday_end: dc.twoZone?.weekday?.end ?? 22,
+    dist_two_zone_weekend_start: dc.twoZone?.weekend?.start ?? 6,
+    dist_two_zone_weekend_end: dc.twoZone?.weekend?.end ?? 22,
+    dist_peak1_start: dc.threeZone?.peak1?.start ?? 7,
+    dist_peak1_end: dc.threeZone?.peak1?.end ?? 13,
+    dist_peak2_start: dc.threeZone?.peak2?.start ?? 16,
+    dist_peak2_end: dc.threeZone?.peak2?.end ?? 21,
+    dist_weekend_off_peak: dc.threeZone?.weekendOffPeak !== false,
+    distribution_valley: settings?.distributionValley ?? 13.5,
+    dist_valley_start: dc.fourZone?.valley?.start ?? 1,
+    dist_valley_end: dc.fourZone?.valley?.end ?? 5,
+  };
+  // For four_zone, use fourZone peak boundaries instead of threeZone
+  if (type === 'four_zone') {
+    payload.dist_peak1_start = dc.fourZone?.peak1?.start ?? 7;
+    payload.dist_peak1_end = dc.fourZone?.peak1?.end ?? 13;
+    payload.dist_peak2_start = dc.fourZone?.peak2?.start ?? 16;
+    payload.dist_peak2_end = dc.fourZone?.peak2?.end ?? 21;
+  }
+  return payload;
+}
+
+/**
+ * Get hourly distribution rate based on OSD distribution time windows.
+ * Uses distributionConfig (separate from energy tariffConfig).
+ * Returns PLN/kWh (distribution zone rate / 1000).
+ */
+function getHourlyDistributionRate(h, month, dayOfMonth, isWeekend, params) {
+  const settings = systemSettings || {};
+  const dc = settings.distributionConfig;
+  const distPeak = (params?.distribution_peak || 200);
+  const distDay = (params?.distribution_day || 200);
+  const distNight = (params?.distribution_night || 200);
+  const distValley = (params?.distribution_valley || distNight);
+
+  if (!dc) return distNight / 1000; // fallback flat
+
+  const type = dc.type || 'flat';
+
+  if (type === 'flat') {
+    return distNight / 1000; // all zones same for flat
+  } else if (type === 'two_zone') {
+    const dayStart = isWeekend ? (dc.twoZone?.weekend?.start || 6) : (dc.twoZone?.weekday?.start || 6);
+    const dayEnd = isWeekend ? (dc.twoZone?.weekend?.end || 22) : (dc.twoZone?.weekday?.end || 22);
+    const isDayZone = h >= dayStart && h < dayEnd;
+    return isDayZone ? distDay / 1000 : distNight / 1000;
+  } else if (type === 'three_zone') {
+    const weekendOffPeak = dc.threeZone?.weekendOffPeak !== false;
+    if (isWeekend && weekendOffPeak) return distNight / 1000;
+    const p1s = dc.threeZone?.peak1?.start || 7;
+    const p1e = dc.threeZone?.peak1?.end || 13;
+    const p2s = dc.threeZone?.peak2?.start || 16;
+    const p2e = dc.threeZone?.peak2?.end || 21;
+    const isPeak = (h >= p1s && h < p1e) || (h >= p2s && h < p2e);
+    if (isPeak) return distPeak / 1000;
+    const isNight = h < p1s || h >= p2e;
+    if (isNight) return distNight / 1000;
+    return distDay / 1000; // partial/day zone (between peaks)
+  } else if (type === 'four_zone') {
+    // Weekend = full valley (Strefa 4)
+    if (isWeekend) return distValley / 1000;
+    // Weekday: valley = deep night only (e.g. 1:00-4:59)
+    const vStart = dc.fourZone?.valley?.start ?? 1;
+    const vEnd = dc.fourZone?.valley?.end ?? 5;
+    if (h >= vStart && h < vEnd) return distValley / 1000;
+    // Peak zones (Strefa 1+2)
+    const p1s = dc.fourZone?.peak1?.start || 7;
+    const p1e = dc.fourZone?.peak1?.end || 13;
+    const p2s = dc.fourZone?.peak2?.start || 16;
+    const p2e = dc.fourZone?.peak2?.end || 21;
+    if ((h >= p1s && h < p1e) || (h >= p2s && h < p2e)) return distPeak / 1000;
+    // Remaining hours = Strefa 3 (13-16, 21-1, 5-7) — fall through
+    return distDay / 1000;
+  }
+  return distNight / 1000;
 }
 
 function getDayOfYear(month, day) {
@@ -5280,8 +5425,9 @@ function generateTypicalDayProfiles(monthOrDayType = 6, day = 15, realDayData = 
     const isWeekend = false; // Typical day = weekday
     const energiaRate = getHourlyEnergyRate(h, month, day, isWeekend); // PLN/kWh (energia czynna)
 
-    // Fixed fees per kWh (distribution + quality + OZE + cogeneration + excise)
-    const fixedFeesPerKwh = ((params.distribution || 0) + (params.quality_fee || 0) +
+    // Fixed fees per kWh (zonal distribution + quality + OZE + cogeneration + excise)
+    const distRatePerKwh = getHourlyDistributionRate(h, month, day, isWeekend, params);
+    const fixedFeesPerKwh = distRatePerKwh + ((params.quality_fee || 0) +
                              (params.oze_fee || 0) + (params.cogeneration_fee || 0) +
                              (params.excise_tax || 0)) / 1000; // PLN/MWh -> PLN/kWh
 
@@ -6036,9 +6182,23 @@ async function exportPvYearlyExcel() {
   const pvProfile = cachedHourlyProduction?.values ||
                     sd.pvData ||
                     sd.analysisResults?.hourly_production || [];
-  const loadProfile = cachedHourlyConsumption?.values ||
+  let loadProfile = cachedHourlyConsumption?.values ||
                       sd.loadData ||
                       sd.consumptionData?.values || [];
+
+  // Safety: if loadProfile is still 15-min data (>10000 points), convert to hourly
+  // (cachedHourlyConsumption should already be converted in fetchRealHourlyData,
+  //  but sd.consumptionData might still be raw 15-min)
+  if (loadProfile.length > 10000) {
+    console.log(`📊 PV Export: Converting ${loadProfile.length} 15-min load points to hourly`);
+    const hourlyLoad = [];
+    for (let h = 0; h < Math.floor(loadProfile.length / 4); h++) {
+      const s = h * 4;
+      const avg = ((loadProfile[s] || 0) + (loadProfile[s+1] || 0) + (loadProfile[s+2] || 0) + (loadProfile[s+3] || 0)) / 4;
+      hourlyLoad.push(avg);
+    }
+    loadProfile = hourlyLoad;
+  }
 
   if (pvProfile.length < 720 || loadProfile.length < 720) {
     alert('Brak danych profili godzinowych (PV i/lub konsumpcja). Upewnij się, że dane zostały załadowane i wyświetlono PULS DNIA.');
@@ -6051,7 +6211,8 @@ async function exportPvYearlyExcel() {
   const payload = {
     load_kw: loadProfile.slice(0, n),
     pv_kw: pvProfile.slice(0, n),
-    start_date: window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2024-01-01',
+    start_date: cachedHourlyConsumption?.timestamps?.[0]?.slice(0, 10) ||
+                window.sharedData?.analyticalPeriod?.start_datetime?.slice(0, 10) || '2025-01-01',
     interval_minutes: 60,
     tariff_type: tariffConfig.type || 'two_zone',
     flat_rate: tariffConfig.flatRate || 750,
@@ -6069,12 +6230,18 @@ async function exportPvYearlyExcel() {
     peak2_start: tariffConfig.threeZone?.peak2?.start || 17,
     peak2_end: tariffConfig.threeZone?.peak2?.end || 21,
     distribution: settings.distribution || 200,
+    distribution_peak: settings.distributionPeak || settings.distribution || 200,
+    distribution_day: settings.distributionDay || settings.distribution || 200,
+    distribution_night: settings.distributionNight || settings.distribution || 200,
+    distribution_valley: settings.distributionValley || settings.distributionNight || 13.5,
     quality_fee: settings.qualityFee || 10,
     oze_fee: settings.ozeFee || 7,
     cogeneration_fee: settings.cogenerationFee || 10,
     excise_tax: settings.exciseTax || 5,
     capacity_fee_som: settings.capacityFeeConfig?.somRate || 0.2194,
     is_osd_all_in: settings.isOsdAllIn || false,
+    // Distribution time windows (OSD zones)
+    ...getDistConfigPayload(settings),
     project_name: `PV ${variant.capacity} kWp - Analiza Roczna`,
     pv_capacity_kwp: variant.capacity || 0,
   };
@@ -16706,35 +16873,81 @@ function toggleKClassDetails() {
 window.toggleKClassDetails = toggleKClassDetails;
 
 /**
- * Polish holidays for 2025-2030 (simplified - major holidays only)
+ * Calculate Easter Sunday for a given year (Anonymous Gregorian algorithm).
  */
-const POLISH_HOLIDAYS = new Set([
-  // 2025
-  '2025-01-01', '2025-01-06', '2025-04-20', '2025-04-21', '2025-05-01', '2025-05-03',
-  '2025-06-08', '2025-06-19', '2025-08-15', '2025-11-01', '2025-11-11', '2025-12-25', '2025-12-26',
-  // 2026
-  '2026-01-01', '2026-01-06', '2026-04-05', '2026-04-06', '2026-05-01', '2026-05-03',
-  '2026-05-24', '2026-06-04', '2026-08-15', '2026-11-01', '2026-11-11', '2026-12-25', '2026-12-26',
-]);
+function _getEasterDate(year) {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
 
 /**
- * Check if a date is a Polish workday (Mon-Fri, not a holiday)
+ * Get Polish public holidays for a given year (dynamic, works for any year).
+ * Wigilia (Dec 24) only from 2025 (Dz.U. 2024 poz. 1911).
+ */
+const _economicsHolidayCache = {};
+function _getPolishHolidays(year) {
+  if (_economicsHolidayCache[year]) return _economicsHolidayCache[year];
+  const easter = _getEasterDate(year);
+  const easterMs = easter.getTime();
+  const oneDay = 86400000;
+  const dates = [
+    new Date(year, 0, 1),             // Nowy Rok
+    new Date(year, 0, 6),             // Trzech Króli
+    easter,                            // Wielkanoc (Niedziela)
+    new Date(easterMs + oneDay),       // Poniedziałek Wielkanocny
+    new Date(year, 4, 1),             // Święto Pracy
+    new Date(year, 4, 3),             // Święto Konstytucji
+    new Date(easterMs + 49 * oneDay), // Zielone Świątki
+    new Date(easterMs + 60 * oneDay), // Boże Ciało
+    new Date(year, 7, 15),            // Wniebowzięcie NMP
+    new Date(year, 10, 1),            // Wszystkich Świętych
+    new Date(year, 10, 11),           // Święto Niepodległości
+    new Date(year, 11, 25),           // Boże Narodzenie 1
+    new Date(year, 11, 26),           // Boże Narodzenie 2
+  ];
+  // Wigilia — only from 2025
+  if (year >= 2025) {
+    dates.push(new Date(year, 11, 24));
+  }
+  const set = new Set(dates.map(d => {
+    const yy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }));
+  _economicsHolidayCache[year] = set;
+  return set;
+}
+
+/**
+ * Check if a date is a Polish workday (Mon-Fri, not a holiday).
+ * Dynamic — works for any year.
  */
 function isPolishWorkday(date) {
   const dayOfWeek = date.getDay();
-  if (dayOfWeek === 0 || dayOfWeek === 6) return false; // Weekend
-  const dateStr = date.toISOString().slice(0, 10);
-  return !POLISH_HOLIDAYS.has(dateStr);
+  if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return !_getPolishHolidays(y).has(`${y}-${m}-${d}`);
 }
 
 /**
  * Get K-class from delta_s percentage
  */
 function getKClassFromDeltaS(deltaS) {
-  // Boundaries per Rozporządzenie Ministra Klimatu i Środowiska (Dz.U. 2023 poz. 503)
-  if (deltaS < -10) return { klass: 'K1', coeff: 0.17, color: '#4caf50' };
+  // Progi K-class (spójne z consumption.js, settings.js, backend calculator.py)
+  if (deltaS < 5) return { klass: 'K1', coeff: 0.17, color: '#4caf50' };
   if (deltaS < 10) return { klass: 'K2', coeff: 0.50, color: '#8bc34a' };
-  if (deltaS < 30) return { klass: 'K3', coeff: 0.83, color: '#ff9800' };
+  if (deltaS < 15) return { klass: 'K3', coeff: 0.83, color: '#ff9800' };
   return { klass: 'K4', coeff: 1.00, color: '#f44336' };
 }
 
@@ -17406,7 +17619,9 @@ async function initKClassAnalysis() {
       return;
     }
 
-    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, 2025, 0.2194);
+    const dataYear = cachedHourlyConsumption?.timestamps?.[0]
+      ? new Date(cachedHourlyConsumption.timestamps[0]).getFullYear() : 2025;
+    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, dataYear, 0.2194);
     updateKClassWidget(analysis);
 
   } catch (e) {
@@ -17521,7 +17736,9 @@ async function initKClassAnalysisFromData() {
     const somPLNperKWh = (params.capacity_fee || 219) / 1000; // Convert PLN/MWh to PLN/kWh
 
     // Calculate K-class analysis
-    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, 2025, somPLNperKWh);
+    const dataYear2 = cachedHourlyConsumption?.timestamps?.[0]
+      ? new Date(cachedHourlyConsumption.timestamps[0]).getFullYear() : 2025;
+    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, dataYear2, somPLNperKWh);
     updateKClassWidget(analysis);
 
   } catch (e) {
@@ -18350,6 +18567,10 @@ async function calculateTcslComparison(variant) {
       rdn_prices_plnmwh: rdnPrices,
       fees_variable: {
         distribution_plnmwh: s.distribution || 200,
+        distribution_peak_plnmwh: s.distributionPeak || s.distribution || 200,
+        distribution_day_plnmwh: s.distributionDay || s.distribution || 200,
+        distribution_night_plnmwh: s.distributionNight || s.distribution || 200,
+        distribution_valley_plnmwh: s.distributionValley || s.distributionNight || 13.5,
         quality_fee_plnmwh: s.qualityFee || 10,
         oze_fee_plnmwh: s.ozeFee || 7,
         cogeneration_fee_plnmwh: s.cogenerationFee || 10,
