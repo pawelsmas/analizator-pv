@@ -358,9 +358,9 @@ async function exportCapexToExcel(withFormulas = false) {
   const params = getEconomicParameters();
   const cashFlows = centralizedCalc.capex.cashFlows;
   const investment = centralizedCalc.capex.investment;
-  const discountRate = centralizedCalc.common.discountRate || 0.07;
-  const inflationRate = centralizedCalc.common.inflationRate || 0.025;
-  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice || 800;
+  const discountRate = centralizedCalc.common.discountRate;
+  const inflationRate = centralizedCalc.common.inflationRate;
+  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
   const analysisPeriod = params.analysis_period || cashFlows.length;
   const useInflation = centralizedCalc.common.useInflation ?? false;
 
@@ -1322,9 +1322,9 @@ async function exportCapexToExcel(withFormulas = false) {
     capex_per_kwp: investment / capacityKwp,
     opex_per_kwp: params.opex_per_kwp || 24,
     degradation_rate: pvDegradationYears2Plus || 0.004,
-    discount_rate: discountRate || 0.07,
+    discount_rate: discountRate,
     analysis_period: analysisPeriod || 30,
-    inflation_rate: inflationRate || 0.025
+    inflation_rate: inflationRate
   };
 
   // Matrix headers

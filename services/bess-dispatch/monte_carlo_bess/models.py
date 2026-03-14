@@ -114,7 +114,7 @@ class MCBessRequest(BaseModel):
         description="CAPEX [PLN/kWh of storage capacity]")
     opex_pct: float = Field(1.5, ge=0, le=10,
         description="Annual OPEX as % of CAPEX")
-    discount_rate: float = Field(0.08, ge=0, le=0.30)
+    discount_rate: float = Field(0.10, ge=0, le=0.30)
     analysis_years: int = Field(15, ge=5, le=30)
     battery_replacement_year: Optional[int] = Field(None, ge=5, le=25,
         description="Year of battery replacement (None = no replacement)")

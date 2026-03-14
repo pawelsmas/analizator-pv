@@ -279,10 +279,10 @@ class CanonicalEconomics:
     capex_fixed: float = 0.0                # Fixed installation cost
 
     # OPEX
-    opex_pct_per_year: float = 0.02         # Annual OPEX as % of CAPEX
+    opex_pct_per_year: float = 0.015        # Annual OPEX as % of CAPEX
 
     # Financing
-    discount_rate: float = 0.08             # Nominal discount rate
+    discount_rate: float = 0.10             # Nominal discount rate
     inflation_rate: float = 0.025           # Annual inflation
     analysis_years: int = 15                # Project lifetime
 

@@ -1736,8 +1736,8 @@ function updateEconomics(variant) {
   const capexPerKwh = settings.bessCapexPerKwh || 1500;
   const capexPerKw = settings.bessCapexPerKw || 300;
   const opexPct = settings.bessOpexPctPerYear || 1.5;
-  const lifetime = settings.bessLifetimeYears || 15;
-  const analysisPeriod = 25;
+  const lifetime = settings.bessLifetimeYears;
+  const analysisPeriod = settings.analysisPeriod;
 
   const bessCapex = energyKwh * capexPerKwh + powerKw * capexPerKw;
   const bessOpex = bessCapex * (opexPct / 100);
@@ -1776,7 +1776,7 @@ function updateTechnicalParams(variant) {
   document.getElementById('bessSocMax').textContent = `${settings.bessSocMax || 90}%`;
   document.getElementById('bessDegYear1').textContent = `${settings.bessDegradationYear1 || 3.0}%`;
   document.getElementById('bessDegYearN').textContent = `${settings.bessDegradationPctPerYear || 2.0}%/rok`;
-  document.getElementById('bessLifetime').textContent = `${settings.bessLifetimeYears || 15} lat`;
+  document.getElementById('bessLifetime').textContent = `${settings.bessLifetimeYears} lat`;
   document.getElementById('bessCapexKwh').textContent = `${formatNumberEU(settings.bessCapexPerKwh || 1500, 0)} PLN/kWh`;
   document.getElementById('bessCapexKw').textContent = `${formatNumberEU(settings.bessCapexPerKw || 300, 0)} PLN/kW`;
 }
@@ -1790,8 +1790,8 @@ function generateDegradationTable(variant) {
   const dischargedKwh = variant.bess_discharged_kwh || 0;
   const degYear1 = settings.bessDegradationYear1 || 3.0;
   const degYearN = settings.bessDegradationPctPerYear || 2.0;
-  const lifetime = settings.bessLifetimeYears || 15;
-  const analysisPeriod = 25;
+  const lifetime = settings.bessLifetimeYears;
+  const analysisPeriod = settings.analysisPeriod;
 
   // Energy factor based on first year discharge
   const baseEnergyFactor = energyKwh > 0 ? dischargedKwh / energyKwh : 0;
@@ -2082,7 +2082,7 @@ function exportBessData() {
     ['CAPEX per kWh [PLN]', settings.bessCapexPerKwh || 1500],
     ['CAPEX per kW [PLN]', settings.bessCapexPerKw || 300],
     ['OPEX [% CAPEX/rok]', settings.bessOpexPctPerYear || 1.5],
-    ['Żywotność [lat]', settings.bessLifetimeYears || 15],
+    ['Żywotność [lat]', settings.bessLifetimeYears],
     ['Degradacja rok 1 [%]', settings.bessDegradationYear1 || 3.0],
     ['Degradacja lata 2+ [%/rok]', settings.bessDegradationPctPerYear || 2.0]
   ];
@@ -4905,8 +4905,8 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
 
       // v0.6.0: Finance config with lifecycle features
       // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
-      const bessHorizonYears = Math.min(settings.analysisPeriod || 15, 10);
-      const discountRateDecimal = (settings.discountRate || 7) / 100;
+      const bessHorizonYears = Math.min(settings.analysisPeriod, 10);
+      const discountRateDecimal = settings.discountRate / 100;
       requestBody.finance_config = {
         horizon_years: bessHorizonYears,
         discount_rate: discountRateDecimal,
@@ -5013,7 +5013,7 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
     // v0.6.0: Finance config with lifecycle features
     // v1.2.0: Full lifecycle - 30yr horizon with auto-replacement, escalation
     const bessHorizonYears = settings.analysisPeriod || 30;
-    const discountRateDecimal = (settings.discountRate || 7) / 100;
+    const discountRateDecimal = settings.discountRate / 100;
     const inflationRate = (settings.inflationRate || 2.5) / 100;
     requestBody.finance_config = {
       horizon_years: bessHorizonYears,
@@ -5182,7 +5182,7 @@ async function tryFetchSizingVariants(variant) {
     durations_h: [1, 2, 4],  // S/M/L grid
     capex_per_kwh: settings.bessCapexPerKwh || 1500,
     capex_per_kw: settings.bessCapexPerKw || 300,
-    discount_rate: (settings.discountRate || 7) / 100,
+    discount_rate: settings.discountRate / 100,
     analysis_years: settings.analysisYears || 15,
     stacked_mode: isStacked,
     dispatch_mode: variantDispatchMode,
@@ -5302,7 +5302,7 @@ async function tryFetchSizingVariantsWithSettings(variant) {
     durations_h: [1, 2, 4],  // S/M/L grid
     capex_per_kwh: settings.bessCapexPerKwh || 1500,
     capex_per_kw: settings.bessCapexPerKw || 300,
-    discount_rate: (settings.discountRate || 7) / 100,
+    discount_rate: settings.discountRate / 100,
     analysis_years: settings.analysisYears || 15,
     stacked_mode: isSettingsStacked,
     dispatch_mode: settingsDispatchMode,
@@ -5597,7 +5597,7 @@ async function runSensitivityAnalysis() {
 
     // Build request with params from Settings
     // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
-    const bessAnalysisYears = Math.min(settings.analysisPeriod || 15, 10);
+    const bessAnalysisYears = Math.min(settings.analysisPeriod, 10);
     const request = {
       pv_generation_kw: pvData,
       load_kw: loadData,
@@ -5612,7 +5612,7 @@ async function runSensitivityAnalysis() {
       capex_per_kwh: settings.bessCapexPerKwh || 1500,
       capex_per_kw: settings.bessCapexPerKw || 300,
       opex_pct_per_year: (settings.bessOpexPctPerYear || 1.5) / 100,  // Convert % to decimal
-      discount_rate: (settings.discountRate || 7) / 100,
+      discount_rate: settings.discountRate / 100,
       analysis_years: bessAnalysisYears,
       import_price_pln_mwh: settings.energyPurchasePrice || 800,
       // Degradation params from Settings
@@ -6512,7 +6512,7 @@ function buildSizingRequest(variantData) {
   }
 
   // BESS analysis horizon is capped at 10 years (battery lifetime constraint)
-  const bessAnalysisYears = Math.min(settings.analysisPeriod || 15, 10);
+  const bessAnalysisYears = Math.min(settings.analysisPeriod, 10);
   const request = {
     pv_generation_kw: effectivePv,
     load_kw: loadData,
@@ -6535,7 +6535,7 @@ function buildSizingRequest(variantData) {
     capex_per_kwh: settings.bessCapexPerKwh || 1500,
     capex_per_kw: settings.bessCapexPerKw || 300,
     opex_pct_per_year: (settings.bessOpexPctPerYear || 1.5) / 100,  // Convert % to decimal
-    discount_rate: (settings.discountRate || 7) / 100,
+    discount_rate: settings.discountRate / 100,
     analysis_years: bessAnalysisYears,
 
     // Degradation from Settings
@@ -6628,7 +6628,7 @@ function buildSizingRequest(variantData) {
   // v3.1.0: Add finance_config for cashflow/sensitivity analysis
   request.finance_config = {
     horizon_years: bessAnalysisYears,
-    discount_rate: (settings.discountRate || 7) / 100,
+    discount_rate: settings.discountRate / 100,
     include_cashflow_timeseries: true,
     discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
     bess_degradation_year1_pct: settings.bessDegradationYear1 || 3.0,

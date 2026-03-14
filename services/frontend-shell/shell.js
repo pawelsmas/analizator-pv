@@ -1066,7 +1066,7 @@ function buildEconomicsSnapshotPayloadV2() {
   // Discount rate: settings is in % (e.g., 7), economics is in decimal (e.g., 0.07)
   const discountRate = settings.discountRate !== undefined && settings.discountRate !== null
     ? settings.discountRate / 100
-    : (economics.discountRate || 0.07);
+    : economics.discountRate;
 
   // O&M and insurance costs for investor
   const omCostPerKwp = settings.omCostPerKwp || 24; // PLN/kWp/year
@@ -1340,7 +1340,7 @@ function buildEconomicsSnapshotPayloadV2() {
     // Store as percentage (e.g., 7.0 for 7%)
     discount_rate_pct: settings.discountRate !== undefined && settings.discountRate !== null
       ? settings.discountRate
-      : (economics.discountRate ? economics.discountRate * 100 : 7),
+      : economics.discountRate * 100,
     inflation_rate_pct: settings.inflationRate !== undefined && settings.inflationRate !== null
       ? settings.inflationRate
       : 2.5,

@@ -123,8 +123,8 @@
       opex_pct_per_year: parseFloatSafe(settings.bessOpexPctPerYear, 1.5) / 100,
 
       // ===== ANALYSIS =====
-      discount_rate: parseFloatSafe(settings.discountRate, 7) / 100,
-      analysis_years: parseInt(settings.analysisYears || settings.bessLifetimeYears, 10) || 15,
+      discount_rate: parseFloatSafe(settings.discountRate) / 100,
+      analysis_years: parseInt(settings.analysisYears || settings.bessLifetimeYears || settings.analysisPeriod, 10),
 
       // ===== DEGRADATION BUDGET =====
       max_efc_per_year: settings.bessMaxEfcPerYear || null,
@@ -263,7 +263,7 @@
       pricing_stack_mode: 'OSD_ALL_IN',
 
       // Energy prices
-      import_price_pln_mwh: parseFloatSafe(settings.totalEnergyPrice, 800),
+      import_price_pln_mwh: parseFloatSafe(settings.totalEnergyPrice),
       export_price_pln_mwh: 0,  // ZERO_EXPORT policy
 
       // Fixed charges

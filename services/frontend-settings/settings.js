@@ -170,11 +170,16 @@ const DEFAULT_CONFIG = {
   landLeasePerKwp: 0,    // Land lease cost [PLN/kWp/year]
 
   // Financial Parameters
-  discountRate: 7,
+  discountRate: 10,
   pvDegradationYear1: 1.0,        // First year PV degradation [%] - LID (TOPCon ~1%, PERC ~2%)
   degradationRate: 0.5,           // Annual PV degradation for years 2+ [%/year]
   analysisPeriod: 25,
   inflationRate: 2.5,
+
+  // Production scenario factors (P-values)
+  productionFactorP50: 1.00,    // P50 = baseline
+  productionFactorP75: 0.97,    // P75 = conservative
+  productionFactorP90: 0.94,    // P90 = very conservative
 
   // IRR Calculation Mode
   useInflation: false,   // false = real IRR (constant prices), true = nominal IRR (inflation-indexed)
@@ -2693,17 +2698,13 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// Utility function to get CAPEX for capacity (can be called from other modules)
-function getCapexForCapacity(capacityKwp) {
-  const settings = getCurrentSettings();
-  for (const tier of settings.capexTiers) {
-    if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
-      return tier.capex;
-    }
-  }
-  // Fallback
-  if (capacityKwp > 50000) return settings.capexTiers[6].capex;
-  return settings.capexTiers[0].capex;
+// Utility function to get CAPEX sale price [PLN/kWp] for capacity and optional pvType.
+// Delegates to getCapexForCapacityAndType (NEW format with capexPerType + capexRanges).
+// This is the SSoT — other modules should call window.PVSettings.getCapexForCapacity().
+function getCapexForCapacity(capacityKwp, pvType) {
+  const type = pvType || 'ground_s';
+  const result = getCapexForCapacityAndType(capacityKwp, type);
+  return result.sale;
 }
 
 // Utility function to get DC/AC ratio for capacity and installation type

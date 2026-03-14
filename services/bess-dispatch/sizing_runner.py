@@ -218,8 +218,8 @@ def calculate_battery_lifetime_years(
     cycles_to_eol: float = 6000.0,
     eol_soh_pct: float = 70.0,
     energy_kwh: float = 0.0,
-    calendar_deg_year1_pct: float = 5.0,
-    calendar_deg_annual_pct: float = 2.0,
+    calendar_deg_year1_pct: float = 2.0,
+    calendar_deg_annual_pct: float = 1.0,
     degradation_curve: str = "linear",
     max_years: int = 30,
 ) -> int:
@@ -252,8 +252,8 @@ def calculate_npv_lifecycle(
     savings_escalation_rate: float = 0.0,
     opex_escalation_rate: float = 0.0,
     degradation_curve: str = "linear",
-    calendar_deg_year1_pct: float = 5.0,
-    calendar_deg_annual_pct: float = 2.0,
+    calendar_deg_year1_pct: float = 2.0,
+    calendar_deg_annual_pct: float = 1.0,
     annual_auxiliary_cost_pln: float = 0.0,
 ) -> tuple:
     """
@@ -2148,7 +2148,7 @@ def calculate_stacked_decomposition(
 
     peak_capex = peak_energy_kwh * capex_per_kwh + peak_power_kw * capex_per_kw
     _peak_cfg = _NpvConfig(
-        discount_rate=request.discount_rate or 0.07,
+        discount_rate=request.discount_rate or 0.10,
         analysis_years=request.analysis_years or 15,
         opex_pct=request.opex_pct_per_year or 0.015,
     )
@@ -2246,7 +2246,7 @@ def calculate_stacked_decomposition(
 
     arb_capex = arb_energy_kwh * capex_per_kwh + arb_power_kw * capex_per_kw
     _arb_cfg = _NpvConfig(
-        discount_rate=request.discount_rate or 0.07,
+        discount_rate=request.discount_rate or 0.10,
         analysis_years=request.analysis_years or 15,
         opex_pct=request.opex_pct_per_year or 0.015,
     )
@@ -2281,7 +2281,7 @@ def calculate_stacked_decomposition(
 
     # Recalculate combined NPV (not just sum due to shared OPEX base)
     _total_cfg = _NpvConfig(
-        discount_rate=request.discount_rate or 0.07,
+        discount_rate=request.discount_rate or 0.10,
         analysis_years=request.analysis_years or 15,
         opex_pct=request.opex_pct_per_year or 0.015,
     )
@@ -2545,7 +2545,7 @@ def find_optimal_power_for_duration(
 
     for power, result, capex, npv, eff_years in futures:
         energy = power * duration_h
-        payback = calculate_simple_payback(result.annual_savings_pln, capex)
+        payback = _unified_simple_payback(result.annual_savings_pln, capex)
 
         # Check constraints
         passes_hard, penalty, violations = check_constraints(
@@ -2631,7 +2631,7 @@ def find_optimal_power_for_duration(
             pv_kw, load_kw, dt_hours, mode, duration_h, power, request,
             import_prices=import_prices, export_prices=export_prices
         )
-        payback = calculate_simple_payback(result.annual_savings_pln, capex)
+        payback = _unified_simple_payback(result.annual_savings_pln, capex)
         _, _, violations = check_constraints(opt_config, capex, npv, payback, result)
         return power, power * duration_h, result, float('-inf'), violations, grid_points
 

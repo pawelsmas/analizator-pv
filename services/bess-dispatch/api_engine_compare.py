@@ -93,7 +93,7 @@ class CompareRequest(BaseModel):
     # Economics
     capex_per_kwh: float = Field(1500.0, description="CAPEX per kWh [PLN]")
     capex_per_kw: float = Field(300.0, description="CAPEX per kW [PLN]")
-    discount_rate: float = Field(0.08, description="Discount rate")
+    discount_rate: float = Field(0.10, description="Discount rate")
     analysis_years: int = Field(15, description="Analysis period")
 
     # Battery (optional - for dispatch comparison)

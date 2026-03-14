@@ -130,7 +130,7 @@ class MonteCarloEngine:
             payback_histogram = self._compute_histogram(payback_valid, request.histogram_bins)
 
         # Risk metrics
-        risk_metrics = self._compute_risk_metrics(npv_results, params.get("discount_rate", 0.07))
+        risk_metrics = self._compute_risk_metrics(npv_results, params.get("discount_rate", 0.10))
 
         # Generate insights
         insights = self._generate_insights(
@@ -336,7 +336,7 @@ class MonteCarloEngine:
             exported = base_production * 0.3
 
         analysis_period = params.get("analysis_period", 25)
-        base_discount_rate = params.get("discount_rate", 0.07)
+        base_discount_rate = params.get("discount_rate", 0.10)
         base_degradation_rate = params.get("degradation_rate", 0.005)
         base_opex_per_kwp = params.get("opex_per_kwp", 15.0)
         export_mode = params.get("export_mode", "zero")

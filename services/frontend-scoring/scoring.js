@@ -314,7 +314,7 @@ async function calculateScores(offers) {
     offers: offers,
     parameters: {
       horizon_years: currentHorizon,
-      discount_rate: 0.07,
+      discount_rate: window.economicsSettings?.discountRate,
       conservative_yield_factor: currentConservativeYield,
       conservative_price_factor: currentConservativePrices,
       profile: {

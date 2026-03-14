@@ -354,7 +354,7 @@ function buildEconomicsDataFromGlobals(variant, economicData, systemSettings) {
 
         // === OTHER PARAMETERS (match economics.js exactly) ===
         // Discount rate: economics.js uses window.economicsSettings.discountRate
-        const discountRate = window.economicsSettings?.discountRate ?? 0.07;
+        const discountRate = window.economicsSettings?.discountRate;
 
         // Degradation rate: economics.js uses params.degradation_rate (from systemSettings as %)
         const degradationRate = (systemSettings?.degradationRate || 0.5) / 100;
@@ -367,7 +367,7 @@ function buildEconomicsDataFromGlobals(variant, economicData, systemSettings) {
 
         // Inflation rate (only if useInflation is enabled)
         const useInflation = window.economicsSettings?.useInflation || false;
-        const inflationRate = useInflation ? (window.economicsSettings?.inflationRate || 0.025) : 0;
+        const inflationRate = useInflation ? window.economicsSettings?.inflationRate : 0;
 
         console.log('🎲 MC: Final parameters:', {
             energy_price: energyPrice,
@@ -433,7 +433,7 @@ function buildEconomicsDataFromStoredVariant(variant, economicData) {
         }
 
         // Get discount rate from window.economicsSettings (where economics.js stores it)
-        const discountRate = window.economicsSettings?.discountRate || economicData?.discount_rate || 0.07;
+        const discountRate = window.economicsSettings?.discountRate || economicData?.discount_rate;
 
         console.log('🎲 MC: buildEconomicsDataFromStoredVariant - energyPrice:', energyPrice,
                     'investmentCost:', investmentCost, 'discountRate:', discountRate);
@@ -486,7 +486,7 @@ function buildEconomicsDataFromUI(capacity) {
     const analysisPeriod = parseInt(document.getElementById('analysisPeriod')?.value || 25);
 
     // Get discount rate from window.economicsSettings
-    const discountRate = window.economicsSettings?.discountRate ?? 0.07;
+    const discountRate = window.economicsSettings?.discountRate;
 
     console.log('🎲 MC: buildEconomicsDataFromUI - totalEnergyPrice:', totalEnergyPrice,
                 '(includes capacityFee:', capacityFee, ')');

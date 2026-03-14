@@ -2083,7 +2083,7 @@ def auto_size_bess_lite(
     capex_per_kwh: float = 1500.0,
     capex_per_kw: float = 300.0,
     energy_price_plnmwh: float = 800.0,
-    discount_rate: float = 0.07,
+    discount_rate: float = 0.10,
     lifetime_years: int = 15,
     roundtrip_efficiency: float = 0.90
 ) -> tuple:
@@ -2254,7 +2254,7 @@ def call_bess_pro_optimizer(
     pv_capacity_kwp: float,
     bess_config: "BESSConfigLite",
     energy_price_plnmwh: float = 800.0,
-    discount_rate: float = 0.07,
+    discount_rate: float = 0.10,
     analysis_period_years: int = 25
 ) -> Optional[dict]:
     """
@@ -2266,7 +2266,7 @@ def call_bess_pro_optimizer(
         pv_capacity_kwp: PV capacity [kWp]
         bess_config: BESS configuration with pro_config
         energy_price_plnmwh: Energy price [PLN/MWh]
-        discount_rate: Discount rate (e.g., 0.07 = 7%)
+        discount_rate: Discount rate (e.g., 0.10 = 10%)
         analysis_period_years: Analysis period [years]
 
     Returns:
@@ -2479,7 +2479,7 @@ def call_bess_dispatch_sizing(
         "capex_per_kwh": bess_settings.get('capex_per_kwh', 1500.0),  # PLN/kWh from Settings
         "capex_per_kw": bess_settings.get('capex_per_kw', 300.0),     # PLN/kW from Settings
         "opex_pct_per_year": bess_settings.get('opex_pct_per_year', 0.015),
-        "discount_rate": bess_settings.get('discount_rate', 0.07),   # 7% from Settings.discountRate
+        "discount_rate": bess_settings.get('discount_rate', 0.10),   # 10% from Settings.discountRate
         # BESS analysis horizon is capped at 10 years (battery lifetime constraint)
         "analysis_years": min(bess_settings.get('analysis_years', 15), 10),
 
@@ -2988,7 +2988,7 @@ async def analyze(request: AnalysisRequest):
                     capex_per_kwh=bess_config.capex_per_kwh,
                     capex_per_kw=bess_config.capex_per_kw,
                     energy_price_plnmwh=request.pv_config.energy_price if hasattr(request.pv_config, 'energy_price') else 800.0,
-                    discount_rate=request.pv_config.discount_rate if hasattr(request.pv_config, 'discount_rate') else 0.07,
+                    discount_rate=request.pv_config.discount_rate if hasattr(request.pv_config, 'discount_rate') else 0.10,
                     lifetime_years=bess_config.lifetime_years,
                     roundtrip_efficiency=bess_config.roundtrip_efficiency
                 )
@@ -3080,7 +3080,7 @@ async def analyze(request: AnalysisRequest):
                         'capex_per_kwh': bess_config.capex_per_kwh,
                         'capex_per_kw': bess_config.capex_per_kw,
                         'opex_pct_per_year': opex_fraction,
-                        'discount_rate': getattr(request.pv_config, 'discount_rate', 0.07),
+                        'discount_rate': getattr(request.pv_config, 'discount_rate', 0.10),
                         'analysis_years': bess_config.lifetime_years,
                         'import_price_pln_mwh': getattr(request.pv_config, 'energy_price', 800.0),
                         'durations_h': [1.0, 2.0, 4.0],

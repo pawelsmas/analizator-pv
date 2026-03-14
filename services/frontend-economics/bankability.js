@@ -1010,8 +1010,8 @@ function exportBankabilityToExcel() {
   // Economic assumptions
   wsAssumptions.addRow(['PARAMETRY EKONOMICZNE', '', '', '']);
   wsAssumptions.getCell('A17').font = { bold: true };
-  const discountRate = window.economicsSettings?.discountRate || 0.07;
-  const inflationRate = window.economicsSettings?.inflationRate || 0.025;
+  const discountRate = window.economicsSettings?.discountRate;
+  const inflationRate = window.economicsSettings?.inflationRate;
   wsAssumptions.addRow(['Stopa dyskontowa', discountRate]);
   wsAssumptions.getCell('B18').numFmt = '0.00%';
   wsAssumptions.addRow(['Inflacja', inflationRate]);

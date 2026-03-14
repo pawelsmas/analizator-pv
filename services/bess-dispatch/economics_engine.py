@@ -14,13 +14,13 @@ NIE ROBI:
 UŻYCIE:
   from economics_engine import NpvConfig, NpvResult, calculate_npv, calculate_simple_payback
 
-  config = NpvConfig(discount_rate=0.07, analysis_years=15)
+  config = NpvConfig(discount_rate=0.10, analysis_years=15)
   result = calculate_npv(annual_savings=50000, capex=300000, config=config)
   print(result.npv_pln, result.irr_pct, result.payback_years)
 
   # Z degradacją (lifecycle):
   config = NpvConfig(
-      discount_rate=0.07, analysis_years=15,
+      discount_rate=0.10, analysis_years=15,
       include_degradation=True,
       efc_per_year=500, energy_kwh=1000, cycles_to_eol=6000,
       savings_escalation_rate=0.025,
@@ -47,7 +47,7 @@ class NpvConfig:
     Konfiguracja obliczeń NPV — jeden obiekt, wiele trybów.
 
     Tryb prosty (default):
-        NpvConfig(discount_rate=0.07, analysis_years=15)
+        NpvConfig(discount_rate=0.10, analysis_years=15)
         → stałe cashflows przez analysis_years
 
     Tryb lifecycle (include_degradation=True):
@@ -60,7 +60,7 @@ class NpvConfig:
         opex_escalation_rate=0.025 → opex rośnie 2.5%/rok
     """
     # --- Wymagane ---
-    discount_rate: float = 0.07
+    discount_rate: float = 0.10
     analysis_years: int = 15
     opex_pct: float = 0.015
 

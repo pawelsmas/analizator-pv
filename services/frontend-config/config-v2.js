@@ -654,40 +654,19 @@ function updateNpvModeHint() {
   }
 }
 
-// Get CAPEX tiers from system settings
-function getCapexTiers() {
-  if (systemSettings && systemSettings.capexTiers) {
-    return systemSettings.capexTiers;
-  }
-  // Fallback defaults
-  return [
-    { min: 150, max: 500, capex: 4200 },
-    { min: 501, max: 1000, capex: 3800 },
-    { min: 1001, max: 2500, capex: 3500 },
-    { min: 2501, max: 5000, capex: 3200 },
-    { min: 5001, max: 10000, capex: 3000 },
-    { min: 10001, max: 15000, capex: 2850 },
-    { min: 15001, max: 50000, capex: 2700 }
-  ];
-}
-
-// Get CAPEX per kWp based on capacity
+// Get CAPEX per kWp based on capacity — delegates to settings.js SSoT
 function getCapexForCapacity(capacityKwp) {
-  const tiers = getCapexTiers();
-
+  if (window.PVSettings?.getCapexForCapacity) {
+    return window.PVSettings.getCapexForCapacity(capacityKwp);
+  }
+  console.warn('PVSettings.getCapexForCapacity not available, using systemSettings.capexTiers');
+  const tiers = (systemSettings && systemSettings.capexTiers) || [];
   for (const tier of tiers) {
     if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
       return tier.capex;
     }
   }
-
-  // Fallback: use last tier for very large installations
-  if (capacityKwp > 50000) {
-    return tiers[tiers.length - 1].capex;
-  }
-
-  // Fallback: use first tier for very small installations
-  return tiers[0].capex;
+  return tiers.length > 0 ? tiers[tiers.length - 1].capex : 3500;
 }
 
 // Calculate NPV for a given capacity scenario
@@ -699,7 +678,7 @@ function calculateScenarioNPV(scenario, params) {
   const opex = scenario.capacity * params.opex;
 
   // Get parameters from system settings
-  const discountRate = (systemSettings?.discountRate || 7) / 100;
+  const discountRate = systemSettings?.discountRate / 100;
   const analysisPeriod = systemSettings?.analysisPeriod || 25;
   const degradationRate = (systemSettings?.degradationRate || 0.5) / 100;
 
@@ -1179,7 +1158,7 @@ async function runAnalysis() {
         capex_per_kwh: systemSettings.bessCapexPerKwh || 1500,
         capex_per_kw: systemSettings.bessCapexPerKw || 300,
         opex_pct_per_year: (systemSettings.bessOpexPctPerYear || 1.5) / 100,  // Convert % to decimal
-        lifetime_years: systemSettings.bessLifetimeYears || 15,
+        lifetime_years: systemSettings.bessLifetimeYears,
         degradation_pct_per_year: systemSettings.bessDegradationPctPerYear || 2.0,
 
         // Scenario-based dispatch configuration (MVP v3.17)
@@ -1324,8 +1303,8 @@ async function runAnalysis() {
     const economicParams = {
       energyPrice: systemSettings?.totalEnergyPrice || 1001,
       opex: systemSettings?.opexPerKwp || 15,
-      capexTiers: getCapexTiers(),
-      discountRate: systemSettings?.discountRate || 7,
+      capexTiers: (systemSettings && systemSettings.capexTiers) || [],
+      discountRate: systemSettings?.discountRate,
       degradationRate: systemSettings?.degradationRate || 0.5,
       analysisPeriod: systemSettings?.analysisPeriod || 25
     };
@@ -2207,10 +2186,10 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
         bess_capex_per_kwh: systemSettings?.bessCapexPerKwh || 1500,
         bess_capex_per_kw: systemSettings?.bessCapexPerKw || 300,
         opex_pct_per_year: (systemSettings?.bessOpexPctPerYear || 1.5) / 100,
-        discount_rate: (systemSettings?.discountRate || 7) / 100,
-        lifetime_years: systemSettings?.bessLifetimeYears || 15,
+        discount_rate: systemSettings?.discountRate / 100,
+        lifetime_years: systemSettings?.bessLifetimeYears,
         prices: {
-          import_price_pln_mwh: systemSettings?.totalEnergyPrice || 800
+          import_price_pln_mwh: systemSettings?.totalEnergyPrice
         }
       };
     }

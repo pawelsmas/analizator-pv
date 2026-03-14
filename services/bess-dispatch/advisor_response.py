@@ -90,7 +90,7 @@ def validate_advisor_input(
     capex_per_kwh: float = DEFAULT_CAPEX_PER_KWH,
     capex_per_kw: float = DEFAULT_CAPEX_PER_KW,
     analysis_years: int = 15,
-    discount_rate: float = 0.07,
+    discount_rate: float = 0.10,
     roundtrip_efficiency: float = 0.90,
 ) -> ValidationResult:
     """
@@ -734,7 +734,7 @@ def generate_advisor_response(
     # BESS analysis horizon is capped at 10 years
     analysis_years = min(applied.get("analysis_years", 15), 10)
     assumptions = AdvisorAssumptions(
-        discount_rate=applied.get("discount_rate", 0.07),
+        discount_rate=applied.get("discount_rate", 0.10),
         analysis_years=analysis_years,
         capex_per_kwh=capex_per_kwh,
         capex_per_kw=capex_per_kw,

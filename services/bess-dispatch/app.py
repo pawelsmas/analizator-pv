@@ -1921,7 +1921,7 @@ class SizingRequestAPI(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0)
     capex_per_kw: float = Field(300.0, ge=0)
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
 
     # Prices (legacy flat pricing)
@@ -2332,7 +2332,7 @@ async def run_sizing_optimization(
             fc_dict = request.finance_config
             finance_config = FinanceConfig(
                 horizon_years=fc_dict.get("horizon_years", 10),
-                discount_rate=fc_dict.get("discount_rate", 0.08),
+                discount_rate=fc_dict.get("discount_rate", 0.10),
                 savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
                 opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
                 opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
@@ -2795,7 +2795,7 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         fc_dict = api_request.finance_config
         finance_config = FinanceConfig(
             horizon_years=fc_dict.get("horizon_years", 10),
-            discount_rate=fc_dict.get("discount_rate", 0.08),
+            discount_rate=fc_dict.get("discount_rate", 0.10),
             savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
             opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
             opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
@@ -3102,7 +3102,7 @@ class SensitivityRequestAPI(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0)
     capex_per_kw: float = Field(300.0, ge=0)
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
     import_price_pln_mwh: float = Field(800.0, ge=0)
 

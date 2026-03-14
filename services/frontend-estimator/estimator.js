@@ -34,7 +34,7 @@ let CAPEX_TIERS = [
 // Additional parameters from settings
 let degradationRate = 0.5; // % per year
 let systemLifetime = 25; // years (analysisPeriod)
-let discountRate = 7; // % for NPV calculations
+let discountRate = null; // % for NPV calculations — set from settings via updateFromSettings()
 let curtailmentLossPercent = 0; // % straty od ograniczeń (0-export, clipping)
 let locationInfo = null; // { city, latitude, longitude, elevation }
 

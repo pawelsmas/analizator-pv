@@ -53,11 +53,13 @@ class StackedServiceOptimizer:
         battery_config: BatteryVirtualizationConfig,
         market_preset: Optional[PolishMarketPreset] = None,
         year: int = 2026,
+        degradation_cost_pln_mwh: float = 50.0,
     ):
         self.battery = battery_config
         self.market = market_preset or POLISH_MARKET_PRESETS.get(
             year, PolishMarketPreset(year=year)
         )
+        self._degradation_cost_per_kwh = degradation_cost_pln_mwh / 1000.0
         self.virtualizer = BatteryVirtualizer(battery_config)
         self.revenue_calc = AncillaryRevenueCalculator(battery_config, self.market, year)
 
@@ -114,8 +116,8 @@ class StackedServiceOptimizer:
             if "mfrr_up" in ancillary_prices:
                 mfrr_up_price = ancillary_prices["mfrr_up"] / 1000
 
-        # Degradation cost per kWh throughput
-        deg_cost = 0.10  # PLN/kWh
+        # Degradation cost per kWh throughput — from config
+        deg_cost = self._degradation_cost_per_kwh
 
         # ── Build LP ──
         # Decision variables per timestep:
@@ -295,7 +297,7 @@ class StackedServiceOptimizer:
         throughput_mwh = (total_charge + total_discharge) / 1000
         efc = throughput_mwh / 2 / (total_e / 1000) if total_e > 0 else 0
 
-        degradation_cost = throughput_mwh * 1000 * 0.10  # PLN
+        degradation_cost = throughput_mwh * 1000 * self._degradation_cost_per_kwh  # PLN
 
         return {
             "status": "optimal",

@@ -1,7 +1,17 @@
-console.log('🚀 economics.js LOADED v=20260314-SCENARIO-DEBOUNCE - timestamp:', new Date().toISOString());
+console.log('🚀 economics.js LOADED v=20260314-PLNTOTYPLN - timestamp:', new Date().toISOString());
 
 // DEBUG flag - set to true for verbose logging (or via URL ?debug_economics=1)
 const DEBUG_ECONOMICS = window.location?.search?.includes('debug_economics=1') || false;
+
+// ============================================================================
+// UNIT CONVERSION HELPERS — użyj zamiast ręcznego /1000, *1000
+// ============================================================================
+const kwhToMwh = kwh => kwh / 1000;
+const mwhToKwh = mwh => mwh * 1000;
+const plnToTysPln = pln => pln / 1000;
+const plnToMlnPln = pln => pln / 1000000;
+const pctToDecimal = pct => pct / 100;
+const decimalToPct = dec => dec * 100;
 
 // Production mode - use nginx reverse proxy routes
 const USE_PROXY = true;
@@ -116,14 +126,15 @@ window.centralizedMetrics = centralizedMetrics;
 window.currentVariant = currentVariant;
 window.eaasYearlyData = eaasYearlyData;
 
-// Initialize window.economicsSettings with defaults
+// Initialize window.economicsSettings — values are null until real settings arrive via SHARED_DATA_RESPONSE.
+// Any calculation reading null means settings haven't loaded yet (bug in call order, not a fallback case).
 window.economicsSettings = {
-  discountRate: 0.07, // 7%
-  insuranceRate: 0.005, // 0.5%
-  inflationRate: 0.03, // 3%
-  eaasIndexation: 'fixed', // 'fixed' or 'cpi'
-  useInflation: false, // false = real IRR, true = nominal IRR
-  irrMode: 'real', // 'real' or 'nominal'
+  discountRate: null,
+  insuranceRate: null,
+  inflationRate: null,
+  eaasIndexation: null,
+  useInflation: false,
+  irrMode: null,
 
   // === P0-1: BESS Replacement Parameters ===
   bessLifetimeYears: 15,
@@ -151,7 +162,7 @@ window.economicsSettings = {
 window.currentProductionScenario = 'P50';
 window.currentScenarioFactor = 1.0;
 
-// P-factor values (can be overwritten by settings)
+// P-factor values — initialized from settings in applySettingsToUI()
 window.productionFactors = {
   P50: 1.00,
   P75: 0.97,
@@ -173,7 +184,7 @@ window.productionFactors = {
  * @returns {Array<{year: number, cost: number}>} - Replacement schedule
  */
 function calculateBessReplacementSchedule(initialBessCapex, bessEnergyKwh, analysisPeriod, settings = {}) {
-  const bessLifetime = settings.bessLifetimeYears ?? window.economicsSettings?.bessLifetimeYears ?? 15;
+  const bessLifetime = settings.bessLifetimeYears ?? window.economicsSettings?.bessLifetimeYears;
   const replacementMode = settings.bessReplacementMode ?? window.economicsSettings?.bessReplacementMode ?? 'percent_of_initial';
   const replacementCostValue = settings.bessReplacementCostValue ?? window.economicsSettings?.bessReplacementCostValue ?? 0.7;
   const replacementFraction = settings.bessReplacementFraction ?? window.economicsSettings?.bessReplacementFraction ?? 1.0;
@@ -356,7 +367,7 @@ function calculateResidualValue(totalCapex, capacityKwp, analysisPeriod, setting
       // Fair Market Value as percentage of initial CAPEX
       // Note: Could be adjusted for depreciation, but simplified here
       value = totalCapex * fmvPercent;
-      description = `FMV: ${(fmvPercent * 100).toFixed(0)}% of initial CAPEX`;
+      description = `FMV: ${decimalToPct(fmvPercent).toFixed(0)}% of initial CAPEX`;
       break;
 
     default:
@@ -398,8 +409,8 @@ function calculateResidualValue(totalCapex, capacityKwp, analysisPeriod, setting
  */
 function getEffectiveDiscountRate(settings = {}) {
   const rateMode = settings.rateMode ?? window.economicsSettings?.rateMode ?? 'nominal';
-  let discountRate = settings.discountRate ?? window.economicsSettings?.discountRate ?? 0.07;
-  let inflationRate = settings.inflationRate ?? window.economicsSettings?.inflationRate ?? 0.03;
+  let discountRate = settings.discountRate ?? window.economicsSettings?.discountRate;
+  let inflationRate = settings.inflationRate ?? window.economicsSettings?.inflationRate;
   const useInflation = settings.useInflation ?? window.economicsSettings?.useInflation ?? false;
 
   // P0-3 GUARDRAIL: Ensure numeric values
@@ -407,8 +418,8 @@ function getEffectiveDiscountRate(settings = {}) {
   inflationRate = parseFloat(inflationRate);
 
   if (isNaN(discountRate)) {
-    console.warn('⚠️ getEffectiveDiscountRate: discountRate is NaN, using default 0.07');
-    discountRate = 0.07;
+    console.error('❌ getEffectiveDiscountRate: discountRate is NaN — settings not loaded?');
+    return { effectiveRate: NaN, mode: 'error', isConverted: false, inflationRate: NaN, warning: 'discountRate is NaN', inputRate: NaN };
   }
 
   let effectiveRate = discountRate;
@@ -428,7 +439,7 @@ function getEffectiveDiscountRate(settings = {}) {
       isConverted = true;
 
       if (DEBUG_ECONOMICS) {
-        console.log(`📊 Rate conversion: ${(discountRate * 100).toFixed(2)}% real → ${(effectiveRate * 100).toFixed(2)}% nominal (inflation: ${(inflationRate * 100).toFixed(1)}%)`);
+        console.log(`📊 Rate conversion: ${decimalToPct(discountRate).toFixed(2)}% real → ${decimalToPct(effectiveRate).toFixed(2)}% nominal (inflation: ${decimalToPct(inflationRate).toFixed(1)}%)`);
       }
     }
     // If inflation = 0, real = nominal, no conversion needed
@@ -442,8 +453,8 @@ function getEffectiveDiscountRate(settings = {}) {
 
   // P0-3 GUARDRAIL: Final NaN check
   if (isNaN(effectiveRate) || !isFinite(effectiveRate)) {
-    console.warn('⚠️ getEffectiveDiscountRate: effectiveRate is NaN/Infinity, using default 0.07');
-    effectiveRate = 0.07;
+    console.warn('⚠️ getEffectiveDiscountRate: effectiveRate is NaN/Infinity, using default 0.10');
+    effectiveRate = 0.10;
     warning = (warning || '') + ' effectiveRate computed as NaN, using fallback.';
   }
 
@@ -533,7 +544,7 @@ function applyBessSourceToVariant() {
     // Build from available data
     const settings = systemSettings || {};
     variant.prices_summary = {
-      import_price_pln_mwh: settings.totalEnergyPrice || settings.energyPrice || 800,
+      import_price_pln_mwh: window.economicsSettings?.totalEnergyPrice || settings.totalEnergyPrice || settings.energyPrice,
       demand_charge_pln_kw_month: settings.bessPowerChargePlnPerKwMonth || 50,
       tariff_id: settings.tariffGroup || settings.bessOsdTariffGroup || 'C12a'
     };
@@ -574,7 +585,7 @@ function generateLocalSavingsBreakdown(variant) {
   const settings = systemSettings || {};
 
   // Get energy price [PLN/MWh]
-  const energyPricePLNperMWh = settings.totalEnergyPrice || settings.energyPrice || 800;
+  const energyPricePLNperMWh = window.economicsSettings?.totalEnergyPrice || settings.totalEnergyPrice || settings.energyPrice;
 
   // Get BESS energy discharged/self-consumed [kWh/year]
   // Priority: bess_self_consumed_from_bess_kwh > bess_discharged_kwh > estimate from cycles
@@ -594,7 +605,7 @@ function generateLocalSavingsBreakdown(variant) {
   // ========== ENERGY SAVINGS ==========
   // Savings from BESS storing excess PV and discharging to reduce grid import
   // This is the main value proposition: energy stored = energy not bought from grid
-  const bessDischargedMwh = bessDischargedKwh / 1000;
+  const bessDischargedMwh = kwhToMwh(bessDischargedKwh);
   const energySavingsPLN = bessDischargedMwh * energyPricePLNperMWh;
   console.log('  💰 Energy savings:', energySavingsPLN.toFixed(0), 'PLN/year');
 
@@ -621,13 +632,13 @@ function generateLocalSavingsBreakdown(variant) {
   // Estimate: 10-20% premium for ToU tariffs, applied to portion of BESS discharge
   const touPremiumFactor = settings.bessTouPremiumFactor || 0.10; // 10% default
   const arbitrageEligibleKwh = bessDischargedKwh * 0.7; // Assume 70% of discharge can capture ToU spread
-  const arbitrageSavingsPLN = (arbitrageEligibleKwh / 1000) * energyPricePLNperMWh * touPremiumFactor;
+  const arbitrageSavingsPLN = kwhToMwh(arbitrageEligibleKwh) * energyPricePLNperMWh * touPremiumFactor;
   console.log('  💰 Arbitrage savings:', arbitrageSavingsPLN.toFixed(0), 'PLN/year (ToU premium)');
 
   // ========== DEGRADATION COST ==========
   // Cost of battery degradation from cycling
   // Typical: 0.05-0.10 PLN/kWh throughput
-  const degradationCostPLNperKwh = settings.bessDegradationCostPlnPerKwh || 0.07;
+  const degradationCostPLNperKwh = settings.bessDegradationCostPlnPerKwh || 0.10;
   const annualThroughputKwh = bessDischargedKwh * 2; // Charge + discharge
   const degradationCostPLN = annualThroughputKwh * degradationCostPLNperKwh;
   console.log('  💸 Degradation cost:', degradationCostPLN.toFixed(0), 'PLN/year');
@@ -681,11 +692,25 @@ function ensureSavingsBreakdown(variant) {
  *
  * Uses multiple sources with fallbacks
  */
+let _cachedAnnualConsumptionKwh = null;
+
+function invalidateConsumptionCache() {
+  _cachedAnnualConsumptionKwh = null;
+}
+
 function getAnnualConsumptionKwh() {
+  if (_cachedAnnualConsumptionKwh !== null) return _cachedAnnualConsumptionKwh;
+
+  const result = _resolveAnnualConsumptionKwh();
+  _cachedAnnualConsumptionKwh = result;
+  return result;
+}
+
+function _resolveAnnualConsumptionKwh() {
   // Priority 1: consumptionData.annual_consumption_kwh (sent from config module)
   if (consumptionData?.annual_consumption_kwh && consumptionData.annual_consumption_kwh > 0) {
     console.log('📊 [P1] Using annual_consumption_kwh from consumptionData:',
-      (consumptionData.annual_consumption_kwh / 1000).toFixed(1), 'MWh');
+      kwhToMwh(consumptionData.annual_consumption_kwh).toFixed(1), 'MWh');
     return consumptionData.annual_consumption_kwh;
   }
 
@@ -693,7 +718,7 @@ function getAnnualConsumptionKwh() {
   if (consumptionData?.total_consumption_gwh && consumptionData.total_consumption_gwh > 0) {
     const kwh = consumptionData.total_consumption_gwh * 1000000;
     console.log('📊 [P2] Using total_consumption_gwh from consumptionData:',
-      consumptionData.total_consumption_gwh, 'GWh =', (kwh / 1000).toFixed(1), 'MWh');
+      consumptionData.total_consumption_gwh, 'GWh =', kwhToMwh(kwh).toFixed(1), 'MWh');
     return kwh;
   }
 
@@ -710,7 +735,7 @@ function getAnnualConsumptionKwh() {
       }
     }
     if (sum > 0) {
-      console.log('📊 [P3] Calculated annual consumption from hourlyData:', (sum / 1000).toFixed(1), 'MWh');
+      console.log('📊 [P3] Calculated annual consumption from hourlyData:', kwhToMwh(sum).toFixed(1), 'MWh');
       return sum;
     }
   }
@@ -718,17 +743,14 @@ function getAnnualConsumptionKwh() {
   // Priority 4: Get from analysisResults (data sent back from pv-calculation)
   if (analysisResults?.consumption_stats?.total_consumption_gwh) {
     const kwh = analysisResults.consumption_stats.total_consumption_gwh * 1000000;
-    console.log('📊 [P4] Using total_consumption_gwh from analysisResults:', (kwh / 1000).toFixed(1), 'MWh');
+    console.log('📊 [P4] Using total_consumption_gwh from analysisResults:', kwhToMwh(kwh).toFixed(1), 'MWh');
     return kwh;
   }
 
   // FALLBACK WARNING: The values below are NOT the total consumption!
-  // They are approximations and should be avoided if possible
   console.warn('⚠️ WARNING: consumptionData not available! Using fallback values.');
-  console.warn('   consumptionData:', consumptionData);
 
   // Priority 5: Get from current variant (grid_import + self_consumed = approximate total consumption)
-  // NOTE: This is NOT accurate if BESS is present!
   const variant = variants[currentVariant];
   if (variant) {
     const selfConsumed = variant.self_consumed || 0;
@@ -737,14 +759,14 @@ function getAnnualConsumptionKwh() {
     if (selfConsumed > 0 && gridImport > 0) {
       const totalConsumption = selfConsumed + gridImport;
       console.warn('📊 [P5 FALLBACK] Estimated from variant: self_consumed + grid_import =',
-        (totalConsumption / 1000).toFixed(1), 'MWh (INACCURATE!)');
+        kwhToMwh(totalConsumption).toFixed(1), 'MWh (INACCURATE!)');
       return totalConsumption;
     }
   }
 
   // Priority 6: Last resort fallback
   console.error('❌ No consumption data found! Using default 5000 MWh');
-  return 5000000; // 5 GWh = 5,000 MWh - fallback
+  return 5000000;
 }
 
 /**
@@ -806,7 +828,7 @@ function setGlobalScenario(scenario, broadcastToShell = true) {
 /**
  * Recalculate CAPEX section economics with production scenario factor
  */
-function recalculateCapexWithScenario(scenario) {
+async function recalculateCapexWithScenario(scenario) {
   const factor = window.productionFactors[scenario] || 1.0;
   console.log(`📊 Recalculating CAPEX economics with factor: ${factor} (${scenario})`);
 
@@ -823,11 +845,11 @@ function recalculateCapexWithScenario(scenario) {
 
   // If we have analysis results, recalculate and update displays
   if (analysisResults && variants && Object.keys(variants).length > 0) {
-    // Update key metrics (NPV, IRR, Payback)
-    updateCapexMetricsWithScenario(factor);
+    // Regenerate all charts, tables, and centralizedMetrics with new scenario
+    await regenerateAllChartsAndTables();
 
-    // Regenerate all charts and tables with new scenario
-    regenerateAllChartsAndTables();
+    // Update key metrics UI from centralizedMetrics (SSoT)
+    updateKeyMetricsFromCentralized();
   }
 }
 
@@ -946,8 +968,8 @@ function calculateScenarioAdjustedEconomicData(variant, params, factor) {
   // Apply scenario factor
   const adjustedProductionKwh = baseProductionKwh * factor;
   const adjustedSelfConsumedKwh = baseSelfConsumedKwh * factor;
-  const adjustedProductionMwh = adjustedProductionKwh / 1000;
-  const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
+  const adjustedProductionMwh = kwhToMwh(adjustedProductionKwh);
+  const adjustedSelfConsumedMwh = kwhToMwh(adjustedSelfConsumedKwh);
 
   // Energy prices - calculateTotalEnergyPrice() zawiera wszystkie składniki ceny energii z sieci
   // (energia czynna, dystrybucja, opłaty OZE/kogeneracja/jakościowa/mocowa, akcyza)
@@ -967,9 +989,9 @@ function calculateScenarioAdjustedEconomicData(variant, params, factor) {
 
   // Analysis parameters
   const analysisPeriod = params.analysis_period || 25;
-  const degradationRate = params.degradation_rate || 0.005;
-  const discountRate = params.discount_rate || 0.07;
-  const inflationRate = window.economicsSettings?.useInflation ? (params.inflation_rate || 0.03) : 0;
+  const degradationRate = params.degradation_rate || window.economicsSettings?.degradationRate;
+  const discountRate = params.discount_rate || window.economicsSettings?.discountRate;
+  const inflationRate = window.economicsSettings?.useInflation ? (params.inflation_rate || window.economicsSettings?.inflationRate) : 0;
 
   // Generate cash flows in format expected by charts/tables
   const cash_flows = [];
@@ -1025,133 +1047,67 @@ function calculateScenarioAdjustedEconomicData(variant, params, factor) {
 }
 
 /**
- * Update CAPEX metrics (key indicators, tables) with scenario factor
+ * Update key metric UI elements from centralizedMetrics (SSoT).
+ * Called after centralizedMetrics has been (re)populated.
  */
-function updateCapexMetricsWithScenario(factor) {
-  console.log('🔄 updateCapexMetricsWithScenario called with factor:', factor);
-
-  const variant = variants[currentVariant];
-  if (!variant) {
-    console.warn('⚠️ No variant data available for scenario update');
+function updateKeyMetricsFromCentralized() {
+  const cm = centralizedMetrics[currentVariant];
+  if (!cm || !cm.common) {
+    console.warn('⚠️ centralizedMetrics not available for updateKeyMetricsFromCentralized');
     return;
   }
-  console.log('  📊 Variant:', currentVariant, variant);
 
-  // Get economic parameters (properly formatted for calculations)
-  const params = getEconomicParameters();
-  console.log('  📊 Params:', params);
+  const c = cm.common;
+  const capex = cm.capex;
 
-  // Get base annual production (kWh) - use self_consumed for savings calculation
-  // variant.production is total production, variant.self_consumed is what saves money
-  const baseAnnualSelfConsumedKwh = variant.self_consumed || variant.production || 0;
-  const adjustedSelfConsumedKwh = baseAnnualSelfConsumedKwh * factor;
-  const adjustedSelfConsumedMwh = adjustedSelfConsumedKwh / 1000;
-  console.log('  📊 Self-consumed: base=', baseAnnualSelfConsumedKwh, 'adjusted=', adjustedSelfConsumedKwh);
-
-  // Get total energy price (already includes all components: energy_active, distribution, fees, capacity_fee, excise)
-  const totalPricePerMwh = calculateTotalEnergyPrice(params); // PLN/MWh
-  console.log('  📊 Total energy price:', totalPricePerMwh, 'PLN/MWh');
-
-  // Calculate adjusted annual savings (self-consumed energy * full price)
-  const annualSavings = adjustedSelfConsumedMwh * totalPricePerMwh;
-  console.log('  📊 Annual savings:', annualSavings, 'PLN');
-
-  // Get CAPEX using getCapexForCapacity function
-  const capacityKwp = variant.capacity || 0;
-  const capexPerKwp = getCapexForCapacity(capacityKwp);
-  const capex = capacityKwp * capexPerKwp;
-  console.log('  📊 CAPEX: capacity=', capacityKwp, 'kWp, capexPerKwp=', capexPerKwp, 'total=', capex);
-
-  // Calculate adjusted payback
-  const opexPerKwp = params.opex_per_kwp || 15;
-  const annualOpex = capacityKwp * opexPerKwp;
-  const netAnnualSavings = annualSavings - annualOpex;
-  const paybackYears = netAnnualSavings > 0 ? capex / netAnnualSavings : null;
-
-  // Calculate adjusted NPV
-  const discountRate = params.discount_rate || (systemSettings?.discountRate || 7) / 100;
-  const analysisPeriod = params.analysis_period || systemSettings?.analysisPeriod || 25;
-  const degradationRate = params.degradation_rate || (systemSettings?.degradationRate || 0.5) / 100;
-  const inflationRate = window.economicsSettings?.useInflation ? (params.inflation_rate || (systemSettings?.inflationRate || 3) / 100) : 0;
-
-  let npv = -capex;
-  for (let year = 1; year <= analysisPeriod; year++) {
-    const degradedSelfConsumedMwh = adjustedSelfConsumedMwh * Math.pow(1 - degradationRate, year - 1);
-    const yearSavings = degradedSelfConsumedMwh * totalPricePerMwh;
-    // OPEX with inflation if enabled
-    const yearOpex = capacityKwp * opexPerKwp * Math.pow(1 + inflationRate, year - 1);
-    const yearCashFlow = yearSavings - yearOpex;
-    npv += yearCashFlow / Math.pow(1 + discountRate, year);
-  }
-
-  // Calculate IRR using binary search
-  const irr = calculateSimpleIRR(capex, annualSavings, annualOpex, analysisPeriod, degradationRate);
-
-  // Update UI elements (using actual element IDs from index.html) - European format
+  // Key metrics — read from SSoT
   const paybackEl = document.getElementById('paybackPeriod');
-  if (paybackEl) paybackEl.textContent = paybackYears ? formatNumberEU(paybackYears, 1) : '–';
+  if (paybackEl) paybackEl.textContent = c.simplePayback ? formatNumberEU(c.simplePayback, 1) : '–';
 
   const npvEl = document.getElementById('npv');
-  if (npvEl) npvEl.textContent = formatNumberEU(npv / 1000000, 2);
+  if (npvEl) npvEl.textContent = formatNumberEU(plnToMlnPln(c.capexNpv), 2);
 
   const irrEl = document.getElementById('irr');
-  if (irrEl) irrEl.textContent = irr ? formatNumberEU(irr * 100, 1) : '–';
+  if (irrEl) irrEl.textContent = c.capexIrr ? formatNumberEU(decimalToPct(c.capexIrr), 1) : '–';
 
-  // Update scenario factor display
+  // Scenario factor display
   const factorDisplayEl = document.getElementById('scenarioFactorDisplay');
-  if (factorDisplayEl) factorDisplayEl.textContent = `${formatNumberEU(factor * 100, 0)}%`;
+  if (factorDisplayEl) factorDisplayEl.textContent = `${formatNumberEU(decimalToPct(c.scenarioFactor), 0)}%`;
 
   // Store scenario-adjusted data for use by other functions
   window.scenarioAdjustedData = {
-    factor: factor,
-    scenario: window.currentProductionScenario,
-    production: adjustedSelfConsumedKwh,
-    annualSavings: annualSavings,
-    npv: npv,
-    irr: irr,
-    paybackYears: paybackYears,
-    capex: capex,
-    capacityKwp: capacityKwp
+    factor: c.scenarioFactor,
+    scenario: c.scenarioName,
+    production: c.selfConsumedKwh,
+    annualSavings: c.selfConsumedMwh * c.totalEnergyPrice,
+    npv: c.capexNpv,
+    irr: c.capexIrr,
+    paybackYears: c.simplePayback,
+    capex: c.totalCapex,
+    capacityKwp: c.capacityKwp
   };
 
-  // Update "Szczegółowe Wskaźniki Finansowe" section - European format
+  // "Szczegółowe Wskaźniki Finansowe" section
+  const annualSavings = c.selfConsumedMwh * c.totalEnergyPrice;
+  const annualOpex = c.capacityKwp * c.opexPerKwp;
+  const netAnnualSavings = annualSavings - annualOpex;
+
   const savingsAnnualEl = document.getElementById('savingsAnnual');
-  if (savingsAnnualEl) savingsAnnualEl.textContent = `${formatNumberEU(netAnnualSavings / 1000, 0)} tys. PLN`;
+  if (savingsAnnualEl) savingsAnnualEl.textContent = `${formatNumberEU(plnToTysPln(netAnnualSavings), 0)} tys. PLN`;
 
   const revenueAnnualEl = document.getElementById('revenueAnnual');
-  if (revenueAnnualEl) revenueAnnualEl.textContent = `${formatNumberEU(annualSavings / 1000, 0)} tys. PLN`;
+  if (revenueAnnualEl) revenueAnnualEl.textContent = `${formatNumberEU(plnToTysPln(annualSavings), 0)} tys. PLN`;
 
   const opexAnnualEl = document.getElementById('opexAnnual');
-  if (opexAnnualEl) opexAnnualEl.textContent = `${formatNumberEU(annualOpex / 1000, 0)} tys. PLN`;
+  if (opexAnnualEl) opexAnnualEl.textContent = `${formatNumberEU(plnToTysPln(annualOpex), 0)} tys. PLN`;
 
   const roiEl = document.getElementById('roi');
-  if (roiEl && capex > 0) roiEl.textContent = `${formatNumberEU((npv / capex) * 100, 1)}%`;
+  if (roiEl && c.totalCapex > 0) roiEl.textContent = `${formatNumberEU((c.capexNpv / c.totalCapex) * 100, 1)}%`;
 
   const unitCapexEl = document.getElementById('unitCapex');
-  if (unitCapexEl && capacityKwp > 0) unitCapexEl.textContent = `${formatNumberEU(capex / capacityKwp, 0)} PLN/kWp`;
+  if (unitCapexEl && c.capacityKwp > 0) unitCapexEl.textContent = `${formatNumberEU(c.capexPerKwp, 0)} PLN/kWp`;
 
-  console.log(`📈 CAPEX metrics updated: Payback=${paybackYears?.toFixed(1)}y, NPV=${(npv/1000000).toFixed(2)}M, IRR=${irr ? (irr*100).toFixed(1) : 'N/A'}%`);
-  console.log(`   Self-consumed: ${adjustedSelfConsumedMwh.toFixed(1)} MWh/yr, Savings: ${(annualSavings/1000).toFixed(0)}k PLN/yr`);
-}
-
-/**
- * Simple IRR calculation using binary search
- */
-function calculateSimpleIRR(capex, annualSavings, annualOpex, years, degradationRate) {
-  let low = -0.5, high = 1.0;
-  for (let i = 0; i < 50; i++) {
-    const mid = (low + high) / 2;
-    let npv = -capex;
-    for (let year = 1; year <= years; year++) {
-      const degradedSavings = annualSavings * Math.pow(1 - degradationRate, year - 1);
-      const cf = degradedSavings - annualOpex;
-      npv += cf / Math.pow(1 + mid, year);
-    }
-    if (Math.abs(npv) < 100) return mid;
-    if (npv > 0) low = mid;
-    else high = mid;
-  }
-  return (low + high) / 2;
+  console.log(`📈 Key metrics updated from centralizedMetrics: Payback=${c.simplePayback?.toFixed(1)}y, NPV=${plnToMlnPln(c.capexNpv).toFixed(2)}M, IRR=${c.capexIrr ? (c.capexIrr*100).toFixed(1) : 'N/A'}%`);
 }
 
 function selectProductionScenario(scenario) {
@@ -1209,7 +1165,7 @@ function selectProductionScenario(scenario) {
   // Roczne oszczędności = Produkcja * Różnica cen
   const annualSavingsEl = document.getElementById('eaasVal_annualSavings');
   if (annualSavingsEl) {
-    annualSavingsEl.textContent = formatNumberEU(cs.annualSavings / 1000, 1);
+    annualSavingsEl.textContent = formatNumberEU(plnToTysPln(cs.annualSavings), 1);
     annualSavingsEl.style.color = cs.annualSavings >= 0 ? '#27ae60' : '#e74c3c';
   }
 
@@ -1366,7 +1322,7 @@ function recalculateEaaSWithScenario(scenario) {
 
   // Update "Cena EaaS" (price per MWh) using SAME subscription as "Efektywna cena EaaS"
   // This ensures: Cena EaaS [EUR/MWh] × FX = Efektywna cena [PLN/MWh]
-  const annualEnergyMWh = (variant.self_consumed || variant.production || 0) / 1000 * factor;
+  const annualEnergyMWh = kwhToMwh(variant.self_consumed || variant.production || 0) * factor;
   if (annualEnergyMWh > 0) {
     const updatedPricePerMWh = subscriptionContractCurrency / annualEnergyMWh;
     const priceEl = document.getElementById('eaasPricePerMWh');
@@ -1401,7 +1357,7 @@ function updateEaaSDetailedMetrics(scenario, factor) {
     const el = document.getElementById(id);
     if (el && value !== null && value !== undefined) {
       if (id.includes('NPV')) {
-        el.textContent = formatNumberEU(value / 1000000, 2);
+        el.textContent = formatNumberEU(plnToMlnPln(value), 2);
       } else if (id.includes('IRR')) {
         el.textContent = formatNumberEU(value, 1);
       }
@@ -1465,92 +1421,55 @@ const DEFAULT_CAPEX_RANGES = [
   { min: 10000, max: Infinity }
 ];
 
-// Get CAPEX per kWp based on capacity using tiered pricing
+// Get CAPEX per kWp based on capacity using tiered pricing (memoized)
+const _capexCache = new Map();
+
+function invalidateCapexCache() {
+  _capexCache.clear();
+}
+
 function getCapexForCapacity(capacityKwp) {
-  // Get current PV type from pvConfig or default to ground_s
+  const pvType = pvConfig?.pvType || pvConfig?.pv_type || 'ground_s';
+  const cacheKey = `${capacityKwp}_${pvType}`;
+  if (_capexCache.has(cacheKey)) return _capexCache.get(cacheKey);
+
+  const result = _resolveCapexForCapacity(capacityKwp);
+  _capexCache.set(cacheKey, result);
+  return result;
+}
+
+function _resolveCapexForCapacity(capacityKwp) {
   const currentPvType = pvConfig?.pvType || pvConfig?.pv_type || 'ground_s';
 
-  // Try to get CAPEX data - prefer capexPerType (new format) over capexTiers (legacy)
-  // Use defaults if systemSettings doesn't have the new format
+  // SSoT: delegate to settings.js via window.PVSettings (loaded first)
+  if (window.PVSettings?.getCapexForCapacity) {
+    return window.PVSettings.getCapexForCapacity(capacityKwp, currentPvType);
+  }
+
+  // Fallback when settings.js not yet loaded — use local data
   const capexPerType = systemSettings?.capexPerType || DEFAULT_CAPEX_PER_TYPE;
   const capexRanges = systemSettings?.capexRanges || DEFAULT_CAPEX_RANGES;
-  const capexTiers = systemSettings?.capexTiers || analysisResults?.economicParams?.capexTiers;
+  const typeTiers = capexPerType[currentPvType] || capexPerType.ground_s;
 
-  // NEW FORMAT: Use capexPerType with capexRanges
-  if (capexPerType && capexRanges && capexRanges.length > 0) {
-    // Get tiers for current PV type
-    const typeTiers = capexPerType[currentPvType] || capexPerType.ground_s;
-    if (typeTiers && typeTiers.length > 0) {
-      // Find matching tier by range
-      for (let i = 0; i < capexRanges.length; i++) {
-        const range = capexRanges[i];
-        const tier = typeTiers[i];
-        if (!tier || !range) continue;
-
-        const minVal = range.min || 0;
-        const maxVal = (range.max === null || range.max === undefined || range.max === Infinity || range.max >= 999999)
-                       ? Infinity : range.max;
-
-        if (capacityKwp >= minVal && capacityKwp <= maxVal) {
-          const price = tier.sale || tier.capex || tier.cost || 3500;
-          return price;
-        }
+  if (typeTiers && capexRanges) {
+    for (let i = 0; i < capexRanges.length; i++) {
+      const range = capexRanges[i];
+      const tier = typeTiers[i];
+      if (!tier || !range) continue;
+      const maxVal = (range.max == null || range.max === Infinity || range.max >= 999999) ? Infinity : range.max;
+      if (capacityKwp >= (range.min || 0) && capacityKwp <= maxVal) {
+        return tier.sale || tier.cost || 3500;
       }
-
-      // Fallback: use last non-null tier for large installations
-      // Find the last valid (non-null) tier
-      let lastValidTierIndex = -1;
-      for (let i = typeTiers.length - 1; i >= 0; i--) {
-        if (typeTiers[i] !== null) {
-          lastValidTierIndex = i;
-          break;
-        }
-      }
-
-      if (lastValidTierIndex >= 0) {
-        const lastTier = typeTiers[lastValidTierIndex];
-        const lastRange = capexRanges[lastValidTierIndex];
-        if (lastTier && capacityKwp >= (lastRange?.min || 0)) {
-          const price = lastTier.sale || lastTier.capex || lastTier.cost || 3500;
-          console.log(`  → Using last valid tier (capexPerType/${currentPvType}): ${lastRange?.min}-${lastRange?.max} kWp, price: ${price} PLN/kWp`);
-          return price;
-        }
+    }
+    // Last valid tier for large installations
+    for (let i = typeTiers.length - 1; i >= 0; i--) {
+      if (typeTiers[i] !== null) {
+        return typeTiers[i].sale || typeTiers[i].cost || 3500;
       }
     }
   }
 
-  // LEGACY FORMAT: Use capexTiers
-  if (capexTiers && capexTiers.length > 0) {
-    const sortedTiers = [...capexTiers].sort((a, b) => a.min - b.min);
-
-    for (const tier of sortedTiers) {
-      const maxValue = (tier.max === null || tier.max === undefined ||
-                       tier.max === Infinity || tier.max === '∞' ||
-                       tier.max === 'Infinity' || tier.max >= 999999)
-                       ? Infinity : tier.max;
-
-      console.log(`  → Checking tier (legacy): ${tier.min}-${maxValue} kWp for capacity ${capacityKwp}`);
-
-      if (capacityKwp >= tier.min && capacityKwp <= maxValue) {
-        const price = tier.capex || tier.sale || tier.cost || 3500;
-        console.log(`  ✓ MATCHED tier (legacy): ${tier.min}-${maxValue} kWp, price: ${price} PLN/kWp`);
-        return price;
-      }
-    }
-
-    // Fallback to last tier for large installations
-    const lastTier = sortedTiers[sortedTiers.length - 1];
-    if (capacityKwp >= lastTier.min) {
-      const price = lastTier.capex || lastTier.sale || lastTier.cost || 3500;
-      console.log(`  → Using last tier (legacy): price: ${price} PLN/kWp`);
-      return price;
-    }
-  }
-
-  // Ultimate fallback
-  const fallback = parseFloat(document.getElementById('investmentCost')?.value || 3500);
-  console.log(`  → No valid tiers found, using fallback: ${fallback} PLN/kWp`);
-  return fallback;
+  return 3500;
 }
 
 // Get economic parameters from inputs or systemSettings
@@ -1575,7 +1494,7 @@ function getEconomicParameters() {
     excise_tax: systemSettings?.exciseTax || parseFloat(document.getElementById('exciseTax')?.value || 5),
     investment_cost: parseFloat(document.getElementById('investmentCost')?.value || 3500), // This is display only
     opex_per_kwp: systemSettings?.opexPerKwp || parseFloat(document.getElementById('opexPerKwp')?.value || 15),
-    degradation_rate: (systemSettings?.degradationRate || parseFloat(document.getElementById('degradationRate')?.value || 0.5)) / 100,
+    degradation_rate: window.economicsSettings?.degradationRate || pctToDecimal(systemSettings?.degradationRate || parseFloat(document.getElementById('degradationRate')?.value || 0.5)),
     analysis_period: systemSettings?.analysisPeriod || parseInt(document.getElementById('analysisPeriod')?.value || 25)
   };
 }
@@ -1705,6 +1624,81 @@ function computeWeightedEnergyPrice(params) {
  * Sets global `preciseAnnualSavings` to the result for backward compat.
  * Returns the data or null on failure.
  */
+
+/**
+ * Resolve PV hourly profile for a variant — SINGLE SOURCE OF TRUTH.
+ * Used by fetchPreciseAnnualSavings() and exportPvYearlyExcel().
+ * Steps: 1) variant-specific, 2) scale from base, 3) localStorage, 4) scenarioFactor, 5) LID
+ * @returns {{ pvProfile: number[]|null, pvProfileSource: string }}
+ */
+function resolvePvProfile(variant, variantKey) {
+  const sd = window.sharedData || window.parent?.sharedData || {};
+  const ar = sd.analysisResults || analysisResults || {};
+
+  let pvProfile = null;
+  let pvProfileSource = '';
+
+  // 1. Best: variant-specific hourly_production from key_variants
+  const variantData = ar.key_variants?.[variantKey];
+  if (variantData?.hourly_production?.length >= 720) {
+    pvProfile = [...variantData.hourly_production];
+    pvProfileSource = `key_variants[${variantKey}].hourly_production`;
+  }
+
+  // 2. Fallback: scale cached/base PV profile by capacity ratio
+  if (!pvProfile || pvProfile.length < 720) {
+    const basePvProfile = cachedHourlyProduction?.values || sd.pvData || ar.hourly_production || [];
+    if (basePvProfile.length >= 720) {
+      const baseVariantKey = currentVariant || 'B';
+      const baseCapacity = ar.key_variants?.[baseVariantKey]?.capacity || variants[baseVariantKey]?.capacity || variant.capacity;
+      const targetCapacity = variant.capacity || baseCapacity;
+      if (baseCapacity > 0 && targetCapacity !== baseCapacity) {
+        const scale = targetCapacity / baseCapacity;
+        pvProfile = basePvProfile.map(v => v * scale);
+        pvProfileSource = `scaled from ${baseVariantKey} (${baseCapacity}→${targetCapacity} kWp, x${scale.toFixed(3)})`;
+      } else {
+        pvProfile = [...basePvProfile];
+        pvProfileSource = 'cached (same capacity)';
+      }
+    }
+  }
+
+  // 3. Last resort: localStorage
+  if (!pvProfile || pvProfile.length < 720) {
+    try {
+      const storedVariants = JSON.parse(localStorage.getItem('pv_variants') || '{}');
+      const sv = storedVariants[variantKey];
+      if (sv?.hourly_production?.length >= 720) {
+        pvProfile = [...sv.hourly_production];
+        pvProfileSource = 'localStorage';
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  if (!pvProfile || pvProfile.length < 720) {
+    return { pvProfile: null, pvProfileSource: 'NOT FOUND' };
+  }
+
+  // 4. Apply scenario factor (P50/P75/P90) — productionFactors priorytet
+  const scenarioName = window.currentProductionScenario || 'P50';
+  const scenarioFactor = (window.productionFactors && window.productionFactors[scenarioName] !== undefined)
+    ? window.productionFactors[scenarioName]
+    : (window.currentScenarioFactor || 1.0);
+  if (scenarioFactor !== 1.0) {
+    pvProfile = pvProfile.map(v => v * scenarioFactor);
+    pvProfileSource += ` × ${scenarioFactor} (${scenarioName})`;
+  }
+
+  // 5. Apply Year 1 LID degradation
+  const lidPct = window.economicsSettings?.pvDegradationYear1 || 0;
+  if (lidPct > 0) {
+    pvProfile = pvProfile.map(v => v * (1 - lidPct));
+    pvProfileSource += ` × ${(1 - lidPct).toFixed(3)} (LID ${(lidPct*100).toFixed(1)}%)`;
+  }
+
+  return { pvProfile, pvProfileSource };
+}
+
 async function fetchPreciseAnnualSavings(variant) {
   if (!variant) return null;
 
@@ -1731,52 +1725,10 @@ async function fetchPreciseAnnualSavings(variant) {
     try { await fetchRealHourlyData(); } catch (e) { console.warn('fetchRealHourlyData error:', e); }
   }
 
-  const sd = window.sharedData || window.parent?.sharedData || {};
-  const ar = sd.analysisResults || analysisResults || {};
-
-  // === PV PROFILE: try variant-specific hourly_production first ===
-  let pvProfile = null;
-  let pvProfileSource = '';
-
-  // 1. Best: variant-specific hourly_production from key_variants
-  const variantData = ar.key_variants?.[variantKey];
-  if (variantData?.hourly_production?.length >= 720) {
-    pvProfile = variantData.hourly_production;
-    pvProfileSource = `key_variants[${variantKey}].hourly_production`;
-  }
-
-  // 2. Fallback: scale cached/base PV profile by capacity ratio
-  if (!pvProfile || pvProfile.length < 720) {
-    const basePvProfile = cachedHourlyProduction?.values || sd.pvData || ar.hourly_production || [];
-    if (basePvProfile.length >= 720) {
-      // Determine base capacity of the cached profile
-      const baseVariantKey = currentVariant || 'B';
-      const baseCapacity = ar.key_variants?.[baseVariantKey]?.capacity || variants[baseVariantKey]?.capacity || variant.capacity;
-      const targetCapacity = variant.capacity || baseCapacity;
-      if (baseCapacity > 0 && targetCapacity !== baseCapacity) {
-        const scale = targetCapacity / baseCapacity;
-        pvProfile = basePvProfile.map(v => v * scale);
-        pvProfileSource = `scaled from ${baseVariantKey} (${baseCapacity}→${targetCapacity} kWp, x${scale.toFixed(3)})`;
-      } else {
-        pvProfile = basePvProfile;
-        pvProfileSource = 'cached (same capacity)';
-      }
-    }
-  }
-
-  // 3. Last resort: localStorage
-  if (!pvProfile || pvProfile.length < 720) {
-    try {
-      const storedVariants = JSON.parse(localStorage.getItem('pv_variants') || '{}');
-      const sv = storedVariants[variantKey];
-      if (sv?.hourly_production?.length >= 720) {
-        pvProfile = sv.hourly_production;
-        pvProfileSource = 'localStorage';
-      }
-    } catch (e) { /* ignore */ }
-  }
-
-  if (!pvProfile || pvProfile.length < 720) {
+  // === PV PROFILE: resolve via shared function (scenarioFactor + LID already applied) ===
+  const { pvProfile: resolvedPv, pvProfileSource } = resolvePvProfile(variant, variantKey);
+  let pvProfile = resolvedPv;
+  if (!pvProfile) {
     console.warn(`⚠️ fetchPreciseAnnualSavings: no PV profile for variant ${variantKey}`);
     return null;
   }
@@ -1800,22 +1752,7 @@ async function fetchPreciseAnnualSavings(variant) {
     loadProfile = hourlyLoad;
   }
 
-  // Apply production scenario factor (P50/P75/P90) to PV profile
-  const currentScenarioName = window.currentProductionScenario || 'P50';
-  const scenarioFactor = (window.productionFactors && window.productionFactors[currentScenarioName] !== undefined)
-    ? window.productionFactors[currentScenarioName]
-    : (window.currentScenarioFactor || 1.0);
-  if (scenarioFactor !== 1.0) {
-    pvProfile = pvProfile.map(v => v * scenarioFactor);
-    pvProfileSource += ` × ${scenarioFactor} (${currentScenarioName})`;
-  }
-
-  // Apply Year 1 LID degradation to profile — so backend self_consumed already includes it
-  const lidPct = (settings.pvDegradationYear1 !== undefined ? settings.pvDegradationYear1 : 1.0) / 100;
-  if (lidPct > 0) {
-    pvProfile = pvProfile.map(v => v * (1 - lidPct));
-    pvProfileSource += ` × ${(1 - lidPct).toFixed(3)} (LID ${(lidPct*100).toFixed(1)}%)`;
-  }
+  // scenarioFactor + LID already applied by resolvePvProfile()
 
   const pvSum = pvProfile.reduce((a, b) => a + b, 0);
   const loadSum = loadProfile.reduce((a, b) => a + b, 0);
@@ -2020,7 +1957,7 @@ async function fetchBackendIRR(variant, params) {
     parametersData.bess_capex_per_kwh = settings.bessCapexPerKwh || 1500;
     parametersData.bess_capex_per_kw = settings.bessCapexPerKw || 300;
     parametersData.bess_opex_pct_per_year = settings.bessOpexPctPerYear || 1.5;
-    parametersData.bess_lifetime_years = settings.bessLifetimeYears || 15;
+    parametersData.bess_lifetime_years = settings.bessLifetimeYears;
     parametersData.bess_degradation_year1 = settings.bessDegradationYear1 || 3.0;
     parametersData.bess_degradation_pct_per_year = settings.bessDegradationPctPerYear || 2.0;
   }
@@ -2053,9 +1990,9 @@ async function fetchEaasMonthlyLog(variant, settings, params) {
     insurance_rate: getInsuranceRate(settings),
     land_lease_per_kwp: settings?.landLeasePerKwp ?? 0,
     duration_years: settings?.eaasDuration ?? 10,
-    target_irr: (settings?.eaasTargetIrrPln ?? 12.0) / 100,
+    target_irr: pctToDecimal(settings?.eaasTargetIrrPln ?? 12.0),
     indexation: settings?.eaasIndexation ?? 'fixed',
-    cpi: window.economicsSettings?.inflationRate ?? 0.025,
+    cpi: window.economicsSettings?.inflationRate,
     currency: settings?.eaasCurrency ?? 'PLN'
   };
 
@@ -2107,32 +2044,32 @@ function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicP
 
   // Target IRR
   const targetIrr = irrDriver === 'PLN'
-    ? (settings.eaasTargetIrrPln || 12.0) / 100
-    : (settings.eaasTargetIrrEur || 10.0) / 100;
+    ? pctToDecimal(settings.eaasTargetIrrPln || 12.0)
+    : pctToDecimal(settings.eaasTargetIrrEur || 10.0);
 
   // CPI
   const cpi = irrDriver === 'PLN'
-    ? (settings.cpiPln || 2.5) / 100
-    : (settings.cpiEur || 2.0) / 100;
-  const cpiFloor = (settings.cpiFloor || 0) / 100;
-  const cpiCapAnnual = (settings.cpiCapAnnual || 5.0) / 100;
-  const cpiCapTotal = (settings.cpiCapTotal || 50.0) / 100;
+    ? pctToDecimal(settings.cpiPln || 2.5)
+    : pctToDecimal(settings.cpiEur || 2.0);
+  const cpiFloor = pctToDecimal(settings.cpiFloor || 0);
+  const cpiCapAnnual = pctToDecimal(settings.cpiCapAnnual || 5.0);
+  const cpiCapTotal = pctToDecimal(settings.cpiCapTotal || 50.0);
 
   // Tax & Depreciation
-  const citRate = (settings.citRate || 19.0) / 100;
+  const citRate = pctToDecimal(settings.citRate || 19.0);
   const depPeriod = settings.depreciationPeriod || 20;
 
   // Financing
-  const leverageRatio = (settings.leverageRatio || 0) / 100;
-  const costOfDebt = (settings.costOfDebt || 7.0) / 100;
+  const leverageRatio = pctToDecimal(settings.leverageRatio || 0);
+  const costOfDebt = pctToDecimal(settings.costOfDebt || 7.0);
   const debtTenor = settings.debtTenor || 8;
   const debtGracePeriod = settings.debtGracePeriod || 0;
   const debtAmortization = settings.debtAmortization || 'annuity';
 
   // Technical
-  const availability = (settings.availabilityFactor || 98.0) / 100;
-  const degradationRate = (settings.degradationRate || economicParams?.degradation_rate * 100 || 0.5) / 100;
-  const expectedLossRate = (settings.expectedLossRate || 0) / 100;
+  const availability = pctToDecimal(settings.availabilityFactor || 98.0);
+  const degradationRate = window.economicsSettings?.degradationRate || pctToDecimal(settings.degradationRate || 0.5);
+  const expectedLossRate = pctToDecimal(settings.expectedLossRate || 0);
 
   // FX
   const fxPlnEur = settings.fxPlnEur || 4.5;
@@ -2423,11 +2360,11 @@ function calculateEaasFullModel(capacityKw, annualEnergyMWh, settings, economicP
   const currencyDisplay = currency;
 
   console.log(`\n✅ WYNIKI SOLVERA (${iterations} iteracji):`);
-  console.log(`   Abonament roczny (rok 1): ${(optimalSubscription * currencyMultiplier / 1000).toFixed(0)} tys. ${currencyDisplay}`);
-  console.log(`   Abonament miesięczny: ${(monthlySubscription * currencyMultiplier / 1000).toFixed(1)} tys. ${currencyDisplay}`);
+  console.log(`   Abonament roczny (rok 1): ${plnToTysPln(optimalSubscription * currencyMultiplier).toFixed(0)} tys. ${currencyDisplay}`);
+  console.log(`   Abonament miesięczny: ${plnToTysPln(monthlySubscription * currencyMultiplier).toFixed(1)} tys. ${currencyDisplay}`);
   console.log(`   Cena EaaS: ${(pricePerMWh * currencyMultiplier).toFixed(0)} ${currencyDisplay}/MWh`);
-  console.log(`   Project IRR: ${(projectIrr * 100).toFixed(2)}%`);
-  console.log(`   Equity IRR: ${(equityIrr * 100).toFixed(2)}%`);
+  console.log(`   Project IRR: ${decimalToPct(projectIrr).toFixed(2)}%`);
+  console.log(`   Equity IRR: ${decimalToPct(equityIrr).toFixed(2)}%`);
   console.log(`   Przychód kontraktowy: ${(totalRevenue * currencyMultiplier / 1e6).toFixed(2)} mln ${currencyDisplay}`);
 
   return {
@@ -2499,13 +2436,13 @@ function calculateEaasSubscription(capacityKw, settings, economicParams, variant
 
   // Target IRR (nominal)
   const r = currency === 'PLN'
-    ? (settings.eaasTargetIrrPln || 12.0) / 100
-    : (settings.eaasTargetIrrEur || 10.0) / 100;
+    ? pctToDecimal(settings.eaasTargetIrrPln || 12.0)
+    : pctToDecimal(settings.eaasTargetIrrEur || 10.0);
 
   // CPI inflation rates - use unified inflationRate from financial parameters
-  const systemInflationRate = window.economicsSettings?.inflationRate || 0.025;
+  const systemInflationRate = window.economicsSettings?.inflationRate;
   const g_PLN = systemInflationRate; // Use system-wide inflation rate for PLN
-  const g_EUR = (settings.cpiEur || 2.0) / 100; // Keep separate EUR inflation if needed
+  const g_EUR = pctToDecimal(settings.cpiEur || 2.0); // Keep separate EUR inflation if needed
   const g = currency === 'PLN' ? g_PLN : g_EUR;
 
   // FX rate
@@ -2525,7 +2462,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams, variant
     const bessCapexPerKw = settings.bessCapexPerKw || 300;
     const bessOpexPctPerYear = settings.bessOpexPctPerYear || 1.5;
     capexBESS_PLN = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
-    opexBESS_PLN = capexBESS_PLN * (bessOpexPctPerYear / 100);
+    opexBESS_PLN = capexBESS_PLN * pctToDecimal(bessOpexPctPerYear);
   }
 
   // Total CAPEX = PV + BESS
@@ -2545,14 +2482,14 @@ function calculateEaasSubscription(capacityKw, settings, economicParams, variant
   console.log(`     Waluta: ${currency}`);
   console.log(`     Okres umowy: ${N} lat`);
   console.log(`     Typ opłaty: ${indexationType}`);
-  console.log(`     Target IRR: ${(r * 100).toFixed(1)}%`);
-  console.log(`     Inflacja (CPI ${currency}): ${(g * 100).toFixed(1)}%`);
+  console.log(`     Target IRR: ${decimalToPct(r).toFixed(1)}%`);
+  console.log(`     Inflacja (CPI ${currency}): ${decimalToPct(g).toFixed(1)}%`);
   console.log(`  `);
   console.log(`  💰 PARAMETRY (waluta bazowa PLN):`);
-  console.log(`     CAPEX (I₀): ${(I0_PLN / 1000000).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
+  console.log(`     CAPEX (I₀): ${plnToMlnPln(I0_PLN).toFixed(2)} mln PLN (${capexPerKwp} PLN/kWp)`);
   if (hasBess) {
-    console.log(`       - PV CAPEX: ${(capexPV_PLN / 1000000).toFixed(2)} mln PLN`);
-    console.log(`       - BESS CAPEX: ${(capexBESS_PLN / 1000000).toFixed(2)} mln PLN`);
+    console.log(`       - PV CAPEX: ${plnToMlnPln(capexPV_PLN).toFixed(2)} mln PLN`);
+    console.log(`       - BESS CAPEX: ${plnToMlnPln(capexBESS_PLN).toFixed(2)} mln PLN`);
   }
   console.log(`     OPEX (O): ${O_PLN.toFixed(0)} PLN/rok`);
   console.log(`       - O&M: ${annualOM_PLN.toFixed(0)} PLN/rok`);
@@ -2605,7 +2542,7 @@ function calculateEaasSubscription(capacityKw, settings, economicParams, variant
     A_PLN = A_real_PLN;
 
     console.log(`  🔢 LOGIKA CPI:`);
-    console.log(`     r_real = (1+r)/(1+g) - 1 = ${(r_real * 100).toFixed(3)}%`);
+    console.log(`     r_real = (1+r)/(1+g) - 1 = ${decimalToPct(r_real).toFixed(3)}%`);
     console.log(`     A_real = O_real + I₀ · [r_real(1+r_real)^N] / [(1+r_real)^N - 1]`);
     console.log(`     A_real = ${O_real_PLN.toFixed(0)} + ${I0_PLN.toFixed(0)} · ${annuity_factor_real.toFixed(6)}`);
     console.log(`     A₁ (nominal, rok 1) = ${A_PLN.toFixed(0)} PLN/rok`);
@@ -2674,8 +2611,8 @@ function calculateEaasSubscription(capacityKw, settings, economicParams, variant
   console.log(`  ✅ PODSUMOWANIE:`);
   console.log(`     Abonament roczny (rok 1): ${A_contract.toLocaleString('pl-PL', {maximumFractionDigits: 0})} ${currency_display}/rok`);
   console.log(`     Abonament miesięczny: ${A_monthly_contract.toLocaleString('pl-PL', {maximumFractionDigits: 0})} ${currency_display}/mies`);
-  console.log(`     Całkowity przychód (${N} lat): ${(totalRevenue_contract / 1000000).toFixed(2)} mln ${currency_display}`);
-  console.log(`     Osiągnięte IRR: ${(achievedIRR * 100).toFixed(2)}% (target: ${(r * 100).toFixed(1)}%)`);
+  console.log(`     Całkowity przychód (${N} lat): ${plnToMlnPln(totalRevenue_contract).toFixed(2)} mln ${currency_display}`);
+  console.log(`     Osiągnięte IRR: ${decimalToPct(achievedIRR).toFixed(2)}% (target: ${decimalToPct(r).toFixed(1)}%)`);
   console.log(`     Tryb: ${calculationMode}`);
 
   return {
@@ -2792,6 +2729,10 @@ function requestSettingsFromShell() {
 function applySettingsToUI(settings) {
   if (!settings) return;
 
+  // Invalidate caches — settings changed
+  invalidateConsumptionCache();
+  invalidateCapexCache();
+
   // Energy tariff components
   const energyActive = document.getElementById('energyActive');
   if (energyActive) energyActive.value = settings.energyActive || 550;
@@ -2838,13 +2779,25 @@ function applySettingsToUI(settings) {
   if (typeof window.economicsSettings === 'undefined') {
     window.economicsSettings = {};
   }
-  window.economicsSettings.discountRate = (settings.discountRate || 7) / 100; // Convert % to decimal
+  window.economicsSettings.discountRate = pctToDecimal(settings.discountRate);
   window.economicsSettings.insuranceRate = getInsuranceRate(settings);
-  window.economicsSettings.inflationRate = (settings.inflationRate || 3) / 100;
-  window.economicsSettings.eaasIndexation = settings.eaasIndexation || 'fixed'; // 'fixed' or 'cpi'
+  window.economicsSettings.inflationRate = pctToDecimal(settings.inflationRate);
+  window.economicsSettings.degradationRate = pctToDecimal(settings.degradationRate);       // PV annual years 2+ [decimal]
+  window.economicsSettings.pvDegradationYear1 = pctToDecimal(settings.pvDegradationYear1); // LID [decimal]
+  window.economicsSettings.opexPerKwp = settings.opexPerKwp;   // PLN/kWp/year
+  window.economicsSettings.analysisPeriod = settings.analysisPeriod; // years
+  window.economicsSettings.eaasIndexation = settings.eaasIndexation || 'fixed';
   // IRR calculation mode
   window.economicsSettings.useInflation = settings.useInflation || false;
   window.economicsSettings.irrMode = settings.irrMode || (settings.useInflation ? 'nominal' : 'real');
+  window.economicsSettings.bessLifetimeYears = settings.bessLifetimeYears;
+
+  // Production scenario factors — from USTAWIENIA (SSoT)
+  window.productionFactors = {
+    P50: settings.productionFactorP50 ?? 1.00,
+    P75: settings.productionFactorP75 ?? 0.97,
+    P90: settings.productionFactorP90 ?? 0.94
+  };
 
   // Calculate and store total energy price (all components including capacity fee)
   // Used by LCOE chart for grid price reference line
@@ -2910,6 +2863,7 @@ window.addEventListener('message', (event) => {
       // Load consumptionData - CRITICAL for correct energy consumption values
       if (event.data.data.consumptionData) {
         consumptionData = event.data.data.consumptionData;
+        invalidateConsumptionCache();
         // Calculate annual_consumption_kwh from total_consumption_gwh if not present
         if (!consumptionData.annual_consumption_kwh && consumptionData.total_consumption_gwh) {
           consumptionData.annual_consumption_kwh = consumptionData.total_consumption_gwh * 1000000;
@@ -2962,7 +2916,7 @@ window.addEventListener('message', (event) => {
         const scenarioLabel = document.getElementById('eaasScenarioLabel');
         if (scenarioLabel) scenarioLabel.textContent = savedScenario;
         const factorDisplay = document.getElementById('scenarioFactorDisplay');
-        if (factorDisplay) factorDisplay.textContent = `${Math.round(window.currentScenarioFactor * 100)}%`;
+        if (factorDisplay) factorDisplay.textContent = `${Math.round(decimalToPct(window.currentScenarioFactor))}%`;
       }
 
       console.log('🚀 Calling performEconomicAnalysis() from SHARED_DATA_RESPONSE (debounced)');
@@ -3019,6 +2973,7 @@ window.addEventListener('message', (event) => {
           }
           if (event.data.data.sharedData.consumptionData) {
             consumptionData = event.data.data.sharedData.consumptionData;
+            invalidateConsumptionCache();
             // Calculate annual_consumption_kwh from total_consumption_gwh if not present
             if (!consumptionData.annual_consumption_kwh && consumptionData.total_consumption_gwh) {
               consumptionData.annual_consumption_kwh = consumptionData.total_consumption_gwh * 1000000;
@@ -3147,7 +3102,7 @@ window.addEventListener('message', (event) => {
         if (bessResult.variants && bessResult.variants.length > 0) {
           const v = bessResult.variants[0];
           bessSizingData.bess_cycles_equivalent = v.degradation?.efc_total || v.annual_cycles || 0;
-          bessSizingData.annual_discharge_mwh = (v.dispatch_summary?.total_discharge_kwh || 0) / 1000;
+          bessSizingData.annual_discharge_mwh = kwhToMwh(v.dispatch_summary?.total_discharge_kwh || 0);
           bessSizingData.annual_savings_pln = v.annual_savings_pln;
           bessSizingData.savings_breakdown = v.savings_breakdown;
           bessSizingData.dispatch_metadata = v.dispatch_summary;
@@ -3285,19 +3240,19 @@ window.addEventListener('message', (event) => {
 
         const eaasDuration = systemSettings?.eaasDuration || 10;
         const analysisPeriod = systemSettings?.analysisPeriod || 25;
-        const discountRate = (systemSettings?.discountRate || 5) / 100;
+        const discountRate = window.economicsSettings?.discountRate;
         console.log('📤 DEBUG: eaasDuration =', eaasDuration, 'analysisPeriod =', analysisPeriod);
 
         // Calculate Full Investor Model on-demand to ensure fresh data
         let fullInvestorModelData = null;
         try {
-          const annualEnergyMWh = (variant.production || 0) / 1000;
+          const annualEnergyMWh = kwhToMwh(variant.production || 0);
           const bessDataForModel = (variant.bess_power_kw > 0 && variant.bess_energy_kwh > 0) ? variant : null;
           const economicParams = {
             gridPrice: systemSettings?.gridPrice || 0.8,
-            opexPerKwp: systemSettings?.omCostPerKwp || 24,
-            insuranceRate: systemSettings?.insuranceRate || 0.005,
-            degradationRate: systemSettings?.degradationRate || 0.005
+            opexPerKwp: window.economicsSettings?.opexPerKwp,
+            insuranceRate: window.economicsSettings?.insuranceRate,
+            degradationRate: window.economicsSettings?.degradationRate
           };
           console.log('📤 DEBUG: Calling calculateEaasFullModel with capacity =', variant.capacity, 'annualEnergyMWh =', annualEnergyMWh);
 
@@ -3569,21 +3524,23 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   const rdnBaseline = options.rdnBaseline || null;
   console.log('💰 CENTRALIZED CALCULATION for variant:', variant.capacity, 'kWp', '| pricingMode:', pricingMode);
 
-  // Apply production scenario factor
-  const scenarioFactor = window.currentScenarioFactor || 1.0;
+  // Apply production scenario factor — productionFactors (per-scenario) ma priorytet nad currentScenarioFactor (global cache)
   const scenarioName = window.currentProductionScenario || 'P50';
+  const scenarioFactor = (window.productionFactors && window.productionFactors[scenarioName] !== undefined)
+    ? window.productionFactors[scenarioName]
+    : (window.currentScenarioFactor || 1.0);
   console.log(`  📊 Using scenario: ${scenarioName} (factor: ${scenarioFactor})`);
 
   // Common parameters - convert to MWh for consistent calculations with PLN/MWh prices
   const capacityKwp = variant.capacity;
-  const productionMwh = (variant.production * scenarioFactor) / 1000; // kWh → MWh
+  const productionMwh = kwhToMwh(variant.production * scenarioFactor);
   // Use PRECISE hourly self-consumed from backend when available (consistent with Excel)
   const selfConsumedMwh = (preciseAnnualSavings?.energy?.self_consumed_mwh)
     ? preciseAnnualSavings.energy.self_consumed_mwh
-    : (variant.self_consumed * scenarioFactor) / 1000; // fallback: simple scaling
+    : kwhToMwh(variant.self_consumed * scenarioFactor); // fallback: simple scaling
 
   // BESS autoconsumption breakdown (for table display)
-  const bessSelfConsumedMwh = ((variant.bess_self_consumed_from_bess_kwh || 0) * scenarioFactor) / 1000; // MWh from BESS
+  const bessSelfConsumedMwh = kwhToMwh((variant.bess_self_consumed_from_bess_kwh || 0) * scenarioFactor);
 
   // PV direct autoconsumption - CRITICAL: use profile-analysis data when available!
   // The variant.self_consumed was calculated with CONFIG BESS, not recommended BESS,
@@ -3624,20 +3581,20 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     // BESS degradation from settings (user configurable in Settings → Parametry techniczne BESS)
     const rawDegYear1 = settings.bessDegradationYear1;
     const rawDegPerYear = settings.bessDegradationPctPerYear;
-    bessDegradationYear1 = (rawDegYear1 !== undefined ? rawDegYear1 : 3.0) / 100;
-    bessDegradationPctPerYear = (rawDegPerYear !== undefined ? rawDegPerYear : 2.0) / 100;
+    bessDegradationYear1 = pctToDecimal(rawDegYear1 !== undefined ? rawDegYear1 : 3.0);
+    bessDegradationPctPerYear = pctToDecimal(rawDegPerYear !== undefined ? rawDegPerYear : 2.0);
     capexBESS = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
-    opexBESS = capexBESS * (bessOpexPctPerYear / 100);
-    console.log(`  🔋 BESS CAPEX: ${(capexBESS/1000000).toFixed(2)} mln PLN`);
-    console.log(`  🔋 BESS OPEX: ${(opexBESS/1000).toFixed(0)} tys. PLN/rok`);
+    opexBESS = capexBESS * pctToDecimal(bessOpexPctPerYear);
+    console.log(`  🔋 BESS CAPEX: ${plnToMlnPln(capexBESS).toFixed(2)} mln PLN`);
+    console.log(`  🔋 BESS OPEX: ${plnToTysPln(opexBESS).toFixed(0)} tys. PLN/rok`);
     console.log(`  🔋 BESS Degradation from settings: Year1=${(bessDegradationYear1*100).toFixed(1)}% (raw: ${rawDegYear1}), Years2+=${(bessDegradationPctPerYear*100).toFixed(1)}%/yr (raw: ${rawDegPerYear})`);
   }
 
   // Total CAPEX = PV + BESS
   const capex = capexPV + capexBESS;
 
-  const discountRate = window.economicsSettings?.discountRate ?? 0.07;
-  const inflationRate = window.economicsSettings?.inflationRate || 0.025;
+  const discountRate = window.economicsSettings?.discountRate;
+  const inflationRate = window.economicsSettings?.inflationRate;
   const eaasIndexation = window.economicsSettings?.eaasIndexation || 'fixed';
   // =========================================================================
   // DATA CONTRACT: Client analysis horizon = 30 years
@@ -3649,26 +3606,33 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
   // PV degradation Year 1 (LID)
   // When preciseAnnualSavings available: LID already applied to PV profile before backend call,
-  // so self_consumed_mwh already includes it → pvDegradationYear1 = 0 here to avoid double-counting.
-  // When no precise data (fallback): apply LID in cashflow loop as before.
+  // so self_consumed_mwh already includes it → pvDegradationYear1Calc = 0 to avoid double-counting.
+  // pvDegradationYear1Display always reflects actual setting (for tables/Excel).
   const settings = systemSettings || {};
   const rawPvDegYear1 = settings.pvDegradationYear1;
   const hasPreciseBase = !!(preciseAnnualSavings?.energy?.self_consumed_mwh);
+  const pvDegradationYear1Display = pctToDecimal(rawPvDegYear1 !== undefined ? rawPvDegYear1 : 1.0);
   const pvDegradationYear1 = hasPreciseBase
     ? 0  // LID already in profile → in self_consumed_mwh
-    : (rawPvDegYear1 !== undefined ? rawPvDegYear1 : 1.0) / 100;
+    : pvDegradationYear1Display;
 
   // IRR calculation mode - determines if we apply inflation to cash flows
   const useInflation = window.economicsSettings?.useInflation || false;
   const irrMode = useInflation ? 'nominal' : 'real';
 
-  // Total energy price in PLN/MWh (same unit as params)
-  // SPLIT: energy price WITHOUT capacity fee (for per-MWh savings)
-  //        + capacity fee handled separately via K-class scenarios
+  // ========== CENA ENERGII [PLN/MWh] ==========
+  // energyPriceWithoutCapacity — cena energii BEZ opłaty mocowej (capacity_fee).
+  //   Składniki: energia czynna (ToU average) + dystrybucja + jakościowa + OZE + kogeneracja + akcyza
+  //   Użycie: obliczanie oszczędności per-MWh z autokonsumpcji (bo capacity_fee zależy od K-class, nie od MWh)
+  //
+  // totalEnergyPrice — pełna cena = energyPriceWithoutCapacity + capacity_fee
+  //   Użycie: LCOE reference, display, backward compat
+  //
+  // Gdy dostępne preciseAnnualSavings: obie wartości zastępowane przez effective_price z backendu
   let energyPriceWithoutCapacity = params.energy_active + params.distribution + params.quality_fee +
                                       params.oze_fee + params.cogeneration_fee +
-                                      params.excise_tax; // PLN/MWh (NO capacity_fee!)
-  let totalEnergyPrice = energyPriceWithoutCapacity + params.capacity_fee; // Full price (backward compat)
+                                      params.excise_tax;
+  let totalEnergyPrice = energyPriceWithoutCapacity + params.capacity_fee;
 
   // PRECISE BACKEND SAVINGS: if available, use hourly K-class calculations (same as Excel)
   const hasPreciseSavings = preciseAnnualSavings && preciseAnnualSavings.year1_savings;
@@ -3710,10 +3674,10 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   // ========== CAPEX MODEL CALCULATION ==========
   console.log('🔢 CENTRALIZED CAPEX NPV Calculation:');
   console.log('  📅 Analysis period:', analysisPeriod, 'years');
-  console.log('  📊 Discount rate:', (discountRate * 100).toFixed(1), '%');
-  console.log('  📈 Inflation rate:', (inflationRate * 100).toFixed(1), '%');
+  console.log('  📊 Discount rate:', decimalToPct(discountRate).toFixed(1), '%');
+  console.log('  📈 Inflation rate:', decimalToPct(inflationRate).toFixed(1), '%');
   console.log(`  📉 PV Degradation from settings: Year1=${(pvDegradationYear1*100).toFixed(1)}% (raw: ${rawPvDegYear1}), Years2+=${(degradationRate*100).toFixed(2)}%/yr`);
-  console.log('  💰 Initial CAPEX:', (-capex / 1000000).toFixed(2), 'mln PLN');
+  console.log('  💰 Initial CAPEX:', plnToMlnPln(-capex).toFixed(2), 'mln PLN');
   console.log('  📊 IRR Mode:', irrMode, useInflation ? '(inflation-indexed cash flows)' : '(constant prices)');
   console.log(`  📊 K-class data: ${hasKClassData ? 'YES' : 'NO (fallback to flat rate)'}`);
   if (hasKClassData) {
@@ -3827,7 +3791,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       selfConsumedPvDirect: yearPvDirectMwh * 1000,
       selfConsumedBess: yearBessMwh * 1000,
       energyPrice: (hasKClassData ? energyPriceWithoutCapacity : totalEnergyPrice) * savingsCpiEscalation,
-      pvDegradationPct: pvDegradation * 100,
+      pvDegradationPct: ((1 - pvDegradationYear1Display) * Math.pow(1 - degradationRate, Math.max(0, year - 1))) * 100,
       bessDegradationPct: bessDegradation * 100,
       pricingMode: pricingMode,
       hasKClassData: hasKClassData
@@ -3835,11 +3799,11 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
     // Log sample years
     if (year <= 2 || year === analysisPeriod) {
-      console.log(`  Year ${year}: NetCF=${(yearCashFlow/1000).toFixed(0)}k PLN, Discounted=${(discountedCF/1000).toFixed(0)}k PLN, RunningNPV=${(capexNPV/1000000).toFixed(2)}M PLN`);
+      console.log(`  Year ${year}: NetCF=${plnToTysPln(yearCashFlow).toFixed(0)}k PLN, Discounted=${plnToTysPln(discountedCF).toFixed(0)}k PLN, RunningNPV=${plnToMlnPln(capexNPV).toFixed(2)}M PLN`);
     }
   }
 
-  console.log('  ✅ Final CAPEX NPV:', (capexNPV / 1000000).toFixed(2), 'mln PLN');
+  console.log('  ✅ Final CAPEX NPV:', plnToMlnPln(capexNPV).toFixed(2), 'mln PLN');
 
   // Calculate CAPEX IRR using local Newton-Raphson method
   // NOTE: This is for display purposes; backend IRR (when available) should be preferred
@@ -3847,11 +3811,11 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     year: i + 1,
     net_cash_flow: cf.net_cash_flow
   }));
-  console.log('  📊 IRR Input - Initial investment:', (capex / 1000000).toFixed(2), 'mln PLN');
+  console.log('  📊 IRR Input - Initial investment:', plnToMlnPln(capex).toFixed(2), 'mln PLN');
   console.log('  📊 IRR Input - Cash flows count:', irrCashFlows.length);
-  console.log('  📊 IRR Input - First 3 cash flows:', irrCashFlows.slice(0, 3).map(cf => `Year ${cf.year}: ${(cf.net_cash_flow/1000).toFixed(0)}k PLN`));
+  console.log('  📊 IRR Input - First 3 cash flows:', irrCashFlows.slice(0, 3).map(cf => `Year ${cf.year}: ${plnToTysPln(cf.net_cash_flow).toFixed(0)}k PLN`));
   const capexIRR = calculateIRR()
-  console.log('  📊 IRR Result:', capexIRR, '(', (capexIRR * 100).toFixed(2), '%) - Mode:', irrMode);
+  console.log('  📊 IRR Result:', capexIRR, '(', decimalToPct(capexIRR).toFixed(2), '%) - Mode:', irrMode);
 
   // ========== EaaS MODEL CALCULATION ==========
   let eaasNPV = 0;
@@ -3868,14 +3832,14 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     console.log('🔢 CENTRALIZED EaaS NPV Calculation:');
     console.log('  📅 Analysis period:', analysisPeriod, 'years');
     console.log('  📅 EaaS contract duration:', eaasDuration, 'years');
-    console.log('  📊 Discount rate:', (discountRate * 100).toFixed(1), '%');
-    console.log('  📈 Inflation rate:', (inflationRate * 100).toFixed(1), '%');
+    console.log('  📊 Discount rate:', decimalToPct(discountRate).toFixed(1), '%');
+    console.log('  📈 Inflation rate:', decimalToPct(inflationRate).toFixed(1), '%');
     console.log('  📋 EaaS indexation:', eaasIndexation);
-    console.log('  💰 Base subscription:', (baseSubscriptionCost / 1000).toFixed(0), 'k PLN/year');
-    console.log('  💰 Base O&M:', (baseOmCost / 1000).toFixed(0), 'k PLN/year');
-    console.log('  💰 Base insurance:', (baseInsuranceCost / 1000).toFixed(0), 'k PLN/year');
+    console.log('  💰 Base subscription:', plnToTysPln(baseSubscriptionCost).toFixed(0), 'k PLN/year');
+    console.log('  💰 Base O&M:', plnToTysPln(baseOmCost).toFixed(0), 'k PLN/year');
+    console.log('  💰 Base insurance:', plnToTysPln(baseInsuranceCost).toFixed(0), 'k PLN/year');
     if (baseLandLeaseCost > 0) {
-      console.log('  💰 Base land lease:', (baseLandLeaseCost / 1000).toFixed(0), 'k PLN/year');
+      console.log('  💰 Base land lease:', plnToTysPln(baseLandLeaseCost).toFixed(0), 'k PLN/year');
     }
 
     for (let year = 1; year <= analysisPeriod; year++) {
@@ -3950,18 +3914,18 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
         discountedCF: discountedCF,
         phase: year <= eaasDuration ? 'eaas' : 'ownership',
         energyPrice: adjustedGridPrice,
-        pvDegradationPct: pvDegradation * 100,
+        pvDegradationPct: ((1 - pvDegradationYear1Display) * Math.pow(1 - degradationRate, Math.max(0, year - 1))) * 100,
         bessDegradationPct: bessDegradation * 100,
         pricingMode: pricingMode
       });
 
       // Log sample years
       if (year <= 2 || year === eaasDuration || year === eaasDuration + 1 || year === analysisPeriod) {
-        console.log(`  Year ${year} (${year <= eaasDuration ? 'EaaS' : 'Own'}): GridCost=${(gridCost/1000).toFixed(0)}k, EaasCost=${(eaasCost/1000).toFixed(0)}k, Savings=${(savings/1000).toFixed(0)}k, Discounted=${(discountedCF/1000).toFixed(0)}k, RunningNPV=${(eaasNPV/1000000).toFixed(2)}M`);
+        console.log(`  Year ${year} (${year <= eaasDuration ? 'EaaS' : 'Own'}): GridCost=${plnToTysPln(gridCost).toFixed(0)}k, EaasCost=${plnToTysPln(eaasCost).toFixed(0)}k, Savings=${plnToTysPln(savings).toFixed(0)}k, Discounted=${plnToTysPln(discountedCF).toFixed(0)}k, RunningNPV=${plnToMlnPln(eaasNPV).toFixed(2)}M`);
       }
     }
 
-    console.log('  ✅ Final EaaS NPV:', (eaasNPV / 1000000).toFixed(2), 'mln PLN');
+    console.log('  ✅ Final EaaS NPV:', plnToMlnPln(eaasNPV).toFixed(2), 'mln PLN');
 
     eaasMetrics = {
       npv: eaasNPV,
@@ -4016,7 +3980,7 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       bessDeg = (1 - bessDegradationYear1) * Math.pow(1 - bessDegradationPctPerYear, Math.max(0, yr - 1));
     }
     // K column = OPEX [tys PLN] = =$F$14*POWER(1+$F$5,yr)
-    const yrOpexTys = ((capacityKwp * params.opex_per_kwp + opexBESS) * Math.pow(1 + inflationRate, yr)) / 1000;
+    const yrOpexTys = plnToTysPln((capacityKwp * params.opex_per_kwp + opexBESS) * Math.pow(1 + inflationRate, yr));
     lcoeNumerator += yrOpexTys / Math.pow(1 + discountRate, yr);
     // I column = AutoPV + AutoBESS [MWh]
     const yrAutocons = pvDirectSelfConsumedMwh * pvDeg + bessSelfConsumedMwh * bessDeg;
@@ -4041,18 +4005,45 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
     },
     eaas: eaasMetrics ? { ...eaasMetrics, pricingMode, rdnBaseline } : null,
     common: {
+      // === Dane wariantu ===
       capacityKwp: capacityKwp,
       productionMwh: productionMwh,
       selfConsumedMwh: selfConsumedMwh,
       productionKwh: productionMwh * 1000,
       selfConsumedKwh: selfConsumedMwh * 1000,
+      pvDirectSelfConsumedMwh: pvDirectSelfConsumedMwh,
+      bessSelfConsumedMwh: bessSelfConsumedMwh,
+      // === Scenariusz produkcji ===
+      scenarioFactor: scenarioFactor,                     // decimal (np. 0.85 dla P75)
+      scenarioName: scenarioName,                         // string ('P50'/'P75'/'P90')
+      // === Ceny energii [PLN/MWh] ===
       totalEnergyPrice: totalEnergyPrice,
       energyPriceWithoutCapacity: energyPriceWithoutCapacity,
+      // === Parametry finansowe [decimal] ===
       discountRate: discountRate,
       inflationRate: inflationRate,
       analysisPeriod: analysisPeriod,
       useInflation: useInflation,
+      // === Degradacja [decimal] ===
+      degradationRate: degradationRate,                   // PV roczna years 2+ (np. 0.005)
+      pvDegradationYear1: pvDegradationYear1,             // LID (np. 0.01 lub 0 gdy precise)
+      bessDegradationYear1: bessDegradationYear1,         // BESS year 1 (np. 0.03)
+      bessDegradationPctPerYear: bessDegradationPctPerYear, // BESS annual (np. 0.02)
+      // === Koszty [PLN] ===
+      capexPerKwp: capexPerKwp,
+      totalCapex: capex,
+      opexPerKwp: params.opex_per_kwp,
+      // === Wyniki obliczeń — SSoT, NIE liczyć ponownie! ===
+      // Aby uzyskać NPV/IRR/payback/LCOE, czytaj z tych pól lub z capex.*/eaas.*
+      capexNpv: capexNPV,                                 // [PLN] NPV modelu CAPEX
+      capexIrr: capexIRR,                                 // [decimal] IRR modelu CAPEX
+      simplePayback: simplePayback,                       // [lata] prosty okres zwrotu
+      discountedPayback: discountedPayback,               // [lata] zdyskontowany okres zwrotu (DPP)
+      lcoe: lcoe,                                         // [PLN/MWh] LCOE
+      eaasNpv: eaasMetrics?.npv || null,                  // [PLN] NPV modelu EaaS
+      // === Tryb wyceny ===
       pricingMode: pricingMode,
+      // === K-class / opłata mocowa ===
       hasKClassData: hasKClassData,
       kClassBaseline: variant.k_class_baseline || null,
       kClassWithPV: variant.k_class_with_pv || null,
@@ -4147,17 +4138,18 @@ async function performEconomicAnalysis() {
 
     console.log('💰 Total energy price (with capacity fee):', totalEnergyPrice, 'PLN/MWh');
 
-    // Podstawowe dane z wariantu
+    // Podstawowe dane z wariantu — z uwzględnieniem scenarioFactor (P50/P75/P90)
+    const scenarioFactor = window.currentScenarioFactor || 1.0;
     const capacity_kwp = variant.capacity; // Already in kWp from backend
-    const production_annual = variant.production / 1000; // kWh → MWh
+    const production_annual = kwhToMwh(variant.production * scenarioFactor);
 
-    // Autokonsumpcja: bezpośrednia PV + energia z BESS (jeśli jest)
-    // variant.self_consumed już zawiera całkowitą autokonsumpcję z BESS
-    // ale dla pewności sprawdzamy czy bess_self_consumed_from_bess_kwh jest dostępne
-    let self_consumed_annual = variant.self_consumed / 1000; // kWh → MWh
+    // Autokonsumpcja: preciseAnnualSavings jako źródło (spójne z Excel), fallback: skalowanie
+    let self_consumed_annual = (preciseAnnualSavings?.energy?.self_consumed_mwh)
+      ? preciseAnnualSavings.energy.self_consumed_mwh
+      : kwhToMwh(variant.self_consumed * scenarioFactor);
 
     // BESS dodatkowa autokonsumpcja (energia rozładowana z baterii do zużycia)
-    const bess_self_consumed_from_bess = (variant.bess_self_consumed_from_bess_kwh || 0) / 1000; // kWh → MWh
+    const bess_self_consumed_from_bess = kwhToMwh(variant.bess_self_consumed_from_bess_kwh || 0);
 
     console.log('📊 Variant data:', {
       capacity_kwp,
@@ -4171,7 +4163,7 @@ async function performEconomicAnalysis() {
     // 1. Nakłady inwestycyjne PV (CAPEX) - using tiered pricing based on capacity
     const capexPerKwp = getCapexForCapacity(capacity_kwp);
     const capexPV = capacity_kwp * capexPerKwp; // PLN
-    console.log(`💰 PV CAPEX: ${capacity_kwp} kWp × ${capexPerKwp} PLN/kWp = ${(capexPV/1000000).toFixed(2)} mln PLN`);
+    console.log(`💰 PV CAPEX: ${capacity_kwp} kWp × ${capexPerKwp} PLN/kWp = ${plnToMlnPln(capexPV).toFixed(2)} mln PLN`);
 
     // 1b. Nakłady inwestycyjne BESS (jeśli włączony)
     let capexBESS = 0;
@@ -4181,12 +4173,12 @@ async function performEconomicAnalysis() {
       const bessCapexPerKwh = settings.bessCapexPerKwh || 1500;
       const bessCapexPerKw = settings.bessCapexPerKw || 300;
       capexBESS = (variant.bess_energy_kwh * bessCapexPerKwh) + (variant.bess_power_kw * bessCapexPerKw);
-      console.log(`🔋 BESS CAPEX: ${variant.bess_energy_kwh} kWh × ${bessCapexPerKwh} + ${variant.bess_power_kw} kW × ${bessCapexPerKw} = ${(capexBESS/1000000).toFixed(2)} mln PLN`);
+      console.log(`🔋 BESS CAPEX: ${variant.bess_energy_kwh} kWh × ${bessCapexPerKwh} + ${variant.bess_power_kw} kW × ${bessCapexPerKw} = ${plnToMlnPln(capexBESS).toFixed(2)} mln PLN`);
     }
 
     // 1c. Całkowity CAPEX = PV + BESS
     const capex = capexPV + capexBESS;
-    console.log(`💰 TOTAL CAPEX: ${(capexPV/1000000).toFixed(2)} + ${(capexBESS/1000000).toFixed(2)} = ${(capex/1000000).toFixed(2)} mln PLN`);
+    console.log(`💰 TOTAL CAPEX: ${plnToMlnPln(capexPV).toFixed(2)} + ${plnToMlnPln(capexBESS).toFixed(2)} = ${plnToMlnPln(capex).toFixed(2)} mln PLN`);
 
     // Update investmentCost field to show the calculated tiered CAPEX
     const investmentCostField = document.getElementById('investmentCost');
@@ -4204,7 +4196,7 @@ async function performEconomicAnalysis() {
     if (hasBess) {
       const settings = systemSettings || {};
       const bessOpexPctPerYear = settings.bessOpexPctPerYear || 1.5; // % CAPEX per year
-      opex_bess_annual = capexBESS * (bessOpexPctPerYear / 100);
+      opex_bess_annual = capexBESS * pctToDecimal(bessOpexPctPerYear);
       console.log(`🔋 BESS OPEX: ${capexBESS.toFixed(0)} × ${bessOpexPctPerYear}% = ${opex_bess_annual.toFixed(0)} PLN/rok`);
     }
 
@@ -4215,7 +4207,7 @@ async function performEconomicAnalysis() {
     // 3. Roczne oszczędności = autoconsumption * cena energii
     // self_consumed_annual już zawiera energię z BESS (backend liczy to razem)
     const savings_year1 = self_consumed_annual * totalEnergyPrice; // PLN
-    console.log(`💰 Savings Year 1: ${self_consumed_annual.toFixed(1)} MWh × ${totalEnergyPrice.toFixed(0)} PLN/MWh = ${(savings_year1/1000).toFixed(0)} tys. PLN`);
+    console.log(`💰 Savings Year 1: ${self_consumed_annual.toFixed(1)} MWh × ${totalEnergyPrice.toFixed(0)} PLN/MWh = ${plnToTysPln(savings_year1).toFixed(0)} tys. PLN`);
 
     // 4. Prosty okres zwrotu (bez zdyskontowania, bez degradacji)
     const simple_payback = capex / (savings_year1 - opex_annual); // lata
@@ -4226,7 +4218,7 @@ async function performEconomicAnalysis() {
 
     // Check if inflation should be applied (nominal IRR mode)
     const useInflation = window.economicsSettings?.useInflation || false;
-    const inflationRate = useInflation ? (window.economicsSettings?.inflationRate || 0.025) : 0;
+    const inflationRate = useInflation ? window.economicsSettings?.inflationRate : 0;
 
     // === P0-1: Combined Reinvestment Schedule (BESS + Inverter) ===
     const reinvestmentResult = calculateReinvestmentSchedule(
@@ -4307,9 +4299,9 @@ async function performEconomicAnalysis() {
     const discountRateResult = getEffectiveDiscountRate(window.economicsSettings || {});
     const discount_rate = discountRateResult.effectiveRate; // Extract numeric value
     if (DEBUG_ECONOMICS) {
-      console.log(`📊 NPV Calculation using ${discountRateResult.mode} discount_rate:`, (discount_rate * 100).toFixed(2), '%');
+      console.log(`📊 NPV Calculation using ${discountRateResult.mode} discount_rate:`, decimalToPct(discount_rate).toFixed(2), '%');
       if (discountRateResult.isConverted) {
-        console.log(`   (converted from real rate, inflation: ${(discountRateResult.inflationRate * 100).toFixed(1)}%)`);
+        console.log(`   (converted from real rate, inflation: ${decimalToPct(discountRateResult.inflationRate).toFixed(1)}%)`);
       }
     }
     let npv = -capex;
@@ -4346,7 +4338,7 @@ async function performEconomicAnalysis() {
       analysis_period: params.analysis_period,
       use_inflation: window.economicsSettings?.useInflation || false,
       irr_mode: window.economicsSettings?.irrMode || ((window.economicsSettings?.useInflation) ? 'nominal' : 'real'),
-      inflation_rate: window.economicsSettings?.inflationRate || 0.0,
+      inflation_rate: window.economicsSettings?.inflationRate ?? 0.0,
       // P0-3: Rate mode for backend reference
       rate_mode: window.economicsSettings?.rateMode || 'nominal',
       // P0-1: BESS replacement parameters
@@ -4416,11 +4408,6 @@ async function performEconomicAnalysis() {
     };
 
     console.log('? Calculated economic analysis (using backend NPV/IRR):', economicData);
-
-    // Update UI
-    updateMetrics(economicData);
-    updateDataInfo();
-
 
     // Update UI
     updateMetrics(economicData);
@@ -4504,95 +4491,63 @@ function performAnalysis() {
   performEconomicAnalysis();
 }
 
-// Generate sample economic data
+// Generate sample economic data — reads from settings, no hardcoded financial params
 function generateSampleEconomicData(config) {
   const capacity = config.installedCapacity || 1000; // kWp
-  const unitCost = 3500; // PLN/kWp
+  const unitCost = getCapexForCapacity(capacity) || 3500; // PLN/kWp
 
   return {
     capex: capacity * unitCost,
-    opexAnnual: capacity * 50, // PLN/year
-    energyPrice: 0.65, // PLN/kWh
-    discountRate: 0.05,
-    analysisHorizon: 25,
-    inflationRate: 0.03,
+    opexAnnual: capacity * (systemSettings?.opexPerKwp || 24), // PLN/year
+    energyPrice: (window.economicsSettings?.totalEnergyPrice || 961) / 1000, // PLN/kWh
+    discountRate: window.economicsSettings?.discountRate,
+    analysisHorizon: systemSettings?.analysisPeriod || 25,
+    inflationRate: window.economicsSettings?.inflationRate,
     taxRate: 0.19,
     subsidies: 0
   };
 }
 
-// Calculate financial metrics
+// Calculate financial metrics — reads from centralizedMetrics (SSoT)
 function calculateFinancialMetrics() {
-  const capacity = pvConfig?.installedCapacity || 1000;
-  const capex = economicData?.capex || capacity * getCapexForCapacity(capacity);
-  const opexAnnual = economicData?.opexAnnual || capacity * 50;
-  const energyPrice = economicData?.energyPrice || 0.65;
-  const discountRate = economicData?.discountRate || 0.05;
-  const horizon = economicData?.analysisHorizon || 25;
-
-  // Annual production (kWh)
-  const annualProduction = capacity * 1000; // Assuming 1000 kWh/kWp
-
-  // Annual revenue
-  const revenueAnnual = annualProduction * energyPrice;
-
-  // Annual savings (revenue - opex)
-  const savingsAnnual = revenueAnnual - opexAnnual;
-
-  // Simple payback period
-  const paybackPeriod = capex / savingsAnnual;
-
-  // NPV calculation
-  let npv = -capex;
-  for (let year = 1; year <= horizon; year++) {
-    const cashFlow = savingsAnnual;
-    npv += cashFlow / Math.pow(1 + discountRate, year);
+  const cm = centralizedMetrics[currentVariant];
+  if (!cm || !cm.common) {
+    console.warn('⚠️ calculateFinancialMetrics: centralizedMetrics not available, returning empty');
+    return null;
   }
 
-  // IRR calculation removed (backend is source of truth)
-  const irr = economicData?.irr !== undefined && economicData?.irr !== null ? formatNumberEU(economicData.irr * 100, 1) : 'N/A';
-
-  // LCOE (Levelized Cost of Energy)
-  // P1-4 FIX: Add degradation to production for consistency with other LCOE calculations
-  const degradationRate = economicData?.parameters?.degradation_rate || window.economicsSettings?.degradationRate || 0.005;
-  let totalCosts = capex;
-  let totalEnergy = 0;
-  for (let year = 1; year <= horizon; year++) {
-    const degradation = Math.pow(1 - degradationRate, year - 1);
-    totalCosts += opexAnnual / Math.pow(1 + discountRate, year);
-    totalEnergy += (annualProduction * degradation) / Math.pow(1 + discountRate, year);
-  }
-  const lcoe = totalEnergy > 0 ? totalCosts / totalEnergy : 0;
-
-  // ROI
-  const roi = (npv / capex) * 100;
+  const c = cm.common;
+  const annualSavings = c.selfConsumedMwh * c.totalEnergyPrice;
+  const annualOpex = c.capacityKwp * c.opexPerKwp;
+  const netAnnualSavings = annualSavings - annualOpex;
+  const roi = c.totalCapex > 0 ? (c.capexNpv / c.totalCapex) * 100 : 0;
 
   return {
-    capex: formatNumberEU(capex / 1000000, 2), // PLN -> mln PLN
-    paybackPeriod: formatNumberEU(paybackPeriod, 1),
-    npv: formatNumberEU(npv / 1000000, 2),
-    irr: irr,
-    unitCapex: `${formatNumberEU(capex / capacity, 0)} PLN/kWp`,
-    lcoe: `${formatNumberEU(lcoe, 2)} PLN/kWh`,
-    opexAnnual: `${formatNumberEU(opexAnnual / 1000, 0)} tys. PLN`,
-    revenueAnnual: `${formatNumberEU(revenueAnnual / 1000, 0)} tys. PLN`,
-    savingsAnnual: `${formatNumberEU(savingsAnnual / 1000, 0)} tys. PLN`,
+    capex: formatNumberEU(plnToMlnPln(c.totalCapex), 2),
+    paybackPeriod: formatNumberEU(c.simplePayback, 1),
+    npv: formatNumberEU(plnToMlnPln(c.capexNpv), 2),
+    irr: c.capexIrr != null ? formatNumberEU(decimalToPct(c.capexIrr), 1) : 'N/A',
+    unitCapex: `${formatNumberEU(c.capexPerKwp, 0)} PLN/kWp`,
+    lcoe: `${formatNumberEU(c.lcoe / 1000, 2)} PLN/kWh`,
+    opexAnnual: `${formatNumberEU(plnToTysPln(annualOpex), 0)} tys. PLN`,
+    revenueAnnual: `${formatNumberEU(plnToTysPln(annualSavings), 0)} tys. PLN`,
+    savingsAnnual: `${formatNumberEU(plnToTysPln(netAnnualSavings), 0)} tys. PLN`,
     roi: `${formatNumberEU(roi, 1)}%`,
-    discountRate: `${formatNumberEU((economicData?.discountRate || 0.05) * 100, 1)}%`,
-    analysisHorizon: `${horizon} lat`,
-    energyPrice: `${formatNumberEU(energyPrice, 2)} PLN/kWh`,
-    subsidies: `${formatNumberEU((economicData?.subsidies || 0) / 1000, 0)} tys. PLN`,
+    discountRate: `${formatNumberEU(decimalToPct(c.discountRate), 1)}%`,
+    analysisHorizon: `${c.analysisPeriod} lat`,
+    energyPrice: `${formatNumberEU(c.totalEnergyPrice / 1000, 2)} PLN/kWh`,
+    subsidies: `${formatNumberEU(plnToTysPln(economicData?.subsidies || 0), 0)} tys. PLN`,
     taxRate: `${formatNumberEU((economicData?.taxRate || 0.19) * 100, 0)}%`,
-    inflationRate: `${formatNumberEU((economicData?.inflationRate || 0.03) * 100, 1)}%`
+    inflationRate: `${formatNumberEU(decimalToPct(c.inflationRate), 1)}%`
   };
 }
 
 // Update metrics display
 function updateMetrics(data) {
   // Main metrics from backend API - European format
-  document.getElementById('capex').textContent = formatNumberEU(data.investment / 1000000, 2); // PLN → mln PLN
+  document.getElementById('capex').textContent = formatNumberEU(plnToMlnPln(data.investment), 2); // PLN → mln PLN
   document.getElementById('paybackPeriod').textContent = formatNumberEU(data.simple_payback, 1);
-  document.getElementById('npv').textContent = formatNumberEU(data.npv / 1000000, 2); // PLN → mln PLN
+  document.getElementById('npv').textContent = formatNumberEU(plnToMlnPln(data.npv), 2); // PLN → mln PLN
 
   // Update CAPEX breakdown (PV + BESS)
   updateCapexBreakdown(data);
@@ -4608,7 +4563,7 @@ function updateMetrics(data) {
       irrElement.textContent = 'N/A';
       irrElement.title = data.irrMessage || 'IRR niedostępne';
     } else {
-      irrElement.textContent = formatNumberEU(irrValue * 100, 1); // decimal → %
+      irrElement.textContent = formatNumberEU(decimalToPct(irrValue), 1); // decimal → %
       irrElement.title = `IRR ${irrMode === 'nominal' ? 'nominalny' : 'realny'}`;
     }
   }
@@ -4634,14 +4589,14 @@ function updateMetrics(data) {
 
   document.getElementById('unitCapex').textContent = `${formatNumberEU(data.investment / capacity_kwp, 0)} PLN/kWp`;
   document.getElementById('lcoe').textContent = `${formatNumberEU(data.lcoe * 1000, 2)} PLN/kWh`; // /kWh → /kWh
-  document.getElementById('opexAnnual').textContent = `${formatNumberEU(data.metrics.annual_opex / 1000, 0)} tys. PLN`;
-  document.getElementById('revenueAnnual').textContent = `${formatNumberEU(data.annual_total_revenue / 1000, 0)} tys. PLN`;
-  document.getElementById('savingsAnnual').textContent = `${formatNumberEU(data.annual_savings / 1000, 0)} tys. PLN`;
+  document.getElementById('opexAnnual').textContent = `${formatNumberEU(plnToTysPln(data.metrics.annual_opex), 0)} tys. PLN`;
+  document.getElementById('revenueAnnual').textContent = `${formatNumberEU(plnToTysPln(data.annual_total_revenue), 0)} tys. PLN`;
+  document.getElementById('savingsAnnual').textContent = `${formatNumberEU(plnToTysPln(data.annual_savings), 0)} tys. PLN`;
   document.getElementById('roi').textContent = `${formatNumberEU((data.npv / data.investment) * 100, 1)}%`;
 
   // Display parameters from sidebar inputs - European format
   const params = data.parameters;
-  const discountRateValue = window.economicsSettings?.discountRate ?? 0.07;
+  const discountRateValue = window.economicsSettings?.discountRate;
   document.getElementById('discountRate').textContent = `${formatNumberEU(discountRateValue * 100, 1)}%`;
   document.getElementById('analysisHorizon').textContent = `${params.analysis_period} lat`;
   document.getElementById('energyPrice').textContent = `${formatNumberEU(data.metrics.total_energy_price, 0)} PLN/MWh`;
@@ -4655,12 +4610,12 @@ function updateDataInfo() {
   if (!variants || !currentVariant) return;
 
   const variant = variants[currentVariant];
-  const capacity = formatNumberEU(variant.capacity / 1000, 1); // kWp → MWp
+  const capacity = formatNumberEU(kwhToMwh(variant.capacity), 1); // kWp → MWp
   const params = getEconomicParameters();
   const irrMode = economicData?.irrMode || centralizedMetrics[currentVariant]?.capex?.irrMode || 'real';
   const irrValue = economicData?.irr;
   const irrDisplay = irrValue !== null && irrValue !== undefined
-    ? `${formatNumberEU(irrValue * 100, 1)}% (${irrMode === 'nominal' ? 'nom.' : 'real'})`
+    ? `${formatNumberEU(decimalToPct(irrValue), 1)}% (${irrMode === 'nominal' ? 'nom.' : 'real'})`
     : 'N/A';
   const info = `Wariant ${currentVariant}: ${capacity} MWp • Analiza ${params.analysis_period}-letnia • IRR: ${irrDisplay}`;
   document.getElementById('dataInfo').textContent = info;
@@ -4727,8 +4682,8 @@ function updateCapexBreakdown(data) {
     });
 
     // Update display
-    capexPVEl.textContent = formatNumberEU(pvCapex / 1000000, 2);
-    capexBESSEl.textContent = formatNumberEU(bessCapexTotal / 1000000, 2);
+    capexPVEl.textContent = formatNumberEU(plnToMlnPln(pvCapex), 2);
+    capexBESSEl.textContent = formatNumberEU(plnToMlnPln(bessCapexTotal), 2);
     capexBreakdown.style.display = 'block';
   } else {
     capexBreakdown.style.display = 'none';
@@ -4780,7 +4735,7 @@ function generateCapexChart() {
         tooltip: {
           callbacks: {
             label: function(context) {
-              return context.label + ': ' + (context.parsed / 1000).toFixed(0) + ' tys. PLN';
+              return context.label + ': ' + plnToTysPln(context.parsed).toFixed(0) + ' tys. PLN';
             }
           }
         }
@@ -4833,7 +4788,7 @@ function generateOpexChart() {
         tooltip: {
           callbacks: {
             label: function(context) {
-              return context.label + ': ' + (context.parsed / 1000).toFixed(1) + ' tys. PLN/rok';
+              return context.label + ': ' + plnToTysPln(context.parsed).toFixed(1) + ' tys. PLN/rok';
             }
           }
         }
@@ -4850,7 +4805,7 @@ function generateCashFlowChart(data) {
   if (cashFlowChart) cashFlowChart.destroy();
 
   const years = data.cash_flows.map(cf => cf.year);
-  const cumulativeCashFlow = data.cash_flows.map(cf => (cf.cumulative_cash_flow / 1000000).toFixed(2)); // PLN → mln PLN
+  const cumulativeCashFlow = data.cash_flows.map(cf => plnToMlnPln(cf.cumulative_cash_flow).toFixed(2)); // PLN → mln PLN
 
   cashFlowChart = new Chart(ctx, {
     type: 'line',
@@ -4902,8 +4857,8 @@ function generateRevenueChart() {
 
   for (let year = 1; year <= horizon; year++) {
     years.push(`Rok ${year}`);
-    revenues.push((annualProduction * energyPrice / 1000).toFixed(0));
-    costs.push((opexAnnual / 1000).toFixed(0));
+    revenues.push(plnToTysPln(annualProduction * energyPrice).toFixed(0));
+    costs.push(plnToTysPln(opexAnnual).toFixed(0));
   }
 
   revenueChart = new Chart(ctx, {
@@ -6342,55 +6297,13 @@ async function exportPvYearlyExcel() {
     }
   }
 
-  // Get full-year profiles - use variant-specific PV profile (same logic as fetchPreciseAnnualSavings)
-  const sd = window.sharedData || window.parent?.sharedData || {};
-  const ar = sd.analysisResults || analysisResults || {};
+  // Get full-year profiles via shared resolvePvProfile() — SSoT for PV profile resolution
   const variantKey = currentVariant || 'B';
+  const { pvProfile: resolvedPv, pvProfileSource } = resolvePvProfile(variant, variantKey);
+  let pvProfile = resolvedPv || [];
+  console.log(`📊 PV Export: pvSource=${pvProfileSource}, pvSum=${pvProfile.length > 0 ? (pvProfile.reduce((a,b)=>a+b,0)/1000).toFixed(1) : 0} MWh`);
 
-  // 1. Best: variant-specific hourly_production from key_variants
-  let pvProfile = null;
-  const variantData = ar.key_variants?.[variantKey];
-  if (variantData?.hourly_production?.length >= 720) {
-    pvProfile = [...variantData.hourly_production]; // copy to avoid mutation
-  }
-
-  // 2. Fallback: scale cached/base PV profile by capacity ratio
-  if (!pvProfile || pvProfile.length < 720) {
-    const basePvProfile = cachedHourlyProduction?.values || sd.pvData || ar.hourly_production || [];
-    if (basePvProfile.length >= 720) {
-      const baseCapacity = ar.key_variants?.[variantKey]?.capacity || variants[variantKey]?.capacity || variant.capacity;
-      const targetCapacity = variant.capacity || baseCapacity;
-      if (baseCapacity > 0 && targetCapacity !== baseCapacity) {
-        const scale = targetCapacity / baseCapacity;
-        pvProfile = basePvProfile.map(v => v * scale);
-      } else {
-        pvProfile = [...basePvProfile];
-      }
-    }
-  }
-
-  // 3. Apply scenario factor (P50/P75/P90) — use productionFactors as authoritative source
-  const scenarioName = window.currentProductionScenario || 'P50';
-  const scenarioFactor = (window.productionFactors && window.productionFactors[scenarioName] !== undefined)
-    ? window.productionFactors[scenarioName]
-    : (window.currentScenarioFactor || 1.0);
-  const pvSumBefore = pvProfile ? pvProfile.reduce((a,b)=>a+b,0) : 0;
-  console.log(`📊 PV Export: scenario=${scenarioName}, factor=${scenarioFactor}, ` +
-    `pvProfile.length=${pvProfile?.length}, pvSum=${(pvSumBefore/1000).toFixed(1)} MWh (before scaling)`);
-  if (pvProfile && scenarioFactor !== 1.0) {
-    pvProfile = pvProfile.map(v => v * scenarioFactor);
-    console.log(`📊 PV Export: after scenario scaling pvSum=${(pvProfile.reduce((a,b)=>a+b,0)/1000).toFixed(1)} MWh`);
-  }
-
-  // Apply Year 1 LID degradation — same as fetchPreciseAnnualSavings
-  const pvDegYear1Export = (settings.pvDegradationYear1 !== undefined ? settings.pvDegradationYear1 : 1.0) / 100;
-  if (pvProfile && pvDegYear1Export > 0) {
-    pvProfile = pvProfile.map(v => v * (1 - pvDegYear1Export));
-    console.log(`📊 PV Export: after LID (${(pvDegYear1Export*100).toFixed(1)}%) pvSum=${(pvProfile.reduce((a,b)=>a+b,0)/1000).toFixed(1)} MWh`);
-  }
-
-  if (!pvProfile || pvProfile.length < 720) pvProfile = [];
-
+  const sd = window.sharedData || window.parent?.sharedData || {};
   let loadProfile = cachedHourlyConsumption?.values ||
                       sd.loadData ||
                       sd.consumptionData?.values || [];
@@ -6635,8 +6548,8 @@ function generateSensitivityChart() {
   const capacity_kwp = variant.capacity;
   const self_consumed = variant.self_consumed;
   const capex_per_kwp = getCapexForCapacity(capacity_kwp);
-  const base_discount_rate = window.economicsSettings?.discountRate ?? 0.07;
-  const inflation_rate = window.economicsSettings?.inflationRate || 0.025;
+  const base_discount_rate = window.economicsSettings?.discountRate;
+  const inflation_rate = window.economicsSettings?.inflationRate;
 
   // Base NPV parameters for recalculation
   const baseParams = {
@@ -6651,7 +6564,7 @@ function generateSensitivityChart() {
     inflation_rate
   };
 
-  const baseNPV = calculateCapexNPV(baseParams) / 1000000;
+  const baseNPV = plnToMlnPln(calculateCapexNPV(baseParams));
 
   // Recalculate NPV for each variation of each parameter
   const variations = [-20, -10, 0, 10, 20];
@@ -6666,7 +6579,7 @@ function generateSensitivityChart() {
   const datasets = paramDefs.map(paramDef => {
     const npvValues = variations.map(variation => {
       const modifiedParams = paramDef.modify(variation);
-      return (calculateCapexNPV(modifiedParams) / 1000000).toFixed(2);
+      return plnToMlnPln(calculateCapexNPV(modifiedParams)).toFixed(2);
     });
 
     return {
@@ -6726,7 +6639,7 @@ function calculateCapexNPV(params) {
 
   const capex = capacity_kwp * capex_per_kwp;
   const base_opex_annual = capacity_kwp * opex_per_kwp;
-  const self_consumed_annual_mwh = self_consumed_annual_kwh / 1000;
+  const self_consumed_annual_mwh = kwhToMwh(self_consumed_annual_kwh);
 
   let npv = -capex;
   for (let year = 1; year <= analysis_period; year++) {
@@ -6770,7 +6683,7 @@ function calculateEaaSNPV(params) {
   // Post-contract costs: O&M + insurance (client takes over installation)
   const base_om_cost = capacity_kwp * eaas_om_per_kwp;
   const base_insurance_cost = capex * insurance_rate;
-  const self_consumed_annual_mwh = self_consumed_annual_kwh / 1000;
+  const self_consumed_annual_mwh = kwhToMwh(self_consumed_annual_kwh);
 
   let npv = 0;
   for (let year = 1; year <= analysis_period; year++) {
@@ -6824,8 +6737,8 @@ function generateSensitivityAnalysisCharts() {
   const capacity_kwp = variant.capacity;
   const self_consumed = variant.self_consumed;
   const capex_per_kwp = getCapexForCapacity(capacity_kwp);
-  const base_discount_rate = window.economicsSettings?.discountRate ?? 0.07;
-  const inflation_rate = window.economicsSettings?.inflationRate || 0.025; // 2.5% default
+  const base_discount_rate = window.economicsSettings?.discountRate;
+  const inflation_rate = window.economicsSettings?.inflationRate;
   const eaas_indexation = window.economicsSettings?.eaasIndexation || 'fixed';
 
   // === 1. Energy Price Sensitivity Chart ===
@@ -6867,8 +6780,8 @@ function generateSensitivityAnalysisCharts() {
       eaas_indexation
     });
 
-    capexNPVsByEnergy.push((capexNPV / 1000000).toFixed(2));
-    eaasNPVsByEnergy.push((eaasNPV / 1000000).toFixed(2));
+    capexNPVsByEnergy.push(plnToMlnPln(capexNPV).toFixed(2));
+    eaasNPVsByEnergy.push(plnToMlnPln(eaasNPV).toFixed(2));
   });
 
   // Create energy price sensitivity chart
@@ -6957,8 +6870,8 @@ function generateSensitivityAnalysisCharts() {
       eaas_indexation
     });
 
-    capexNPVsByDiscount.push((capexNPV / 1000000).toFixed(2));
-    eaasNPVsByDiscount.push((eaasNPV / 1000000).toFixed(2));
+    capexNPVsByDiscount.push(plnToMlnPln(capexNPV).toFixed(2));
+    eaasNPVsByDiscount.push(plnToMlnPln(eaasNPV).toFixed(2));
   });
 
   // Create discount rate sensitivity chart
@@ -7203,13 +7116,13 @@ function generatePaybackTable(data, capacity_kwp, params) {
 
   const cashFlows = centralizedCalc.capex.cashFlows;
   const investment = centralizedCalc.capex.investment;
-  const discountRate = centralizedCalc.common.discountRate || 0.07;
-  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice || 800;
-  const inflationRate = centralizedCalc.common.inflationRate || 0.025;
+  const discountRate = centralizedCalc.common.discountRate;
+  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
+  const inflationRate = centralizedCalc.common.inflationRate;
 
   // Get annual consumption using helper function
   const annualConsumptionKwh = getAnnualConsumptionKwh();
-  const annualConsumptionMwh = annualConsumptionKwh / 1000;
+  const annualConsumptionMwh = kwhToMwh(annualConsumptionKwh);
 
   console.log('📊 CAPEX TABLE - Using centralizedMetrics:', {
     variant: currentVariant,
@@ -7234,8 +7147,8 @@ function generatePaybackTable(data, capacity_kwp, params) {
     <td>-</td>
     <td>-</td>
     <td>-</td>
-    <td class="negative">-${formatNumberEU(investment / 1000, 0)}</td>
-    <td class="negative">-${formatNumberEU(investment / 1000000, 2)}</td>
+    <td class="negative">-${formatNumberEU(plnToTysPln(investment), 0)}</td>
+    <td class="negative">-${formatNumberEU(plnToMlnPln(investment), 2)}</td>
   `;
   tableBody.appendChild(row0);
 
@@ -7259,9 +7172,9 @@ function generatePaybackTable(data, capacity_kwp, params) {
     const yearGridCostFull = gridEnergyMwh * totalEnergyPrice * inflationFactor;
 
     // C. Autokonsumpcja - breakdown PV/BESS (z degradacją) - dane w kWh, konwersja do MWh
-    const selfConsumedMwh = (cf.selfConsumed || 0) / 1000;
-    const pvDirectMwh = (cf.selfConsumedPvDirect || 0) / 1000;
-    const bessMwh = (cf.selfConsumedBess || 0) / 1000;
+    const selfConsumedMwh = kwhToMwh(cf.selfConsumed || 0);
+    const pvDirectMwh = kwhToMwh(cf.selfConsumedPvDirect || 0);
+    const bessMwh = kwhToMwh(cf.selfConsumedBess || 0);
 
     // D. Równoważny Koszt OSD = autokonsumpcja × cena sieci z inflacją
     const equivalentGridCost = cf.savings || 0; // savings = selfConsumed × price
@@ -7314,14 +7227,14 @@ function generatePaybackTable(data, capacity_kwp, params) {
       <td>${formatNumberEU(pvDegPct, 1)}</td>
       <td>${formatNumberEU(bessDegPct, 1)}</td>
       <td>${formatNumberEU(gridEnergyMwh, 1)}</td>
-      <td>${formatNumberEU(yearGridCostFull / 1000, 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(yearGridCostFull), 0)}</td>
       <td>${formatNumberEU(pvDirectMwh, 1)}</td>
       <td>${formatNumberEU(bessMwh, 1)}</td>
       <td>${formatNumberEU(selfConsumedMwh, 1)}</td>
-      <td>${formatNumberEU(equivalentGridCost / 1000, 0)}</td>
-      <td>${formatNumberEU(opex / 1000, 0)}</td>
-      <td class="${savingsClass}">${formatNumberEU(savings / 1000, 0)}</td>
-      <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
+      <td>${formatNumberEU(plnToTysPln(equivalentGridCost), 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(opex), 0)}</td>
+      <td class="${savingsClass}">${formatNumberEU(plnToTysPln(savings), 0)}</td>
+      <td class="${npvClass}">${formatNumberEU(plnToMlnPln(cumulativeNPV), 2)}</td>
     `;
 
     tableBody.appendChild(row);
@@ -7336,13 +7249,13 @@ function generatePaybackTable(data, capacity_kwp, params) {
   const npvClass = cumulativeNPV >= 0 ? 'positive' : 'negative';
 
   summaryRow.innerHTML = `
-    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (${cashFlows.length} lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
-    <td class="positive">${formatNumberEU(totalSavings / 1000, 0)}</td>
-    <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
+    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (${cashFlows.length} lat) / NPV (${formatNumberEU(decimalToPct(discountRate), 0)}%):</td>
+    <td class="positive">${formatNumberEU(plnToTysPln(totalSavings), 0)}</td>
+    <td class="${npvClass}">${formatNumberEU(plnToMlnPln(cumulativeNPV), 2)}</td>
   `;
   tableBody.appendChild(summaryRow);
 
-  console.log('✅ CAPEX table generated. Break-even year:', breakEvenYear || 'Beyond analysis period', ', Final NPV:', (cumulativeNPV / 1000000).toFixed(2), 'mln PLN');
+  console.log('✅ CAPEX table generated. Break-even year:', breakEvenYear || 'Beyond analysis period', ', Final NPV:', plnToMlnPln(cumulativeNPV).toFixed(2), 'mln PLN');
 }
 
 // Generate revenue and costs table
@@ -7380,7 +7293,7 @@ function generateRevenueTable(data) {
     const savings = cf.savings || 0;
     const opex = cf.opex || 0;
     const profit = cf.net_cash_flow || 0;
-    const margin = savings > 0 ? ((profit / savings) * 100) : 0;
+    const margin = savings > 0 ? decimalToPct(profit / savings) : 0;
 
     totalSavings += savings;
     totalOpex += opex;
@@ -7391,9 +7304,9 @@ function generateRevenueTable(data) {
 
     row.innerHTML = `
       <td>${cf.year}</td>
-      <td>${formatNumberEU(savings / 1000, 0)}</td>
-      <td>${formatNumberEU(opex / 1000, 0)}</td>
-      <td class="${profitClass}">${formatNumberEU(profit / 1000, 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(savings), 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(opex), 0)}</td>
+      <td class="${profitClass}">${formatNumberEU(plnToTysPln(profit), 0)}</td>
       <td class="${marginClass}">${formatNumberEU(margin, 1)}%</td>
     `;
 
@@ -7406,14 +7319,14 @@ function generateRevenueTable(data) {
   summaryRow.style.fontWeight = '600';
   summaryRow.style.borderTop = '2px solid #27ae60';
 
-  const avgMargin = totalSavings > 0 ? ((totalProfit / totalSavings) * 100) : 0;
+  const avgMargin = totalSavings > 0 ? decimalToPct(totalProfit / totalSavings) : 0;
   const avgMarginClass = avgMargin >= 0 ? 'positive' : 'negative';
 
   summaryRow.innerHTML = `
     <td>SUMA</td>
-    <td>${formatNumberEU(totalSavings / 1000, 0)}</td>
-    <td>${formatNumberEU(totalOpex / 1000, 0)}</td>
-    <td class="positive">${formatNumberEU(totalProfit / 1000, 0)}</td>
+    <td>${formatNumberEU(plnToTysPln(totalSavings), 0)}</td>
+    <td>${formatNumberEU(plnToTysPln(totalOpex), 0)}</td>
+    <td class="positive">${formatNumberEU(plnToTysPln(totalProfit), 0)}</td>
     <td class="${avgMarginClass}">${formatNumberEU(avgMargin, 1)}%</td>
   `;
 
@@ -7454,12 +7367,12 @@ function exportRevenueToExcel() {
   let totalProfit = 0;
 
   economicData.cash_flows.forEach((cf) => {
-    const savings = cf.savings / 1000; // PLN → tys. PLN
-    const opex = cf.opex / 1000;
-    const bessReplacement = (cf.bessReplacementCost || 0) / 1000;  // P0-1
-    const residualVal = (cf.residualValue || 0) / 1000;            // P0-2
-    const profit = cf.net_cash_flow / 1000;
-    const margin = savings > 0 ? (profit / savings) * 100 : 0;
+    const savings = plnToTysPln(cf.savings); // PLN → tys. PLN
+    const opex = plnToTysPln(cf.opex);
+    const bessReplacement = plnToTysPln(cf.bessReplacementCost || 0);  // P0-1
+    const residualVal = plnToTysPln(cf.residualValue || 0);            // P0-2
+    const profit = plnToTysPln(cf.net_cash_flow);
+    const margin = savings > 0 ? decimalToPct(profit / savings) : 0;
 
     totalSavings += savings;
     totalOpex += opex;
@@ -7479,7 +7392,7 @@ function exportRevenueToExcel() {
   });
 
   // Summary row - P0-1/P0-2: Include BESS Replacement and Residual Value totals
-  const avgMargin = totalSavings > 0 ? (totalProfit / totalSavings) * 100 : 0;
+  const avgMargin = totalSavings > 0 ? decimalToPct(totalProfit / totalSavings) : 0;
   excelData.push([
     'SUMA',
     parseFloat(totalSavings.toFixed(2)),
@@ -7510,7 +7423,7 @@ function exportRevenueToExcel() {
 
   // Generate filename with date
   const variant = variants[currentVariant];
-  const capacity = (variant.capacity / 1000).toFixed(1);
+  const capacity = kwhToMwh(variant.capacity).toFixed(1);
   const date = new Date().toISOString().split('T')[0];
   const filename = `Analiza_Ekonomiczna_${capacity}MWp_${date}.xlsx`;
 
@@ -7600,7 +7513,7 @@ function calculateEaaSEffectivePrice(params) {
 
   const eaasPricePLNperKWh = eaasTotalAnnualCostPLN / pvSelfConsumedKWh;
 
-  console.log(`📊 calculateEaaSEffectivePrice RESULT: ${(eaasPricePLNperKWh * 1000).toFixed(2)} PLN/MWh (subscription=${(eaasTotalAnnualCostPLN/1000).toFixed(0)}k / energy=${(pvSelfConsumedKWh/1000).toFixed(1)} MWh)`);
+  console.log(`📊 calculateEaaSEffectivePrice RESULT: ${(eaasPricePLNperKWh * 1000).toFixed(2)} PLN/MWh (subscription=${plnToTysPln(eaasTotalAnnualCostPLN).toFixed(0)}k / energy=${kwhToMwh(pvSelfConsumedKWh).toFixed(1)} MWh)`);
 
   return {
     error: null,
@@ -7908,13 +7821,13 @@ function displayEaasBessSynergy(variant, eaasSubscriptionPLN, annualEnergyMWh, p
 
   // Row 2: Subscription and BESS metrics
   const baseSubEl = document.getElementById('eaasBessBaseSub');
-  if (baseSubEl) baseSubEl.textContent = fmt(bessSynergyMetrics.baseSubscriptionPLN / 1000, 1);
+  if (baseSubEl) baseSubEl.textContent = fmt(plnToTysPln(bessSynergyMetrics.baseSubscriptionPLN), 1);
 
   const savingsEl = document.getElementById('eaasBessSavings');
-  if (savingsEl) savingsEl.textContent = fmt(bessSynergyMetrics.bessAnnualSavingsPLN / 1000, 1);
+  if (savingsEl) savingsEl.textContent = fmt(plnToTysPln(bessSynergyMetrics.bessAnnualSavingsPLN), 1);
 
   const netSubEl = document.getElementById('eaasBessNetSub');
-  if (netSubEl) netSubEl.textContent = fmt(bessSynergyMetrics.netSubscriptionPLN / 1000, 1);
+  if (netSubEl) netSubEl.textContent = fmt(plnToTysPln(bessSynergyMetrics.netSubscriptionPLN), 1);
 
   const discountEl = document.getElementById('eaasBessDiscount');
   if (discountEl) {
@@ -7931,7 +7844,7 @@ function displayEaasBessSynergy(variant, eaasSubscriptionPLN, annualEnergyMWh, p
 
   // Row 3: BESS economics
   const capexEl = document.getElementById('eaasBessCapex');
-  if (capexEl) capexEl.textContent = fmt(bessCapexPLN / 1000, 0);
+  if (capexEl) capexEl.textContent = fmt(plnToTysPln(bessCapexPLN), 0);
 
   const paybackEl = document.getElementById('eaasBessPayback');
   if (paybackEl) {
@@ -7951,12 +7864,12 @@ function displayEaasBessSynergy(variant, eaasSubscriptionPLN, annualEnergyMWh, p
   // Detailed breakdown
   const detail = bessSynergyMetrics.savingsBreakdownDetail;
   const arbitrageEl = document.getElementById('eaasBessArbitrage');
-  if (arbitrageEl) arbitrageEl.textContent = fmt((detail?.arbitrageSavings || 0) / 1000, 1);
+  if (arbitrageEl) arbitrageEl.textContent = fmt(plnToTysPln(detail?.arbitrageSavings || 0), 1);
 
   // Peak shaving = demand charge + capacity fee savings combined
   const peakShavingTotal = (detail?.demandChargeSavings || 0) + (detail?.capacityFeeSavings || 0);
   const peakShavingEl = document.getElementById('eaasBessPeakShaving');
-  if (peakShavingEl) peakShavingEl.textContent = fmt(peakShavingTotal / 1000, 1);
+  if (peakShavingEl) peakShavingEl.textContent = fmt(plnToTysPln(peakShavingTotal), 1);
 
   // Store for potential export
   window.eaasBessSynergyMetrics = bessSynergyMetrics;
@@ -7993,7 +7906,7 @@ function formatEaaSResults(result) {
     roi: m.eaasEquivalentROI,
     capex: m.pvCapexPLN || 0,  // Use pvCapexPLN from metrics (was previously missing)
     annualCost: m.breakdown?.totalAnnualCost || 0,
-    pvSelfConsumedMWh: (m.breakdown?.pvSelfConsumedKWh || 0) / 1000
+    pvSelfConsumedMWh: kwhToMwh(m.breakdown?.pvSelfConsumedKWh || 0)
   };
   console.log('📊 eaasBaseMetrics set with CAPEX:', window.eaasBaseMetrics.capex);
 
@@ -8021,7 +7934,7 @@ function formatEaaSResults(result) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div id="eaasCard_annualSavings" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Roczne oszczędności</div>
-        <div id="eaasVal_annualSavings" style="color:#27ae60;font-size:24px;font-weight:600">${(m.annualSavingsPLN / 1000).toFixed(1)}</div>
+        <div id="eaasVal_annualSavings" style="color:#27ae60;font-size:24px;font-weight:600">${plnToTysPln(m.annualSavingsPLN).toFixed(1)}</div>
         <div id="eaasVal_savingsPercent" style="color:#7f8c8d;font-size:11px">tys. PLN (${m.savingsPercentageVsBaseline.toFixed(1)}% kosztu energii)</div>
       </div>
 
@@ -8042,19 +7955,19 @@ function formatEaaSResults(result) {
     <div id="eaasScenarioRow" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div id="eaasCard_production" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Produkcja roczna (<span id="eaasScenarioLabel">P50</span>)</div>
-        <div id="eaasVal_production" style="color:#3f51b5;font-size:24px;font-weight:600">${((m.breakdown?.pvSelfConsumedKWh || 0) / 1000).toFixed(0)}</div>
+        <div id="eaasVal_production" style="color:#3f51b5;font-size:24px;font-weight:600">${kwhToMwh(m.breakdown?.pvSelfConsumedKWh || 0).toFixed(0)}</div>
         <div style="color:#7f8c8d;font-size:11px">MWh/rok</div>
       </div>
 
       <div id="eaasCard_subscription" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Abonament EaaS</div>
-        <div id="eaasVal_subscription" style="color:#3f51b5;font-size:24px;font-weight:600">${((m.breakdown?.subscriptionCost || 0) / 1000).toFixed(0)}</div>
+        <div id="eaasVal_subscription" style="color:#3f51b5;font-size:24px;font-weight:600">${plnToTysPln(m.breakdown?.subscriptionCost || 0).toFixed(0)}</div>
         <div style="color:#7f8c8d;font-size:11px">tys. PLN/rok</div>
       </div>
 
       <div id="eaasCard_escoIrr" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">ESCO IRR (fixed)</div>
-        <div id="eaasVal_escoIrr" style="color:#3f51b5;font-size:24px;font-weight:600">${((window.eaasEscoIrr || 0) * 100).toFixed(1)}</div>
+        <div id="eaasVal_escoIrr" style="color:#3f51b5;font-size:24px;font-weight:600">${decimalToPct(window.eaasEscoIrr || 0).toFixed(1)}</div>
         <div style="color:#7f8c8d;font-size:11px">% (stała subskrypcja)</div>
       </div>
     </div>
@@ -8062,10 +7975,10 @@ function formatEaaSResults(result) {
     <div style="padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0;font-size:12px">
       <div style="color:#7f8c8d;font-weight:600;margin-bottom:6px">Rozbicie kosztów EaaS (rocznych):</div>
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#2c3e50">
-        <span>• Abonament: <strong>${(m.breakdown.subscriptionCost / 1000).toFixed(1)}</strong> tys. PLN</span>
-        <span>• O&M: <strong>${(m.breakdown.omCost / 1000).toFixed(1)}</strong> tys. PLN</span>
-        <span>• Ubezpieczenie: <strong>${(m.breakdown.insuranceCost / 1000).toFixed(1)}</strong> tys. PLN</span>
-        <span>• Suma: <strong>${(m.breakdown.totalAnnualCost / 1000).toFixed(1)}</strong> tys. PLN/rok</span>
+        <span>• Abonament: <strong>${plnToTysPln(m.breakdown.subscriptionCost).toFixed(1)}</strong> tys. PLN</span>
+        <span>• O&M: <strong>${plnToTysPln(m.breakdown.omCost).toFixed(1)}</strong> tys. PLN</span>
+        <span>• Ubezpieczenie: <strong>${plnToTysPln(m.breakdown.insuranceCost).toFixed(1)}</strong> tys. PLN</span>
+        <span>• Suma: <strong>${plnToTysPln(m.breakdown.totalAnnualCost).toFixed(1)}</strong> tys. PLN/rok</span>
       </div>
     </div>
   `;
@@ -8111,7 +8024,7 @@ async function calculateEaaS() {
   let annualEnergyMWh;
 
   // SSoT Refactor: Always use variant.self_consumed from pv-calculation.
-  annualEnergyMWh = variant.self_consumed / 1000; // kWh -> MWh
+  annualEnergyMWh = kwhToMwh(variant.self_consumed); // kWh -> MWh
   console.log(`📊 EaaS using SSoT variant.self_consumed: ${annualEnergyMWh.toFixed(2)} MWh`);
 
   // SSoT Refactor: Get BESS data directly from the variant
@@ -8258,9 +8171,9 @@ async function calculateEaaS() {
     const btnP50 = document.getElementById('globalBtnP50');
     const btnP75 = document.getElementById('globalBtnP75');
     const btnP90 = document.getElementById('globalBtnP90');
-    if (btnP50) btnP50.innerHTML = `P50 <span style="font-size:10px;opacity:0.9">(${(p50Factor * 100).toFixed(0)}%)</span>`;
-    if (btnP75) btnP75.innerHTML = `P75 <span style="font-size:10px;opacity:0.9">(${(p75Factor * 100).toFixed(0)}%)</span>`;
-    if (btnP90) btnP90.innerHTML = `P90 <span style="font-size:10px;opacity:0.9">(${(p90Factor * 100).toFixed(0)}%)</span>`;
+    if (btnP50) btnP50.innerHTML = `P50 <span style="font-size:10px;opacity:0.9">(${decimalToPct(p50Factor).toFixed(0)}%)</span>`;
+    if (btnP75) btnP75.innerHTML = `P75 <span style="font-size:10px;opacity:0.9">(${decimalToPct(p75Factor).toFixed(0)}%)</span>`;
+    if (btnP90) btnP90.innerHTML = `P90 <span style="font-size:10px;opacity:0.9">(${decimalToPct(p90Factor).toFixed(0)}%)</span>`;
 
     // Annual subscription (fixed for all scenarios)
     const annualSubscriptionPLN = fullModelResult.annualSubscriptionPLN || fullModelResult.annualSubscription;
@@ -8294,7 +8207,7 @@ async function calculateEaaS() {
       const s = scenarios[key];
       s.savingsPerMWh = gridPricePLN - s.pricePLN;           // PLN/MWh saved vs grid
       s.annualSavings = s.energyMWh * s.savingsPerMWh;       // PLN/year total savings
-      s.savingsPercent = gridPricePLN > 0 ? (s.savingsPerMWh / gridPricePLN * 100) : 0;
+      s.savingsPercent = gridPricePLN > 0 ? decimalToPct(s.savingsPerMWh / gridPricePLN) : 0;
     });
 
     console.log('Production scenarios (client perspective):', {
@@ -8392,8 +8305,8 @@ async function calculateEaaS() {
   centralizedMetrics[currentVariant] = centralizedCalc;
 
   console.log('CENTRALIZED METRICS stored:', centralizedCalc);
-  console.log('  - CAPEX NPV:', (centralizedCalc.capex.npv / 1000000).toFixed(2), 'mln PLN');
-  console.log('  - EaaS NPV:', ((centralizedCalc.eaas?.npv || 0) / 1000000).toFixed(2), 'mln PLN');
+  console.log('  - CAPEX NPV:', plnToMlnPln(centralizedCalc.capex.npv).toFixed(2), 'mln PLN');
+  console.log('  - EaaS NPV:', plnToMlnPln(centralizedCalc.eaas?.npv || 0).toFixed(2), 'mln PLN');
 
   // K-class warning banner
   const kclassBanner = document.getElementById('kclassWarningBanner');
@@ -8571,8 +8484,8 @@ async function calculateOptimization() {
     const eaasNPV = centralizedCalc.eaas ? centralizedCalc.eaas.npv : 0;
 
     console.log(`📊 OPTIMIZATION - Variant ${key}:`);
-    console.log(`   CAPEX NPV = ${(capexNPV/1000000).toFixed(2)} mln PLN`);
-    console.log(`   EaaS NPV = ${(eaasNPV/1000000).toFixed(2)} mln PLN`);
+    console.log(`   CAPEX NPV = ${plnToMlnPln(capexNPV).toFixed(2)} mln PLN`);
+    console.log(`   EaaS NPV = ${plnToMlnPln(eaasNPV).toFixed(2)} mln PLN`);
 
     results.push({
       key: key,
@@ -8582,8 +8495,8 @@ async function calculateOptimization() {
       capexIRR: capexIRR,
       eaasNPV: eaasNPV,
       // Composite score: normalized NPV * autoconsumption ratio
-      capexScore: (capexNPV / 1000000) * autoconsumptionRatio,
-      eaasScore: (eaasNPV / 1000000) * autoconsumptionRatio
+      capexScore: plnToMlnPln(capexNPV) * autoconsumptionRatio,
+      eaasScore: plnToMlnPln(eaasNPV) * autoconsumptionRatio
     });
   }
 
@@ -8645,8 +8558,8 @@ async function calculateOptimization() {
       capexPanel.innerHTML = `
         <div style="font-size:13px;line-height:1.8">
           <div><strong>📈 Optymalna instalacja:</strong> ${r.capacity} kWp</div>
-          <div style="margin-left:20px;color:#1565c0">NPV: ${(r.capexNPV / 1000000).toFixed(2)} mln PLN</div>
-          <div style="margin-left:20px;color:#1565c0">IRR: ${(r.capexIRR * 100).toFixed(1)}%</div>
+          <div style="margin-left:20px;color:#1565c0">NPV: ${plnToMlnPln(r.capexNPV).toFixed(2)} mln PLN</div>
+          <div style="margin-left:20px;color:#1565c0">IRR: ${decimalToPct(r.capexIRR).toFixed(1)}%</div>
           <div style="margin-left:20px;color:#1565c0">Autokonsumpcja: ${r.autoconsumptionRatio.toFixed(1)}%</div>
         </div>
       `;
@@ -8654,7 +8567,7 @@ async function calculateOptimization() {
       capexPanel.innerHTML = `
         <div style="font-size:13px;line-height:1.8">
           <div><strong>🏆 Najlepszy NPV:</strong> Wariant ${bestCapexNPV.key} (${bestCapexNPV.capacity} kWp)</div>
-          <div style="margin-left:20px;color:#1565c0">NPV: ${(bestCapexNPV.capexNPV / 1000000).toFixed(2)} mln PLN, IRR: ${(bestCapexNPV.capexIRR * 100).toFixed(1)}%</div>
+          <div style="margin-left:20px;color:#1565c0">NPV: ${plnToMlnPln(bestCapexNPV.capexNPV).toFixed(2)} mln PLN, IRR: ${decimalToPct(bestCapexNPV.capexIRR).toFixed(1)}%</div>
           <div style="margin-top:8px"><strong>⚡ Najlepsza autokons.:</strong> Wariant ${bestAutoconsumption.key} (${bestAutoconsumption.capacity} kWp)</div>
           <div style="margin-left:20px;color:#1565c0">Autokonsumpcja: ${bestAutoconsumption.autoconsumptionRatio.toFixed(1)}%</div>
           <div style="margin-top:8px"><strong>🎯 Kompromis:</strong> Wariant ${bestCapexScore.key} (${bestCapexScore.capacity} kWp)</div>
@@ -8672,7 +8585,7 @@ async function calculateOptimization() {
       eaasPanel.innerHTML = `
         <div style="font-size:13px;line-height:1.8">
           <div><strong>📈 Optymalna instalacja:</strong> ${r.capacity} kWp</div>
-          <div style="margin-left:20px;color:#e65100">NPV: ${(r.eaasNPV / 1000000).toFixed(2)} mln PLN</div>
+          <div style="margin-left:20px;color:#e65100">NPV: ${plnToMlnPln(r.eaasNPV).toFixed(2)} mln PLN</div>
           <div style="margin-left:20px;color:#e65100">Autokonsumpcja: ${r.autoconsumptionRatio.toFixed(1)}%</div>
         </div>
       `;
@@ -8680,7 +8593,7 @@ async function calculateOptimization() {
       eaasPanel.innerHTML = `
         <div style="font-size:13px;line-height:1.8">
           <div><strong>🏆 Najlepszy NPV:</strong> Wariant ${bestEaasNPV.key} (${bestEaasNPV.capacity} kWp)</div>
-          <div style="margin-left:20px;color:#e65100">NPV: ${(bestEaasNPV.eaasNPV / 1000000).toFixed(2)} mln PLN</div>
+          <div style="margin-left:20px;color:#e65100">NPV: ${plnToMlnPln(bestEaasNPV.eaasNPV).toFixed(2)} mln PLN</div>
           <div style="margin-top:8px"><strong>⚡ Najlepsza autokons.:</strong> Wariant ${bestAutoconsumption.key} (${bestAutoconsumption.capacity} kWp)</div>
           <div style="margin-left:20px;color:#e65100">Autokonsumpcja: ${bestAutoconsumption.autoconsumptionRatio.toFixed(1)}%</div>
           <div style="margin-top:8px"><strong>🎯 Kompromis:</strong> Wariant ${bestEaasScore.key} (${bestEaasScore.capacity} kWp)</div>
@@ -8712,9 +8625,9 @@ async function calculateOptimization() {
         <td style="text-align:center">${r.key} ${badges.join('')}</td>
         <td>${formatNumberEU(r.capacity, 0)}</td>
         <td>${formatNumberEU(r.autoconsumptionRatio, 1)}</td>
-        <td class="${r.capexNPV >= 0 ? 'positive' : 'negative'}">${formatNumberEU(r.capexNPV / 1000000, 2)}</td>
+        <td class="${r.capexNPV >= 0 ? 'positive' : 'negative'}">${formatNumberEU(plnToMlnPln(r.capexNPV), 2)}</td>
         <td>${formatNumberEU(r.capexIRR * 100, 1)}</td>
-        <td class="${r.eaasNPV >= 0 ? 'positive' : 'negative'}">${formatNumberEU(r.eaasNPV / 1000000, 2)}</td>
+        <td class="${r.eaasNPV >= 0 ? 'positive' : 'negative'}">${formatNumberEU(plnToMlnPln(r.eaasNPV), 2)}</td>
         <td style="color:${modelColor};font-weight:600">${betterModel}</td>
       `;
 
@@ -8787,12 +8700,12 @@ function generateEaaSYearlyTable(params, result) {
   let ownershipPhaseSavings = 0;
 
   // Get total energy price and annual consumption for calculations
-  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice || 800; // PLN/MWh
-  const inflationRate = centralizedCalc.common.inflationRate || 0.025;
+  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
+  const inflationRate = centralizedCalc.common.inflationRate;
 
   // A. Energia z sieci = całkowite zużycie zakładu (bez PV musiałby pobrać całość z sieci)
   const annualConsumptionKwh = getAnnualConsumptionKwh();
-  const annualConsumptionMwh = annualConsumptionKwh / 1000;
+  const annualConsumptionMwh = kwhToMwh(annualConsumptionKwh);
 
   // ========== POPULATE eaasYearlyData for Bankability ==========
   // This data is used by initializeBankability() for DSCR/CCR calculations
@@ -8809,7 +8722,7 @@ function generateEaaSYearlyTable(params, result) {
     opex: yearData.eaasCost || 0,
     // Additional fields for Bankability
     phase: yearData.phase,
-    selfConsumedMwh: (yearData.selfConsumed || 0) / 1000,
+    selfConsumedMwh: kwhToMwh(yearData.selfConsumed || 0),
     gridCost: yearData.gridCost || 0,
     eaasCost: yearData.eaasCost || 0,
     netSavings: yearData.savings || 0
@@ -8820,7 +8733,7 @@ function generateEaaSYearlyTable(params, result) {
     const year = yearData.year;
     // Use selfConsumed directly from cashFlows (already includes degradation) - in kWh
     const autoconsumptionKwh = yearData.selfConsumed || 0;
-    const autoconsumptionMwh = autoconsumptionKwh / 1000;
+    const autoconsumptionMwh = kwhToMwh(autoconsumptionKwh);
     const gridCost = yearData.gridCost;
     const eaasCost = yearData.eaasCost;
     const savings = yearData.savings;
@@ -8879,8 +8792,8 @@ function generateEaaSYearlyTable(params, result) {
     // J. NPV (mln PLN) - skumulowany NPV
 
     // Breakdown autokonsumpcji
-    const pvDirectMwh = (yearData.selfConsumedPvDirect || 0) / 1000; // kWh → MWh
-    const bessMwh = (yearData.selfConsumedBess || 0) / 1000; // kWh → MWh
+    const pvDirectMwh = kwhToMwh(yearData.selfConsumedPvDirect || 0); // kWh → MWh
+    const bessMwh = kwhToMwh(yearData.selfConsumedBess || 0); // kWh → MWh
 
     // Degradation percentages (from cashFlows)
     const pvDegPct = yearData.pvDegradationPct || 100;
@@ -8896,15 +8809,15 @@ function generateEaaSYearlyTable(params, result) {
       <td>${formatNumberEU(pvDegPct, 1)}</td>
       <td>${formatNumberEU(bessDegPct, 1)}</td>
       <td>${formatNumberEU(gridEnergyMwh, 1)}</td>
-      <td>${formatNumberEU(yearGridCostFull / 1000, 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(yearGridCostFull), 0)}</td>
       <td>${formatNumberEU(pvDirectMwh, 1)}</td>
       <td>${formatNumberEU(bessMwh, 1)}</td>
       <td>${formatNumberEU(autoconsumptionMwh, 1)}</td>
-      <td>${formatNumberEU(gridCostWithPv / 1000, 0)}</td>
-      <td>${formatNumberEU(pvSavings / 1000, 0)}</td>
-      <td>${formatNumberEU(eaasCost / 1000, 0)}</td>
-      <td class="${savingsClass}">${formatNumberEU(savings / 1000, 0)}</td>
-      <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
+      <td>${formatNumberEU(plnToTysPln(gridCostWithPv), 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(pvSavings), 0)}</td>
+      <td>${formatNumberEU(plnToTysPln(eaasCost), 0)}</td>
+      <td class="${savingsClass}">${formatNumberEU(plnToTysPln(savings), 0)}</td>
+      <td class="${npvClass}">${formatNumberEU(plnToMlnPln(cumulativeNPV), 2)}</td>
     `;
 
     tableBody.appendChild(row);
@@ -8918,7 +8831,7 @@ function generateEaaSYearlyTable(params, result) {
 
   eaasSummaryRow.innerHTML = `
     <td colspan="10" style="text-align:right;color:#f57c00">📋 Suma oszczędności w fazie EaaS (lata 1-${eaasDuration}):</td>
-    <td class="positive" style="color:#f57c00">${formatNumberEU(eaasPhaseSavings / 1000, 0)}</td>
+    <td class="positive" style="color:#f57c00">${formatNumberEU(plnToTysPln(eaasPhaseSavings), 0)}</td>
     <td style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
   `;
   tableBody.appendChild(eaasSummaryRow);
@@ -8930,7 +8843,7 @@ function generateEaaSYearlyTable(params, result) {
 
   ownershipSummaryRow.innerHTML = `
     <td colspan="10" style="text-align:right;color:#4caf50">🏠 Suma oszczędności w fazie własności (lata ${eaasDuration + 1}-${analysisPeriod}):</td>
-    <td class="positive" style="color:#4caf50">${formatNumberEU(ownershipPhaseSavings / 1000, 0)}</td>
+    <td class="positive" style="color:#4caf50">${formatNumberEU(plnToTysPln(ownershipPhaseSavings), 0)}</td>
     <td style="text-align:left;font-size:11px;color:#666">&nbsp;tys. PLN</td>
   `;
   tableBody.appendChild(ownershipSummaryRow);
@@ -8945,13 +8858,13 @@ function generateEaaSYearlyTable(params, result) {
   const totalSavings = eaasPhaseSavings + ownershipPhaseSavings;
 
   totalSummaryRow.innerHTML = `
-    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (25 lat) / NPV (${formatNumberEU(discountRate * 100, 0)}%):</td>
-    <td class="positive">${formatNumberEU(totalSavings / 1000, 0)}</td>
-    <td class="${npvClass}">${formatNumberEU(cumulativeNPV / 1000000, 2)}</td>
+    <td colspan="10" style="text-align:right">💰 SUMA CAŁKOWITA (25 lat) / NPV (${formatNumberEU(decimalToPct(discountRate), 0)}%):</td>
+    <td class="positive">${formatNumberEU(plnToTysPln(totalSavings), 0)}</td>
+    <td class="${npvClass}">${formatNumberEU(plnToMlnPln(cumulativeNPV), 2)}</td>
   `;
   tableBody.appendChild(totalSummaryRow);
 
-  console.log('✅ EaaS yearly table generated. EaaS phase:', (eaasPhaseSavings / 1000).toFixed(0), 'tys. PLN, Ownership phase:', (ownershipPhaseSavings / 1000).toFixed(0), 'tys. PLN, NPV:', (cumulativeNPV / 1000000).toFixed(2), 'mln PLN');
+  console.log('✅ EaaS yearly table generated. EaaS phase:', plnToTysPln(eaasPhaseSavings).toFixed(0), 'tys. PLN, Ownership phase:', plnToTysPln(ownershipPhaseSavings).toFixed(0), 'tys. PLN, NPV:', plnToMlnPln(cumulativeNPV).toFixed(2), 'mln PLN');
 
   // Send economics data to shell for Reports module
   // Use JSON.parse/stringify to ensure clean data without DOM references
@@ -9065,9 +8978,11 @@ function roundNum(value, decimals = 2) {
 async function exportEaaSToExcel(withFormulas = false) {
   console.log('📥 exportEaaSToExcel() CALLED', { withFormulas, currentVariant, hasCentralizedMetrics: !!centralizedMetrics?.[currentVariant] });
   try {
-  // Apply production scenario factor (P50/P75/P90)
-  const scenarioFactor = window.currentScenarioFactor || 1.0;
+  // Apply production scenario factor (P50/P75/P90) — productionFactors priorytet
   const scenarioName = window.currentProductionScenario || 'P50';
+  const scenarioFactor = (window.productionFactors && window.productionFactors[scenarioName] !== undefined)
+    ? window.productionFactors[scenarioName]
+    : (window.currentScenarioFactor || 1.0);
   console.log(`📥 Exporting EaaS analysis to Excel (${scenarioName}, factor=${scenarioFactor})...`, withFormulas ? '(WITH FORMULAS)' : '(values only)');
 
   // Get variant data (same as calculateEaaS)
@@ -9104,7 +9019,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // USE centralizedMetrics as single source of truth for autoconsumption
   // (consistent with portal display — includes scenario factor from analysis time)
   const autoconsumptionMwh = centralizedMetrics[currentVariant]?.common?.selfConsumedMwh ||
-                              (variant.self_consumed * scenarioFactor) / 1000;
+                              kwhToMwh(variant.self_consumed * scenarioFactor);
 
   // Calculate EaaS metrics (for Sheet 1 summary only - year-by-year uses centralizedMetrics)
   const eaasParams = {
@@ -9137,7 +9052,7 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   // Get total annual consumption from uploaded file
   const annualConsumptionKwh = getAnnualConsumptionKwh();
-  const annualConsumptionMwh = annualConsumptionKwh / 1000;
+  const annualConsumptionMwh = kwhToMwh(annualConsumptionKwh);
 
   // Sheet 1: Summary (client-facing - no sensitive ESCO data)
   // Rows 1-3: Header area (logo + title merged A1:B3)
@@ -9155,7 +9070,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   const gridPriceDisplay = result.metrics.gridPricePLNperKWh * 1000 * currencyMultiplier;
   const eaasPriceDisplay = result.metrics.eaasPricePLNperKWh * 1000 * currencyMultiplier;
   const priceDiffDisplay = result.metrics.priceDifferencePLNperKWh * 1000 * currencyMultiplier;
-  const annualSavingsDisplay = result.metrics.annualSavingsPLN * currencyMultiplier / 1000;
+  const annualSavingsDisplay = plnToTysPln(result.metrics.annualSavingsPLN * currencyMultiplier);
 
   const summaryData = [
     [''],  // Row 1 - logo area
@@ -9219,7 +9134,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // In RDN mode: compute effective price from actual TCSL annual cost
   const isRdnExport = !!window._rdnExportMode;
   const rdnBLEaas = isRdnExport ? (centralizedCalc.eaas?.rdnBaseline || null) : null;
-  const rdnGridCostYear1TysEaas = rdnBLEaas ? rdnBLEaas.nopvRdnTcslAnnual / 1000 : 0;
+  const rdnGridCostYear1TysEaas = rdnBLEaas ? plnToTysPln(rdnBLEaas.nopvRdnTcslAnnual) : 0;
   const rdnEffPriceEaas = (rdnBLEaas && annualConsumptionMwh > 0)
     ? rdnBLEaas.nopvRdnTcslAnnual / annualConsumptionMwh : totalEnergyPrice;
   const effectiveEnergyPriceEaas = isRdnExport ? rdnEffPriceEaas : totalEnergyPrice;
@@ -9236,12 +9151,8 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   // currency and fxPlnEur already defined above (for Sheet 1)
 
-  // Get degradation rates (same logic as centralizedMetrics)
-  // LID already applied in profile when precise data available → 0 here
-  const hasPreciseBaseExcel = !!(preciseAnnualSavings?.energy?.self_consumed_mwh);
-  const pvDegradationYear1 = hasPreciseBaseExcel
-    ? 0
-    : (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0) / 100;
+  // Get degradation rates — always show actual setting for display/Excel
+  const pvDegradationYear1 = pctToDecimal(systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0);
   const pvDegradationYears2Plus = params.degradation_rate; // for years 2+
 
   // Base autoconsumption (LID already included when precise data available)
@@ -9249,10 +9160,10 @@ async function exportEaaSToExcel(withFormulas = false) {
   const baseAutoconsumptionMwh = autoconsumptionMwh;
 
   console.log(`📥 Export EaaS with FORMULAS - scenario: ${scenarioName} (×${scenarioFactor}), baseAutoconsumption:`, baseAutoconsumptionMwh, 'MWh');
-  console.log('📥 Degradation: Year1:', (pvDegradationYear1 * 100).toFixed(1) + '%, Years2+:', (pvDegradationYears2Plus * 100).toFixed(2) + '%/yr');
+  console.log('📥 Degradation: Year1:', decimalToPct(pvDegradationYear1).toFixed(1) + '%, Years2+:', decimalToPct(pvDegradationYears2Plus).toFixed(2) + '%/yr');
 
   // Convert values to contract currency for Sheet 2
-  const baseSubscriptionDisplay = baseSubscriptionCost * currencyMultiplier / 1000; // tys. w walucie kontraktu
+  const baseSubscriptionDisplay = plnToTysPln(baseSubscriptionCost * currencyMultiplier); // tys. w walucie kontraktu
   const totalEnergyPriceDisplay = totalEnergyPrice * currencyMultiplier; // w walucie kontraktu
 
   // Create worksheet manually to set formulas
@@ -9268,7 +9179,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     ['', 'Okres umowy EaaS [lat]:', '', '', eaasDuration],                                       // B8, E8
     ['', 'Okres analizy [lat]:', '', '', analysisPeriod],                                        // B9, E9
     ['', 'Autokonsumpcja bazowa [MWh]:', '', '', roundNum(baseAutoconsumptionMwh, 2)],           // B10, E10
-    ['', isRdnExport ? `Oszcz. RDN brutto rok 1 [tys. ${currencyLabel}]:` : `Cena sieci bazowa [${currencyLabel}/MWh]:`, '', '', isRdnExport ? roundNum((rdnBLEaas ? rdnBLEaas.totalSavingsYear1 : 0) * currencyMultiplier / 1000, 2) : roundNum(totalEnergyPriceDisplay, 2)],    // B11, E11
+    ['', isRdnExport ? `Oszcz. RDN brutto rok 1 [tys. ${currencyLabel}]:` : `Cena sieci bazowa [${currencyLabel}/MWh]:`, '', '', isRdnExport ? roundNum(plnToTysPln((rdnBLEaas ? rdnBLEaas.totalSavingsYear1 : 0) * currencyMultiplier), 2) : roundNum(totalEnergyPriceDisplay, 2)],    // B11, E11
     ['', `Abonament EaaS [tys. ${currencyLabel}/rok]:`, '', '', roundNum(baseSubscriptionDisplay, 2)],  // B12, E12
     ['', `O&M + Ubezp. (rok 1 własności) [tys. ${currencyLabel}/rok]:`, '', '', null], // B13, E13 - formula set below
     ['', 'Indeksacja EaaS:', '', '', eaasIndexation === 'cpi' ? 'Rata indeksowana inflacją' : 'Rata stała'],  // B14, E14
@@ -9289,7 +9200,7 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   // E13: O&M + Ubezp. (rok 1 własności) - tylko wartość (bez formuły dla ochrony danych)
   // Wartość już zindeksowana na moment przejścia na własność, w walucie kontraktu
-  const baseOmTotalThousands = (baseOmCost + baseInsuranceCost) * currencyMultiplier / 1000; // tys. w walucie kontraktu
+  const baseOmTotalThousands = plnToTysPln((baseOmCost + baseInsuranceCost) * currencyMultiplier); // tys. w walucie kontraktu
   const omAtOwnershipYear1 = baseOmTotalThousands * Math.pow(1 + inflationRate, eaasDuration);
   ws2['E13'] = {
     t: 'n',
@@ -9322,7 +9233,7 @@ async function exportEaaSToExcel(withFormulas = false) {
 
     // Get values from centralizedMetrics (these are the correct values in PLN)
     const autoconsumptionKwh = yearData?.selfConsumed || 0;
-    const autoconsumptionYearMwh = autoconsumptionKwh / 1000;
+    const autoconsumptionYearMwh = kwhToMwh(autoconsumptionKwh);
     // Convert to contract currency
     const gridCost = (yearData?.gridCost || 0) * currencyMultiplier;
     const eaasCost = (yearData?.eaasCost || 0) * currencyMultiplier;
@@ -9354,7 +9265,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     // E15=zużycie, E11=cena sieci bazowa, E5=inflacja
     const noPvCostFormula = `C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1)`;
     const noPvCostValue = consumptionMwh * totalEnergyPrice * Math.pow(1 + inflationRate, year - 1) * currencyMultiplier;
-    setCell(ws2, 3, row, noPvCostFormula, roundNum(noPvCostValue / 1000, 2));
+    setCell(ws2, 3, row, noPvCostFormula, roundNum(plnToTysPln(noPvCostValue), 2));
 
     // Column E: Autokonsumpcja [MWh] - formula with Year1 and Years2+ degradation
     // E10=autokonsumpcja bazowa, E6=degradacja rok 1, E7=degradacja lata 2+
@@ -9366,7 +9277,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     const withPvCostFormula = `D${row}-G${row}`;
     const pvSavingsValue = gridCost; // autokonsumpcja × cena (from cashflows)
     const withPvCostValue = noPvCostValue - pvSavingsValue;
-    setCell(ws2, 5, row, withPvCostFormula, roundNum(withPvCostValue / 1000, 2));
+    setCell(ws2, 5, row, withPvCostFormula, roundNum(plnToTysPln(withPvCostValue), 2));
 
     // Column G: Oszczędność PV [tys. PLN] = autokonsumpcja × cena sieci × inflacja
     // Tariff: Autokonsumpcja * cena [PLN/MWh] / 1000 * CPI
@@ -9374,25 +9285,25 @@ async function exportEaaSToExcel(withFormulas = false) {
     const pvSavingsFormula = isRdnExport
       ? `$E$11*POWER(1+$E$5,A${row}-1)`
       : `E${row}*$E$11/1000*POWER(1+$E$5,A${row}-1)`;
-    setCell(ws2, 6, row, pvSavingsFormula, roundNum(pvSavingsValue / 1000, 2));
+    setCell(ws2, 6, row, pvSavingsFormula, roundNum(plnToTysPln(pvSavingsValue), 2));
 
     // Column H: Koszt EaaS/Własność [tys. PLN]
     // W fazie EaaS: abonament (z lub bez indeksacji inflacją)
     // W fazie Własność: E13 (O&M zindeksowane) × inflacja
     const eaasCostFormula = `IF(A${row}<=$E$8,IF($E$14="Rata indeksowana inflacją",$E$12*POWER(1+$E$5,A${row}-1),$E$12),$E$13*POWER(1+$E$5,A${row}-$E$8-1))`;
-    setCell(ws2, 7, row, eaasCostFormula, roundNum(eaasCost / 1000, 2));
+    setCell(ws2, 7, row, eaasCostFormula, roundNum(plnToTysPln(eaasCost), 2));
 
     // Column I: Oszczędności [tys. PLN] = Oszczędność PV - Koszt EaaS
     const savingsFormula = `G${row}-H${row}`;
-    setCell(ws2, 8, row, savingsFormula, roundNum(savings / 1000, 2));
+    setCell(ws2, 8, row, savingsFormula, roundNum(plnToTysPln(savings), 2));
 
     // Column J: CF Zdyskontowany [tys. PLN]
     const discountedFormula = `I${row}/POWER(1+$E$4,A${row})`;
-    setCell(ws2, 9, row, discountedFormula, roundNum(discountedCF / 1000, 2));
+    setCell(ws2, 9, row, discountedFormula, roundNum(plnToTysPln(discountedCF), 2));
 
     // Column K: Skumulowany NPV [mln PLN]
     const npvFormula = year === 1 ? `J${row}/1000` : `K${prevRow}+J${row}/1000`;
-    setCell(ws2, 10, row, npvFormula, roundNum(cumulativeNPV / 1000000, 2));
+    setCell(ws2, 10, row, npvFormula, roundNum(plnToMlnPln(cumulativeNPV), 2));
   }
 
   // Summary rows
@@ -9409,7 +9320,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   ws2[XLSX.utils.encode_cell({ c: 8, r: summaryRow1 - 1 })] = {
     t: 'n',
     f: `SUMIF(B${dataStartRow}:B${lastDataRow},"EaaS",I${dataStartRow}:I${lastDataRow})`,
-    v: roundNum(eaasPhaseSavings / 1000, 0)
+    v: roundNum(plnToTysPln(eaasPhaseSavings), 0)
   };
 
   // Suma faza Własność
@@ -9417,7 +9328,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   ws2[XLSX.utils.encode_cell({ c: 8, r: summaryRow2 - 1 })] = {
     t: 'n',
     f: `SUMIF(B${dataStartRow}:B${lastDataRow},"Własność",I${dataStartRow}:I${lastDataRow})`,
-    v: roundNum(ownershipPhaseSavings / 1000, 0)
+    v: roundNum(plnToTysPln(ownershipPhaseSavings), 0)
   };
 
   // Suma całkowita
@@ -9425,13 +9336,13 @@ async function exportEaaSToExcel(withFormulas = false) {
   ws2[XLSX.utils.encode_cell({ c: 8, r: summaryRow3 - 1 })] = {
     t: 'n',
     f: `SUM(I${dataStartRow}:I${lastDataRow})`,
-    v: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 0)
+    v: roundNum(plnToTysPln(eaasPhaseSavings + ownershipPhaseSavings), 0)
   };
   ws2[XLSX.utils.encode_cell({ c: 9, r: summaryRow3 - 1 })] = { t: 's', v: `NPV [mln ${currency}]:` };
   ws2[XLSX.utils.encode_cell({ c: 10, r: summaryRow3 - 1 })] = {
     t: 'n',
     f: `K${lastDataRow}`,
-    v: roundNum(cumulativeNPV / 1000000, 2)
+    v: roundNum(plnToMlnPln(cumulativeNPV), 2)
   };
 
   // Set column widths (A-K = 11 columns)
@@ -9885,7 +9796,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet2.mergeCells(summaryStartRow, 2, summaryStartRow, 9); // Merge B-I for label
   eaasSummaryRow.getCell(2).value = `📋  Suma oszczędności w fazie EaaS (lata 1-${eaasDuration}):`;
   eaasSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
-  eaasSummaryRow.getCell(10).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"EaaS",J${dataStartRow}:J${lastDataRow})`, result: roundNum(eaasPhaseSavings / 1000, 2) };
+  eaasSummaryRow.getCell(10).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"EaaS",J${dataStartRow}:J${lastDataRow})`, result: roundNum(plnToTysPln(eaasPhaseSavings), 2) };
   eaasSummaryRow.getCell(10).numFmt = '#,##0.00';
   eaasSummaryRow.getCell(10).alignment = { horizontal: 'right', vertical: 'middle' };
   // Style: light orange background #fff3e0, orange text #f57c00
@@ -9908,7 +9819,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet2.mergeCells(summaryStartRow + 1, 2, summaryStartRow + 1, 9); // Merge B-I for label
   ownershipSummaryRow.getCell(2).value = `🏠  Suma oszczędności w fazie własności (${eaasDuration + 1}-${analysisPeriod}):`;
   ownershipSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
-  ownershipSummaryRow.getCell(10).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"Własność",J${dataStartRow}:J${lastDataRow})`, result: roundNum(ownershipPhaseSavings / 1000, 2) };
+  ownershipSummaryRow.getCell(10).value = { formula: `SUMIF(C${dataStartRow}:C${lastDataRow},"Własność",J${dataStartRow}:J${lastDataRow})`, result: roundNum(plnToTysPln(ownershipPhaseSavings), 2) };
   ownershipSummaryRow.getCell(10).numFmt = '#,##0.00';
   ownershipSummaryRow.getCell(10).alignment = { horizontal: 'right', vertical: 'middle' };
   // Style: light green background #e8f5e9, green text #4caf50
@@ -9931,12 +9842,12 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet2.mergeCells(summaryStartRow + 2, 2, summaryStartRow + 2, 9); // Merge B-I for label
   totalSummaryRow.getCell(2).value = '💰  SUMA CAŁKOWITA:';
   totalSummaryRow.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' };
-  totalSummaryRow.getCell(10).value = { formula: `SUM(J${dataStartRow}:J${lastDataRow})`, result: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 2) };
+  totalSummaryRow.getCell(10).value = { formula: `SUM(J${dataStartRow}:J${lastDataRow})`, result: roundNum(plnToTysPln(eaasPhaseSavings + ownershipPhaseSavings), 2) };
   totalSummaryRow.getCell(10).numFmt = '#,##0.00';
   totalSummaryRow.getCell(10).alignment = { horizontal: 'right', vertical: 'middle' };
   totalSummaryRow.getCell(11).value = `NPV [mln ${currency}]:`;
   totalSummaryRow.getCell(11).alignment = { horizontal: 'right', vertical: 'middle' };
-  totalSummaryRow.getCell(12).value = { formula: `L${lastDataRow}`, result: roundNum(cumulativeNPV / 1000000, 2) };
+  totalSummaryRow.getCell(12).value = { formula: `L${lastDataRow}`, result: roundNum(plnToMlnPln(cumulativeNPV), 2) };
   totalSummaryRow.getCell(12).numFmt = '#,##0.00';
   totalSummaryRow.getCell(12).alignment = { horizontal: 'right', vertical: 'middle' };
   // Style: gradient-like effect with bold
@@ -10148,10 +10059,10 @@ async function exportEaaSToExcel(withFormulas = false) {
     insurance_rate: window.economicsSettings?.insuranceRate || 0.005,
     capex_per_kwp: capex / capacityKwp,
     degradation_rate: pvDegradationYears2Plus || 0.004,
-    discount_rate: discountRate || 0.07,
+    discount_rate: discountRate,
     eaas_duration: eaasDuration,
     analysis_period: analysisPeriod || 30,
-    inflation_rate: inflationRate || 0.025,
+    inflation_rate: inflationRate,
     eaas_indexation: eaasIndexation || 'fixed'
   };
 
@@ -10164,7 +10075,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     // Fallback: simple savings estimate
     baseEaaSNpvPLN = (autoconsumptionMwh * totalEnergyPrice - baseSubscriptionCost) * (analysisPeriod || 30) * 0.6;
   }
-  const baseEaaSNpvTys = baseEaaSNpvPLN / 1000 * currencyMultiplier;
+  const baseEaaSNpvTys = plnToTysPln(baseEaaSNpvPLN) * currencyMultiplier;
   const baseEaaSNpvMln = baseEaaSNpvTys / 1000;
   console.log('📊 EaaS NPV base:', { baseEaaSNpvPLN: roundNum(baseEaaSNpvPLN, 0), baseEaaSNpvTys: roundNum(baseEaaSNpvTys, 0), baseEaaSNpvMln: roundNum(baseEaaSNpvMln, 2), isRdnExport, effectivePrice: roundNum(effectiveEnergyPriceEaas, 2), tariffPrice: roundNum(totalEnergyPrice, 2) });
 
@@ -10203,7 +10114,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // They are in PLN and already include inflation + degradation year by year
   const totalSavingsEaaS = eaasPhaseSavings; // in PLN
   const totalSavingsOwnership = ownershipPhaseSavings; // in PLN
-  const baseTotalSavings = (totalSavingsEaaS + totalSavingsOwnership) / 1000; // Convert from PLN to tys. PLN
+  const baseTotalSavings = plnToTysPln(totalSavingsEaaS + totalSavingsOwnership); // Convert from PLN to tys. PLN
   console.log('📊 KPI SUMA CAŁKOWITA (from Sheet 2):', {
     totalSavingsEaaS: totalSavingsEaaS,
     totalSavingsOwnership: totalSavingsOwnership,
@@ -10218,9 +10129,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   // Use formula or value depending on withFormulas flag
   if (withFormulas) {
-    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `${sheet2Refs.eaasSum}/1000`, result: roundNum(totalSavingsEaaS / 1000, 2) };
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `${sheet2Refs.eaasSum}/1000`, result: roundNum(plnToTysPln(totalSavingsEaaS), 2) };
   } else {
-    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(totalSavingsEaaS / 1000, 2);
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(plnToTysPln(totalSavingsEaaS), 2);
   }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = `#,##0.00 "mln ${currencyLabel}"`;
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' } };
@@ -10236,9 +10147,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
   // Use formula or value depending on withFormulas flag
   if (withFormulas) {
-    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `${sheet2Refs.ownershipSum}/1000`, result: roundNum(totalSavingsOwnership / 1000, 2) };
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `${sheet2Refs.ownershipSum}/1000`, result: roundNum(plnToTysPln(totalSavingsOwnership), 2) };
   } else {
-    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(totalSavingsOwnership / 1000, 2);
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(plnToTysPln(totalSavingsOwnership), 2);
   }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = `#,##0.00 "mln ${currencyLabel}"`;
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
@@ -10254,9 +10165,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
   // Use formula or value depending on withFormulas flag
   if (withFormulas) {
-    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `C${kpiEaaSRow}+C${kpiOwnRow}`, result: roundNum((totalSavingsEaaS + totalSavingsOwnership) / 1000, 2) };
+    excelSheet3.getCell(`C${cfoRow}`).value = { formula: `C${kpiEaaSRow}+C${kpiOwnRow}`, result: roundNum(plnToTysPln(totalSavingsEaaS + totalSavingsOwnership), 2) };
   } else {
-    excelSheet3.getCell(`C${cfoRow}`).value = roundNum((totalSavingsEaaS + totalSavingsOwnership) / 1000, 2);
+    excelSheet3.getCell(`C${cfoRow}`).value = roundNum(plnToTysPln(totalSavingsEaaS + totalSavingsOwnership), 2);
   }
   excelSheet3.getCell(`C${cfoRow}`).numFmt = `#,##0.00 "mln ${currencyLabel}"`;
   excelSheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' }, size: 12 };
@@ -10269,7 +10180,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   cfoRow++;
   excelSheet3.getCell(`B${cfoRow}`).value = '📊 NPV (wartość bieżąca netto)';
   excelSheet3.getCell(`B${cfoRow}`).font = { bold: true };
-  const npvMln = cumulativeNPV / 1000000;
+  const npvMln = plnToMlnPln(cumulativeNPV);
   if (withFormulas) {
     excelSheet3.getCell(`C${cfoRow}`).value = { formula: `${sheet2Refs.npvFinal}`, result: roundNum(npvMln, 2) };
   } else {
@@ -10388,14 +10299,14 @@ async function exportEaaSToExcel(withFormulas = false) {
   const tornadoBaseSavings30 = baseTotalSavings; // Already in tys. PLN, includes inflation + degradation year by year
 
   // === TORNADO CHART — Full NPV recalculation (consistent with CAPEX) ===
-  const npvGridPess = calculateEaaSNPV({...eaasNpvBaseForMatrix, total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * 0.80}) / 1000 * currencyMultiplier;
-  const npvGridOpt  = calculateEaaSNPV({...eaasNpvBaseForMatrix, total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * 1.20}) / 1000 * currencyMultiplier;
-  const npvSubsPess = calculateEaaSNPV({...eaasNpvBaseForMatrix, eaas_subscription: baseSubscriptionCost * 1.20}) / 1000 * currencyMultiplier;
-  const npvSubsOpt  = calculateEaaSNPV({...eaasNpvBaseForMatrix, eaas_subscription: baseSubscriptionCost * 0.80}) / 1000 * currencyMultiplier;
-  const npvYieldPess = calculateEaaSNPV({...eaasNpvBaseForMatrix, self_consumed_annual_kwh: autoconsumptionMwh * 1000 * 0.85}) / 1000 * currencyMultiplier;
-  const npvYieldOpt  = calculateEaaSNPV({...eaasNpvBaseForMatrix, self_consumed_annual_kwh: autoconsumptionMwh * 1000 * 1.15}) / 1000 * currencyMultiplier;
-  const npvDiscPess  = calculateEaaSNPV({...eaasNpvBaseForMatrix, discount_rate: discountRate + 0.02}) / 1000 * currencyMultiplier;
-  const npvDiscOpt   = calculateEaaSNPV({...eaasNpvBaseForMatrix, discount_rate: Math.max(0.01, discountRate - 0.02)}) / 1000 * currencyMultiplier;
+  const npvGridPess = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * 0.80})) * currencyMultiplier;
+  const npvGridOpt  = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * 1.20})) * currencyMultiplier;
+  const npvSubsPess = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, eaas_subscription: baseSubscriptionCost * 1.20})) * currencyMultiplier;
+  const npvSubsOpt  = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, eaas_subscription: baseSubscriptionCost * 0.80})) * currencyMultiplier;
+  const npvYieldPess = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, self_consumed_annual_kwh: autoconsumptionMwh * 1000 * 0.85})) * currencyMultiplier;
+  const npvYieldOpt  = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, self_consumed_annual_kwh: autoconsumptionMwh * 1000 * 1.15})) * currencyMultiplier;
+  const npvDiscPess  = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, discount_rate: discountRate + 0.02})) * currencyMultiplier;
+  const npvDiscOpt   = plnToTysPln(calculateEaaSNPV({...eaasNpvBaseForMatrix, discount_rate: Math.max(0.01, discountRate - 0.02)})) * currencyMultiplier;
 
   console.log('📊 EaaS Tornado (recalculated):', {
     grid: [roundNum(npvGridPess, 0), roundNum(baseEaaSNpvTys, 0), roundNum(npvGridOpt, 0)],
@@ -10669,7 +10580,7 @@ async function exportEaaSToExcel(withFormulas = false) {
       const sc = (typeof _computeSelfConsumptionForYield === 'function')
         ? _computeSelfConsumptionForYield(1 + yv)
         : null;
-      eaasSelfConsumptionByYield[yv] = sc !== null ? sc / 1000 : autoconsumptionMwh * (1 + yv); // MWh
+      eaasSelfConsumptionByYield[yv] = sc !== null ? kwhToMwh(sc) : autoconsumptionMwh * (1 + yv); // MWh
     });
   } catch (scErr) {
     console.warn('⚠️ EaaS self-consumption pre-compute failed, using linear fallback:', scErr);
@@ -10707,11 +10618,11 @@ async function exportEaaSToExcel(withFormulas = false) {
       // Full NPV recalculation per cell (consistent with CAPEX calculateCapexNPV pattern)
       let adjNpv;
       try {
-        adjNpv = calculateEaaSNPV({
+        adjNpv = plnToTysPln(calculateEaaSNPV({
           ...eaasNpvBaseForMatrix,
           self_consumed_annual_kwh: eaasSelfConsumptionByYield[yv] * 1000, // MWh → kWh
           total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * (1 + gpv)  // PLN/MWh → PLN/kWh with variation (RDN-aware)
-        }) / 1000 * currencyMultiplier; // → tys. in display currency
+        })) * currencyMultiplier; // → tys. in display currency
       } catch (npvErr) {
         console.warn('⚠️ EaaS NPV calc failed, fallback to 0:', npvErr);
         adjNpv = 0;
@@ -10892,13 +10803,13 @@ async function exportEaaSToExcel(withFormulas = false) {
     const deg = Math.pow(1 - pvDegradationYears2Plus, yr - 1);
     const cpi = Math.pow(1 + inflationRate, yr - 1);
     const disc = Math.pow(1 + discountRate, yr);
-    pvSavings += autoconsumptionMwh * gridPriceDisplay / 1000 * deg * cpi / disc;
+    pvSavings += plnToTysPln(autoconsumptionMwh * gridPriceDisplay) * deg * cpi / disc;
     let cost;
     if (yr <= eaasDuration) {
       const eaasInfl = eaasIndexation === 'cpi' ? cpi : 1;
-      cost = baseSubscriptionCost / 1000 * eaasInfl;
+      cost = plnToTysPln(baseSubscriptionCost) * eaasInfl;
     } else {
-      cost = (capacityKwp * eaasOM + capex * (window.economicsSettings?.insuranceRate || 0.005)) / 1000 * cpi;
+      cost = plnToTysPln(capacityKwp * eaasOM + capex * (window.economicsSettings?.insuranceRate || 0.005)) * cpi;
     }
     pvCosts += cost / disc;
   }
@@ -11014,7 +10925,7 @@ async function exportEaaSToExcel(withFormulas = false) {
 
   const scenarioStartRow = cfoRow + 1;
   // K_eaas in display currency (thousands) — for corrected scenario formula
-  const _K_eaas_tys = _K_eaas_disp / 1000;
+  const _K_eaas_tys = plnToTysPln(_K_eaas_disp);
   console.log('📊 Scenarios - baseEaaSNpvTys:', roundNum(baseEaaSNpvTys, 0), 'K_eaas_tys:', roundNum(_K_eaas_tys, 0));
 
   // Pre-compute non-linear self-consumption for each scenario yield level (hourly profile-based)
@@ -11038,11 +10949,11 @@ async function exportEaaSToExcel(withFormulas = false) {
       scenarioSavings = baseEaaSNpvTys;
     } else {
       try {
-        scenarioSavings = calculateEaaSNPV({
+        scenarioSavings = plnToTysPln(calculateEaaSNPV({
           ...eaasNpvBaseForMatrix,
           self_consumed_annual_kwh: scenarioSCbyYield[s.yieldMult] || autoconsumptionMwh * 1000 * s.yieldMult,
           total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * s.gridMult  // RDN-aware
-        }) / 1000 * currencyMultiplier;
+        })) * currencyMultiplier;
       } catch (e) {
         scenarioSavings = baseEaaSNpvTys * s.yieldMult * s.gridMult;
       }
@@ -11156,7 +11067,7 @@ async function exportEaaSToExcel(withFormulas = false) {
       ...eaasNpvBaseForMatrix,
       inflation_rate: inf
     });
-    inflNpvValues.push(npvPLN / 1000 * currencyMultiplier);
+    inflNpvValues.push(plnToTysPln(npvPLN) * currencyMultiplier);
   });
 
   cfoRow++;
@@ -11206,7 +11117,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   console.log('📊 Inflation sensitivity (full NPV):', inflationRates.map((r, i) => `${(r*100).toFixed(1)}%: ${roundNum(inflNpvValues[i], 0)}`).join(', '));
 
   cfoRow++;
-  excelSheet3.getCell(`B${cfoRow}`).value = `vs bazowa inflacja ${(baseInflation * 100).toFixed(1)}%`;
+  excelSheet3.getCell(`B${cfoRow}`).value = `vs bazowa inflacja ${decimalToPct(baseInflation).toFixed(1)}%`;
   excelSheet3.getCell(`B${cfoRow}`).font = { italic: true, size: 9, color: { argb: 'FF757575' } };
 
   // Percentage change vs base inflation NPV
@@ -11263,7 +11174,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // Decision rows with formulas for dynamic rows
   const decisions = [
     { criterion: 'Nakład inwestycyjny (CAPEX)', eaas: '0 PLN', statusQuo: '0 PLN', winner: 'Remis', winColor: 'FF757575', useFormula: false },
-    { criterion: `Koszt energii ${cfoPeriod} lat`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} tys.`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
+    { criterion: `Koszt energii ${cfoPeriod} lat`, eaas: `${roundNum(plnToTysPln(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30), 0)} tys.`, statusQuo: `${roundNum(plnToTysPln(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30), 0)} tys.`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
     { criterion: `Oszczędności ${cfoPeriod} lat`, eaas: `${roundNum(tornadoBaseSavings30, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'savings' },
     { criterion: 'Ryzyko techniczne', eaas: 'Dostawca', statusQuo: 'Brak instalacji', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Ryzyko cenowe', eaas: 'Częściowe zabezp.', statusQuo: '100% ekspozycji', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
@@ -11517,7 +11428,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     ['EaaS contract period [years]:', eaasDuration],
     ['Analysis period [years]:', analysisPeriod],
     ['Base self-consumption [MWh]:', roundNum(baseAutoconsumptionMwh, 2)],
-    [isRdnExport ? `RDN gross savings Yr1 [k${currencyLabel}]:` : `Base grid price [${currencyLabel}/MWh]:`, isRdnExport ? roundNum((rdnBLEaas ? rdnBLEaas.totalSavingsYear1 : 0) * currencyMultiplier / 1000, 2) : roundNum(totalEnergyPriceDisplay, 2)],
+    [isRdnExport ? `RDN gross savings Yr1 [k${currencyLabel}]:` : `Base grid price [${currencyLabel}/MWh]:`, isRdnExport ? roundNum(plnToTysPln((rdnBLEaas ? rdnBLEaas.totalSavingsYear1 : 0) * currencyMultiplier), 2) : roundNum(totalEnergyPriceDisplay, 2)],
     [`EaaS subscription [k${currencyLabel}/year]:`, roundNum(baseSubscriptionDisplay, 2)],
     [`O&M + Insurance (ownership year 1) [k${currencyLabel}/year]:`, roundNum(omAtOwnershipYear1, 2)],
     ['EaaS indexation:', eaasIndexation === 'cpi' ? 'CPI indexed' : 'Fixed rate'],
@@ -11622,19 +11533,19 @@ async function exportEaaSToExcel(withFormulas = false) {
   const summaryStartRowEN = lastDataRowEN + 2;
   excelSheet5.getRow(summaryStartRowEN).getCell(3).value = 'TOTAL EaaS Phase:';
   excelSheet5.getRow(summaryStartRowEN).getCell(3).font = { bold: true, color: { argb: 'FF1565C0' } };
-  excelSheet5.getRow(summaryStartRowEN).getCell(7).value = { formula: `SUMIF(C${dataStartRowEN}:C${lastDataRowEN},"EaaS",G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum(eaasPhaseSavings / 1000, 2) };
+  excelSheet5.getRow(summaryStartRowEN).getCell(7).value = { formula: `SUMIF(C${dataStartRowEN}:C${lastDataRowEN},"EaaS",G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum(plnToTysPln(eaasPhaseSavings), 2) };
   excelSheet5.getRow(summaryStartRowEN).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN).getCell(7).font = { bold: true, color: { argb: 'FF1565C0' } };
 
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(3).value = 'TOTAL Ownership Phase:';
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(3).font = { bold: true, color: { argb: 'FF2E7D32' } };
-  excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).value = { formula: `SUMIF(C${dataStartRowEN}:C${lastDataRowEN},"Ownership",G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum(ownershipPhaseSavings / 1000, 2) };
+  excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).value = { formula: `SUMIF(C${dataStartRowEN}:C${lastDataRowEN},"Ownership",G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum(plnToTysPln(ownershipPhaseSavings), 2) };
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN + 1).getCell(7).font = { bold: true, color: { argb: 'FF2E7D32' } };
 
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(3).value = 'GRAND TOTAL:';
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(3).font = { bold: true, size: 11 };
-  excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).value = { formula: `SUM(G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum((eaasPhaseSavings + ownershipPhaseSavings) / 1000, 2) };
+  excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).value = { formula: `SUM(G${dataStartRowEN}:G${lastDataRowEN})`, result: roundNum(plnToTysPln(eaasPhaseSavings + ownershipPhaseSavings), 2) };
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).numFmt = '#,##0.00';
   excelSheet5.getRow(summaryStartRowEN + 2).getCell(7).font = { bold: true, size: 11 };
 
@@ -11642,7 +11553,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   const npvRowEN = summaryStartRowEN + 4;
   excelSheet5.getRow(npvRowEN).getCell(3).value = `NPV [M${currencyLabel}]:`;
   excelSheet5.getRow(npvRowEN).getCell(3).font = { bold: true, size: 12, color: { argb: 'FF1976D2' } };
-  excelSheet5.getRow(npvRowEN).getCell(9).value = { formula: `I${lastDataRowEN}`, result: roundNum(cumulativeNPV / 1000000, 2) };
+  excelSheet5.getRow(npvRowEN).getCell(9).value = { formula: `I${lastDataRowEN}`, result: roundNum(plnToMlnPln(cumulativeNPV), 2) };
   excelSheet5.getRow(npvRowEN).getCell(9).numFmt = '#,##0.00';
   excelSheet5.getRow(npvRowEN).getCell(9).font = { bold: true, size: 12, color: { argb: 'FF1976D2' } };
 
@@ -11827,9 +11738,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `EaaS Phase (years 1-${eaasPhaseYears})`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.eaasSum}/1000`, result: roundNum(totalSavingsEaaS / 1000, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.eaasSum}/1000`, result: roundNum(plnToTysPln(totalSavingsEaaS), 2) };
   } else {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalSavingsEaaS / 1000, 2);
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(plnToTysPln(totalSavingsEaaS), 2);
   }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = `#,##0.00 "M${currencyLabel}"`;
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF1565C0' } };
@@ -11844,9 +11755,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `Ownership Phase (years ${eaasPhaseYears + 1}-${cfoPeriod})`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.ownershipSum}/1000`, result: roundNum(totalSavingsOwnership / 1000, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `${sheet5Refs.ownershipSum}/1000`, result: roundNum(plnToTysPln(totalSavingsOwnership), 2) };
   } else {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(totalSavingsOwnership / 1000, 2);
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(plnToTysPln(totalSavingsOwnership), 2);
   }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = `#,##0.00 "M${currencyLabel}"`;
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF2E7D32' } };
@@ -11861,9 +11772,9 @@ async function exportEaaSToExcel(withFormulas = false) {
   excelSheet6.getCell(`B${cfoRowEN}`).value = `TOTAL SAVINGS (${cfoPeriod} years)`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { bold: true, size: 11 };
   if (withFormulas) {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `C${kpiEaaSRowEN}+C${kpiOwnRowEN}`, result: roundNum((totalSavingsEaaS + totalSavingsOwnership) / 1000, 2) };
+    excelSheet6.getCell(`C${cfoRowEN}`).value = { formula: `C${kpiEaaSRowEN}+C${kpiOwnRowEN}`, result: roundNum(plnToTysPln(totalSavingsEaaS + totalSavingsOwnership), 2) };
   } else {
-    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum((totalSavingsEaaS + totalSavingsOwnership) / 1000, 2);
+    excelSheet6.getCell(`C${cfoRowEN}`).value = roundNum(plnToTysPln(totalSavingsEaaS + totalSavingsOwnership), 2);
   }
   excelSheet6.getCell(`C${cfoRowEN}`).numFmt = `#,##0.00 "M${currencyLabel}"`;
   excelSheet6.getCell(`C${cfoRowEN}`).font = { bold: true, color: { argb: 'FF1565C0' }, size: 12 };
@@ -12193,11 +12104,11 @@ async function exportEaaSToExcel(withFormulas = false) {
       // Full NPV recalculation per cell (consistent with CAPEX)
       let adjNpv;
       try {
-        adjNpv = calculateEaaSNPV({
+        adjNpv = plnToTysPln(calculateEaaSNPV({
           ...eaasNpvBaseForMatrix,
           self_consumed_annual_kwh: eaasSelfConsumptionByYield[yv] * 1000,
           total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * (1 + gpv)  // RDN-aware
-        }) / 1000 * currencyMultiplier;
+        })) * currencyMultiplier;
       } catch (npvErr) {
         console.warn('⚠️ EaaS NPV calc failed (EN), fallback:', npvErr);
         adjNpv = 0;
@@ -12471,11 +12382,11 @@ async function exportEaaSToExcel(withFormulas = false) {
       scenarioSavingsEN = baseEaaSNpvTys;
     } else {
       try {
-        scenarioSavingsEN = calculateEaaSNPV({
+        scenarioSavingsEN = plnToTysPln(calculateEaaSNPV({
           ...eaasNpvBaseForMatrix,
           self_consumed_annual_kwh: scenarioSCbyYield[s.yieldMult] || autoconsumptionMwh * 1000 * s.yieldMult,
           total_energy_price_per_kwh: effectiveEnergyPriceEaas / 1000 * s.gridMult  // RDN-aware
-        }) / 1000 * currencyMultiplier;
+        })) * currencyMultiplier;
       } catch (e) {
         scenarioSavingsEN = baseEaaSNpvTys * s.yieldMult * s.gridMult;
       }
@@ -12613,7 +12524,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   });
 
   cfoRowEN++;
-  excelSheet6.getCell(`B${cfoRowEN}`).value = `vs base inflation ${(baseInflation * 100).toFixed(1)}%`;
+  excelSheet6.getCell(`B${cfoRowEN}`).value = `vs base inflation ${decimalToPct(baseInflation).toFixed(1)}%`;
   excelSheet6.getCell(`B${cfoRowEN}`).font = { italic: true, size: 9, color: { argb: 'FF757575' } };
 
   const baseInflColLetterEN = baseInflIdx >= 0 ? _col(3 + baseInflIdx) : null;
@@ -12662,7 +12573,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   // Decision criteria with formulas support (matching Polish version)
   const decisionsEN = [
     { criterion: 'Investment (CAPEX)', eaas: '0 PLN', statusQuo: '0 PLN', winner: 'Tie', winColor: 'FF757575', useFormula: false },
-    { criterion: `${cfoPeriod}-year energy cost`, eaas: `${roundNum(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, statusQuo: `${roundNum(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30 / 1000, 0)} k`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
+    { criterion: `${cfoPeriod}-year energy cost`, eaas: `${roundNum(plnToTysPln(autoconsumptionMwh * eaasPriceDisplay * cfoPeriod * degradationFactor30), 0)} k`, statusQuo: `${roundNum(plnToTysPln(autoconsumptionMwh * gridPriceDisplay * cfoPeriod * degradationFactor30), 0)} k`, winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'energyCost' },
     { criterion: `${cfoPeriod}-year savings`, eaas: `${roundNum(baseTotalSavings, 0)} k${currencyLabel}`, statusQuo: '0', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: true, formulaType: 'savings' },
     { criterion: 'Technical risk', eaas: 'Provider', statusQuo: 'No installation', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
     { criterion: 'Price risk', eaas: 'Partial hedge', statusQuo: '100% exposure', winner: 'EaaS', winColor: 'FF2E7D32', useFormula: false },
@@ -13211,8 +13122,7 @@ async function exportEaaSToExcel(withFormulas = false) {
   if (isRdnExport && rdnBLEaas) {
     try {
       const params = getEconomicParameters();
-      const pvDegYear1 = (preciseAnnualSavings?.energy?.self_consumed_mwh)
-        ? 0 : (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0) / 100;
+      const pvDegYear1 = pctToDecimal(systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0);
       addTcslAuditSheet(excelWorkbook, rdnBLEaas, {
         inflationRate,
         discountRate,
@@ -13306,7 +13216,7 @@ function addTcslAuditSheet(workbook, rdnBaseline, econParams, logoImageId) {
   const SHEET = 'Dane bazowe TCSL (Rok 1)';
   const ws = workbook.addWorksheet(SHEET);
   const fmt = v => Math.round(v);
-  const pct = v => +(v * 100).toFixed(2);
+  const pct = v => +(decimalToPct(v)).toFixed(2);
   const numFmt = '#,##0';
 
   // Clean look: hide grid lines and row/col headers
@@ -13329,9 +13239,9 @@ function addTcslAuditSheet(workbook, rdnBaseline, econParams, logoImageId) {
   const somRate = cfc.somRate || 0.2194;
 
   // Energy volumes from TCSL
-  const gridNoPvMwh = (r.annual_consumption_kwh || 0) / 1000;
-  const gridWPvMwh = (r.annual_grid_import_kwh || 0) / 1000;
-  const selfConsumedMwh = (r.annual_self_consumed_kwh || 0) / 1000;
+  const gridNoPvMwh = kwhToMwh(r.annual_consumption_kwh || 0);
+  const gridWPvMwh = kwhToMwh(r.annual_grid_import_kwh || 0);
+  const selfConsumedMwh = kwhToMwh(r.annual_self_consumed_kwh || 0);
 
   // Column widths
   ws.columns = [
@@ -13661,8 +13571,8 @@ function addTcslAuditSheet(workbook, rdnBaseline, econParams, logoImageId) {
     const mRow = 40 + m;
     const wpvR = months[m]?.rdn || {};
     const npvR = nopvM[m]?.rdn_nopv || {};
-    const gNP = (npvR.consumption_kwh || npvR.grid_import_kwh || 0) / 1000;
-    const gWP = (wpvR.grid_import_kwh || 0) / 1000;
+    const gNP = kwhToMwh(npvR.consumption_kwh || npvR.grid_import_kwh || 0);
+    const gWP = kwhToMwh(wpvR.grid_import_kwh || 0);
     const cNP = (npvR.energy_active_pln || 0) + (npvR.fees_var_pln || 0);
     const cWP = (wpvR.energy_active_pln || 0) + (wpvR.fees_var_pln || 0);
     const capNP = npvR.capacity_fee_pln || nopvM[m]?.tariff_nopv?.capacity_fee_pln || 0;
@@ -13718,10 +13628,10 @@ function addTcslAuditSheet(workbook, rdnBaseline, econParams, logoImageId) {
     ws.getCell(`C${rw}`).border = subtleBorder;
   };
   addInfo(55, 'Roczne zuzycie energii [MWh]', +gridNoPvMwh.toFixed(1));
-  addInfo(56, 'Roczna produkcja PV [MWh]', +((r.annual_production_kwh || 0) / 1000).toFixed(1));
+  addInfo(56, 'Roczna produkcja PV [MWh]', +kwhToMwh(r.annual_production_kwh || 0).toFixed(1));
   addInfo(57, 'Autokonsumpcja [MWh]', +selfConsumedMwh.toFixed(1));
   addInfo(58, 'Pobor z sieci z PV [MWh]', +gridWPvMwh.toFixed(1));
-  const selfPct = gridNoPvMwh > 0 ? (selfConsumedMwh / gridNoPvMwh * 100).toFixed(1) : '0';
+  const selfPct = gridNoPvMwh > 0 ? decimalToPct(selfConsumedMwh / gridNoPvMwh).toFixed(1) : '0';
   addInfo(59, 'Wspolczynnik autokonsumpcji [%]', +selfPct);
 
   // =============================================
@@ -13743,9 +13653,9 @@ function addTcslAuditSheet(workbook, rdnBaseline, econParams, logoImageId) {
 
   ws.getCell('B65').value = 'PARAMETRY:';
   ws.getCell('B65').font = { bold: true, color: { argb: 'FF5D4037' } };
-  addInfo(66, '  Stopa inflacji (CPI):', pct(econParams.inflationRate || 0.03) + '%');
-  addInfo(67, '  Stopa dyskontowa:', pct(econParams.discountRate || 0.07) + '%');
-  addInfo(68, '  Degradacja PV rok 1:', pct(econParams.pvDegYear1 || 0.02) + '%');
+  addInfo(66, '  Stopa inflacji (CPI):', pct(econParams.inflationRate ?? 0) + '%');
+  addInfo(67, '  Stopa dyskontowa:', pct(econParams.discountRate ?? 0) + '%');
+  addInfo(68, '  Degradacja PV rok 1:', pct(econParams.pvDegYear1 ?? 0) + '%');
   addInfo(69, '  Degradacja PV lata 2+:', pct(econParams.pvDegYear2Plus || 0.005) + '%/rok');
   addInfo(70, '  Okres analizy:', (econParams.analysisPeriod || 30) + ' lat');
 
@@ -14609,29 +14519,27 @@ function updateESGDashboard() {
     return;
   }
 
-  // Get consumption data using helper function
+  // Read from centralizedMetrics (SSoT) — already computed with correct scenarioFactor and preciseAnnualSavings
+  const cm = centralizedMetrics[currentVariant]?.common;
+  if (!cm) {
+    console.warn('⚠️ centralizedMetrics not yet available for ESG calculation');
+    return;
+  }
+
   const annualConsumptionKwh = getAnnualConsumptionKwh();
-  const annualConsumptionMwh = annualConsumptionKwh / 1000;
-
-  // Get production data (apply scenario factor)
-  const factor = window.currentScenarioFactor || 1.0;
-  const annualProductionMwh = (variant.production || 0) * factor / 1000;
-  const selfConsumedMwh = (variant.self_consumed || 0) * factor / 1000;
-
-  // Grid consumption before PV = total consumption
-  // Grid consumption after PV = total consumption - self consumed
+  const annualConsumptionMwh = kwhToMwh(annualConsumptionKwh);
   const gridConsumptionBeforeMwh = annualConsumptionMwh;
-  const gridConsumptionAfterMwh = Math.max(0, annualConsumptionMwh - selfConsumedMwh);
+  const gridConsumptionAfterMwh = Math.max(0, annualConsumptionMwh - cm.selfConsumedMwh);
 
   // Build parameters for ESG calculation
   const esgParams = {
-    capacityKwp: variant.capacity || 0,
-    annualProductionMwh: annualProductionMwh,
-    selfConsumedMwh: selfConsumedMwh,
+    capacityKwp: cm.capacityKwp,
+    annualProductionMwh: cm.productionMwh,
+    selfConsumedMwh: cm.selfConsumedMwh,
     gridConsumptionBeforeMwh: gridConsumptionBeforeMwh,
     gridConsumptionAfterMwh: gridConsumptionAfterMwh,
-    projectLifetimeYears: systemSettings?.analysisPeriod || 25,
-    degradationRate: (systemSettings?.degradationRate || 0.5) / 100
+    projectLifetimeYears: cm.analysisPeriod,
+    degradationRate: window.economicsSettings?.degradationRate
   };
 
   console.log('📊 ESG calculation params:', esgParams);
@@ -14662,7 +14570,7 @@ function calculateESGMetricsLocal(params) {
     gridConsumptionBeforeMwh = 0,
     gridConsumptionAfterMwh = 0,
     projectLifetimeYears = 25,
-    degradationRate = 0.005
+    degradationRate = window.economicsSettings?.degradationRate || 0.005
   } = params;
 
   // Default emission factors (Poland)
@@ -14986,7 +14894,7 @@ function updateBessEconomicsSection() {
   const bessCapexPerKwh = settings?.bessCapexPerKwh || 1500;
   const bessCapexPerKw = settings?.bessCapexPerKw || 300;
   const bessOpexPct = settings?.bessOpexPctPerYear || 1.5;
-  const bessLifetime = settings?.bessLifetimeYears || 15;
+  const bessLifetime = settings?.bessLifetimeYears;
   const bessDegradationYear1 = settings?.bessDegradationYear1 || 3.0;
   const bessDegradationPerYear = settings?.bessDegradationPctPerYear || 2.0;
   const analysisPeriod = parseInt(document.getElementById('analysisPeriod')?.value) || 25;
@@ -15007,10 +14915,10 @@ function updateBessEconomicsSection() {
   document.getElementById('bessEconDurationCard').textContent = `Duration: ${duration.toFixed(1)}h`;
 
   // Update KPI cards
-  document.getElementById('bessEconCapex').textContent = formatNumberEU(bessCapexTotal / 1000, 0);
+  document.getElementById('bessEconCapex').textContent = formatNumberEU(plnToTysPln(bessCapexTotal), 0);
   document.getElementById('bessEconCapexDetail').textContent = `${formatNumberEU(bessCapexPerKwh, 0)} PLN/kWh + ${formatNumberEU(bessCapexPerKw, 0)} PLN/kW`;
 
-  document.getElementById('bessEconOpex').textContent = formatNumberEU(bessOpexAnnual / 1000, 1);
+  document.getElementById('bessEconOpex').textContent = formatNumberEU(plnToTysPln(bessOpexAnnual), 1);
   document.getElementById('bessEconOpexPct').textContent = `${formatNumberEU(bessOpexPct, 1)}% CAPEX/rok`;
 
   // Battery replacement
@@ -15018,7 +14926,7 @@ function updateBessEconomicsSection() {
   const needsReplacement = analysisPeriod > bessLifetime;
   document.getElementById('bessEconReplacement').textContent = needsReplacement ? replacementYear.toString() : 'N/A';
   document.getElementById('bessEconReplacementCost').textContent = needsReplacement
-    ? `Koszt: ${formatNumberEU(bessCapexTotal * 0.7 / 1000, 0)} tys. PLN`
+    ? `Koszt: ${formatNumberEU(plnToTysPln(bessCapexTotal * 0.7), 0)} tys. PLN`
     : 'Brak wymiany w okresie';
 
   // Update degradation parameters info
@@ -15085,7 +14993,7 @@ function generateBessDegradationTable(
     const effectiveCapacity = currentCapacity;
 
     // Calculate energy delivered this year (proportional to effective capacity)
-    const energyMWh = (effectiveCapacity * baseEnergyFactor) / 1000;
+    const energyMWh = kwhToMwh(effectiveCapacity * baseEnergyFactor);
     cumulativeEnergyMWh += energyMWh;
 
     // EOL check (80% of nominal)
@@ -15170,7 +15078,7 @@ function displayBessSavingsBreakdown() {
   const settings = systemSettings || {};
   const fallbackMode = settings.bessDispatchMode || settings.bessPeakShavingEnabled ? 'stacked' : 'pv_surplus';
   const fallbackTopology = settings.bessTopology || (variant.bess_power_kw ? 'pv_load' : 'pv_only');
-  const fallbackImportPrice = settings.totalEnergyPrice || settings.energyPrice || 800;
+  const fallbackImportPrice = window.economicsSettings?.totalEnergyPrice || settings.totalEnergyPrice || settings.energyPrice;
 
   // Format helper
   const fmt = (val) => {
@@ -15423,10 +15331,10 @@ function prepareVariantScanDataFromScenarios(scenarios, params, factor) {
     scanData.push({
       key: `${capacityKwp}kWp`,
       capacity: capacityKwp,
-      capacityMWp: capacityKwp / 1000,
-      productionMWh: productionKwh / 1000,
-      selfConsumedMWh: selfConsumedKwh / 1000,
-      exportedMWh: exportedKwh / 1000,
+      capacityMWp: kwhToMwh(capacityKwp),
+      productionMWh: kwhToMwh(productionKwh),
+      selfConsumedMWh: kwhToMwh(selfConsumedKwh),
+      exportedMWh: kwhToMwh(exportedKwh),
       autoConsumptionPct: autoConsumptionPct,
       coveragePct: coveragePct,
       npv: economics.npv,
@@ -15473,10 +15381,10 @@ function prepareVariantScanDataFromVariants(params, factor) {
     scanData.push({
       key: key,
       capacity: capacityKwp,
-      capacityMWp: capacityKwp / 1000,
-      productionMWh: productionKwh / 1000,
-      selfConsumedMWh: selfConsumedKwh / 1000,
-      exportedMWh: exportedKwh / 1000,
+      capacityMWp: kwhToMwh(capacityKwp),
+      productionMWh: kwhToMwh(productionKwh),
+      selfConsumedMWh: kwhToMwh(selfConsumedKwh),
+      exportedMWh: kwhToMwh(exportedKwh),
       autoConsumptionPct: autoConsumptionPct,
       coveragePct: coveragePct,
       npv: economics.npv,
@@ -15545,7 +15453,7 @@ function computeLCOE(config) {
     opexBase = 0,
     energyBase = 0,
     years = 25,
-    discountRate = 0.07,
+    discountRate = window.economicsSettings?.discountRate,
     degradationRate = 0,
     inflationRate = 0,
     applyInflationToOpex = false
@@ -15674,15 +15582,15 @@ function calculateVariantEconomics(variant, params, factor) {
   const totalPricePerMwh = window.economicsSettings?.totalEnergyPrice || calculateTotalEnergyPrice(params);
   const annualOpexBase = capacityKwp * (params.opex_per_kwp || 15); // Bazowy OPEX [PLN/rok]
 
-  const productionMwh = productionKwh / 1000;
-  const selfConsumedMwhYear1 = selfConsumedKwh / 1000;
+  const productionMwh = kwhToMwh(productionKwh);
+  const selfConsumedMwhYear1 = kwhToMwh(selfConsumedKwh);
 
   // ===== PARAMETRY FINANSOWE (z ustawień użytkownika) =====
-  const discountRateNominal = window.economicsSettings?.discountRate ?? 0.07;
-  const inflationRate = window.economicsSettings?.inflationRate || 0.025;
+  const discountRateNominal = window.economicsSettings?.discountRate;
+  const inflationRate = window.economicsSettings?.inflationRate;
   const useInflation = window.economicsSettings?.useInflation || false;
   const analysisPeriod = params.analysis_period || 25;
-  const degradationRate = params.degradation_rate || 0.005;
+  const degradationRate = params.degradation_rate || window.economicsSettings?.degradationRate;
 
   // ===== SPÓJNOŚĆ NOMINALNA/REALNA =====
   // Jeśli useInflation=false (model realny), przeliczamy stopę na realną
@@ -15784,7 +15692,7 @@ function calculateVariantEconomics(variant, params, factor) {
   const deltaLevelized = lcoeGrid - lcoeEff;
 
   // Marża LCOE - o ile drożej płacisz za autokonsumpcję vs produkcję [%]
-  const lcoeMargin = lcoeStd > 0 ? ((lcoeEff - lcoeStd) / lcoeStd * 100) : 0;
+  const lcoeMargin = lcoeStd > 0 ? decimalToPct((lcoeEff - lcoeStd) / lcoeStd) : 0;
 
   // ===== PAYBACK =====
   const annualSavings = selfConsumedMwhYear1 * totalPricePerMwh;
@@ -15796,7 +15704,7 @@ function calculateVariantEconomics(variant, params, factor) {
   // ===== DEBUG LOG =====
   if (capacityKwp === 500 || capacityKwp === 647 || capacityKwp === 1000) {
     console.log(`📊 LCOE Debug [${capacityKwp} kWp]:`);
-    console.log(`   Mode: ${useInflation ? 'NOMINAL' : 'REAL'}, Discount: ${(discountRateUsed * 100).toFixed(1)}%`);
+    console.log(`   Mode: ${useInflation ? 'NOMINAL' : 'REAL'}, Discount: ${decimalToPct(discountRateUsed).toFixed(1)}%`);
     console.log(`   CAPEX: ${totalCapex.toLocaleString()} PLN (${capexPerKwp} PLN/kWp)`);
     console.log(`   OPEX/rok (base): ${annualOpexBase.toLocaleString()} PLN`);
     console.log(`   Produkcja rok1: ${productionMwh.toFixed(1)} MWh`);
@@ -15815,7 +15723,7 @@ function calculateVariantEconomics(variant, params, factor) {
 
   return {
     // Legacy fields (zachowane dla kompatybilności UI)
-    npv: npv / 1000000, // mln PLN
+    npv: plnToMlnPln(npv), // mln PLN
     payback: Math.min(payback, 99),
     lcoe: lcoeStd,           // LCOE standardowe (legacy alias)
 
@@ -16109,7 +16017,7 @@ function generateLcoeAnalysisChart(scanData) {
   const autoConsData = sampledData.map(d => d.autoConsumptionPct || 0);
 
   // Get grid price for reference line
-  const gridPrice = window.economicsSettings?.totalEnergyPrice || 750;
+  const gridPrice = window.economicsSettings?.totalEnergyPrice;
 
   // Find key points
   let minLcoeEffIdx = 0;
@@ -16452,7 +16360,7 @@ function generateVariantScanTable(scanData) {
     else paybackClass = 'value-bad';
 
     // Color coding for LCOE Eff (porównanie z LCOE Grid - poprawne levelized!)
-    const lcoeGridValue = d.lcoeGrid || (window.economicsSettings?.totalEnergyPrice || 750);
+    const lcoeGridValue = d.lcoeGrid || (window.economicsSettings?.totalEnergyPrice);
     let lcoeEffClass = '';
     if (d.lcoeEff && d.lcoeEff < lcoeGridValue * 0.7) lcoeEffClass = 'value-good';      // <70% LCOE Grid
     else if (d.lcoeEff && d.lcoeEff < lcoeGridValue) lcoeEffClass = 'value-warning';    // <100% LCOE Grid
@@ -16565,13 +16473,13 @@ async function exportVariantScanToExcel() {
 
   const params = getEconomicParameters();
   const factor = window.currentScenarioFactor || 1.0;
-  const gridPrice = window.economicsSettings?.totalEnergyPrice || 750;
-  const discountRate = window.economicsSettings?.discountRate ?? 0.07;
+  const gridPrice = window.economicsSettings?.totalEnergyPrice;
+  const discountRate = window.economicsSettings?.discountRate;
   const analysisPeriod = params.analysis_period || 25;
   const opexPerKwp = params.opex_per_kwp || 15;
-  const degradationRate = params.degradation_rate || 0.005;
+  const degradationRate = params.degradation_rate || window.economicsSettings?.degradationRate;
   const useInflation = window.economicsSettings?.useInflation || false;
-  const inflationRate = useInflation ? (window.economicsSettings?.inflationRate || 0.03) : 0;
+  const inflationRate = useInflation ? window.economicsSettings?.inflationRate : 0;
 
   // Sort scenarios by capacity
   const sortedScenarios = [...scenarios].sort((a, b) => (a.capacity || 0) - (b.capacity || 0));
@@ -16602,12 +16510,12 @@ async function exportVariantScanToExcel() {
 
     mainData.push({
       capacity: capacityKwp,
-      capacityMwp: capacityKwp / 1000,
-      productionMwh: productionKwh / 1000,
+      capacityMwp: kwhToMwh(capacityKwp),
+      productionMwh: kwhToMwh(productionKwh),
       autoConsumptionPct: autoConsumptionPct,
       coveragePct: coveragePct,
-      selfConsumedMwh: selfConsumedKwh / 1000,
-      exportedMwh: exportedKwh / 1000,
+      selfConsumedMwh: kwhToMwh(selfConsumedKwh),
+      exportedMwh: kwhToMwh(exportedKwh),
       capexTotal: economics.totalCapex,
       capexPerKwp: economics.capexPerKwp,
       opexAnnual: economics.annualOpex,
@@ -16708,10 +16616,10 @@ async function exportVariantScanToExcel() {
   addSectionHeader(sheet1, row, 'PARAMETRY MODELU');
   row++;
   addDataRow(sheet1, row++, 'Okres analizy', analysisPeriod, 'lat', 'Horyzont NPV i LCOE');
-  addDataRow(sheet1, row++, 'Stopa dyskontowa', (discountRate * 100).toFixed(1), '%', 'Dyskontowanie przepływów');
-  addDataRow(sheet1, row++, 'Degradacja PV', (degradationRate * 100).toFixed(2), '%/rok', 'Roczny spadek produkcji');
+  addDataRow(sheet1, row++, 'Stopa dyskontowa', decimalToPct(discountRate).toFixed(1), '%', 'Dyskontowanie przepływów');
+  addDataRow(sheet1, row++, 'Degradacja PV', decimalToPct(degradationRate).toFixed(2), '%/rok', 'Roczny spadek produkcji');
   addDataRow(sheet1, row++, 'OPEX', opexPerKwp, 'PLN/kWp/rok', 'Koszty O&M');
-  addDataRow(sheet1, row++, 'Inflacja OPEX', useInflation ? (inflationRate * 100).toFixed(1) + '%' : 'wyłączona', '', useInflation ? 'Indeksacja kosztów O&M' : '');
+  addDataRow(sheet1, row++, 'Inflacja OPEX', useInflation ? decimalToPct(inflationRate).toFixed(1) + '%' : 'wyłączona', '', useInflation ? 'Indeksacja kosztów O&M' : '');
   addDataRow(sheet1, row++, 'Cena energii z sieci', Math.round(gridPrice), 'PLN/MWh', 'Benchmark zakupu');
 
   row += 2;
@@ -17394,7 +17302,7 @@ function calculateKClassAnalysis(loadHourly, pvHourly, year = 2025, somPLNperKWh
   const dominantKAfter = getDominantK(histogramAfter);
 
   const savings = totalFeeBefore - totalFeeAfter;
-  const savingsPct = totalFeeBefore > 0 ? (savings / totalFeeBefore * 100) : 0;
+  const savingsPct = totalFeeBefore > 0 ? decimalToPct(savings / totalFeeBefore) : 0;
 
   // Calculate total ZS before and after
   const totalZsBefore = dailyResultsBefore.reduce((sum, d) => sum + d.zs, 0);
@@ -17627,7 +17535,7 @@ function updateKClassWidget(analysis) {
   if (savingsZsEl) {
     savingsZsEl.textContent = fmt(analysis.savings.fromZsReduction) + ' PLN';
     const zsReductionPct = analysis.before.totalZs > 0
-      ? ((analysis.before.totalZs - analysis.after.totalZs) / analysis.before.totalZs * 100)
+      ? decimalToPct((analysis.before.totalZs - analysis.after.totalZs) / analysis.before.totalZs)
       : 0;
     savingsZsPctEl.textContent = `(ZS -${zsReductionPct.toFixed(0)}%)`;
   }
@@ -17639,7 +17547,7 @@ function updateKClassWidget(analysis) {
   if (savingsKclassEl) {
     savingsKclassEl.textContent = fmt(analysis.savings.fromKclassImprovement) + ' PLN';
     const kclassEffectPct = analysis.savings.pln > 0
-      ? (analysis.savings.fromKclassImprovement / analysis.savings.pln * 100)
+      ? decimalToPct(analysis.savings.fromKclassImprovement / analysis.savings.pln)
       : 0;
     savingsKclassPctEl.textContent = `(${kclassEffectPct.toFixed(0)}% całości)`;
   }
@@ -17665,7 +17573,7 @@ function updateKClassWidget(analysis) {
 
     ['K1', 'K2', 'K3', 'K4'].forEach(k => {
       const count = histogram[k] || 0;
-      const pct = total > 0 ? (count / total * 100) : 0;
+      const pct = total > 0 ? decimalToPct(count / total) : 0;
       const bar = document.createElement('div');
       bar.style.cssText = 'display:flex;align-items:center;gap:8px;';
       bar.innerHTML = `
@@ -18528,8 +18436,8 @@ function updateLoadDurationCurveWidget(ldcData) {
   }
   if (avgBefore) avgBefore.textContent = ldcData.avgBefore.toFixed(1);
   if (avgAfter) avgAfter.textContent = ldcData.avgAfter.toFixed(1);
-  if (loadFactorBefore) loadFactorBefore.textContent = (ldcData.loadFactorBefore * 100).toFixed(1) + '%';
-  if (loadFactorAfter) loadFactorAfter.textContent = (ldcData.loadFactorAfter * 100).toFixed(1) + '%';
+  if (loadFactorBefore) loadFactorBefore.textContent = decimalToPct(ldcData.loadFactorBefore).toFixed(1) + '%';
+  if (loadFactorAfter) loadFactorAfter.textContent = decimalToPct(ldcData.loadFactorAfter).toFixed(1) + '%';
 
   // Update threshold table
   const thresholdTable = document.getElementById('ldcThresholdTable');
@@ -18544,7 +18452,7 @@ function updateLoadDurationCurveWidget(ldcData) {
         </tr>
         ${ldcData.hoursAboveThreshold.map(t => `
           <tr>
-            <td style="padding:3px;">${(t.threshold * 100).toFixed(0)}% (${t.thresholdKwBefore.toFixed(0)} kW)</td>
+            <td style="padding:3px;">${decimalToPct(t.threshold).toFixed(0)}% (${t.thresholdKwBefore.toFixed(0)} kW)</td>
             <td style="padding:3px;text-align:right;color:#c62828;">${t.hoursBefore} h</td>
             <td style="padding:3px;text-align:right;color:#2e7d32;">${t.hoursAfter} h</td>
             <td style="padding:3px;text-align:right;color:#1565c0;">${t.hoursAfter - t.hoursBefore} h</td>
@@ -18935,7 +18843,7 @@ async function calculateTcslComparison(variant) {
  */
 function renderTcslWidget(r) {
   const fmtPLN = v => (v == null || isNaN(v)) ? '-' : Math.round(v).toLocaleString('pl-PL') + ' PLN';
-  const fmtMWh = v => (v == null || isNaN(v)) ? '-' : (v / 1000).toFixed(1);
+  const fmtMWh = v => (v == null || isNaN(v)) ? '-' : kwhToMwh(v).toFixed(1);
 
   // PV Annual Cost - CAPEX annualized + OPEX + insurance
   const variantKey = currentVariant || 'B';
@@ -18972,7 +18880,7 @@ function renderTcslWidget(r) {
   }
   const netPctEl = document.getElementById('tcslPvNetSavingsTariffPct');
   if (netPctEl && r.pv_savings_tariff_pln > 0) {
-    const costPct = (pvAnnualCost / r.pv_savings_tariff_pln * 100).toFixed(0);
+    const costPct = decimalToPct(pvAnnualCost / r.pv_savings_tariff_pln).toFixed(0);
     netPctEl.textContent = `Koszt PV = ${costPct}% oszcz. brutto`;
   }
 
@@ -19022,7 +18930,7 @@ function renderTcslWidget(r) {
   const capDelta = (r.capacity_fee_without_pv_pln || 0) - (r.capacity_fee_with_pv_pln || 0);
   if (capSaving) capSaving.textContent = fmtPLN(capDelta);
   if (capSavingPct && r.capacity_fee_without_pv_pln > 0) {
-    const pct = (capDelta / r.capacity_fee_without_pv_pln * 100).toFixed(0);
+    const pct = decimalToPct(capDelta / r.capacity_fee_without_pv_pln).toFixed(0);
     capSavingPct.textContent = pct + '% redukcji';
   }
 
@@ -19163,7 +19071,7 @@ function renderTcslMonthlyTable(r) {
     sumR += rTcsl;
     html += `<tr>
       <td style="padding:6px 8px;">${names[(m.month || 1) - 1]}</td>
-      <td style="padding:6px 8px;text-align:right;">${((t.grid_import_kwh || 0) / 1000).toFixed(1)}</td>
+      <td style="padding:6px 8px;text-align:right;">${kwhToMwh(t.grid_import_kwh || 0).toFixed(1)}</td>
       <td style="padding:6px 8px;text-align:right;">${Math.round(t.energy_active_pln || 0).toLocaleString()}</td>
       <td style="padding:6px 8px;text-align:right;">${Math.round(t.fees_var_pln || 0).toLocaleString()}</td>
       <td style="padding:6px 8px;text-align:right;">${Math.round(t.capacity_fee_pln || 0).toLocaleString()}</td>
@@ -19176,7 +19084,7 @@ function renderTcslMonthlyTable(r) {
 
   html += `<tr style="background:#f5f5f5;font-weight:700;border-top:2px solid #333;">
     <td style="padding:8px;">SUMA</td>
-    <td style="padding:8px;text-align:right;">${(r.annual_grid_import_kwh / 1000).toFixed(1)}</td>
+    <td style="padding:8px;text-align:right;">${kwhToMwh(r.annual_grid_import_kwh).toFixed(1)}</td>
     <td style="padding:8px;text-align:right;">${Math.round(r.tariff_energy_active_cost_pln).toLocaleString()}</td>
     <td style="padding:8px;text-align:right;">${Math.round(r.tariff_fees_var_cost_pln).toLocaleString()}</td>
     <td style="padding:8px;text-align:right;">${Math.round(r.tariff_capacity_fee_total_pln).toLocaleString()}</td>
@@ -19376,7 +19284,7 @@ async function exportTcslHourlyExcel() {
     costHdr.font = { bold: true, size: 11 };
     ws.addRow({ date: `  Moc PV: ${capKwp} kWp`, cost_t: '' });
     ws.addRow({ date: `  OPEX (${opxKwp} PLN/kWp/rok)`, cost_t: Math.round(annOpex) });
-    ws.addRow({ date: `  Ubezpieczenie (${(insRate * 100).toFixed(1)}% CAPEX)`, cost_t: Math.round(annIns) });
+    ws.addRow({ date: `  Ubezpieczenie (${decimalToPct(insRate).toFixed(1)}% CAPEX)`, cost_t: Math.round(annIns) });
     const pvTotRow = addPvRow('  = RAZEM koszt PV/rok', pvCostYr, pvCostYr, 11, 'FFFFCDD2');
     pvTotRow.getCell('cost_t').font = { bold: true, size: 11, color: { argb: 'FFC62828' } };
     if (hasRdn) pvTotRow.getCell('cost_r').font = { bold: true, size: 11, color: { argb: 'FFC62828' } };
@@ -19404,10 +19312,10 @@ async function exportTcslHourlyExcel() {
     ws.addRow({});
     const balHdr = ws.addRow({ date: 'BILANS ENERGII' });
     balHdr.font = { bold: true, size: 11 };
-    ws.addRow({ date: '  Zuzycie roczne [MWh]', cost_t: +(result.annual_consumption_kwh / 1000).toFixed(1) });
-    ws.addRow({ date: '  Produkcja PV [MWh]', cost_t: +(result.annual_production_kwh / 1000).toFixed(1) });
-    ws.addRow({ date: '  Autokonsumpcja [MWh]', cost_t: +(result.annual_self_consumed_kwh / 1000).toFixed(1) });
-    ws.addRow({ date: '  Pobor z sieci [MWh]', cost_t: +(result.annual_grid_import_kwh / 1000).toFixed(1) });
+    ws.addRow({ date: '  Zuzycie roczne [MWh]', cost_t: +kwhToMwh(result.annual_consumption_kwh).toFixed(1) });
+    ws.addRow({ date: '  Produkcja PV [MWh]', cost_t: +kwhToMwh(result.annual_production_kwh).toFixed(1) });
+    ws.addRow({ date: '  Autokonsumpcja [MWh]', cost_t: +kwhToMwh(result.annual_self_consumed_kwh).toFixed(1) });
+    ws.addRow({ date: '  Pobor z sieci [MWh]', cost_t: +kwhToMwh(result.annual_grid_import_kwh).toFixed(1) });
 
     // Apply watermark
     if (window.applyExcelWatermark) {
@@ -19492,8 +19400,8 @@ function calculateRdnYearByYear() {
   );
 
   console.log('✅ RDN Year-by-Year calculated:', {
-    capexNPV: (centralizedMetricsRdn[currentVariant].capex.npv / 1000000).toFixed(2) + ' mln PLN',
-    eaasNPV: centralizedMetricsRdn[currentVariant].eaas ? (centralizedMetricsRdn[currentVariant].eaas.npv / 1000000).toFixed(2) + ' mln PLN' : 'N/A'
+    capexNPV: plnToMlnPln(centralizedMetricsRdn[currentVariant].capex.npv).toFixed(2) + ' mln PLN',
+    eaasNPV: centralizedMetricsRdn[currentVariant].eaas ? plnToMlnPln(centralizedMetricsRdn[currentVariant].eaas.npv).toFixed(2) + ' mln PLN' : 'N/A'
   });
 
   renderRdnYearByYearTables();
@@ -19503,8 +19411,8 @@ function renderRdnYearByYearTables() {
   const rdnCalc = centralizedMetricsRdn[currentVariant];
   if (!rdnCalc) return;
 
-  const fmtK = v => (v / 1000).toFixed(0);
-  const fmtM = v => (v / 1000000).toFixed(2);
+  const fmtK = v => plnToTysPln(v).toFixed(0);
+  const fmtM = v => plnToMlnPln(v).toFixed(2);
   const fmtPct = v => v.toFixed(1);
 
   // --- CAPEX RDN Table ---
@@ -19523,7 +19431,7 @@ function renderRdnYearByYearTables() {
     // Info row above table
     const infoEl = document.getElementById('rdnCapexInfo');
     if (infoEl) {
-      infoEl.innerHTML = `Rok 1 oszcz.: <b>${(baseline.totalSavingsYear1 / 1000).toFixed(0)} tys. PLN</b> (energia+opl: ${(baseline.energyFeesSavingsYear1/1000).toFixed(0)}k + mocowa: ${(baseline.capacitySavingsYear1/1000).toFixed(0)}k) | Inwestycja: <b>${(investment/1000000).toFixed(2)} mln PLN</b>`;
+      infoEl.innerHTML = `Rok 1 oszcz.: <b>${plnToTysPln(baseline.totalSavingsYear1).toFixed(0)} tys. PLN</b> (energia+opl: ${plnToTysPln(baseline.energyFeesSavingsYear1).toFixed(0)}k + mocowa: ${plnToTysPln(baseline.capacitySavingsYear1).toFixed(0)}k) | Inwestycja: <b>${plnToMlnPln(investment).toFixed(2)} mln PLN</b>`;
     }
 
     // Year 0 row
@@ -19594,7 +19502,7 @@ function renderRdnYearByYearTables() {
 
     const infoEl = document.getElementById('rdnEaasInfo');
     if (infoEl) {
-      infoEl.innerHTML = `Rok 1 oszcz.: <b>${(baseline.totalSavingsYear1 / 1000).toFixed(0)} tys. PLN</b> | Abonament EaaS: <b>${(rdnCalc.eaas.baseSubscription / 1000).toFixed(0)} tys. PLN/rok</b> | Kontrakt: <b>${eaasDuration} lat</b>`;
+      infoEl.innerHTML = `Rok 1 oszcz.: <b>${plnToTysPln(baseline.totalSavingsYear1).toFixed(0)} tys. PLN</b> | Abonament EaaS: <b>${plnToTysPln(rdnCalc.eaas.baseSubscription).toFixed(0)} tys. PLN/rok</b> | Kontrakt: <b>${eaasDuration} lat</b>`;
     }
 
     let cumulativeNPV = 0;
@@ -19676,10 +19584,10 @@ async function exportPvImpactExcel() {
     const exciseRate = s.exciseTax || 5;
 
     // --- Wolumeny energii ---
-    const gridNoPvMwh = (r.annual_consumption_kwh || 0) / 1000;
-    const gridWPvMwh = (r.annual_grid_import_kwh || 0) / 1000;
-    const selfConsumedMwh = (r.annual_self_consumed_kwh || 0) / 1000;
-    const pvProductionMwh = (r.annual_production_kwh || 0) / 1000;
+    const gridNoPvMwh = kwhToMwh(r.annual_consumption_kwh || 0);
+    const gridWPvMwh = kwhToMwh(r.annual_grid_import_kwh || 0);
+    const selfConsumedMwh = kwhToMwh(r.annual_self_consumed_kwh || 0);
+    const pvProductionMwh = kwhToMwh(r.annual_production_kwh || 0);
 
     // --- Obliczenie per opłata: Bez PV = gridNoPv * stawka, Z PV = gridWPv * stawka ---
     const distNoPv = gridNoPvMwh * distRate;
@@ -19789,7 +19697,7 @@ async function exportPvImpactExcel() {
     ws.addRow({ label: capNote }).font = { italic: true, size: 9, color: { argb: 'FF9E9E9E' } };
     ws.addRow({});
 
-    const capPct = capNoPv > 0 ? Math.round((capNoPv - capWPv) / capNoPv * 100) : 0;
+    const capPct = capNoPv > 0 ? Math.round(decimalToPct((capNoPv - capWPv) / capNoPv)) : 0;
     addFeeRow(`OSZCZEDNOSC NA OPLACIE MOCOWEJ (${capPct}% redukcji)`, null, capNoPv, capWPv, { bold: true, size: 12, bg: 'FFFFF9C4' });
 
     // ==========================================
@@ -19803,7 +19711,7 @@ async function exportPvImpactExcel() {
 
     ws.addRow({});
     const totalSav = totalNoPv - totalWPv;
-    const totalPct = totalNoPv > 0 ? Math.round(totalSav / totalNoPv * 100) : 0;
+    const totalPct = totalNoPv > 0 ? Math.round(decimalToPct(totalSav / totalNoPv)) : 0;
     const summRow = ws.addRow({ label: `LACZNA ROCZNA OSZCZEDNOSC DZIEKI PV (${totalPct}% redukcji kosztow)`, rate: '', nopv: '', wpv: '', saving: fmt(totalSav) });
     summRow.font = { bold: true, size: 16 };
     summRow.getCell('saving').font = { bold: true, size: 16, color: { argb: 'FF1B5E20' } };
@@ -19854,8 +19762,8 @@ async function exportPvImpactExcel() {
       const wpvR = months[m]?.rdn || {};
       const npvR = nopvM[m]?.rdn_nopv || {};
 
-      const gridNoPv = (npvR.consumption_kwh || npvR.grid_import_kwh || 0) / 1000;
-      const gridWPv = (wpvR.grid_import_kwh || 0) / 1000;
+      const gridNoPv = kwhToMwh(npvR.consumption_kwh || npvR.grid_import_kwh || 0);
+      const gridWPv = kwhToMwh(wpvR.grid_import_kwh || 0);
       const costNoPv = (npvR.energy_active_pln || 0) + (npvR.fees_var_pln || 0);
       const costWPv = (wpvR.energy_active_pln || 0) + (wpvR.fees_var_pln || 0);
       const savEnergy = costNoPv - costWPv;

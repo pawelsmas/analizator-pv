@@ -41,6 +41,7 @@ class AncillaryRevenueCalculator:
         battery_config: BatteryVirtualizationConfig,
         market_preset: Optional[PolishMarketPreset] = None,
         year: int = 2026,
+        degradation_cost_pln_mwh: float = 50.0,
     ):
         self.battery = battery_config
         self.market = market_preset or POLISH_MARKET_PRESETS.get(
@@ -48,9 +49,8 @@ class AncillaryRevenueCalculator:
         )
         self.year = year
 
-        # Degradation cost estimate (PLN per kWh throughput)
-        # Based on CAPEX 1200 PLN/kWh, 6000 FEC lifetime
-        self._degradation_cost_per_kwh = 1200.0 / 6000.0 / 2  # ~0.10 PLN/kWh
+        # Degradation cost per kWh throughput — from configurable PLN/MWh parameter
+        self._degradation_cost_per_kwh = degradation_cost_pln_mwh / 1000.0
 
     def calculate_all(
         self,

@@ -82,41 +82,19 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// Get CAPEX for given capacity from tier table
+// Get CAPEX for given capacity — delegates to settings.js SSoT
 function getCapexForCapacity(capacityKw) {
-  // Default tiers if systemSettings not available
-  const defaultTiers = [
-    { min: 150, max: 500, capex: 4200 },
-    { min: 501, max: 1000, capex: 3800 },
-    { min: 1001, max: 2500, capex: 3500 },
-    { min: 2501, max: 5000, capex: 3200 },
-    { min: 5001, max: 10000, capex: 3000 },
-    { min: 10001, max: 15000, capex: 2850 },
-    { min: 15001, max: 50000, capex: 2700 }
-  ];
-
-  const tiers = (systemSettings && systemSettings.capexTiers) ? systemSettings.capexTiers : defaultTiers;
-  console.log(`💰 CAPEX for ${capacityKw} kW: using ${systemSettings ? 'SETTINGS' : 'DEFAULTS'}`, tiers);
-
-  // Find matching tier
-  for (let tier of tiers) {
+  if (window.PVSettings?.getCapexForCapacity) {
+    return window.PVSettings.getCapexForCapacity(capacityKw);
+  }
+  console.warn('PVSettings.getCapexForCapacity not available, using systemSettings.capexTiers');
+  const tiers = (systemSettings && systemSettings.capexTiers) || [];
+  for (const tier of tiers) {
     if (capacityKw >= tier.min && capacityKw <= tier.max) {
       return tier.capex;
     }
   }
-
-  // Fallback: if above max, use last tier
-  if (capacityKw > 50000) {
-    return tiers[tiers.length - 1].capex;
-  }
-
-  // Fallback: if below min, use first tier
-  if (capacityKw < 150) {
-    return tiers[0].capex;
-  }
-
-  // Default fallback
-  return 3500;
+  return tiers.length > 0 ? tiers[tiers.length - 1].capex : 3500;
 }
 
 // Load variants from localStorage or backend

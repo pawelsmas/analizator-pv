@@ -2210,7 +2210,7 @@ class SizingRequest(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0, description="CAPEX [PLN/kWh]")
     capex_per_kw: float = Field(300.0, ge=0, description="CAPEX [PLN/kW]")
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1, description="OPEX as % of CAPEX")
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
 
     # House load / auxiliary consumption (HVAC, BMS, PCS standby)
@@ -3458,7 +3458,7 @@ class SensitivityRequest(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0)
     capex_per_kw: float = Field(300.0, ge=0)
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
     import_price_pln_mwh: float = Field(800.0, ge=0)
 

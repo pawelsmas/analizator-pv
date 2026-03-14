@@ -43,7 +43,7 @@ class EconomicParameters(BaseModel):
     feed_in_tariff: float = 0.0  # PLN/MWh
     investment_cost: float = 3500.0  # PLN/kWp
     export_mode: str = "zero"  # zero, limited, full
-    discount_rate: float = 0.07
+    discount_rate: float = 0.10
     degradation_rate: float = 0.005
     opex_per_kwp: float = 15.0  # PLN/kWp/year
     analysis_period: int = 25  # years
@@ -1233,7 +1233,7 @@ async def run_monte_carlo(request: MonteCarloRequest):
         ],
         "base_economics": {
             "variant": {"capacity": 100, "production": 100000, "self_consumed": 70000},
-            "parameters": {"energy_price": 450, "investment_cost": 3500, "discount_rate": 0.07}
+            "parameters": {"energy_price": 450, "investment_cost": 3500, "discount_rate": 0.10}
         }
     }
     ```
