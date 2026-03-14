@@ -171,7 +171,7 @@ const DEFAULT_CONFIG = {
 
   // Financial Parameters
   discountRate: 7,
-  pvDegradationYear1: 2.0,        // First year PV degradation [%] (higher due to initial settling)
+  pvDegradationYear1: 1.0,        // First year PV degradation [%] - LID (TOPCon ~1%, PERC ~2%)
   degradationRate: 0.5,           // Annual PV degradation for years 2+ [%/year]
   analysisPeriod: 25,
   inflationRate: 2.5,
@@ -560,6 +560,23 @@ const BESS_SCENARIOS = {
     interval15minSupport: true,  // 15-min tylko jeśli dane mają 35040 punktów
     kpiLabels: ['Peak kW cut', 'Duration coverage'],
     icon: '🚗'
+  },
+  9: {
+    id: 9,
+    name: 'PV + Arbitraż RDN (Spot)',
+    shortName: 'PV + RDN',
+    description: 'Ładuj BESS gdy ceny RDN niskie, rozładuj gdy wysokie. Wymaga cen RDN.',
+    topologies: ['pv_bess'],
+    modes: ['pro'],
+    baseMode: 'stacked',
+    presets: {
+      bessPeakShavingEnabled: false,
+      bessPriceArbitrageEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: true,
+    kpiLabels: ['RDN Spread', 'Arbitrage Savings'],
+    icon: '📈'
   }
 }
 
@@ -575,6 +592,8 @@ document.addEventListener('DOMContentLoaded', () => {
   renderAllCapexTables();
   // Initialize BESS section visibility
   toggleBessSection();
+  // Initialize pricing routing summary
+  setTimeout(updatePricingRoutingSummary, 500);
 });
 
 // ============================================================================
@@ -999,6 +1018,20 @@ function setBessScenario(scenarioId) {
     });
   }
 
+  // Auto-enable RDN overlay for scenarios that require it
+  if (scenario.requiresRdn) {
+    const rdnHidden = document.getElementById('bessPriceArbitrageEnabled');
+    const rdnOverlay = document.getElementById('bessPriceArbitrageOverlay');
+    if (rdnHidden && !rdnHidden.checked) {
+      rdnHidden.checked = true;
+      rdnHidden.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (rdnOverlay && !rdnOverlay.checked) {
+      rdnOverlay.checked = true;
+      rdnOverlay.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
   // Update scenario tiles UI
   renderScenarioTiles();
 
@@ -1070,14 +1103,22 @@ function renderScenarioTiles() {
     const isBeta = scenario.beta;
     const isRecommended = scenario.recommended;
 
+    // Check if RDN data is actually loaded (not just checkbox enabled)
+    const rdnDataLoaded = window._cachedPriceConfig?.rdnPrices?.available ||
+                          (window.parent?.sharedData?.priceConfig?.rdnPrices?.available) ||
+                          (() => { try { const c = localStorage.getItem('rdn_hourly_prices'); return c && JSON.parse(c).length > 100; } catch { return false; } })();
+    const rdnMissing = scenario.requiresRdn && !rdnDataLoaded;
+
     const tileClass = [
       'scenario-tile',
       isSelected ? 'selected' : '',
       isBeta ? 'beta disabled' : '',
+      rdnMissing ? 'rdn-missing' : '',
       isRecommended ? 'recommended' : ''
     ].filter(Boolean).join(' ');
 
     const tooltip = isBeta ? scenario.betaTooltip :
+                   rdnMissing ? 'Wymaga załadowanych cen RDN (Spot) w sekcji Ceny' :
                    (scenario.infoTooltip || '');
 
     tilesHTML += `
@@ -1090,6 +1131,7 @@ function renderScenarioTiles() {
             ${scenario.shortName || scenario.name}
             ${isRecommended ? '<span class="badge recommended">ZALECANY</span>' : ''}
             ${isBeta ? '<span class="badge beta">BETA</span>' : ''}
+            ${rdnMissing ? '<span class="badge" style="background:#ff9800;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:4px">BRAK RDN</span>' : ''}
           </div>
           <div class="scenario-description">${scenario.description}</div>
         </div>
@@ -2288,7 +2330,302 @@ function toggleHybridMonthlySection() {
 
 // Mark settings as unsaved
 function markUnsaved() {
-  // Could add visual indicator that settings need saving
+  // Update pricing routing summary on any settings change
+  updatePricingRoutingSummary();
+}
+
+/**
+ * Update the "Routing cen → Moduły" panel.
+ * Shows clearly which price data goes to which module (PV Economics, BESS).
+ */
+function updatePricingRoutingSummary() {
+  const el = document.getElementById('pricingRoutingContent');
+  if (!el) return;
+
+  // Read current UI state
+  const osdOperator = document.getElementById('osdOperator')?.value || '(brak)';
+  const osdGroup = document.getElementById('osdTariffGroup')?.value || '(brak)';
+  const tariffType = document.getElementById('tariffType')?.value || 'two_zone';
+  const pricingMode = document.getElementById('pricingMode')?.value || 'single';
+
+  // Energy rates
+  const summTotal = document.getElementById('summTotal')?.textContent || '?';
+  const summEnergyAvg = document.getElementById('summEnergyAvg')?.textContent || '?';
+  const summDistAvg = document.getElementById('summDistAvg')?.textContent || '?';
+  const summCapacityVal = document.getElementById('summCapacityVal')?.textContent || '?';
+
+  // BESS flags
+  const osdArb = document.getElementById('bessOsdArbitrageOverlay')?.checked ||
+                  document.getElementById('bessOsdArbitrageEnabled')?.checked;
+  const rdnArb = document.getElementById('bessPriceArbitrageOverlay')?.checked ||
+                  document.getElementById('bessPriceArbitrageEnabled')?.checked;
+  const capFee = document.getElementById('bessCapacityFeeOverlay')?.checked;
+
+  // RDN data
+  let rdnStatus = '<span style="color:#c62828;font-weight:700">BRAK DANYCH</span>';
+  try {
+    const info = localStorage.getItem('rdn_scenario_info');
+    if (info) {
+      const rdnInfo = JSON.parse(info);
+      rdnStatus = `<span style="color:#2e7d32;font-weight:700">${rdnInfo.dataPoints || '?'} h, avg ${rdnInfo.avgPrice?.toFixed(0) || '?'} PLN/MWh (${rdnInfo.scenarioName || rdnInfo.year || '?'})</span>`;
+    }
+  } catch (e) { /* ignore */ }
+
+  // Hybrid monthly info
+  let hybridInfo = '';
+  if (pricingMode === 'hybrid_monthly') {
+    const months = [];
+    for (let m = 1; m <= 12; m++) {
+      const sel = document.getElementById('monthPriceSource_' + m);
+      if (sel) months.push({ m, src: sel.value || 'osd' });
+    }
+    const rdnMonths = months.filter(x => x.src === 'rdn').map(x => x.m);
+    const osdMonths = months.filter(x => x.src !== 'rdn').map(x => x.m);
+    hybridInfo = `<br>&nbsp;&nbsp;OSD miesiące: <strong>${osdMonths.join(', ') || 'brak'}</strong> | RDN miesiące: <strong style="color:#1565c0">${rdnMonths.join(', ') || 'brak'}</strong>`;
+  }
+
+  // Tariff type name
+  const tariffNames = { flat: 'Stała', two_zone: '2-strefowa (C12a)', three_zone: '3-strefowa (C12b)', four_zone: '4-strefowa' };
+  const tariffLabel = tariffNames[tariffType] || tariffType;
+
+  // Build routing table
+  const rows = [];
+
+  // === PV ECONOMICS ===
+  rows.push(`<tr style="background:#e8f5e9">
+    <td style="padding:6px 10px;font-weight:700;color:#2e7d32;border-bottom:1px solid #c8e6c9">☀️ PV Ekonomia</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #c8e6c9">
+      Taryfa <strong>${tariffLabel}</strong> (${osdOperator || 'ręcznie'} / ${osdGroup || '?'})<br>
+      Stawka łączna: <strong>${summTotal} PLN/MWh</strong> (energia ${summEnergyAvg} + dystr. ${summDistAvg} + mocowa ${summCapacityVal})
+      ${pricingMode === 'hybrid_monthly' ? '<br>Tryb: <strong style="color:#ff6f00">HYBRYDOWY</strong>' + hybridInfo : ''}
+    </td>
+  </tr>`);
+
+  // === BESS AUTOKONSUMPCJA ===
+  rows.push(`<tr style="background:#e3f2fd">
+    <td style="padding:6px 10px;font-weight:700;color:#1565c0;border-bottom:1px solid #bbdefb">🔋 BESS Autokonsumpcja</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #bbdefb">
+      Stawka łączna: <strong>${summTotal} PLN/MWh</strong> (ta sama co PV — oszczędność = uniknięty import)
+    </td>
+  </tr>`);
+
+  // === BESS ARBITRAGE ===
+  let arbDesc = '<span style="color:#999">wyłączony</span>';
+  if (osdArb || rdnArb) {
+    const parts = [];
+    if (osdArb) parts.push(`<strong style="color:#4CAF50">OSD ToU</strong> (strefy ${tariffLabel})`);
+    if (rdnArb) parts.push(`<strong style="color:#1565c0">RDN Spot</strong> — ${rdnStatus}`);
+    arbDesc = parts.join(' + ');
+    if (pricingMode === 'hybrid_monthly' && osdArb && rdnArb) {
+      arbDesc += '<br><span style="color:#ff6f00;font-weight:600">HYBRID</span>: per-miesiąc OSD/RDN' + hybridInfo;
+    }
+  }
+  rows.push(`<tr style="background:#fff8e1">
+    <td style="padding:6px 10px;font-weight:700;color:#f57f17;border-bottom:1px solid #fff9c4">⚡ BESS Arbitraż</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #fff9c4">${arbDesc}</td>
+  </tr>`);
+
+  // === BESS CAPACITY FEE ===
+  rows.push(`<tr style="background:#fce4ec">
+    <td style="padding:6px 10px;font-weight:700;color:#c62828">📊 Opłata mocowa</td>
+    <td style="padding:6px 10px">
+      ${capFee ? '<strong style="color:#2e7d32">WŁĄCZONA</strong>' : '<span style="color:#999">wyłączona</span>'}
+      — SOM: <strong>${(parseFloat(document.getElementById('capacitySomRate')?.value) || 0.2194).toFixed(4)} PLN/kWh</strong>
+    </td>
+  </tr>`);
+
+  // === RDN DATA STATUS ===
+  rows.push(`<tr style="background:#f3e5f5">
+    <td style="padding:6px 10px;font-weight:700;color:#6a1b9a">💹 Dane RDN</td>
+    <td style="padding:6px 10px">${rdnStatus}${rdnArb ? '' : ' <span style="color:#999">(nieużywane — arbitraż RDN wyłączony)</span>'}</td>
+  </tr>`);
+
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;border-radius:6px;overflow:hidden;border:1px solid #e0e0e0">${rows.join('')}</table>`;
+
+  // Show/hide and auto-update OSD vs RDN comparison panel
+  updateOsdVsRdnVisibility();
+}
+
+/**
+ * Show/hide the OSD vs RDN comparison panel based on data availability.
+ * Auto-update when both OSD tariff and RDN data are present.
+ */
+function updateOsdVsRdnVisibility() {
+  const panel = document.getElementById('osdVsRdnComparison');
+  if (!panel) return;
+
+  // Check if RDN data exists
+  let hasRdn = false;
+  try {
+    const raw = localStorage.getItem('rdn_hourly_prices');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      hasRdn = Array.isArray(arr) && arr.length >= 8760;
+    }
+  } catch (e) { /* ignore */ }
+
+  // Always show panel if RDN data loaded (user can compare)
+  if (hasRdn) {
+    panel.style.display = 'block';
+    updateOsdVsRdnComparison();
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+/**
+ * OSD vs RDN Profitability Comparison.
+ *
+ * Computes estimated annual BESS arbitrage revenue for:
+ * 1) OSD ToU mode: buy at offpeak rate, sell at peak rate (tariff spread)
+ * 2) RDN Spot mode: buy at P25 price, sell at P75 price (hourly volatility)
+ *
+ * Assumes a reference 1 MWh/1 MW BESS doing 1 cycle/day, 90% roundtrip efficiency.
+ */
+function updateOsdVsRdnComparison() {
+  const el = document.getElementById('osdVsRdnContent');
+  if (!el) return;
+
+  // --- Reference BESS params ---
+  const refCapacityMwh = 1.0;  // 1 MWh reference
+  const eta = parseFloat(document.getElementById('bessRoundtripEfficiency')?.value || 90) / 100;
+
+  // --- OSD Tariff rates ---
+  const tariffConfig = getTariffConfig();
+  const weekdayRates = getTariffHourlyRates('weekday');
+  const weekendRates = getTariffHourlyRates('weekend');
+
+  // --- RDN hourly prices ---
+  let rdnPrices = null;
+  try {
+    const raw = localStorage.getItem('rdn_hourly_prices');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length >= 8760) rdnPrices = arr.slice(0, 8760);
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!rdnPrices) {
+    el.innerHTML = '<em style="color:#c62828">Brak danych RDN — załaduj scenariusz RDN w zakładce "Ceny energii" by porównać.</em>';
+    return;
+  }
+
+  // --- Compute OSD annual arbitrage ---
+  // For each day of year: find max/min energy rate, compute spread * capacity * eta
+  const startDate = new Date(2025, 0, 1); // reference year
+  let osdTotalRevenue = 0;
+  let osdDaysTraded = 0;
+
+  for (let d = 0; d < 365; d++) {
+    const date = new Date(startDate.getTime() + d * 86400000);
+    const isWeekend = (date.getDay() === 0 || date.getDay() === 6);
+    const rates = isWeekend ? weekendRates : weekdayRates;
+
+    const maxRate = Math.max(...rates);
+    const minRate = Math.min(...rates);
+    const spread = maxRate - minRate;
+
+    if (spread > 0) {
+      // Buy 1/eta MWh at minRate, sell 1 MWh at maxRate
+      const dailyProfitPln = (maxRate - minRate / eta) * refCapacityMwh;
+      osdTotalRevenue += dailyProfitPln;
+      if (dailyProfitPln > 0) osdDaysTraded++;
+    }
+  }
+
+  // --- Compute RDN annual arbitrage ---
+  // For each day: find best buy hour and best sell hour
+  let rdnTotalRevenue = 0;
+  let rdnDaysTraded = 0;
+
+  for (let d = 0; d < 365; d++) {
+    const dayPrices = rdnPrices.slice(d * 24, (d + 1) * 24);
+    if (dayPrices.length < 24) continue;
+
+    const maxPrice = Math.max(...dayPrices);
+    const minPrice = Math.min(...dayPrices);
+
+    // Buy 1/eta MWh at min, sell 1 MWh at max
+    const dailyProfitPln = (maxPrice - minPrice / eta) * refCapacityMwh;
+    if (dailyProfitPln > 0) {
+      rdnTotalRevenue += dailyProfitPln;
+      rdnDaysTraded++;
+    }
+  }
+
+  // --- RDN statistics ---
+  const rdnSorted = [...rdnPrices].sort((a, b) => a - b);
+  const rdnAvg = rdnPrices.reduce((s, v) => s + v, 0) / rdnPrices.length;
+  const rdnP25 = rdnSorted[Math.floor(rdnPrices.length * 0.25)];
+  const rdnP50 = rdnSorted[Math.floor(rdnPrices.length * 0.50)];
+  const rdnP75 = rdnSorted[Math.floor(rdnPrices.length * 0.75)];
+  const rdnMin = rdnSorted[0];
+  const rdnMax = rdnSorted[rdnSorted.length - 1];
+
+  // --- OSD statistics ---
+  const osdAvgWeekday = weekdayRates.reduce((s, v) => s + v, 0) / 24;
+  const osdMax = Math.max(...weekdayRates);
+  const osdMin = Math.min(...weekdayRates);
+  const osdSpread = osdMax - osdMin;
+
+  // --- Winner ---
+  const osdWins = osdTotalRevenue >= rdnTotalRevenue;
+  const diff = Math.abs(osdTotalRevenue - rdnTotalRevenue);
+  const diffPct = rdnTotalRevenue > 0 ? (diff / Math.max(osdTotalRevenue, rdnTotalRevenue) * 100) : 0;
+
+  // --- Build HTML ---
+  const fmt = (v) => v.toFixed(0);
+  const fmtK = (v) => (v / 1000).toFixed(1);
+
+  const winnerColor = osdWins ? '#e65100' : '#1565c0';
+  const winnerLabel = osdWins ? 'OSD Taryfa' : 'RDN Spot';
+  const winnerIcon = osdWins ? '📋' : '💹';
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <!-- OSD Column -->
+      <div style="background:${osdWins ? 'linear-gradient(135deg,#fff3e0,#ffe0b2)' : '#fff'};border-radius:8px;padding:12px;border:2px solid ${osdWins ? '#ff9800' : '#e0e0e0'}">
+        <div style="font-weight:700;color:#e65100;font-size:13px;margin-bottom:8px">📋 OSD Taryfa (${tariffConfig.type === 'flat' ? 'stała' : tariffConfig.type === 'two_zone' ? '2-stref.' : tariffConfig.type === 'three_zone' ? '3-stref.' : '4-stref.'})</div>
+        <div style="font-size:11px;line-height:1.7">
+          Szczyt: <strong>${fmt(osdMax)} PLN/MWh</strong><br>
+          Pozaszczy: <strong>${fmt(osdMin)} PLN/MWh</strong><br>
+          Spread: <strong>${fmt(osdSpread)} PLN/MWh</strong><br>
+          Średnia: <strong>${fmt(osdAvgWeekday)} PLN/MWh</strong>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:rgba(255,152,0,0.1);border-radius:6px;text-align:center">
+          <div style="font-size:11px;color:#e65100;font-weight:600">Roczny przychód arbitraż</div>
+          <div style="font-size:22px;font-weight:900;color:#e65100">${fmtK(osdTotalRevenue)} tys. PLN</div>
+          <div style="font-size:10px;color:#999">na 1 MWh BESS, ${osdDaysTraded} dni handlowych</div>
+        </div>
+      </div>
+
+      <!-- RDN Column -->
+      <div style="background:${!osdWins ? 'linear-gradient(135deg,#e3f2fd,#bbdefb)' : '#fff'};border-radius:8px;padding:12px;border:2px solid ${!osdWins ? '#1976d2' : '#e0e0e0'}">
+        <div style="font-weight:700;color:#1565c0;font-size:13px;margin-bottom:8px">💹 RDN Spot (godzinowe)</div>
+        <div style="font-size:11px;line-height:1.7">
+          Min: <strong>${fmt(rdnMin)} PLN/MWh</strong> | Max: <strong>${fmt(rdnMax)} PLN/MWh</strong><br>
+          P25: <strong>${fmt(rdnP25)}</strong> | P50: <strong>${fmt(rdnP50)}</strong> | P75: <strong>${fmt(rdnP75)}</strong><br>
+          Spread P25-P75: <strong>${fmt(rdnP75 - rdnP25)} PLN/MWh</strong><br>
+          Średnia: <strong>${fmt(rdnAvg)} PLN/MWh</strong>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:rgba(25,118,210,0.1);border-radius:6px;text-align:center">
+          <div style="font-size:11px;color:#1565c0;font-weight:600">Roczny przychód arbitraż</div>
+          <div style="font-size:22px;font-weight:900;color:#1565c0">${fmtK(rdnTotalRevenue)} tys. PLN</div>
+          <div style="font-size:10px;color:#999">na 1 MWh BESS, ${rdnDaysTraded} dni handlowych</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Verdict -->
+    <div style="padding:10px 14px;background:${winnerColor};border-radius:8px;text-align:center">
+      <span style="font-size:14px;font-weight:800;color:white">
+        ${winnerIcon} ${winnerLabel} jest korzystniejszy o ${fmtK(diff)} tys. PLN/rok (+${diffPct.toFixed(0)}%)
+      </span>
+      <div style="font-size:10px;color:rgba(255,255,255,0.8);margin-top:4px">
+        Ref: 1 MWh BESS, η=${(eta*100).toFixed(0)}%, 1 cykl/dzień, ceny bez opłat dystr. Rzeczywisty wynik zależy od profilu obciążenia i strategii LP.
+      </div>
+    </div>
+  `;
 }
 
 // Show status message
@@ -5561,8 +5898,7 @@ async function selectRdnScenario(scenarioId) {
     if (infoEl) infoEl.style.display = 'block';
 
     // Cache hourly prices in localStorage for Economics module
-    localStorage.setItem('rdn_hourly_prices', JSON.stringify(priceArray));
-    localStorage.setItem('rdn_scenario_info', JSON.stringify({
+    const rdnInfo = {
       scenarioId,
       scenarioName: scenarioName.replace(/\s*\[.*?\]\s*\(.*?\)/, '').trim(),
       year,
@@ -5570,7 +5906,21 @@ async function selectRdnScenario(scenarioId) {
       minPrice: min,
       maxPrice: max,
       dataPoints: priceArray.length
-    }));
+    };
+    localStorage.setItem('rdn_hourly_prices', JSON.stringify(priceArray));
+    localStorage.setItem('rdn_scenario_info', JSON.stringify(rdnInfo));
+
+    // Broadcast RDN prices to shell for centralized price config
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'RDN_PRICES_CHANGED',
+        data: {
+          hourlyPricesPlnMwh: priceArray,
+          scenarioInfo: rdnInfo
+        }
+      }, '*');
+      console.log('[Settings] RDN prices broadcast to shell:', priceArray.length, 'points');
+    }
 
     markUnsaved();
     console.log(`RDN scenario #${scenarioId} selected: ${priceArray.length} prices, avg=${avg.toFixed(1)} PLN/MWh`);
@@ -5593,6 +5943,10 @@ function clearRdnScenarioInfo() {
   if (infoEl) infoEl.style.display = 'none';
   localStorage.removeItem('rdn_hourly_prices');
   localStorage.removeItem('rdn_scenario_info');
+  // Broadcast clear to shell
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'RDN_PRICES_CHANGED', data: null }, '*');
+  }
 }
 
 /**

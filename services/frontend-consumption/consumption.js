@@ -4,14 +4,17 @@ const USE_PROXY = true;
 // Backend API URLs
 const API_URLS = USE_PROXY ? {
   dataAnalysis: '/api/data',
-  economics: '/api/economics'
+  economics: '/api/economics',
+  bessDispatch: '/api/bess-dispatch'
 } : {
   dataAnalysis: 'http://localhost:8001',
-  economics: 'http://localhost:8003'
+  economics: 'http://localhost:8003',
+  bessDispatch: 'http://localhost:8031'
 };
 
 // Chart.js instances
 let dailyChart, weeklyChart, monthlyChart, loadDurationChart, seasonalityChart;
+let tariffCompChart = null;
 
 /**
  * Format number in European style
@@ -4782,4 +4785,482 @@ window.addEventListener('message', (event) => {
     console.log(`⚡ K-class: RE-RUN RESULT — feeBefore=${analysis?.totalFeeBefore?.toFixed(0)}, feeAfter=${analysis?.totalFeeAfter?.toFixed(0)}, savings=${analysis?.totalSavings?.toFixed(0)} PLN`);
   }
 });
+
+
+// =============================================================================
+// TARIFF COST COMPARISON — FULL COST (energy + distribution + capacity + fees)
+// Uses tariff_presets.json for real OSD tariff data
+// =============================================================================
+
+let _tariffPresetsCache = null;
+
+async function loadTariffPresets() {
+  if (_tariffPresetsCache) return _tariffPresetsCache;
+  try {
+    // Try from settings module via nginx
+    const resp = await fetch('/modules/settings/tariff_presets.json');
+    if (resp.ok) {
+      _tariffPresetsCache = await resp.json();
+      return _tariffPresetsCache;
+    }
+  } catch (e) { console.warn('Failed to load tariff_presets.json:', e); }
+  return null;
+}
+
+function getCapacityFeeConfig() {
+  // Try to get from shell settings
+  try {
+    const settings = cachedSystemSettings || {};
+    if (settings.capacityFeeConfig) return settings.capacityFeeConfig;
+  } catch (e) {}
+  // Default URE 58/2025
+  return { somRate: 0.2194, selectedHours: { Q1: {start:7,end:22}, Q2: {start:7,end:22}, Q3: {start:7,end:22}, Q4: {start:7,end:22} } };
+}
+
+function isCapacityFeeHour(hour, month, dayOfWeek) {
+  // Capacity fee applies 7:00-22:00 on workdays (Mon-Fri)
+  if (dayOfWeek === 0 || dayOfWeek === 6) return false; // weekend
+  const cfg = getCapacityFeeConfig();
+  let q = 'Q1';
+  if (month >= 3 && month <= 5) q = 'Q2';
+  else if (month >= 6 && month <= 8) q = 'Q3';
+  else if (month >= 9) q = 'Q4';
+  const sh = cfg.selectedHours?.[q] || { start: 7, end: 22 };
+  return hour >= sh.start && hour < sh.end;
+}
+
+function calculateFullTariffCost(tariff, commonFees, loadKw, timestamps, intervalMinutes, energyActiveByVoltage) {
+  const hoursPerStep = intervalMinutes / 60;
+  const n = loadKw.length;
+  const touRates = tariff.touRates || {};
+  const varFees = tariff.variableFees || {};
+  const fixFees = tariff.fixedFees || {};
+  const capFee = getCapacityFeeConfig();
+  const somRate = capFee.somRate || 0.2194; // PLN/kWh
+
+  // Distribution rates per zone (PLN/MWh -> PLN/kWh)
+  const distPeak = (touRates.peakRate || touRates.dayRate || touRates.flatRate || 0);
+  const distPartial = (touRates.partialRate || touRates.dayRate || touRates.flatRate || 0);
+  const distOffPeak = (touRates.offPeakRate || touRates.nightRate || touRates.flatRate || 0);
+  const distValley = (touRates.valleyRate || distOffPeak);
+
+  // Energy active rates per zone (PLN/MWh) — from energyActiveByVoltage
+  const voltage = (tariff.voltage || 'C').toUpperCase();
+  const eaRates = (energyActiveByVoltage && energyActiveByVoltage[voltage]) || { flat: 420, peak: 520, partial: 420, offpeak: 320, valley: 260 };
+  const eaPeak = eaRates.peak || eaRates.flat || 420;
+  const eaPartial = eaRates.partial || eaRates.flat || 420;
+  const eaOffPeak = eaRates.offpeak || eaRates.flat || 420;
+  const eaValley = eaRates.valley || eaOffPeak;
+  const eaFlat = eaRates.flat || 420;
+
+  // Fixed per-MWh fees
+  const qualityFee = varFees.qualityFee || commonFees.qualityFeeDefault || 33.10; // PLN/MWh
+  const ozeFee = commonFees.ozeFee || 7.30;
+  const cogenFee = commonFees.cogenerationFee || 3.0;
+  const excise = commonFees.exciseTax || 5.0;
+  const fixedPerMwh = (qualityFee + ozeFee + cogenFee + excise); // PLN/MWh
+
+  // Monthly fixed fees
+  const contractedPowerKw = fixFees.contractedPowerKw || (cachedSystemSettings?.fixedMonthlyFees?.contractedPowerKw || 50);
+  const distFixedPerKwMonth = fixFees.distFixedRatePerKwMonth || 9.14;
+  const osdSubscription = fixFees.osdSubscriptionFeeMonth || 5.54;
+  const transitionFee = fixFees.transitionFeeMonth || 0;
+  const monthlyFixed = (distFixedPerKwMonth * contractedPowerKw) + osdSubscription + transitionFee;
+  const annualFixed = monthlyFixed * 12;
+
+  // ToU zone determination
+  const peakWindows = tariff.touRates?.weekday || {};
+  const p1s = peakWindows.peak1Start ?? 7, p1e = peakWindows.peak1End ?? 13;
+  const p2s = peakWindows.peak2Start ?? 16, p2e = peakWindows.peak2End ?? 21;
+  const vStart = peakWindows.valleyStart ?? 0, vEnd = peakWindows.valleyEnd ?? 0;
+  const weekendIsValley = tariff.touRates?.weekend?.isValley || false;
+  const tariffType = tariff.tariffType || 'flat';
+
+  let totalEnergyCostSprzedawca = 0;
+  let totalDistCost = 0;
+  let totalCapacityFeeCost = 0;
+  let totalFixedPerMwhCost = 0;
+  let totalEnergyKwh = 0;
+  let peakEnergyKwh = 0, offpeakEnergyKwh = 0;
+
+  for (let i = 0; i < n; i++) {
+    const kw = loadKw[i];
+    const kwh = kw * hoursPerStep;
+    totalEnergyKwh += kwh;
+
+    // Determine time from timestamp
+    let dt;
+    if (timestamps && timestamps[i]) {
+      dt = new Date(timestamps[i]);
+    } else {
+      // Reconstruct from index
+      const totalMinutes = i * intervalMinutes;
+      dt = new Date(2025, 0, 1, 0, totalMinutes);
+    }
+    const hour = dt.getHours();
+    const dayOfWeek = dt.getDay(); // 0=Sun
+    const month = dt.getMonth(); // 0=Jan
+    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+
+    // Distribution rate + energy active rate (PLN/MWh) based on zone
+    let distRate, eaRate;
+    if (tariffType === 'flat') {
+      distRate = touRates.flatRate || distPeak;
+      eaRate = eaFlat;
+    } else if (isWeekend) {
+      if (tariffType === 'four_zone' && weekendIsValley) {
+        distRate = distValley;
+        eaRate = eaValley;
+      } else {
+        distRate = distOffPeak;
+        eaRate = eaOffPeak;
+      }
+    } else if (tariffType === 'four_zone' && hour >= vStart && hour < vEnd) {
+      distRate = distValley;
+      eaRate = eaValley;
+    } else if ((hour >= p1s && hour < p1e) || (hour >= p2s && hour < p2e)) {
+      distRate = distPeak;
+      eaRate = eaPeak;
+      peakEnergyKwh += kwh;
+    } else if (tariffType === 'three_zone' || tariffType === 'four_zone') {
+      if (hour >= 6 && hour < 22) {
+        distRate = distPartial;
+        eaRate = eaPartial;
+      } else {
+        distRate = distOffPeak;
+        eaRate = eaOffPeak;
+      }
+    } else {
+      // two_zone
+      if (hour >= 6 && hour < 22) {
+        distRate = distPeak;
+        eaRate = eaPeak;
+      } else {
+        distRate = distOffPeak;
+        eaRate = eaOffPeak;
+      }
+    }
+
+    if (!isWeekend && !((hour >= p1s && hour < p1e) || (hour >= p2s && hour < p2e))) {
+      offpeakEnergyKwh += kwh;
+    }
+
+    // Distribution cost (PLN/MWh, kwh is kWh)
+    totalDistCost += kwh * distRate / 1000;
+
+    // Energy active cost — sprzedawca, per zone (PLN/MWh)
+    totalEnergyCostSprzedawca += kwh * eaRate / 1000;
+
+    // Fixed per-MWh fees (quality, OZE, cogen, excise)
+    totalFixedPerMwhCost += kwh * fixedPerMwh / 1000;
+
+    // Capacity fee (only 7-22 workdays)
+    if (isCapacityFeeHour(hour, month, dayOfWeek)) {
+      totalCapacityFeeCost += kwh * somRate;
+    }
+  }
+  const totalCost = totalDistCost + totalEnergyCostSprzedawca + totalCapacityFeeCost + totalFixedPerMwhCost + annualFixed;
+  const totalMwh = totalEnergyKwh / 1000;
+  const avgRate = totalCost / Math.max(totalEnergyKwh, 1);
+
+  return {
+    total_cost_pln: totalCost,
+    avg_rate_pln_kwh: avgRate,
+    total_energy_mwh: totalMwh,
+    breakdown: {
+      energy_active_pln: Math.round(totalEnergyCostSprzedawca),
+      distribution_variable_pln: Math.round(totalDistCost),
+      capacity_fee_pln: Math.round(totalCapacityFeeCost),
+      quality_oze_cogen_excise_pln: Math.round(totalFixedPerMwhCost),
+      fixed_monthly_pln: Math.round(annualFixed),
+    },
+    peak_energy_kwh: peakEnergyKwh,
+    offpeak_energy_kwh: offpeakEnergyKwh,
+  };
+}
+
+async function runTariffComparison() {
+  const btn = document.getElementById('btnRunTariffComparison');
+  const status = document.getElementById('tariffCompStatus');
+  const tbody = document.getElementById('tariffComparisonTableBody');
+
+  const hourlyData = consumptionData?.hourlyData;
+  if (!consumptionData || !hourlyData || !hourlyData.values || hourlyData.values.length === 0) {
+    status.textContent = 'Brak danych zuzycia! Najpierw wgraj dane w zakladce Konfiguracja.';
+    status.style.color = '#f44336';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Obliczam...';
+  status.textContent = 'Ladowanie presetow taryfowych...';
+  status.style.color = '#2196F3';
+
+  try {
+    const presets = await loadTariffPresets();
+    if (!presets || !presets.operators) {
+      throw new Error('Nie udalo sie zaladowac tariff_presets.json');
+    }
+
+    const loadKw = hourlyData.values;
+    const timestamps = hourlyData.timestamps || null;
+    const interval = 60; // hourly data
+    const commonFees = presets.commonFees || {};
+    const energyActiveByVoltage = presets.energyActiveByVoltage || {};
+
+    status.textContent = `Obliczam ${Object.keys(presets.operators).length} OSD...`;
+
+    const results = [];
+    for (const [opName, opData] of Object.entries(presets.operators)) {
+      for (const [tariffId, tariff] of Object.entries(opData.tariffs || {})) {
+        const fullId = `${opName}_${tariffId}`;
+        const calc = calculateFullTariffCost(tariff, commonFees, loadKw, timestamps, interval, energyActiveByVoltage);
+        results.push({
+          tariff_id: fullId,
+          tariff_name: `${opData.label || opName} ${tariffId}`,
+          osd: opName,
+          group: tariffId,
+          tariff_type: tariff.tariffType,
+          voltage: tariff.voltage || '?',
+          annual_cost_pln: calc.total_cost_pln,
+          avg_rate_pln_kwh: calc.avg_rate_pln_kwh,
+          total_energy_mwh: calc.total_energy_mwh,
+          breakdown: calc.breakdown,
+        });
+      }
+    }
+
+    results.sort((a, b) => a.annual_cost_pln - b.annual_cost_pln);
+
+    // Get current tariff cost from existing analysis
+    const currentTariffCost = getCurrentTariffAnnualCost();
+    const totalMwh = results[0]?.total_energy_mwh || 0;
+
+    const data = {
+      results,
+      rdn_result: null, // RDN will be fetched from backend
+      total_energy_mwh: totalMwh,
+      cheapest: results[0]?.tariff_id,
+      most_expensive: results[results.length - 1]?.tariff_id,
+    };
+
+    // Also fetch RDN from backend
+    try {
+      const startDate = new Date().getFullYear() + '-01-01';
+      const rdnResp = await fetch(`${API_URLS.bessDispatch}/tariff-cost-comparison`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ load_kw: loadKw, start_date: startDate, interval_minutes: interval }),
+      });
+      if (rdnResp.ok) {
+        const rdnData = await rdnResp.json();
+        if (rdnData.rdn_result) {
+          // Add fixed fees to RDN too (capacity fee + quality + monthly fixed)
+          const capFeeCfg = getCapacityFeeConfig();
+          // Approximate: use same capacity fee + fixed fees as cheapest tariff
+          const cheapestBreakdown = results[0]?.breakdown || {};
+          const rdnTotal = rdnData.rdn_result.annual_cost_pln +
+            (cheapestBreakdown.capacity_fee_pln || 0) +
+            (cheapestBreakdown.quality_oze_cogen_excise_pln || 0) +
+            (cheapestBreakdown.fixed_monthly_pln || 0);
+          rdnData.rdn_result.annual_cost_pln = rdnTotal;
+          rdnData.rdn_result.avg_rate_pln_kwh = rdnTotal / Math.max(totalMwh * 1000, 1);
+          data.rdn_result = rdnData.rdn_result;
+        }
+      }
+    } catch (e) { console.warn('RDN fetch failed:', e); }
+
+    console.log('📊 Full tariff comparison:', data);
+
+    renderTariffComparisonTable(data, currentTariffCost);
+    renderTariffComparisonChart(data);
+    renderRdnComparisonBox(data.rdn_result, currentTariffCost);
+
+    status.textContent = `Gotowe! ${results.length} taryf (pelny koszt: energia + dystrybucja + mocowa + OZE + stale). Zuzycie: ${totalMwh.toFixed(1)} MWh`;
+    status.style.color = '#4CAF50';
+
+  } catch (err) {
+    console.error('Tariff comparison error:', err);
+    status.textContent = `Blad: ${err.message}`;
+    status.style.color = '#f44336';
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:20px;color:#f44336;">${err.message}</td></tr>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Przelicz dla wszystkich taryf';
+  }
+}
+
+function getCurrentTariffAnnualCost() {
+  const el = document.getElementById('tariffTotalCost');
+  if (!el) return null;
+  const text = el.textContent.replace(/\s/g, '').replace(',', '.').replace('PLN', '');
+  const val = parseFloat(text);
+  return isNaN(val) ? null : val;
+}
+
+function renderTariffComparisonTable(data, currentCost) {
+  const tbody = document.getElementById('tariffComparisonTableBody');
+  if (!data.results || data.results.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center">Brak wynikow</td></tr>';
+    return;
+  }
+
+  const allResults = [...data.results];
+  if (data.rdn_result) {
+    allResults.push(data.rdn_result);
+  }
+  allResults.sort((a, b) => a.annual_cost_pln - b.annual_cost_pln);
+
+  const refCost = currentCost || allResults[0].annual_cost_pln;
+  const fmtK = (v) => formatNumberEU((v || 0) / 1000, 1); // tys. PLN
+
+  let html = '';
+  allResults.forEach((r, i) => {
+    const diff = r.annual_cost_pln - refCost;
+    const diffPct = refCost > 0 ? (diff / refCost * 100) : 0;
+    const isRdn = r.tariff_id === 'rdn_spot';
+    const isCheapest = i === 0;
+    const isMostExp = i === allResults.length - 1;
+    const bd = r.breakdown || {};
+
+    let rowStyle = '';
+    if (isCheapest) rowStyle = 'background:rgba(76,175,80,0.12);font-weight:600;';
+    else if (isMostExp) rowStyle = 'background:rgba(244,67,54,0.08);';
+    else if (isRdn) rowStyle = 'background:rgba(33,150,243,0.08);';
+
+    const diffColor = diff < -500 ? '#4CAF50' : diff > 500 ? '#f44336' : '#666';
+    const badge = isCheapest ? ' 🏆' : isMostExp ? ' ⚠️' : isRdn ? ' 💹' : '';
+
+    html += `<tr style="${rowStyle}">
+      <td style="padding:4px 6px;">${i + 1}</td>
+      <td style="padding:4px 6px;white-space:nowrap;">${r.tariff_name}${badge}</td>
+      <td style="padding:4px 6px;">${r.osd}</td>
+      <td style="padding:4px 6px;">${r.group}</td>
+      <td style="padding:4px 6px;text-align:right;">${fmtK(bd.energy_active_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;">${fmtK(bd.distribution_variable_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;">${fmtK(bd.capacity_fee_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;">${fmtK(bd.quality_oze_cogen_excise_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;">${fmtK(bd.fixed_monthly_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;font-weight:700;">${fmtK(r.annual_cost_pln)}</td>
+      <td style="padding:4px 6px;text-align:right;">${r.avg_rate_pln_kwh.toFixed(4)}</td>
+      <td style="padding:4px 6px;text-align:right;color:${diffColor};font-weight:500;">${diff > 0 ? '+' : ''}${fmtK(diff)}</td>
+      <td style="padding:4px 6px;text-align:right;color:${diffColor};">${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%</td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = html;
+}
+
+function renderTariffComparisonChart(data) {
+  const canvas = document.getElementById('tariffComparisonChart');
+  if (!canvas) return;
+
+  if (tariffCompChart) {
+    tariffCompChart.destroy();
+    tariffCompChart = null;
+  }
+
+  const items = [...data.results].sort((a, b) => a.annual_cost_pln - b.annual_cost_pln);
+  const top = items.slice(0, 20);
+  if (data.rdn_result) top.push(data.rdn_result);
+
+  const labels = top.map(r => r.tariff_name.replace(' Dystrybucja', '').replace(' Operator', ''));
+
+  tariffCompChart = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Energia czynna',
+          data: top.map(r => (r.breakdown?.energy_active_pln || 0) / 1000),
+          backgroundColor: 'rgba(255,152,0,0.7)',
+        },
+        {
+          label: 'Dystrybucja zmienna',
+          data: top.map(r => (r.breakdown?.distribution_variable_pln || 0) / 1000),
+          backgroundColor: 'rgba(33,150,243,0.7)',
+        },
+        {
+          label: 'Oplata mocowa',
+          data: top.map(r => (r.breakdown?.capacity_fee_pln || 0) / 1000),
+          backgroundColor: 'rgba(244,67,54,0.7)',
+        },
+        {
+          label: 'Jakosc+OZE+Kogen+Akcyza',
+          data: top.map(r => (r.breakdown?.quality_oze_cogen_excise_pln || 0) / 1000),
+          backgroundColor: 'rgba(156,39,176,0.5)',
+        },
+        {
+          label: 'Oplaty stale',
+          data: top.map(r => (r.breakdown?.fixed_monthly_pln || 0) / 1000),
+          backgroundColor: 'rgba(96,125,139,0.5)',
+        },
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, position: 'top', labels: { font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${formatNumberEU(ctx.raw, 1)} tys. PLN`
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          title: { display: true, text: 'Roczny koszt [tys. PLN]' },
+          ticks: { callback: v => formatNumberEU(v, 0) }
+        },
+        y: { stacked: true }
+      }
+    }
+  });
+}
+
+function renderRdnComparisonBox(rdnResult, currentCost) {
+  const box = document.getElementById('rdnComparisonBox');
+  const content = document.getElementById('rdnComparisonContent');
+  if (!box || !content) return;
+
+  if (!rdnResult) {
+    box.style.display = 'none';
+    return;
+  }
+
+  box.style.display = 'block';
+  const stats = rdnResult.zone_breakdown?.stats || {};
+  const diff = currentCost ? (rdnResult.annual_cost_pln - currentCost) : 0;
+  const diffColor = diff < -100 ? '#4CAF50' : diff > 100 ? '#f44336' : '#666';
+
+  content.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px;">
+      <div style="background:white;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#666;">Roczny koszt RDN</div>
+        <div style="font-size:20px;font-weight:700;color:#1565C0;">${formatNumberEU(rdnResult.annual_cost_pln, 0)} PLN</div>
+      </div>
+      <div style="background:white;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#666;">Sr. cena RDN</div>
+        <div style="font-size:20px;font-weight:700;">${(rdnResult.avg_rate_pln_kwh * 1000).toFixed(0)} PLN/MWh</div>
+      </div>
+      <div style="background:white;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#666;">Min / Max</div>
+        <div style="font-size:16px;font-weight:600;">${((stats.min_pln_kwh || 0) * 1000).toFixed(0)} / ${((stats.max_pln_kwh || 0) * 1000).toFixed(0)} PLN/MWh</div>
+      </div>
+      ${currentCost ? `<div style="background:white;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#666;">Roznica vs obecna taryfa</div>
+        <div style="font-size:20px;font-weight:700;color:${diffColor};">${diff > 0 ? '+' : ''}${formatNumberEU(diff, 0)} PLN</div>
+      </div>` : ''}
+    </div>
+    <div style="font-size:12px;color:#666;">
+      P25 = ${((stats.p25_pln_kwh || 0) * 1000).toFixed(0)} PLN/MWh |
+      P75 = ${((stats.p75_pln_kwh || 0) * 1000).toFixed(0)} PLN/MWh |
+      Spread P25-P75 = ${(((stats.p75_pln_kwh || 0) - (stats.p25_pln_kwh || 0)) * 1000).toFixed(0)} PLN/MWh
+    </div>
+  `;
+}
 

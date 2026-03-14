@@ -2006,6 +2006,7 @@ def dispatch_load_only(
 def run_dispatch(
     request: DispatchRequest,
     import_prices: Optional[np.ndarray] = None,
+    export_prices: Optional[np.ndarray] = None,
 ) -> DispatchResult:
     """
     Main dispatch entry point - routes to appropriate algorithm.
@@ -2017,9 +2018,11 @@ def run_dispatch(
     request : DispatchRequest
         Dispatch request with all configuration
     import_prices : np.ndarray, optional
-        Time-varying import prices [PLN/kWh] per timestep.
+        Time-varying import prices [PLN/kWh] per timestep (all-in: RDN + OSD fees).
         Required if request.arbitrage_config.enabled is True.
-        Should be fetched from price_engine before calling this function.
+    export_prices : np.ndarray, optional
+        Time-varying export prices [PLN/kWh] per timestep (raw RDN: prosumer sell price).
+        If provided, used as sell_price in LP. If None, falls back to buy_price * 0.95.
 
     Returns:
     --------
@@ -2053,7 +2056,7 @@ def run_dispatch(
             )
 
     # === LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy) ===
-    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_price_arrays
+    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_buy_sell_for_dispatch
     import logging as _logging
     _lp_logger = _logging.getLogger("lp_dispatch")
 
@@ -2064,13 +2067,18 @@ def run_dispatch(
     if request.mode == DispatchMode.STACKED and request.stacked_params:
         lp_peak_limit = request.stacked_params.peak_limit_kw
 
-    # Resolve price arrays for LP
-    buy_price_arr = import_prices  # May be None (flat pricing)
-    sell_price_arr = None
-    if buy_price_arr is None:
-        buy_price_arr, sell_price_arr = resolve_price_arrays(request.prices, len(load))
-    else:
-        _, sell_price_arr = resolve_price_arrays(request.prices, len(load))
+    # Resolve price arrays for LP (unified: dispatch + sizing use same logic)
+    buy_price_arr, sell_price_arr = resolve_buy_sell_for_dispatch(
+        prices=request.prices,
+        n_steps=len(load),
+        import_prices=import_prices,
+        export_prices=export_prices,
+        arbitrage_config=getattr(request, 'arbitrage_config', None),
+    )
+
+    # Resolve allow_grid_charging from arbitrage config
+    _arb_cfg_lp = getattr(request, 'arbitrage_config', None)
+    lp_allow_grid_charging = getattr(_arb_cfg_lp, 'allow_grid_charging', True) if _arb_cfg_lp else True
 
     # Check if capacity fee optimization is enabled
     use_cap_fee_opt = (
@@ -2086,7 +2094,13 @@ def run_dispatch(
         except Exception:
             from economics_helper import build_time_index_cet_fixed
             from datetime import date
-            start = getattr(request, 'start_date', None) or date(2025, 1, 1)
+            raw_start = getattr(request, 'start_date', None)
+            if isinstance(raw_start, str):
+                start = date.fromisoformat(raw_start)
+            elif isinstance(raw_start, date):
+                start = raw_start
+            else:
+                start = date(2025, 1, 1)
             time_index = build_time_index_cet_fixed(start, len(load), int(dt_hours * 60))
 
         from capacity_fee_pl.models import CapacityFeeConfig
@@ -2108,6 +2122,7 @@ def run_dispatch(
             sell_price_override=sell_price_arr,
             time_index=time_index,
             capacity_fee_config=cap_config,
+            allow_grid_charging=lp_allow_grid_charging,
         )
     else:
         result = dispatch_lp(
@@ -2122,6 +2137,7 @@ def run_dispatch(
             return_hourly=True,
             buy_price_override=buy_price_arr,
             sell_price_override=sell_price_arr,
+            allow_grid_charging=lp_allow_grid_charging,
         )
 
     # Post-processing: degradation budget + grid constraints

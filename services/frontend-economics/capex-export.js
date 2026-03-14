@@ -380,8 +380,10 @@ async function exportCapexToExcel(withFormulas = false) {
   const effectiveEnergyPrice = isRdn ? rdnEffectivePrice : totalEnergyPrice;
   const baseAutoconsumptionMwh = centralizedCalc.common.selfConsumedMwh || (variant.self_consumed || 0) / 1000;
 
-  // Degradation rates
-  const pvDegradationYear1 = (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 2.0) / 100;
+  // Degradation rates — LID already in profile when precise data available
+  const hasPreciseBaseCapex = !!(window.preciseAnnualSavings?.energy?.self_consumed_mwh);
+  const pvDegradationYear1 = hasPreciseBaseCapex
+    ? 0 : (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0) / 100;
   const pvDegradationYears2Plus = params.degradation_rate;
   const bessDegradationRate = (systemSettings?.bessDegradationRate !== undefined ? systemSettings.bessDegradationRate : 2.5) / 100;
 
@@ -1374,14 +1376,22 @@ async function exportCapexToExcel(withFormulas = false) {
 
       const cell = sheet3.getCell(cfoRow, 3 + i);
       if (withFormulas) {
-        const A = "'Dane bazowe TCSL (Rok 1)'!";
         const colLetter = _col(3 + i);
         const yieldRef = `${colLetter}$${matrixHeaderRow}`;
         const priceRef = `$B${cfoRow}`;
         const bRange = `${s2}$B$${dataStartRow}:$B$${lastDataRow}`;
         const cRange = `${s2}$C$${dataStartRow}:$C$${lastDataRow}`;
         const kRange = `${s2}$K$${dataStartRow}:$K$${lastDataRow}`;
-        const formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s2}$F$4, ${bRange}))\n- ${s2}$F$10`;
+        const iRange = `${s2}$I$${dataStartRow}:$I$${lastDataRow}`;
+        let formula;
+        if (isRdn) {
+          // RDN mode: uses TCSL audit sheet (F18=variable energy savings, F21=capacity fee savings)
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s2}$F$4, ${bRange}))\n- ${s2}$F$10`;
+        } else {
+          // Non-RDN: uses Suma Auto (col I) * energy price ($F$12) with CPI
+          formula = `SUMPRODUCT(\n  (${iRange} * ${s2}$F$12\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s2}$F$4, ${bRange}))\n- ${s2}$F$10`;
+        }
         cell.value = { formula, result: roundNum(adjNpv, 0) };
         cell.note = `-- NPV CAPEX przy yield ${yieldRef} i cena ${priceRef}`;
       } else {
@@ -2655,14 +2665,20 @@ async function exportCapexToExcel(withFormulas = false) {
 
       const cell = sheet6.getCell(cfoRowEng, 3 + i);
       if (withFormulas) {
-        const A = "'Dane bazowe TCSL (Rok 1)'!";
         const colLetter = _col(3 + i);
         const yieldRef = `${colLetter}$${matrixHeaderRowEng}`;
         const priceRef = `$B${cfoRowEng}`;
         const bRange = `${s5}$B$${dataStartRow}:$B$${lastDataRow}`;
         const cRange = `${s5}$C$${dataStartRow}:$C$${lastDataRow}`;
         const kRange = `${s5}$K$${dataStartRow}:$K$${lastDataRow}`;
-        const formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s5}$F$4, ${bRange}))\n- ${s5}$F$10`;
+        const iRange = `${s5}$I$${dataStartRow}:$I$${lastDataRow}`;
+        let formula;
+        if (isRdn) {
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s5}$F$4, ${bRange}))\n- ${s5}$F$10`;
+        } else {
+          formula = `SUMPRODUCT(\n  (${iRange} * ${s5}$F$12\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s5}$F$4, ${bRange}))\n- ${s5}$F$10`;
+        }
         cell.value = { formula, result: roundNum(adjNpv, 0) };
         cell.note = `-- NPV CAPEX at yield ${yieldRef} & price ${priceRef}`;
       } else {

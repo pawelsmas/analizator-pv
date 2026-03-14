@@ -7,6 +7,8 @@ RUN apk add --no-cache curl
 COPY index.html /usr/share/nginx/html/
 COPY styles.css /usr/share/nginx/html/
 COPY api.js /usr/share/nginx/html/
+COPY price_config.js /usr/share/nginx/html/
+COPY bess_request_builder.js /usr/share/nginx/html/
 COPY shell.js /usr/share/nginx/html/
 COPY logo.png /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf

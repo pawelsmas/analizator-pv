@@ -593,14 +593,26 @@ window.addEventListener('message', (event) => {
     handleSharedData(data);
   }
 
-  // Shell sends SETTINGS_UPDATED
+  // Shell sends SETTINGS_UPDATED (may include priceConfig)
   if (type === 'SETTINGS_UPDATED') {
     console.log('📥 Received SETTINGS_UPDATED from shell:', data);
     systemSettings = data;
     window.systemSettings = data;
+    // Cache priceConfig if included
+    if (event.data.priceConfig) {
+      window._cachedPriceConfig = event.data.priceConfig;
+    }
     // Sync ancillary checkboxes in BESS panel with central settings
     syncAncillaryCheckboxes(data);
     updateDisplay();
+  }
+
+  // Shell sends PRICE_CONFIG_UPDATED (e.g. after RDN prices change)
+  if (type === 'PRICE_CONFIG_UPDATED') {
+    console.log('📥 Received PRICE_CONFIG_UPDATED from shell');
+    if (event.data.priceConfig) {
+      window._cachedPriceConfig = event.data.priceConfig;
+    }
   }
 
   // Handle variant changes from other modules (via shell broadcast)
@@ -3998,8 +4010,67 @@ function displaySizingVariants(sizingResult) {
   // Show section
   section.style.display = 'block';
 
+  // =========================================================================
+  // PRICING SOURCE INDICATOR - shows where prices come from
+  // =========================================================================
+  let pricingInfoHtml = '';
+  try {
+    const parentWindow = window.parent !== window ? window.parent : window;
+    const pc = parentWindow.sharedData?.priceConfig || window._cachedPriceConfig;
+    if (pc) {
+      const src = [];
+      // Energy source
+      if (pc.pricingMode === 'hybrid_monthly' && pc.monthlyPriceSources) {
+        const rdnMonths = Object.entries(pc.monthlyPriceSources).filter(([,v]) => v === 'rdn').map(([k]) => k);
+        const osdMonths = Object.entries(pc.monthlyPriceSources).filter(([,v]) => v !== 'rdn').map(([k]) => k);
+        src.push(`<span style="color:#ff9800">Hybrid</span>: OSD mies. ${osdMonths.join(',')} / RDN mies. ${rdnMonths.join(',')}`);
+      } else {
+        src.push(`Taryfa: <strong>${pc.tariffConfig?.name || '?'}</strong> (${pc.tariffType || '?'})`);
+        src.push(`Energia aktywna avg: <strong>${pc.energyActiveAvgPlnMwh?.toFixed(0) || '?'} PLN/MWh</strong>`);
+      }
+      src.push(`Cena calkowita: <strong>${pc.totalEnergyPricePlnMwh?.toFixed(0) || '?'} PLN/MWh</strong>`);
+
+      // Arbitrage source
+      const arbParts = [];
+      if (pc.osdEnabled) arbParts.push(`<span style="color:#4CAF50">OSD ToU</span> (${pc.arbitrageConfig?.tariff_id || '?'})`);
+      if (pc.rdnEnabled) {
+        if (pc.rdnPrices?.available) {
+          const avg = pc.rdnPrices.percentiles?.avg;
+          arbParts.push(`<span style="color:#2196F3">RDN Spot</span> (${pc.rdnPrices.dataPoints} h, avg ${avg?.toFixed(0) || '?'} PLN/MWh)`);
+        } else {
+          arbParts.push(`<span style="color:#f44336">RDN Spot (BRAK DANYCH!)</span>`);
+        }
+      }
+      if (arbParts.length === 0) arbParts.push('<span style="color:#999">wylaczony</span>');
+
+      // Warnings
+      const warnHtml = (pc.warnings || []).map(w =>
+        `<div style="color:#f44336;font-size:11px;margin-top:2px">⚠ ${w}</div>`
+      ).join('');
+
+      pricingInfoHtml = `
+        <div id="pricingSourceIndicator" style="background:rgba(33,150,243,0.08);border:1px solid rgba(33,150,243,0.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;line-height:1.6;">
+          <div style="font-weight:700;color:#1565C0;margin-bottom:4px;font-size:13px;">📊 Zrodlo cen (z Ustawien)</div>
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;">
+            <span style="color:#666;">PV + BESS autokonsumpcja:</span>
+            <span>${src.join(' | ')}</span>
+            <span style="color:#666;">BESS arbitraz:</span>
+            <span>${arbParts.join(' + ')}</span>
+            <span style="color:#666;">Oplata mocowa SOM:</span>
+            <span><strong>${pc.capacityFeeConfig?.somRate?.toFixed(4) || '?'} PLN/kWh</strong> (${pc.capacityFeeConfig?.qualificationPeriod || '?'})</span>
+            <span style="color:#666;">Oplata za moc umowna:</span>
+            <span><strong>${pc.fixedMonthlyFees?.demandChargePerKwMonth?.toFixed(0) || '?'} PLN/kW/mies.</strong></span>
+          </div>
+          ${warnHtml}
+        </div>
+      `;
+    }
+  } catch (e) {
+    console.warn('[BESS] Failed to build pricing source indicator:', e);
+  }
+
   // Build HTML for variants
-  let html = '';
+  let html = pricingInfoHtml;
 
   for (const v of sizingResult.variants) {
     const isRecommended = v.is_recommended;
@@ -4054,7 +4125,7 @@ function displaySizingVariants(sizingResult) {
             ` : ''}
             ${v.savings_breakdown.arbitrage_savings_pln > 0 ? `
             <div class="breakdown-row">
-              <span class="breakdown-label">🕐 Arbitraż ToU</span>
+              <span class="breakdown-label">🕐 ${parseInt((window.sharedData?.settings?.bessScenarioId) || '0', 10) === 9 ? 'Przesunięcie PV (arbitraż RDN)' : 'Arbitraż ToU'}</span>
               <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.arbitrage_savings_pln, 0)} PLN</span>
             </div>
             ` : ''}
@@ -4089,7 +4160,7 @@ function displaySizingVariants(sizingResult) {
           ${v.prices_summary ? `
           <div class="prices-info-section">
             ${v.prices_summary.baseline ? `
-            <!-- ToU pricing breakdown -->
+            <!-- Pricing breakdown — uses annual_savings_pln from dispatch (SSoT) -->
             <div class="tou-breakdown">
               <div class="tou-row baseline">
                 <span class="tou-label">Baseline (PV-only):</span>
@@ -4097,18 +4168,12 @@ function displaySizingVariants(sizingResult) {
               </div>
               <div class="tou-row project">
                 <span class="tou-label">Projekt (PV+BESS):</span>
-                <span class="tou-value">${formatNumberEU(v.prices_summary.project.total_cost_pln / 1000, 1)} tys. PLN/rok</span>
+                <span class="tou-value">${formatNumberEU((v.prices_summary.baseline.total_cost_pln - v.annual_savings_pln) / 1000, 1)} tys. PLN/rok</span>
               </div>
               <div class="tou-row savings">
-                <span class="tou-label">Oszczędność całkowita:</span>
-                <span class="tou-value positive">${formatNumberEU(v.prices_summary.savings.total_savings_pln / 1000, 1)} tys. PLN/rok</span>
+                <span class="tou-label">Oszczędność z BESS:</span>
+                <span class="tou-value positive">${formatNumberEU(v.annual_savings_pln / 1000, 1)} tys. PLN/rok</span>
               </div>
-              ${v.prices_summary.config?.tariff_id ? `
-              <div class="tou-row config">
-                <span class="tou-label">Taryfa:</span>
-                <span class="tou-value">${v.prices_summary.config.tariff_id}</span>
-              </div>
-              ` : ''}
             </div>
             ` : `
             <!-- Legacy flat pricing display -->
@@ -4782,21 +4847,38 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
           discharge_above_percentile: arbitrageConfig.discharge_above_percentile,
           arbitrage_soc_min: arbitrageConfig.arbitrage_soc_min,
         };
-        // Pass RDN hourly prices if available (from Ceny RDN widget)
+        // Pass all-in import prices + raw RDN export prices (from price_config.js)
         if (arbitrageConfig.hourly_prices_pln_mwh && arbitrageConfig.hourly_prices_pln_mwh.length > 100) {
           overrides.arbitrage_config.hourly_prices_pln_mwh = arbitrageConfig.hourly_prices_pln_mwh;
-          console.log(`[BESS] Passing ${arbitrageConfig.hourly_prices_pln_mwh.length} RDN hourly prices to backend`);
+          // Export prices = raw RDN (prosumer sell price, without OSD fees)
+          if (arbitrageConfig.hourly_export_prices_pln_mwh && arbitrageConfig.hourly_export_prices_pln_mwh.length > 100) {
+            overrides.arbitrage_config.hourly_export_prices_pln_mwh = arbitrageConfig.hourly_export_prices_pln_mwh;
+            console.log(`[BESS] All-in import: ${arbitrageConfig.hourly_prices_pln_mwh.length} prices, ` +
+              `raw RDN export: ${arbitrageConfig.hourly_export_prices_pln_mwh.length} prices`);
+          } else {
+            console.log(`[BESS] Passing ${arbitrageConfig.hourly_prices_pln_mwh.length} import prices (no explicit export prices)`);
+          }
         }
-        // Force stacked mode when arbitrage is enabled
-        overrides.mode = 'stacked';
-        // Calculate P95 peak limit from load for stacked mode (backend requires peak_limit_kw)
-        const sortedLoad = [...loadData].sort((a, b) => b - a);
-        const p95Index = Math.floor(loadData.length * 0.05);
-        const p95Load = sortedLoad[p95Index] || sortedLoad[0];
-        overrides.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        // Determine mode based on scenario
+        const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
+        if (scenarioId === 9) {
+          // Scenario 9 (PV + RDN): PV surplus arbitrage — BESS charges ONLY from PV.
+          // Arbitrage = store PV when RDN price low, discharge when RDN price high.
+          // Grid charging is BANNED — battery never buys from grid.
+          overrides.mode = 'pv_surplus';
+          overrides.arbitrage_config.allow_grid_charging = false;
+          console.log('📈 Scenario 9 (PV+RDN): pv_surplus mode, grid charging DISABLED');
+        } else {
+          // Other arbitrage scenarios: stacked (peak shaving + arbitrage)
+          overrides.mode = 'stacked';
+          const sortedLoad = [...loadData].sort((a, b) => b - a);
+          const p95Index = Math.floor(loadData.length * 0.05);
+          const p95Load = sortedLoad[p95Index] || sortedLoad[0];
+          overrides.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        }
         overrides.reserve_fraction = bessConfig.reserve_fraction || 0.3;
         overrides.start_date = arbitrageConfig.start_date;
-        console.log('⚡ Arbitrage enabled for sizing (forcing stacked mode):', {
+        console.log(`⚡ Arbitrage enabled for sizing (mode=${overrides.mode || 'default'}):`, {
           ...arbitrageConfig,
           peak_limit_kw: overrides.peak_limit_kw,
         });
@@ -4901,18 +4983,27 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
         // Pass RDN hourly prices if available (from Ceny RDN widget)
         if (arbitrageConfig.hourly_prices_pln_mwh && arbitrageConfig.hourly_prices_pln_mwh.length > 100) {
           requestBody.arbitrage_config.hourly_prices_pln_mwh = arbitrageConfig.hourly_prices_pln_mwh;
+          if (arbitrageConfig.hourly_export_prices_pln_mwh && arbitrageConfig.hourly_export_prices_pln_mwh.length > 100) {
+            requestBody.arbitrage_config.hourly_export_prices_pln_mwh = arbitrageConfig.hourly_export_prices_pln_mwh;
+          }
           console.log(`📊 Passing ${arbitrageConfig.hourly_prices_pln_mwh.length} RDN hourly prices to sizing request`);
         }
         requestBody.start_date = arbitrageConfig.start_date;
-        // Force stacked mode when arbitrage is enabled (arbitrage is 3rd priority after peak shaving and PV shifting)
-        requestBody.mode = 'stacked';
-        // Calculate P95 peak limit from load for stacked mode (backend requires peak_limit_kw)
-        const sortedLoad = [...loadData].sort((a, b) => b - a);
-        const p95Index = Math.floor(loadData.length * 0.05);
-        const p95Load = sortedLoad[p95Index] || sortedLoad[0];
-        requestBody.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        // Determine mode based on scenario
+        const scenarioId2 = parseInt(settings.bessScenarioId || '0', 10);
+        if (scenarioId2 === 9) {
+          // Scenario 9 (PV + RDN): PV surplus arbitrage — grid charging BANNED
+          requestBody.mode = 'pv_surplus';
+          requestBody.arbitrage_config.allow_grid_charging = false;
+        } else {
+          requestBody.mode = 'stacked';
+          const sortedLoad = [...loadData].sort((a, b) => b - a);
+          const p95Index = Math.floor(loadData.length * 0.05);
+          const p95Load = sortedLoad[p95Index] || sortedLoad[0];
+          requestBody.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
+        }
         requestBody.reserve_fraction = bessConfig.reserve_fraction || 0.3;
-        console.log('⚡ Arbitrage enabled for sizing (forcing stacked mode):', {
+        console.log(`⚡ Arbitrage enabled for sizing (mode=${requestBody.mode || 'default'}):`, {
           ...arbitrageConfig,
           peak_limit_kw: requestBody.peak_limit_kw,
         });
@@ -5196,7 +5287,8 @@ async function tryFetchSizingVariantsWithSettings(variant) {
   // Determine stacked mode: peak shaving, arbitrage, or scenario 2/3/5/8 (all use stacked)
   const hasPeakShaving = settings.bessPeakShavingEnabled || [2, 3, 5, 8].includes(settings.bessScenarioId);
   const hasArbitrage = settings.bessOsdArbitrageEnabled || settings.bessPriceArbitrageEnabled;
-  const settingsDispatchMode = variant?.dispatch_metadata?.dispatch_mode || ((hasPeakShaving || hasArbitrage) ? 'stacked' : 'pv_surplus');
+  const isScenario9 = parseInt(settings.bessScenarioId || '0', 10) === 9;
+  const settingsDispatchMode = variant?.dispatch_metadata?.dispatch_mode || (isScenario9 ? 'pv_surplus' : ((hasPeakShaving || hasArbitrage) ? 'stacked' : 'pv_surplus'));
   const isSettingsStacked = settingsDispatchMode === 'stacked' || settingsDispatchMode === 'load_only' || hasPeakShaving || hasArbitrage;
   const bessConfig = {
     enabled: true,
@@ -5956,118 +6048,45 @@ function updateSizingConstraint(field, value) {
 // Arbitrage configuration is now in Settings module (USTAWIENIA > BESS Advanced Features)
 
 /**
- * v3.15: Collect arbitrage configuration from systemSettings (Settings module)
- * Returns OSD tariff arbitrage config if enabled, or RDN arbitrage config, or null
+ * v4.0: Collect arbitrage configuration from centralized PriceConfig.
+ * Delegates to shell's buildPriceConfig() for Single Source of Truth.
+ * Returns arbitrageConfig ready for backend API, or null if disabled.
  */
 function collectArbitrageConfig() {
-  const settings = window.systemSettings || systemSettings || {};
-  const year = new Date().getFullYear();
-  const osdEnabled = settings.bessOsdArbitrageEnabled;
-  const rdnEnabled = settings.bessPriceArbitrageEnabled;
+  // Try centralized price config from shell (preferred)
+  const parentWindow = window.parent !== window ? window.parent : window;
+  let priceConfig = parentWindow.sharedData?.priceConfig;
 
-  if (!osdEnabled && !rdnEnabled) return null;
-
-  // Build OSD config
-  let osdConfig = null;
-  if (osdEnabled) {
-    const operator = settings.bessOsdOperator || 'pge';
-    const group = settings.bessOsdTariffGroup || 'C12a';
-    const operatorMap = { 'pge': 'pge', 'tauron': 'tauron', 'energa': 'energa', 'enea': 'enea', 'innogy': 'stoen' };
-    const tariffId = `${operatorMap[operator] || operator}_${group.toLowerCase()}_${year}`;
-    osdConfig = {
-      type: 'osd_tariff',
-      tariff_id: tariffId,
-      strategy: 'zone_based',
-      peak_rate_pln_kwh: settings.bessOsdPeakRate || 0.75,
-      offpeak_rate_pln_kwh: settings.bessOsdOffPeakRate || 0.45,
-      min_spread_pln_kwh: settings.bessOsdMinSpread || 0.15,
-      charge_below_percentile: 25,
-      discharge_above_percentile: 75,
-      arbitrage_soc_min: 0.20,
-      start_date: `${year}-01-01`,
-    };
-    console.log('⚡ OSD Tariff Arbitrage enabled:', { operator, group, tariffId });
+  // Fallback: build locally if shell priceConfig not available
+  if (!priceConfig && parentWindow.buildPriceConfig) {
+    const settings = window.systemSettings || systemSettings || {};
+    priceConfig = parentWindow.buildPriceConfig(settings);
+  } else if (!priceConfig && window.buildPriceConfig) {
+    const settings = window.systemSettings || systemSettings || {};
+    priceConfig = window.buildPriceConfig(settings);
   }
 
-  // Build RDN config - uses hourly prices from "Ceny RDN" widget (localStorage)
-  let rdnConfig = null;
-  if (rdnEnabled) {
-    let hourlyPrices = null;
-    let rdnInfo = null;
-    try {
-      const cached = localStorage.getItem('rdn_hourly_prices');
-      const info = localStorage.getItem('rdn_scenario_info');
-      if (cached) hourlyPrices = JSON.parse(cached);
-      if (info) rdnInfo = JSON.parse(info);
-    } catch (e) { /* ignore */ }
-
-    if (!hourlyPrices || hourlyPrices.length < 8000) {
-      console.warn('💹 RDN Arbitrage enabled but no hourly prices from Ceny RDN widget');
-    }
-
-    // Calculate percentile thresholds from actual prices
-    let buyThreshold = 300, sellThreshold = 600;
-    if (hourlyPrices && hourlyPrices.length > 0) {
-      const sorted = [...hourlyPrices].filter(p => p != null).sort((a, b) => a - b);
-      buyThreshold = sorted[Math.floor(sorted.length * 0.25)] || 300;  // P25
-      sellThreshold = sorted[Math.floor(sorted.length * 0.75)] || 600; // P75
-    }
-
-    rdnConfig = {
-      type: 'rdn_spot',
-      tariff_id: 'rdn_spot_' + (rdnInfo?.year || year),
-      strategy: 'percentile',
-      price_source: 'rdn_widget',
-      hourly_prices_pln_mwh: hourlyPrices,  // 8760h prices from Ceny RDN widget
-      buy_threshold_pln_mwh: buyThreshold,
-      sell_threshold_pln_mwh: sellThreshold,
-      min_spread_pln_mwh: Math.max(50, (sellThreshold - buyThreshold) * 0.3),
-      charge_below_percentile: 25,
-      discharge_above_percentile: 75,
-      arbitrage_soc_min: 0.20,
-      start_date: `${rdnInfo?.year || year}-01-01`,
-    };
-    console.log('💹 RDN Arbitrage using Ceny RDN widget:', {
-      dataPoints: hourlyPrices?.length || 0,
-      avgPrice: rdnInfo?.avgPrice?.toFixed(0),
-      buyP25: buyThreshold.toFixed(0),
-      sellP75: sellThreshold.toFixed(0),
-    });
+  if (!priceConfig) {
+    console.warn('[BESS] PriceConfig not available - cannot build arbitrage config');
+    return null;
   }
 
-  // Check for hybrid monthly pricing mode
-  const pricingMode = settings.pricingMode || 'single';
-  const monthlyPriceSources = settings.monthlyPriceSources || null;
-
-  if (pricingMode === 'hybrid_monthly' && monthlyPriceSources && osdConfig && rdnConfig) {
-    // Hybrid mode: both OSD and RDN configs needed, with per-month source mapping
-    console.log('🔀 Hybrid monthly pricing:', monthlyPriceSources);
-    return {
-      enabled: true,
-      ...osdConfig,  // Base config uses OSD tariff for OSD months
-      // RDN prices for RDN months
-      hourly_prices_pln_mwh: rdnConfig.hourly_prices_pln_mwh,
-      // Per-month source selection
-      monthly_price_sources: monthlyPriceSources,
-      // Flags
-      osd_enabled: true,
-      rdn_enabled: true,
-      pricing_mode: 'hybrid_monthly',
-    };
+  // Log warnings from price config
+  if (priceConfig.warnings?.length > 0) {
+    priceConfig.warnings.forEach(w => console.warn('[BESS] PriceConfig warning:', w));
   }
 
-  // Primary config = OSD (predictable zones) takes priority for LP dispatch
-  // Secondary config attached for reporting/comparison
-  const primary = osdConfig || rdnConfig;
-  return {
-    enabled: true,
-    ...primary,
-    // Flag both types for UI display
-    osd_enabled: osdEnabled,
-    rdn_enabled: rdnEnabled,
-    // Attach secondary config if both enabled
-    secondary_arbitrage: (osdEnabled && rdnEnabled) ? rdnConfig : null,
-  };
+  console.log('[BESS] Using centralized PriceConfig:', {
+    osdEnabled: priceConfig.osdEnabled,
+    rdnEnabled: priceConfig.rdnEnabled,
+    rdnAvailable: priceConfig.rdnPrices?.available,
+    rdnPoints: priceConfig.rdnPrices?.dataPoints,
+    pricingMode: priceConfig.pricingMode,
+    tariffId: priceConfig.arbitrageConfig?.tariff_id,
+    totalEnergy: priceConfig.totalEnergyPricePlnMwh?.toFixed(0) + ' PLN/MWh',
+  });
+
+  return priceConfig.arbitrageConfig;  // null if neither OSD nor RDN enabled
 }
 
 /**
@@ -6270,10 +6289,13 @@ function buildPriceConfig(settings) {
 
     console.log('📊 ToU pricing enabled:', { tariffId, operator, group, year });
 
+    // capacity_fee_method: 'dynamic' only if user enabled capacity fee overlay
+    const capFeeMethod = settings.bessCapacityFeeOverlay ? 'dynamic' : 'none';
+
     return {
       tariff_id: tariffId,
       other_fees_pln_mwh: settings.totalFixedCharges || 451,  // Suma opłat stałych (OSD, OZE, kog, jakość, mocowa, akcyza)
-      capacity_fee_method: settings.bessCapacityFeeMethod || 'dynamic',
+      capacity_fee_method: capFeeMethod,
       capacity_fee_som_pln_kwh: settings.bessCapacityFeeSom || 0.2194,
       analysis_year: year,
       // Keep legacy fields for compatibility
@@ -6295,10 +6317,12 @@ function buildPriceConfig(settings) {
 
     console.log('📊 ToU pricing from tariffConfig:', { tariffId, type: settings.tariffConfig.type });
 
+    const capFeeMethod2 = settings.bessCapacityFeeOverlay ? 'dynamic' : 'none';
+
     return {
       tariff_id: tariffId,
       other_fees_pln_mwh: settings.totalFixedCharges || 451,  // Suma opłat stałych
-      capacity_fee_method: 'dynamic',
+      capacity_fee_method: capFeeMethod2,
       capacity_fee_som_pln_kwh: 0.2194,
       analysis_year: year,
       import_price_pln_mwh: settings.energyPurchasePrice || 800,
@@ -11686,7 +11710,7 @@ function syncAncillaryCheckboxes(settings) {
 function showAncillarySection(show) {
   // Respect central settings — only show if ancillary is enabled there
   const cs = window.systemSettings || {};
-  const ancEnabled = cs.ancillaryServicesEnabled ?? true; // default true if no settings yet
+  const ancEnabled = cs.ancillaryServicesEnabled ?? false;
   const section = document.getElementById('ancillarySection');
   if (section) section.style.display = (show && ancEnabled) ? 'block' : 'none';
 }
@@ -11697,6 +11721,18 @@ function showAncillarySection(show) {
 function getAncillaryConfig() {
   // Read from central settings (frontend-settings) if available, else local checkboxes
   const cs = window.systemSettings || {};
+
+  // Master switch — if explicitly disabled in settings, ancillary is OFF
+  const masterEnabled = cs.ancillaryServicesEnabled ?? false;
+  if (!masterEnabled) {
+    return {
+      services: ['peak_shaving', 'energy_arbitrage'],
+      aggregator_margin_pct: 20,
+      market_year: cs.ancillaryMarketYear || 2026,
+      ancillary_enabled: false,
+    };
+  }
+
   const services = [];
 
   const afrrUp = cs.ancSvcAfrrUp ?? document.getElementById('ancSvcAfrrUp')?.checked ?? false;
@@ -12033,4 +12069,182 @@ window.runAncillaryOptimization = runAncillaryOptimization;
 window.updateAncillaryConfig = updateAncillaryConfig;
 window.showAncillarySection = showAncillarySection;
 
-console.log('[BESS] bess.js v3.35 - v3.7.0 Project Scoping + v2.0 Ancillary Services');
+// =============================================================================
+// ARBITRAGE RANKING — compare tariffs for BESS arbitrage potential
+// =============================================================================
+
+let arbRankingChart = null;
+
+async function runArbitrageRanking() {
+  const btn = document.getElementById('btnArbRanking');
+  const status = document.getElementById('arbRankStatus');
+  const tbody = document.getElementById('arbRankingTableBody');
+
+  const powerKw = parseFloat(document.getElementById('arbRankPowerKw')?.value || 200);
+  const energyKwh = parseFloat(document.getElementById('arbRankEnergyKwh')?.value || 400);
+  const effPct = parseFloat(document.getElementById('arbRankEfficiency')?.value || 90);
+  const year = document.getElementById('arbRankYear')?.value || '2025';
+  const startDate = `${year}-01-01`;
+
+  // Get load profile from current data
+  const loadKw = window.lastSizingData?.load_kw || window.lastLoadProfile || [];
+  if (loadKw.length === 0) {
+    // Generate a dummy 8760 flat load if none loaded
+    for (let i = 0; i < 8760; i++) loadKw.push(300);
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Obliczam...';
+  status.textContent = 'Wysylanie...';
+  status.style.color = '#2196F3';
+
+  try {
+    const response = await fetch(`${BESS_API_CONFIG.baseUrl}/bess-arbitrage-ranking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        load_kw: loadKw,
+        battery_power_kw: powerKw,
+        battery_energy_kwh: energyKwh,
+        roundtrip_efficiency: effPct / 100,
+        start_date: startDate,
+        interval_minutes: 60,
+      }),
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    console.log('[BESS] Arbitrage ranking:', data);
+
+    renderArbRankingTable(data);
+    renderArbRankingChart(data);
+
+    status.textContent = `Gotowe! ${data.results.length} taryf. Najlepsza: ${data.best_tariff || 'brak'}`;
+    status.style.color = '#4CAF50';
+  } catch (err) {
+    console.error('Arbitrage ranking error:', err);
+    status.textContent = `Blad: ${err.message}`;
+    status.style.color = '#f44336';
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#f44336;">${err.message}</td></tr>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Przelicz ranking';
+  }
+}
+
+function renderArbRankingTable(data) {
+  const tbody = document.getElementById('arbRankingTableBody');
+  const allResults = [...data.results];
+  if (data.rdn_result) allResults.push(data.rdn_result);
+  allResults.sort((a, b) => b.estimated_annual_arbitrage_pln - a.estimated_annual_arbitrage_pln);
+
+  if (allResults.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;">Brak wynikow</td></tr>';
+    return;
+  }
+
+  const fmtNum = (v, d = 0) => v.toLocaleString('pl-PL', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  let html = '';
+  allResults.forEach((r, i) => {
+    const isRdn = r.tariff_id === 'rdn_spot';
+    const isBest = i === 0 && r.estimated_annual_arbitrage_pln > 0;
+    const isFlat = r.price_spread_pln_kwh < 0.001;
+
+    let rowBg = '';
+    if (isBest) rowBg = 'background:rgba(76,175,80,0.12);font-weight:600;';
+    else if (isRdn) rowBg = 'background:rgba(33,150,243,0.08);';
+    else if (isFlat) rowBg = 'background:rgba(0,0,0,0.03);color:#999;';
+
+    const badge = isBest ? ' 🏆' : isRdn ? ' 💹' : isFlat ? ' (flat)' : '';
+
+    html += `<tr style="${rowBg}">
+      <td style="padding:6px 8px;text-align:center;">${i + 1}</td>
+      <td style="padding:6px 8px;white-space:nowrap;">${r.tariff_name}${badge}</td>
+      <td style="padding:6px 8px;text-align:center;">${r.osd}</td>
+      <td style="padding:6px 8px;text-align:center;">${r.group}</td>
+      <td style="padding:6px 8px;text-align:right;">${r.price_spread_pln_kwh.toFixed(4)}</td>
+      <td style="padding:6px 8px;text-align:right;">${r.peak_rate_pln_kwh.toFixed(4)}</td>
+      <td style="padding:6px 8px;text-align:right;">${r.offpeak_rate_pln_kwh.toFixed(4)}</td>
+      <td style="padding:6px 8px;text-align:right;">${r.cycles_per_year}</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:600;color:${r.estimated_annual_arbitrage_pln > 0 ? '#4CAF50' : '#999'};">
+        ${fmtNum(r.estimated_annual_arbitrage_pln)}
+      </td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = html;
+}
+
+function renderArbRankingChart(data) {
+  const canvas = document.getElementById('arbRankingChart');
+  if (!canvas) return;
+
+  if (arbRankingChart) {
+    arbRankingChart.destroy();
+    arbRankingChart = null;
+  }
+
+  const allResults = [...data.results];
+  if (data.rdn_result) allResults.push(data.rdn_result);
+  // Sort descending by arbitrage and take top 15
+  allResults.sort((a, b) => b.estimated_annual_arbitrage_pln - a.estimated_annual_arbitrage_pln);
+  const top = allResults.filter(r => r.estimated_annual_arbitrage_pln > 0).slice(0, 15);
+
+  if (top.length === 0) return;
+
+  const labels = top.map(r => r.tariff_name.replace(' Dystrybucja', '').replace(' Operator', ''));
+  const values = top.map(r => r.estimated_annual_arbitrage_pln);
+  const spreads = top.map(r => r.price_spread_pln_kwh * 1000); // PLN/MWh
+  const colors = top.map(r => {
+    if (r.tariff_id === 'rdn_spot') return 'rgba(33,150,243,0.7)';
+    if (r.group === 'C12b') return 'rgba(156,39,176,0.65)';
+    return 'rgba(255,152,0,0.65)';
+  });
+
+  arbRankingChart = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Szacunkowy zarobek roczny [PLN]',
+        data: values,
+        backgroundColor: colors,
+        borderColor: colors.map(c => c.replace(/0\.\d+\)/, '1)')),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const r = top[ctx.dataIndex];
+              return [
+                `Zarobek: ${ctx.raw.toLocaleString('pl-PL')} PLN/rok`,
+                `Spread: ${(r.price_spread_pln_kwh * 1000).toFixed(0)} PLN/MWh`,
+                `Peak: ${(r.peak_rate_pln_kwh * 1000).toFixed(0)} / OffPeak: ${(r.offpeak_rate_pln_kwh * 1000).toFixed(0)} PLN/MWh`,
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Roczny zarobek z arbitrazu [PLN]' },
+          ticks: {
+            callback: v => v.toLocaleString('pl-PL')
+          }
+        }
+      }
+    }
+  });
+}
+
+window.runArbitrageRanking = runArbitrageRanking;
+
+console.log('[BESS] bess.js v3.36 - v3.7.0 Project Scoping + v2.0 Ancillary + Arbitrage Ranking');

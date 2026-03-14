@@ -104,7 +104,8 @@ const BACKEND = USE_PROXY ? {
 let currentModule = 'config';
 
 // Shared data storage (alternative to localStorage for iframe isolation)
-let sharedData = {
+// Exposed on window so bess_request_builder.js (IIFE) and iframe children can access it
+const sharedData = window.sharedData = {
   analysisResults: null,
   pvConfig: null,
   consumptionData: null,
@@ -147,13 +148,24 @@ let sharedData = {
 
   // Raw data arrays for BESS calculations
   loadData: null,  // Load profile array [kW]
-  pvData: null     // PV generation array [kW]
+  pvData: null,    // PV generation array [kW]
+
+  // Centralized price configuration (built by price_config.js)
+  priceConfig: null,
+  rdnPrices: null  // RDN hourly prices cache (from Settings module)
 };
 
 // Also save settings to shell's localStorage as central storage
 function saveSettingsToShell(settings) {
   sharedData.settings = settings;
   localStorage.setItem('pv_system_settings', JSON.stringify(settings));
+  // Rebuild centralized price config when settings are saved
+  if (window.buildPriceConfig) {
+    sharedData.priceConfig = window.buildPriceConfig(settings, {
+      rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+      rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+    });
+  }
   console.log('Settings saved to shell localStorage');
 }
 
@@ -1614,10 +1626,10 @@ function loadModule(moduleName, event) {
   iframe.onload = () => {
     // Send ALL shared data to the module (proactive push)
     // This eliminates the need for module to REQUEST_SHARED_DATA
-    iframe.contentWindow.postMessage({
+    iframe.contentWindow.postMessage(stripFunctions({
       type: 'SHARED_DATA_RESPONSE',
       data: sharedData
-    }, '*');
+    }), '*');
     console.log('📤 Sent all shared data to loaded module:', moduleName, {
       hasSettings: !!sharedData.settings,
       hasAnalysisResults: !!sharedData.analysisResults,
@@ -1718,10 +1730,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // When iframe loads, send it ALL shared data immediately
   iframe.onload = () => {
     // Send ALL shared data to the module (proactive push)
-    iframe.contentWindow.postMessage({
+    iframe.contentWindow.postMessage(stripFunctions({
       type: 'SHARED_DATA_RESPONSE',
       data: sharedData
-    }, '*');
+    }), '*');
     console.log('📤 Sent all shared data to initial module (config)');
 
     // Also send scenario separately
@@ -2099,12 +2111,47 @@ window.addEventListener('message', (event) => {
       saveSettingsToShell(event.data.data);
       // Auto-save to current project
       autoSaveToProject('settings', event.data.data);
-      // Broadcast to all modules
+      // Rebuild centralized price config
+      if (window.buildPriceConfig) {
+        sharedData.priceConfig = window.buildPriceConfig(event.data.data, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+        console.log('[Shell] PriceConfig rebuilt on SETTINGS_CHANGED');
+      }
+      // Broadcast to all modules (includes priceConfig in sharedData)
       broadcastToModules({
         type: 'SETTINGS_UPDATED',
-        data: event.data.data
+        data: event.data.data,
+        priceConfig: sharedData.priceConfig
       });
       console.log('Settings updated and saved:', event.data.data);
+      break;
+    case 'RDN_PRICES_CHANGED':
+      // Settings module broadcasts RDN hourly prices
+      sharedData.rdnPrices = event.data.data || null;
+      // Rebuild price config with new RDN data
+      if (window.buildPriceConfig && sharedData.settings) {
+        sharedData.priceConfig = window.buildPriceConfig(sharedData.settings, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+      }
+      // Broadcast to active module
+      broadcastToModules({
+        type: 'PRICE_CONFIG_UPDATED',
+        priceConfig: sharedData.priceConfig
+      });
+      console.log('[Shell] RDN prices updated, priceConfig rebuilt');
+      break;
+    case 'REQUEST_PRICE_CONFIG':
+      // Module requests current price config (e.g. on module load)
+      if (sharedData.priceConfig) {
+        broadcastToModules({
+          type: 'PRICE_CONFIG_UPDATED',
+          priceConfig: sharedData.priceConfig
+        });
+      }
       break;
     case 'REQUEST_SETTINGS':
       // Module requests current settings
@@ -2502,8 +2549,28 @@ function postToActiveModule(message) {
   const iframe = document.getElementById('module-frame');
   if (iframe && iframe.contentWindow) {
     const targetOrigin = getModuleOrigin(currentModule);
-    iframe.contentWindow.postMessage(message, targetOrigin);
+    // Strip functions from message before postMessage (DataCloneError prevention)
+    iframe.contentWindow.postMessage(stripFunctions(message), targetOrigin);
   }
+}
+
+/**
+ * Recursively strip functions from an object so it can be passed via postMessage.
+ * postMessage uses the structured clone algorithm which cannot serialize functions.
+ */
+function stripFunctions(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'function') return undefined;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj;
+  if (Array.isArray(obj)) return obj.map(stripFunctions);
+  const clean = {};
+  for (const key of Object.keys(obj)) {
+    if (typeof obj[key] !== 'function') {
+      clean[key] = stripFunctions(obj[key]);
+    }
+  }
+  return clean;
 }
 
 // Legacy alias for backward compatibility

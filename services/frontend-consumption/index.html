@@ -491,6 +491,65 @@
       </div>
     </div>
 
+    <!-- Porównanie Kosztów Energii per Taryfa -->
+    <div class="chart-section full-width" id="tariffComparisonSection">
+      <h2>📊 Porównanie Kosztów Energii — Wszystkie Taryfy</h2>
+      <div class="chart-info">
+        Ile kosztowałaby energia przy Twoim profilu zużycia, gdybyś był w innej taryfie OSD lub na RDN?
+      </div>
+
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+        <button class="btn-primary" id="btnRunTariffComparison" onclick="runTariffComparison()">
+          🔄 Przelicz dla wszystkich taryf
+        </button>
+        <select id="tariffCompYear" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+          <option value="2025">2025</option>
+          <option value="2026">2026</option>
+          <option value="2024">2024</option>
+        </select>
+        <span id="tariffCompStatus" style="font-size:12px;color:#999;"></span>
+      </div>
+
+      <!-- Comparison Chart -->
+      <div style="background:rgba(255,255,255,0.6);border-radius:10px;padding:16px;margin-bottom:16px;">
+        <canvas id="tariffComparisonChart" style="max-height:400px;"></canvas>
+      </div>
+
+      <!-- Comparison Table -->
+      <div style="overflow-x:auto;">
+        <table id="tariffComparisonTable" class="tariff-details-table" style="font-size:12px;">
+          <thead>
+            <tr style="font-size:11px;">
+              <th>#</th>
+              <th>Taryfa</th>
+              <th>OSD</th>
+              <th>Gr.</th>
+              <th title="Energia czynna (sprzedawca)">Energia<br>[tys.]</th>
+              <th title="Dystrybucja zmienna (OSD)">Dystryb.<br>[tys.]</th>
+              <th title="Oplata mocowa SOM">Mocowa<br>[tys.]</th>
+              <th title="Jakosc + OZE + Kogeneracja + Akcyza">Inne<br>[tys.]</th>
+              <th title="Oplaty stale: moc umowna + abonament + przejsciowa">Stale<br>[tys.]</th>
+              <th style="font-weight:800;" title="Pelny koszt roczny">RAZEM<br>[tys. PLN]</th>
+              <th title="Srednia stawka lacznie">Sr.<br>[zl/kWh]</th>
+              <th title="Roznica vs obecna taryfa">+/-<br>[tys.]</th>
+              <th>+/- %</th>
+            </tr>
+          </thead>
+          <tbody id="tariffComparisonTableBody">
+            <tr><td colspan="13" style="text-align:center;padding:20px;color:#7f8c8d;">
+              Kliknij "Przelicz" aby porownac pelne koszty energii we wszystkich taryfach
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- RDN Box -->
+      <div id="rdnComparisonBox" style="display:none;margin-top:16px;background:linear-gradient(135deg,rgba(33,150,243,0.08),rgba(33,150,243,0.02));border:1px solid rgba(33,150,243,0.25);border-radius:10px;padding:16px;">
+        <h4 style="color:#1565C0;margin-bottom:8px;">💹 Ceny RDN (Rynek Dnia Następnego)</h4>
+        <div id="rdnComparisonContent"></div>
+      </div>
+    </div>
+
     <!-- Statystyki szczegółowe -->
     <div class="details-section">
       <h2>Statystyki Szczegółowe</h2>

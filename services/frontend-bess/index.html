@@ -2736,6 +2736,59 @@
   </div>
 </div>
 
+<!-- Ranking Taryf dla Arbitrażu Magazynu -->
+<div class="chart-section full-width" id="arbitrageRankingSection" style="margin:20px;padding:24px;background:linear-gradient(135deg,#fafbfc,#f0f4f8);border-radius:12px;border:1px solid #e0e4e8;">
+  <h2 style="margin-top:0;">🏆 Ranking Taryf — Potencjal Arbitrazu Magazynu</h2>
+  <div style="color:#666;font-size:13px;margin-bottom:16px;">
+    Szacunkowy roczny zarobek z arbitrazu cenowego (ladowanie w strefie taniej, rozladowanie w drozszej) dla kazdej taryfy OSD + RDN
+  </div>
+
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+    <label style="font-size:13px;">Moc [kW]:</label>
+    <input type="number" id="arbRankPowerKw" value="200" min="10" max="5000" step="10" style="width:80px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <label style="font-size:13px;">Pojemnosc [kWh]:</label>
+    <input type="number" id="arbRankEnergyKwh" value="400" min="10" max="20000" step="10" style="width:80px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <label style="font-size:13px;">Sprawnosc RT:</label>
+    <input type="number" id="arbRankEfficiency" value="90" min="50" max="100" step="1" style="width:60px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <span style="font-size:12px;color:#999;">%</span>
+    <select id="arbRankYear" style="padding:5px 10px;border:1px solid #ccc;border-radius:4px;">
+      <option value="2025">2025</option>
+      <option value="2026">2026</option>
+    </select>
+    <button onclick="runArbitrageRanking()" id="btnArbRanking" style="padding:8px 18px;background:#1565C0;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">
+      Przelicz ranking
+    </button>
+    <span id="arbRankStatus" style="font-size:12px;color:#999;"></span>
+  </div>
+
+  <!-- Chart -->
+  <div style="background:white;border-radius:10px;padding:16px;margin-bottom:16px;">
+    <canvas id="arbRankingChart" style="max-height:420px;"></canvas>
+  </div>
+
+  <!-- Table -->
+  <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;" id="arbRankingTable">
+      <thead>
+        <tr style="background:linear-gradient(135deg,#1565C0,#1976D2);color:white;">
+          <th style="padding:8px;">#</th>
+          <th style="padding:8px;text-align:left;">Taryfa</th>
+          <th style="padding:8px;">OSD</th>
+          <th style="padding:8px;">Grupa</th>
+          <th style="padding:8px;text-align:right;">Spread [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">Peak [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">OffPeak [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">Cykli/rok</th>
+          <th style="padding:8px;text-align:right;">Zarobek roczny [PLN]</th>
+        </tr>
+      </thead>
+      <tbody id="arbRankingTableBody">
+        <tr><td colspan="9" style="text-align:center;padding:20px;color:#999;">Kliknij "Przelicz ranking" aby porownac taryfy</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <script src="auth.js?v=3.0.0"></script>

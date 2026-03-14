@@ -1331,6 +1331,32 @@ def generate_economics_excel(
         ws_b.freeze_panes = 'A5'
 
     # =====================================================================
+    # SHEET: Arbitraż RDN — godzinowy rozkład cen, stanów i zysków
+    # =====================================================================
+    rdn_prices = kwargs.get('hourly_prices_pln_mwh', None)
+    if (rdn_prices and len(rdn_prices) >= 100 and
+            battery_trace and isinstance(battery_trace, dict)):
+        _build_arbitrage_rdn_sheet(
+            wb, battery_trace, rdn_prices, time_index, dt_hours,
+            n_timesteps, bess_power_kw, bess_energy_kwh, start_date, end_date,
+            hdr_fill, hdr_font, charge_fill, discharge_fill, batt_fill,
+            formula_fill, savings_fill, pv_fill, nfmt,
+            pv_arr=kwargs.get('pv_kw'),
+            load_arr=kwargs.get('load_kw'),
+        )
+
+        # Sheet: Arbitraż All-In — same structure but with full network fee breakdown
+        _build_arbitrage_allin_sheet(
+            wb, battery_trace, rdn_prices, time_index, dt_hours,
+            n_timesteps, bess_power_kw, bess_energy_kwh, start_date, end_date,
+            tou_config, fixed_config, bl_mocowa, pj_mocowa,
+            hdr_fill, hdr_font, charge_fill, discharge_fill, batt_fill,
+            formula_fill, savings_fill, pv_fill, nfmt,
+            pv_arr=kwargs.get('pv_kw'),
+            load_arr=kwargs.get('load_kw'),
+        )
+
+    # =====================================================================
     # SHEET: Warianty S/M/L  (sizing variant comparison)
     # =====================================================================
     sizing_variants = kwargs.get('sizing_variants', None)
@@ -1630,5 +1656,767 @@ def _build_grid_search_sheet(ws, grid_results, hdr_fill, hdr_font, savings_fill,
                     ws.cell(row=cr, column=ci).fill = gold_fill
             cr += 1
         cr += 1  # gap between criteria
+
+    ws.freeze_panes = 'A5'
+
+
+# =============================================================================
+# Helper: Arbitraż All-In — pełne rozbicie kosztów sieciowych
+# =============================================================================
+
+def _build_arbitrage_allin_sheet(
+    wb, battery_trace, rdn_prices, time_index, dt_hours,
+    n_timesteps, bess_power_kw, bess_energy_kwh, start_date, end_date,
+    tou_config, fixed_config, bl_mocowa, pj_mocowa,
+    hdr_fill, hdr_font, charge_fill, discharge_fill, batt_fill,
+    formula_fill, savings_fill, pv_fill, nfmt,
+    pv_arr=None, load_arr=None,
+):
+    """Build 'Arbitraż All-In' sheet — full network fee breakdown per hour."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    ws = wb.create_sheet("Arbitraż All-In")
+
+    charge_arr = battery_trace.get('charge_kw', [])
+    discharge_arr = battery_trace.get('discharge_kw', [])
+    soc_arr = battery_trace.get('soc_kwh', [])
+
+    n_rows = min(n_timesteps, len(rdn_prices))
+    for arr in [charge_arr, discharge_arr, soc_arr]:
+        if arr is not None:
+            n_rows = min(n_rows, len(arr))
+
+    rdn = np.array(rdn_prices[:n_rows], dtype=float)
+
+    # Fills
+    rdn_cheap_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
+    rdn_mid_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
+    rdn_exp_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
+    fee_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")      # indigo light
+    allin_fill = PatternFill(start_color="FCE4EC", end_color="FCE4EC", fill_type="solid")     # pink light
+    profit_fill = PatternFill(start_color="A5D6A7", end_color="A5D6A7", fill_type="solid")
+    loss_fill = PatternFill(start_color="EF9A9A", end_color="EF9A9A", fill_type="solid")
+    summary_fill = PatternFill(start_color="E1F5FE", end_color="E1F5FE", fill_type="solid")
+
+    p25 = float(np.percentile(rdn, 25))
+    p75 = float(np.percentile(rdn, 75))
+
+    weekdays_pl = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Nd']
+
+    # Fee rates (PLN/MWh)
+    quality = fixed_config.quality_fee
+    oze = fixed_config.oze_fee
+    cogen = fixed_config.cogeneration_fee
+    excise = fixed_config.excise_tax
+
+    # Title
+    ws['A1'] = "Arbitraż All-In — Pełne koszty sieciowe w rozbiciu godzinowym"
+    ws['A1'].font = Font(bold=True, size=14)
+    ws.merge_cells('A1:V1')
+
+    total_fees = quality + oze + cogen + excise
+    ws['A2'] = (
+        f"Magazyn: {bess_power_kw:.0f} kW / {bess_energy_kwh:.0f} kWh | "
+        f"Opłaty stałe: jakość={quality:.0f}, OZE={oze:.0f}, kog.={cogen:.0f}, "
+        f"akcyza={excise:.0f} PLN/MWh | SOM={fixed_config.capacity_fee_som:.4f} PLN/kWh"
+    )
+    ws['A2'].font = Font(italic=True, color="666666")
+    ws.merge_cells('A2:V2')
+
+    # Headers row 4
+    # A=timestamp B=weekday C=hour D=RDN E=Dystrybucja F=Jakościowa G=OZE H=Kogeneracja
+    # I=Akcyza J=Mocowa K=All-in [PLN/MWh] L=SoC M=Charge N=Discharge O=Stan
+    # P=Koszt ładow. all-in Q=Wartość rozład. all-in R=Zysk netto S=Zysk dzień T=Zysk miesiąc U=Zysk rok
+    headers = [
+        ('Data i godzina', 18),
+        ('Dzień', 8),
+        ('Godz', 6),
+        ('Cena RDN\n[PLN/MWh]', 12),
+        ('Dystrybucja\n[PLN/MWh]', 12),
+        ('Jakościowa\n[PLN/MWh]', 11),
+        ('OZE\n[PLN/MWh]', 10),
+        ('Kogeneracja\n[PLN/MWh]', 11),
+        ('Akcyza\n[PLN/MWh]', 10),
+        ('Mocowa\n[PLN/godz]', 11),
+        ('ALL-IN\n[PLN/MWh]', 13),
+        ('SoC\n[kWh]', 10),
+        ('Ładowanie\n[kW]', 12),
+        ('Rozładowanie\n[kW]', 12),
+        ('Stan', 14),
+        ('Koszt ładow.\nALL-IN [PLN]', 15),
+        ('Wartość rozład.\nALL-IN [PLN]', 15),
+        ('Zysk netto\n[PLN]', 13),
+        ('Zysk dzień\n[PLN]', 13),
+        ('Zysk miesiąc\n[PLN]', 13),
+        ('Zysk rok\n[PLN]', 13),
+    ]
+
+    for ci, (h, w) in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # Data rows
+    for i in range(n_rows):
+        r = i + 5
+        dt = time_index[i]
+        hour = dt.hour
+        price = float(rdn[i])
+        ch = float(charge_arr[i]) if i < len(charge_arr) else 0.0
+        dis = float(discharge_arr[i]) if i < len(discharge_arr) else 0.0
+        soc = float(soc_arr[i]) if i < len(soc_arr) else 0.0
+
+        # Distribution rate for this hour
+        dist_rate = get_distribution_rate(dt, tou_config, fixed_config)
+
+        # Capacity fee for this hour (from pre-calculated arrays, per kWh imported)
+        # bl_mocowa is PLN for baseline import at this hour
+        # We want PLN/MWh equivalent — but mocowa is allocated proportionally
+        # Use the project mocowa directly as PLN value for this hour
+        mocowa_pln = float(pj_mocowa[i]) if i < len(pj_mocowa) else 0.0
+
+        # All-in price (PLN/MWh) = RDN + distribution + fees
+        allin = price + dist_rate + quality + oze + cogen + excise
+        # Note: mocowa is per-hour absolute PLN, not per MWh rate
+
+        # A: Timestamp
+        ws.cell(row=r, column=1, value=dt.replace(tzinfo=None))
+        # B: Weekday
+        ws.cell(row=r, column=2, value=weekdays_pl[dt.weekday()])
+        # C: Hour
+        ws.cell(row=r, column=3, value=hour)
+
+        # D: RDN price
+        c = ws.cell(row=r, column=4, value=round(price, 1))
+        c.number_format = '0.0'
+        if price <= p25:
+            c.fill = rdn_cheap_fill
+        elif price >= p75:
+            c.fill = rdn_exp_fill
+        else:
+            c.fill = rdn_mid_fill
+
+        # E: Distribution
+        ws.cell(row=r, column=5, value=round(dist_rate, 1)).fill = fee_fill
+        # F: Quality
+        ws.cell(row=r, column=6, value=round(quality, 1)).fill = fee_fill
+        # G: OZE
+        ws.cell(row=r, column=7, value=round(oze, 1)).fill = fee_fill
+        # H: Cogeneration
+        ws.cell(row=r, column=8, value=round(cogen, 1)).fill = fee_fill
+        # I: Excise
+        ws.cell(row=r, column=9, value=round(excise, 1)).fill = fee_fill
+        # J: Capacity fee (PLN absolute for this hour)
+        c = ws.cell(row=r, column=10, value=round(mocowa_pln, 4))
+        c.number_format = '0.0000'
+        c.fill = fee_fill
+
+        # K: All-in (formula: D + E + F + G + H + I, mocowa separate)
+        c = ws.cell(row=r, column=11, value=f'=D{r}+E{r}+F{r}+G{r}+H{r}+I{r}')
+        c.number_format = '0.0'
+        c.fill = allin_fill
+        c.font = Font(bold=True)
+
+        # L: SoC
+        ws.cell(row=r, column=12, value=round(soc, 1)).fill = batt_fill
+
+        # M: Charge
+        c = ws.cell(row=r, column=13, value=round(ch, 1))
+        if ch > 0.1:
+            c.fill = charge_fill
+            c.font = Font(bold=True)
+
+        # N: Discharge
+        c = ws.cell(row=r, column=14, value=round(dis, 1))
+        if dis > 0.1:
+            c.fill = discharge_fill
+            c.font = Font(bold=True)
+
+        # O: Status
+        if ch > 0.1:
+            c = ws.cell(row=r, column=15, value="ŁADOWANIE")
+            c.fill = charge_fill
+            c.font = Font(bold=True, color="1565C0")
+        elif dis > 0.1:
+            c = ws.cell(row=r, column=15, value="ROZŁADOWANIE")
+            c.fill = discharge_fill
+            c.font = Font(bold=True, color="E65100")
+        else:
+            ws.cell(row=r, column=15, value="—").alignment = Alignment(horizontal='center')
+
+        # P: Koszt ładowania ALL-IN = charge_kw * dt * all-in/1000 + mocowa
+        #    When battery charges from PV, load imports from grid at all-in price
+        c = ws.cell(row=r, column=16, value=f'=M{r}*{dt_hours}*K{r}/1000+IF(M{r}>0,J{r},0)')
+        c.number_format = '0.00'
+        if ch > 0.1:
+            c.fill = charge_fill
+
+        # Q: Wartość rozładowania ALL-IN = discharge_kw * dt * all-in/1000 + mocowa saved
+        #    When battery discharges, load avoids grid import at all-in price
+        c = ws.cell(row=r, column=17, value=f'=N{r}*{dt_hours}*K{r}/1000+IF(N{r}>0,J{r},0)')
+        c.number_format = '0.00'
+        if dis > 0.1:
+            c.fill = discharge_fill
+
+        # R: Zysk netto = Q - P
+        c = ws.cell(row=r, column=18, value=f'=Q{r}-P{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # S: Zysk dzień (running per day)
+        if i == 0 or time_index[i].date() != time_index[i - 1].date():
+            c = ws.cell(row=r, column=19, value=f'=R{r}')
+        else:
+            c = ws.cell(row=r, column=19, value=f'=S{r-1}+R{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # T: Zysk miesiąc
+        if i == 0 or time_index[i].month != time_index[i - 1].month:
+            c = ws.cell(row=r, column=20, value=f'=R{r}')
+        else:
+            c = ws.cell(row=r, column=20, value=f'=T{r-1}+R{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # U: Zysk rok
+        if i == 0:
+            c = ws.cell(row=r, column=21, value=f'=R{r}')
+        else:
+            c = ws.cell(row=r, column=21, value=f'=U{r-1}+R{r}')
+        c.number_format = '0.00'
+        c.fill = savings_fill
+        c.font = Font(bold=True)
+
+        # Day separator
+        if hour == 23:
+            day_border = Border(bottom=Side(style='medium', color='999999'))
+            for col in range(1, 22):
+                ws.cell(row=r, column=col).border = day_border
+
+    last_row = n_rows + 4
+
+    # Summary row 3
+    ws.cell(row=3, column=1, value="PODSUMOWANIE:").font = Font(bold=True, size=11)
+    ws.cell(row=3, column=15, value="SUMY:").font = Font(bold=True)
+
+    for col, letter in [(16, 'P'), (17, 'Q'), (18, 'R')]:
+        c = ws.cell(row=3, column=col, value=f'=SUM({letter}5:{letter}{last_row})')
+        c.font = Font(bold=True, size=11)
+        c.number_format = '#,##0'
+        c.fill = summary_fill if col < 18 else savings_fill
+
+    # Final yearly profit in bold green
+    ws.cell(row=3, column=18).font = Font(bold=True, size=12, color="1B5E20")
+
+    # Monthly summary below data
+    sr = last_row + 3
+    ws.cell(row=sr, column=1, value="PODSUMOWANIE MIESIĘCZNE — ALL-IN").font = Font(bold=True, size=13)
+    ws.merge_cells(f'A{sr}:H{sr}')
+    sr += 1
+
+    month_headers = [
+        ('Miesiąc', 14), ('Ładow. [kWh]', 14), ('Rozład. [kWh]', 14),
+        ('Koszt ład.\nall-in [PLN]', 15), ('Wartość rozł.\nall-in [PLN]', 15),
+        ('ZYSK\n[PLN]', 14), ('Zysk RDN\nonly [PLN]', 14),
+        ('Zysk z opłat\nsiec. [PLN]', 14),
+    ]
+    for ci, (h, w) in enumerate(month_headers, 1):
+        cell = ws.cell(row=sr, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+        ws.column_dimensions[get_column_letter(ci)].width = max(
+            ws.column_dimensions[get_column_letter(ci)].width or 0, w
+        )
+    sr += 1
+
+    from collections import defaultdict
+    monthly = defaultdict(lambda: {
+        'charge_kwh': 0, 'discharge_kwh': 0,
+        'charge_cost_allin': 0, 'discharge_value_allin': 0,
+        'charge_cost_rdn': 0, 'discharge_value_rdn': 0,
+    })
+
+    for i in range(n_rows):
+        m = time_index[i].month
+        ch = float(charge_arr[i]) if i < len(charge_arr) else 0
+        dis = float(discharge_arr[i]) if i < len(discharge_arr) else 0
+        price = float(rdn[i])
+        dist_rate = get_distribution_rate(time_index[i], tou_config, fixed_config)
+        mocowa_pln = float(pj_mocowa[i]) if i < len(pj_mocowa) else 0.0
+        allin = price + dist_rate + quality + oze + cogen + excise
+
+        if ch > 0.1:
+            energy_kwh = ch * dt_hours
+            monthly[m]['charge_kwh'] += energy_kwh
+            monthly[m]['charge_cost_allin'] += energy_kwh * allin / 1000 + mocowa_pln
+            monthly[m]['charge_cost_rdn'] += energy_kwh * price / 1000
+        if dis > 0.1:
+            energy_kwh = dis * dt_hours
+            monthly[m]['discharge_kwh'] += energy_kwh
+            monthly[m]['discharge_value_allin'] += energy_kwh * allin / 1000 + mocowa_pln
+            monthly[m]['discharge_value_rdn'] += energy_kwh * price / 1000
+
+    month_names = ['', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                   'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień']
+    monthly_start = sr
+    for m in sorted(monthly.keys()):
+        mm = monthly[m]
+        profit_allin = mm['discharge_value_allin'] - mm['charge_cost_allin']
+        profit_rdn = mm['discharge_value_rdn'] - mm['charge_cost_rdn']
+        profit_fees = profit_allin - profit_rdn
+
+        ws.cell(row=sr, column=1, value=month_names[m]).font = Font(bold=True)
+        ws.cell(row=sr, column=2, value=round(mm['charge_kwh'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=3, value=round(mm['discharge_kwh'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=4, value=round(mm['charge_cost_allin'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=5, value=round(mm['discharge_value_allin'], 0)).number_format = '#,##0'
+
+        c = ws.cell(row=sr, column=6, value=round(profit_allin, 0))
+        c.number_format = '#,##0'
+        c.font = Font(bold=True, size=11)
+        c.fill = profit_fill if profit_allin >= 0 else loss_fill
+
+        ws.cell(row=sr, column=7, value=round(profit_rdn, 0)).number_format = '#,##0'
+
+        c = ws.cell(row=sr, column=8, value=round(profit_fees, 0))
+        c.number_format = '#,##0'
+        c.font = Font(bold=True, color="1565C0")
+
+        sr += 1
+
+    # Yearly totals
+    c = ws.cell(row=sr, column=1, value="SUMA ROCZNA")
+    c.font = Font(bold=True, size=12)
+    for col in range(2, 9):
+        letter = get_column_letter(col)
+        c = ws.cell(row=sr, column=col, value=f'=SUM({letter}{monthly_start}:{letter}{sr-1})')
+        c.font = Font(bold=True, size=12)
+        c.number_format = '#,##0'
+        c.fill = savings_fill
+
+    ws.freeze_panes = 'A5'
+
+
+# =============================================================================
+# Helper: Arbitraż RDN sheet — hourly prices, battery state, profit analysis
+# =============================================================================
+
+def _build_arbitrage_rdn_sheet(
+    wb, battery_trace, rdn_prices, time_index, dt_hours,
+    n_timesteps, bess_power_kw, bess_energy_kwh, start_date, end_date,
+    hdr_fill, hdr_font, charge_fill, discharge_fill, batt_fill,
+    formula_fill, savings_fill, pv_fill, nfmt,
+    pv_arr=None, load_arr=None,
+):
+    """Build 'Arbitraż RDN' sheet with hourly price/battery/profit analysis."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    ws = wb.create_sheet("Arbitraż RDN")
+
+    soc_arr = battery_trace.get('soc_kwh', [])
+    charge_arr = battery_trace.get('charge_kw', [])
+    discharge_arr = battery_trace.get('discharge_kw', [])
+    charge_pv_arr = battery_trace.get('charge_from_pv_kw')
+    charge_grid_arr = battery_trace.get('charge_from_grid_kw')
+
+    n_rows = min(n_timesteps, len(rdn_prices))
+    for arr in [soc_arr, charge_arr, discharge_arr]:
+        if arr is not None:
+            n_rows = min(n_rows, len(arr))
+
+    rdn = np.array(rdn_prices[:n_rows], dtype=float)
+
+    # --- Fills ---
+    rdn_cheap_fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")   # green — cheap
+    rdn_mid_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")     # yellow — mid
+    rdn_exp_fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")     # red — expensive
+    profit_fill = PatternFill(start_color="A5D6A7", end_color="A5D6A7", fill_type="solid")      # green — profit
+    loss_fill = PatternFill(start_color="EF9A9A", end_color="EF9A9A", fill_type="solid")        # red — loss
+    summary_fill = PatternFill(start_color="E1F5FE", end_color="E1F5FE", fill_type="solid")     # light blue
+
+    # Price percentiles for coloring
+    p25 = float(np.percentile(rdn, 25))
+    p75 = float(np.percentile(rdn, 75))
+
+    # ===== Title =====
+    ws['A1'] = "Arbitraż RDN — Analiza godzinowa cen i pracy magazynu"
+    ws['A1'].font = Font(bold=True, size=14)
+    ws.merge_cells('A1:R1')
+
+    ws['A2'] = (f"Magazyn: {bess_power_kw:.0f} kW / {bess_energy_kwh:.0f} kWh | "
+                f"Okres: {start_date} - {end_date} | "
+                f"Ceny RDN: min={rdn.min():.0f}, avg={rdn.mean():.0f}, max={rdn.max():.0f} PLN/MWh")
+    ws['A2'].font = Font(italic=True, color="666666")
+    ws.merge_cells('A2:R2')
+
+    # ===== Summary row 3 (formulas filled after data) =====
+
+    # ===== Headers row 4 =====
+    # A=timestamp  B=weekday  C=hour  D=RDN price
+    # E=PV  F=Load  G=SoC  H=SoC%
+    # I=Charge  J=Discharge  K=Stan (charging/discharging/idle)
+    # L=Koszt ładowania (PLN)  M=Wartość rozładowania (PLN)
+    # N=Zysk godzinowy  O=Zysk skumulowany dzień  P=Zysk skumul. miesiąc  Q=Zysk skumul. rok
+    headers = [
+        ('Data i godzina', 18),
+        ('Dzień', 8),
+        ('Godz', 6),
+        ('Cena RDN\n[PLN/MWh]', 13),
+        ('PV\n[kW]', 10),
+        ('Zużycie\n[kW]', 10),
+        ('SoC\n[kWh]', 10),
+        ('SoC\n[%]', 8),
+        ('Ładowanie\n[kW]', 12),
+        ('Rozładowanie\n[kW]', 12),
+        ('Stan', 14),
+        ('Koszt ładowania\n[PLN]', 16),
+        ('Wartość rozład.\n[PLN]', 16),
+        ('Zysk netto\ngodzina [PLN]', 14),
+        ('Zysk skumul.\ndzień [PLN]', 14),
+        ('Zysk skumul.\nmiesiąc [PLN]', 14),
+        ('Zysk skumul.\nrok [PLN]', 14),
+    ]
+
+    for ci, (h, w) in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # ===== Data rows (starting at row 5) =====
+    thin_border = Border(
+        bottom=Side(style='thin', color='CCCCCC'),
+    )
+
+    weekdays_pl = ['Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob', 'Nd']
+
+    for i in range(n_rows):
+        r = i + 5
+        dt = time_index[i]
+        hour = dt.hour
+        price = float(rdn[i])
+        ch = float(charge_arr[i]) if charge_arr is not None and i < len(charge_arr) else 0.0
+        dis = float(discharge_arr[i]) if discharge_arr is not None and i < len(discharge_arr) else 0.0
+        soc = float(soc_arr[i]) if soc_arr is not None and i < len(soc_arr) else 0.0
+
+        # A: Timestamp
+        ws.cell(row=r, column=1, value=dt.replace(tzinfo=None))
+
+        # B: Weekday
+        ws.cell(row=r, column=2, value=weekdays_pl[dt.weekday()])
+
+        # C: Hour
+        ws.cell(row=r, column=3, value=hour)
+
+        # D: RDN price with conditional color
+        c = ws.cell(row=r, column=4, value=round(price, 1))
+        c.number_format = '0.0'
+        if price <= p25:
+            c.fill = rdn_cheap_fill
+        elif price >= p75:
+            c.fill = rdn_exp_fill
+        else:
+            c.fill = rdn_mid_fill
+
+        # E: PV
+        if pv_arr is not None and i < len(pv_arr):
+            ws.cell(row=r, column=5, value=round(float(pv_arr[i]), 1)).fill = pv_fill
+
+        # F: Load
+        if load_arr is not None and i < len(load_arr):
+            ws.cell(row=r, column=6, value=round(float(load_arr[i]), 1))
+
+        # G: SoC [kWh]
+        c = ws.cell(row=r, column=7, value=round(soc, 1))
+        c.fill = batt_fill
+
+        # H: SoC [%] — formula
+        c = ws.cell(row=r, column=8, value=f'=G{r}/{bess_energy_kwh}*100')
+        c.fill = formula_fill
+        c.number_format = '0.0'
+
+        # I: Charge [kW]
+        c = ws.cell(row=r, column=9, value=round(ch, 1))
+        if ch > 0.1:
+            c.fill = charge_fill
+            c.font = Font(bold=True)
+
+        # J: Discharge [kW]
+        c = ws.cell(row=r, column=10, value=round(dis, 1))
+        if dis > 0.1:
+            c.fill = discharge_fill
+            c.font = Font(bold=True)
+
+        # K: Stan (status label)
+        if ch > 0.1:
+            c = ws.cell(row=r, column=11, value="ŁADOWANIE")
+            c.fill = charge_fill
+            c.font = Font(bold=True, color="1565C0")
+        elif dis > 0.1:
+            c = ws.cell(row=r, column=11, value="ROZŁADOWANIE")
+            c.fill = discharge_fill
+            c.font = Font(bold=True, color="E65100")
+        else:
+            c = ws.cell(row=r, column=11, value="—")
+            c.alignment = Alignment(horizontal='center')
+
+        # L: Koszt ładowania = charge_kw * dt_hours * price / 1000 [PLN]
+        #    (energy charged * RDN price = opportunity cost of storing vs exporting)
+        c = ws.cell(row=r, column=12, value=f'=I{r}*{dt_hours}*D{r}/1000')
+        c.number_format = '0.00'
+        if ch > 0.1:
+            c.fill = charge_fill
+
+        # M: Wartość rozładowania = discharge_kw * dt_hours * price / 1000 [PLN]
+        #    (energy discharged * RDN price = avoided import cost)
+        c = ws.cell(row=r, column=13, value=f'=J{r}*{dt_hours}*D{r}/1000')
+        c.number_format = '0.00'
+        if dis > 0.1:
+            c.fill = discharge_fill
+
+        # N: Zysk netto godzinowy = wartość rozład. - koszt ładowania
+        c = ws.cell(row=r, column=14, value=f'=M{r}-L{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # O: Zysk skumulowany dzień — SUMPRODUCT for same date
+        # Use simple running sum: if same day, add to previous; else start fresh
+        if i == 0 or time_index[i].date() != time_index[i - 1].date():
+            c = ws.cell(row=r, column=15, value=f'=N{r}')
+        else:
+            c = ws.cell(row=r, column=15, value=f'=O{r-1}+N{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # P: Zysk skumulowany miesiąc
+        if i == 0 or time_index[i].month != time_index[i - 1].month:
+            c = ws.cell(row=r, column=16, value=f'=N{r}')
+        else:
+            c = ws.cell(row=r, column=16, value=f'=P{r-1}+N{r}')
+        c.number_format = '0.00'
+        c.fill = formula_fill
+
+        # Q: Zysk skumulowany rok (running total)
+        if i == 0:
+            c = ws.cell(row=r, column=17, value=f'=N{r}')
+        else:
+            c = ws.cell(row=r, column=17, value=f'=Q{r-1}+N{r}')
+        c.number_format = '0.00'
+        c.fill = savings_fill
+        c.font = Font(bold=True)
+
+        # Day separator — bold bottom border at 23:00
+        if hour == 23:
+            day_border = Border(bottom=Side(style='medium', color='999999'))
+            for col in range(1, 18):
+                ws.cell(row=r, column=col).border = day_border
+
+    last_row = n_rows + 4
+
+    # ===== Summary row 3 =====
+    ws.cell(row=3, column=1, value="PODSUMOWANIE:").font = Font(bold=True, size=11)
+
+    # Total charge cost
+    c = ws.cell(row=3, column=12, value=f'=SUM(L5:L{last_row})')
+    c.font = Font(bold=True)
+    c.number_format = '#,##0'
+    c.fill = summary_fill
+
+    # Total discharge value
+    c = ws.cell(row=3, column=13, value=f'=SUM(M5:M{last_row})')
+    c.font = Font(bold=True)
+    c.number_format = '#,##0'
+    c.fill = summary_fill
+
+    # Total net profit
+    c = ws.cell(row=3, column=14, value=f'=SUM(N5:N{last_row})')
+    c.font = Font(bold=True, size=12, color="1B5E20")
+    c.number_format = '#,##0'
+    c.fill = savings_fill
+
+    # Labels in row 3
+    ws.cell(row=3, column=11, value="SUMY →").font = Font(bold=True)
+    ws.cell(row=3, column=9, value=f'=SUM(I5:I{last_row})*{dt_hours}').number_format = '#,##0'
+    ws.cell(row=3, column=9).font = Font(bold=True)
+    ws.cell(row=3, column=10, value=f'=SUM(J5:J{last_row})*{dt_hours}').number_format = '#,##0'
+    ws.cell(row=3, column=10).font = Font(bold=True)
+
+    # ===== Daily/monthly summary block below data =====
+    sr = last_row + 3  # summary start row
+
+    ws.cell(row=sr, column=1, value="PODSUMOWANIE DZIENNE I MIESIĘCZNE").font = Font(bold=True, size=13)
+    ws.merge_cells(f'A{sr}:F{sr}')
+    sr += 1
+
+    # Daily summary header
+    day_headers = [
+        ('Data', 12), ('Dzień tyg.', 8), ('Ładowanie [kWh]', 16),
+        ('Rozładowanie [kWh]', 16), ('Koszt ładow. [PLN]', 16),
+        ('Wartość rozład. [PLN]', 16), ('ZYSK [PLN]', 14),
+        ('Śr. cena ładow.\n[PLN/MWh]', 16), ('Śr. cena rozład.\n[PLN/MWh]', 16),
+        ('Spread\n[PLN/MWh]', 14),
+    ]
+
+    for ci, (h, w) in enumerate(day_headers, 1):
+        cell = ws.cell(row=sr, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+        ws.column_dimensions[get_column_letter(ci)].width = max(
+            ws.column_dimensions[get_column_letter(ci)].width or 0, w
+        )
+    sr += 1
+
+    # Aggregate by day
+    from collections import defaultdict
+    daily = defaultdict(lambda: {
+        'charge_kwh': 0, 'discharge_kwh': 0,
+        'charge_cost': 0, 'discharge_value': 0,
+        'charge_price_sum': 0, 'charge_hours': 0,
+        'discharge_price_sum': 0, 'discharge_hours': 0,
+        'weekday': 0,
+    })
+
+    for i in range(n_rows):
+        d = time_index[i].date()
+        ch = float(charge_arr[i]) if charge_arr is not None and i < len(charge_arr) else 0
+        dis = float(discharge_arr[i]) if discharge_arr is not None and i < len(discharge_arr) else 0
+        price = float(rdn[i])
+
+        daily[d]['weekday'] = time_index[i].weekday()
+        if ch > 0.1:
+            daily[d]['charge_kwh'] += ch * dt_hours
+            daily[d]['charge_cost'] += ch * dt_hours * price / 1000
+            daily[d]['charge_price_sum'] += price
+            daily[d]['charge_hours'] += 1
+        if dis > 0.1:
+            daily[d]['discharge_kwh'] += dis * dt_hours
+            daily[d]['discharge_value'] += dis * dt_hours * price / 1000
+            daily[d]['discharge_price_sum'] += price
+            daily[d]['discharge_hours'] += 1
+
+    daily_start_row = sr
+    for d in sorted(daily.keys()):
+        dd = daily[d]
+        avg_ch_price = dd['charge_price_sum'] / dd['charge_hours'] if dd['charge_hours'] > 0 else 0
+        avg_dis_price = dd['discharge_price_sum'] / dd['discharge_hours'] if dd['discharge_hours'] > 0 else 0
+        profit = dd['discharge_value'] - dd['charge_cost']
+
+        ws.cell(row=sr, column=1, value=d)
+        ws.cell(row=sr, column=2, value=weekdays_pl[dd['weekday']])
+        ws.cell(row=sr, column=3, value=round(dd['charge_kwh'], 1)).number_format = '0.0'
+        ws.cell(row=sr, column=4, value=round(dd['discharge_kwh'], 1)).number_format = '0.0'
+        ws.cell(row=sr, column=5, value=round(dd['charge_cost'], 2)).number_format = '0.00'
+        ws.cell(row=sr, column=6, value=round(dd['discharge_value'], 2)).number_format = '0.00'
+
+        c = ws.cell(row=sr, column=7, value=round(profit, 2))
+        c.number_format = '0.00'
+        c.font = Font(bold=True)
+        c.fill = profit_fill if profit >= 0 else loss_fill
+
+        ws.cell(row=sr, column=8, value=round(avg_ch_price, 0)).number_format = '0'
+        ws.cell(row=sr, column=9, value=round(avg_dis_price, 0)).number_format = '0'
+
+        spread = avg_dis_price - avg_ch_price
+        c = ws.cell(row=sr, column=10, value=round(spread, 0))
+        c.number_format = '0'
+        c.font = Font(bold=True, color="1B5E20" if spread > 0 else "B71C1C")
+
+        sr += 1
+
+    # Daily totals
+    c = ws.cell(row=sr, column=1, value="SUMA DZIENNYCH")
+    c.font = Font(bold=True, size=11)
+    for col in range(3, 8):
+        letter = get_column_letter(col)
+        c = ws.cell(row=sr, column=col, value=f'=SUM({letter}{daily_start_row}:{letter}{sr-1})')
+        c.font = Font(bold=True, size=11)
+        c.number_format = '#,##0'
+        c.fill = summary_fill
+    sr += 2
+
+    # ===== Monthly summary =====
+    ws.cell(row=sr, column=1, value="PODSUMOWANIE MIESIĘCZNE").font = Font(bold=True, size=13)
+    ws.merge_cells(f'A{sr}:F{sr}')
+    sr += 1
+
+    month_headers = ['Miesiąc', 'Ładowanie [kWh]', 'Rozładowanie [kWh]',
+                     'Koszt ładow. [PLN]', 'Wartość rozład. [PLN]', 'ZYSK [PLN]',
+                     'Śr. cena ładow.', 'Śr. cena rozład.', 'Spread']
+    for ci, h in enumerate(month_headers, 1):
+        cell = ws.cell(row=sr, column=ci, value=h)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+    sr += 1
+
+    monthly = defaultdict(lambda: {
+        'charge_kwh': 0, 'discharge_kwh': 0,
+        'charge_cost': 0, 'discharge_value': 0,
+        'charge_price_sum': 0, 'charge_hours': 0,
+        'discharge_price_sum': 0, 'discharge_hours': 0,
+    })
+
+    for i in range(n_rows):
+        m = time_index[i].month
+        ch = float(charge_arr[i]) if charge_arr is not None and i < len(charge_arr) else 0
+        dis = float(discharge_arr[i]) if discharge_arr is not None and i < len(discharge_arr) else 0
+        price = float(rdn[i])
+
+        if ch > 0.1:
+            monthly[m]['charge_kwh'] += ch * dt_hours
+            monthly[m]['charge_cost'] += ch * dt_hours * price / 1000
+            monthly[m]['charge_price_sum'] += price
+            monthly[m]['charge_hours'] += 1
+        if dis > 0.1:
+            monthly[m]['discharge_kwh'] += dis * dt_hours
+            monthly[m]['discharge_value'] += dis * dt_hours * price / 1000
+            monthly[m]['discharge_price_sum'] += price
+            monthly[m]['discharge_hours'] += 1
+
+    month_names = ['', 'Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                   'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień']
+    monthly_start_row = sr
+    for m in sorted(monthly.keys()):
+        mm = monthly[m]
+        avg_ch = mm['charge_price_sum'] / mm['charge_hours'] if mm['charge_hours'] > 0 else 0
+        avg_dis = mm['discharge_price_sum'] / mm['discharge_hours'] if mm['discharge_hours'] > 0 else 0
+        profit = mm['discharge_value'] - mm['charge_cost']
+
+        ws.cell(row=sr, column=1, value=month_names[m]).font = Font(bold=True)
+        ws.cell(row=sr, column=2, value=round(mm['charge_kwh'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=3, value=round(mm['discharge_kwh'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=4, value=round(mm['charge_cost'], 0)).number_format = '#,##0'
+        ws.cell(row=sr, column=5, value=round(mm['discharge_value'], 0)).number_format = '#,##0'
+
+        c = ws.cell(row=sr, column=6, value=round(profit, 0))
+        c.number_format = '#,##0'
+        c.font = Font(bold=True, size=11)
+        c.fill = profit_fill if profit >= 0 else loss_fill
+
+        ws.cell(row=sr, column=7, value=round(avg_ch, 0)).number_format = '0'
+        ws.cell(row=sr, column=8, value=round(avg_dis, 0)).number_format = '0'
+        c = ws.cell(row=sr, column=9, value=round(avg_dis - avg_ch, 0))
+        c.number_format = '0'
+        c.font = Font(bold=True, color="1B5E20" if (avg_dis - avg_ch) > 0 else "B71C1C")
+
+        sr += 1
+
+    # Monthly totals
+    c = ws.cell(row=sr, column=1, value="SUMA ROCZNA")
+    c.font = Font(bold=True, size=12)
+    for col in range(2, 7):
+        letter = get_column_letter(col)
+        c = ws.cell(row=sr, column=col, value=f'=SUM({letter}{monthly_start_row}:{letter}{sr-1})')
+        c.font = Font(bold=True, size=12)
+        c.number_format = '#,##0'
+        c.fill = savings_fill
 
     ws.freeze_panes = 'A5'

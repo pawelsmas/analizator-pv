@@ -14,6 +14,30 @@
   'use strict';
 
   /**
+   * Build tariff preset ID from group name and OSD operator.
+   *
+   * Maps settings.tariffGroup (e.g. "B23") + settings.osdOperator (e.g. "pge")
+   * to a preset ID (e.g. "pge_b23_2026") matching keys in ALL_PRESETS.
+   *
+   * @param {string} group - Tariff group (e.g. "B23", "C12a", "C22a")
+   * @param {string} operator - OSD operator (e.g. "pge", "tauron", "energa")
+   * @param {number} [year] - Tariff year (default: from analyticalPeriod or 2026)
+   * @returns {string|null} Preset ID or null if no group provided
+   */
+  function buildTariffPresetId(group, operator, year) {
+    if (!group) return null;
+    // Only OSD ToU groups have presets (C11, C12a, C12b, G12).
+    // Groups B21-B24, A23-A24 are flat/three-zone — no OSD preset exists.
+    const touGroups = ['c11', 'c12a', 'c12b', 'g12'];
+    const g = group.toLowerCase().replace('-', '_');
+    if (!touGroups.includes(g)) return null;
+
+    const op = (operator || 'pge').toLowerCase();
+    const y = year || new Date().getFullYear();
+    return `${op}_${g}_${y}`;
+  }
+
+  /**
    * Build BESS sizing/dispatch request with consistent parameters.
    *
    * Uses sharedData.analyticalPeriod as the SINGLE SOURCE OF TRUTH for time axis.
@@ -184,11 +208,19 @@
    * Determine dispatch mode from settings and topology.
    */
   function determineDispatchMode(settings, options, topology) {
+    // Check overrides first (options.overrides.mode from what-if/scenario flows)
+    if (options.overrides?.mode) return options.overrides.mode;
     if (options.mode) return options.mode;
 
     // load_only topology forces load_only mode
     if (topology === 'load_only') {
       return 'load_only';
+    }
+
+    // Scenario 9 (PV + RDN Arbitrage): always pv_surplus
+    const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
+    if (scenarioId === 9) {
+      return 'pv_surplus';
     }
 
     // Check if stacked mode is enabled (peak shaving or arbitrage)
@@ -223,8 +255,11 @@
     const analysisYear = parseInt(analyticalPeriod.start_datetime.substring(0, 4), 10);
 
     return {
-      // Tariff
-      tariff_id: settings.bessOsdTariffGroup || settings.tariffGroup || 'C12a',
+      // Tariff: explicit BESS override → mapped from consumption tariff → fallback
+      tariff_id: settings.bessOsdTariffGroup ||
+                 buildTariffPresetId(settings.tariffGroup, settings.osdOperator,
+                   parseInt(analyticalPeriod.start_datetime.substring(0, 4), 10)) ||
+                 'pge_c12a_2026',
       pricing_stack_mode: 'OSD_ALL_IN',
 
       // Energy prices
@@ -267,7 +302,9 @@
 
     // OSD Tariff Arbitrage (ToU zones)
     if (osdEnabled) {
-      config.tariff_id = settings.bessOsdTariffGroup || 'C12a';
+      config.tariff_id = settings.bessOsdTariffGroup ||
+        buildTariffPresetId(settings.tariffGroup, settings.osdOperator) ||
+        'pge_c12a_2026';
       config.strategy = 'zone_based';  // Use OSD zone hours
       config.osd_operator = settings.bessOsdOperator || 'pge';
       config.peak_rate_pln_kwh = parseFloatSafe(settings.bessOsdPeakRate, 0.75);
@@ -294,6 +331,12 @@
     // Common arbitrage parameters
     config.arbitrage_soc_min = parseFloatSafe(settings.bessArbitrageSocMin, 0.20);
     config.degradation_cost_pln_kwh = parseFloatSafe(settings.bessArbitrageDegradationCost, 0.05);
+
+    // Grid charging control:
+    // Scenario 9 (PV + RDN): BANNED — battery charges ONLY from PV surplus.
+    // Other scenarios: allowed by default.
+    const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
+    config.allow_grid_charging = (scenarioId === 9) ? false : true;
 
     return config;
   }
@@ -514,6 +557,7 @@
   // ===== EXPORT TO WINDOW =====
 
   window.buildBessRequest = buildBessRequest;
+  window.buildTariffPresetId = buildTariffPresetId;
   window.validateBessRequest = validateBessRequest;
   window.addDriverConfig = addDriverConfig;
   window.getAvailableProfiles = getAvailableProfiles;

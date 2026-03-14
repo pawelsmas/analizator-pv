@@ -481,12 +481,20 @@ class ArbitrageConfig(BaseModel):
         description="Degradation cost per kWh throughput [PLN/kWh]"
     )
 
-    # RDN hourly prices (passed from frontend "Ceny RDN" widget)
-    # When provided, these are used directly instead of looking up OSD tariff presets
+    # All-in import prices (RDN + distribution + fees + capacity fee)
+    # When provided, these are used as buy_price for LP dispatch
     hourly_prices_pln_mwh: Optional[List[float]] = Field(
         None,
-        description="Hourly RDN prices [PLN/MWh] from Ceny RDN widget (8760 values). "
-                    "When provided, used directly for arbitrage dispatch."
+        description="Hourly all-in import prices [PLN/MWh] = RDN + distribution + fees + capacity (8760 values). "
+                    "When provided, used as buy_price for arbitrage dispatch."
+    )
+
+    # Raw RDN export prices (prosumer sell price, without OSD fees)
+    # Used as sell_price in LP to model the opportunity cost of storing PV
+    hourly_export_prices_pln_mwh: Optional[List[float]] = Field(
+        None,
+        description="Hourly export prices [PLN/MWh] = raw RDN (prosumer sell price, no OSD fees). "
+                    "Used as sell_price: storing PV costs this much in lost export revenue."
     )
 
     # Hybrid monthly pricing: per-month price source selection
@@ -1023,7 +1031,12 @@ class SavingsBreakdown(BaseModel):
     """
     # Positive savings/revenue
     energy_savings_pln: float = Field(0.0, description="Savings from reduced grid import at flat price (volume × flat_rate)")
-    arbitrage_savings_pln: float = Field(0.0, description="ADDITIONAL savings from ToU price spread (tou_total - flat_savings)")
+    # DEPRECATED since 2026-03-11: Renamed to arbitrage_timing_value_pln in LP context.
+    # This field remains for backward compatibility in SavingsBreakdown.
+    # In LP dispatch, this equals arbitrage_timing_value_pln (discharge-weighted price vs avg).
+    # In sizing, this equals RDN arbitrage profit (import_cost_no_bess - import_cost_with_bess).
+    # Prefer using rdn_arbitrage_metrics.arbitrage_timing_value_pln for LP diagnostics.
+    arbitrage_savings_pln: float = Field(0.0, description="[DEPRECATED 2026-03-11] ToU/RDN arbitrage savings. See rdn_arbitrage_metrics.arbitrage_timing_value_pln for LP diagnostics.")
     capacity_fee_savings_pln: float = Field(0.0, description="Savings from reduced capacity fee (opłata mocowa PL)")
     demand_charge_savings_pln: float = Field(0.0, description="Savings from peak shaving (opłata za moc / demand charge)")
 
@@ -1714,7 +1727,17 @@ class PricesSummary(BaseModel):
 
 
 class DispatchResult(BaseModel):
-    """Result of BESS dispatch simulation"""
+    """
+    Result of BESS dispatch simulation.
+
+    Response schema notes:
+      - Root-level totals (total_charge_kwh, total_discharge_kwh, etc.) are the
+        canonical energy balance fields. Always populated.
+      - energy_flows (optional) contains timeseries_kwh and totals_mwh sub-objects.
+        It does NOT contain flat total_charge_kwh / total_discharge_kwh fields.
+      - rdn_arbitrage_metrics (in info_dict) contains LP-level diagnostics when
+        time-varying prices are used.
+    """
 
     # Configuration echo
     mode: DispatchMode

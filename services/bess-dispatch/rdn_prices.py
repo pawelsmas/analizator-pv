@@ -146,35 +146,106 @@ def _fetch_from_api(start_date: str, end_date: str) -> List[Dict[str, Any]]:
     """
     Raw HTTP call to the PSE RCE-PLN endpoint.
 
-    Uses OData-style ``$filter`` to select the date range.
+    PSE API v2 (2024+) uses:
+      - ``business_date`` instead of ``doba``
+      - ``dtime`` instead of ``udtczas``
+      - Returns 15-min intervals (96/day) — we aggregate to hourly.
+      - Max ~100 records per request, so we iterate day-by-day.
     """
-    params = {
-        "$filter": (
-            f"doba ge '{start_date}' and doba le '{end_date}'"
-        ),
-    }
-    resp = requests.get(
-        PSE_API_URL,
-        params=params,
-        timeout=REQUEST_TIMEOUT_SECONDS,
-        headers={"Accept": "application/json"},
-    )
-    resp.raise_for_status()
-    payload = resp.json()
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d")
 
-    records: List[Dict[str, Any]] = []
-    for row in payload.get("value", []):
-        rce = float(row.get("rce_pln", 0.0))
-        records.append({
-            "doba": row.get("doba", ""),
-            "udtczas": row.get("udtczas", ""),
-            "rce_pln": rce,
-            "rce_pln_kwh": rce / MWH_TO_KWH,
+    all_records_15min: List[Dict[str, Any]] = []
+    current = dt_start
+
+    while current <= dt_end:
+        day_str = current.strftime("%Y-%m-%d")
+        params = {
+            "$filter": f"business_date eq '{day_str}'",
+        }
+        try:
+            resp = requests.get(
+                PSE_API_URL,
+                params=params,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                headers={"Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+
+            for row in payload.get("value", []):
+                rce = float(row.get("rce_pln", 0.0))
+                all_records_15min.append({
+                    "doba": row.get("business_date", day_str),
+                    "udtczas": row.get("dtime", ""),
+                    "rce_pln": rce,
+                    "rce_pln_kwh": rce / MWH_TO_KWH,
+                })
+        except Exception as exc:
+            logger.warning("PSE API failed for %s: %s", day_str, exc)
+
+        current += timedelta(days=1)
+
+    if not all_records_15min:
+        raise RuntimeError("No data fetched from PSE API")
+
+    # Sort by timestamp
+    all_records_15min.sort(key=lambda r: r["udtczas"])
+
+    # Aggregate 15-min → hourly (average of 4 quarter-hours)
+    hourly_records = _aggregate_15min_to_hourly(all_records_15min)
+    logger.info(
+        "PSE API: fetched %d 15-min records → %d hourly (%s to %s)",
+        len(all_records_15min), len(hourly_records), start_date, end_date,
+    )
+    return hourly_records
+
+
+def _aggregate_15min_to_hourly(
+    records_15min: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Aggregate 15-min RDN records to hourly averages."""
+    from collections import defaultdict
+
+    # Group by (date, hour)
+    buckets: Dict[str, List[float]] = defaultdict(list)
+    bucket_doba: Dict[str, str] = {}
+
+    for rec in records_15min:
+        ts_str = rec["udtczas"]
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        # The 15-min period ending at HH:00 belongs to the previous hour
+        # PSE convention: dtime is END of period, so 01:00 = period 00:45-01:00 = hour 00
+        hour_key = ts.strftime("%Y-%m-%d") + f"T{ts.hour:02d}"
+        # But for :15, :30, :45 the dtime shows next quarter
+        # Actually PSE: dtime="2025-03-01 00:15:00" means period 00:00-00:15 → hour 00
+        # dtime="2025-03-01 01:00:00" means period 00:45-01:00 → hour 00
+        if ts.minute == 0 and ts.hour > 0:
+            # This is the LAST quarter of the previous hour
+            prev_hour = ts.hour - 1
+            hour_key = ts.strftime("%Y-%m-%d") + f"T{prev_hour:02d}"
+        else:
+            hour_key = ts.strftime("%Y-%m-%d") + f"T{ts.hour:02d}"
+
+        buckets[hour_key].append(rec["rce_pln"])
+        bucket_doba[hour_key] = rec["doba"]
+
+    hourly: List[Dict[str, Any]] = []
+    for key in sorted(buckets.keys()):
+        prices = buckets[key]
+        avg_rce = sum(prices) / len(prices)
+        date_part, hour_part = key.split("T")
+        hourly.append({
+            "doba": bucket_doba.get(key, date_part),
+            "udtczas": f"{date_part}T{hour_part}:00:00",
+            "rce_pln": round(avg_rce, 2),
+            "rce_pln_kwh": round(avg_rce / MWH_TO_KWH, 6),
         })
 
-    # Sort by timestamp for deterministic ordering
-    records.sort(key=lambda r: r["udtczas"])
-    return records
+    return hourly
 
 
 # ---------------------------------------------------------------------------

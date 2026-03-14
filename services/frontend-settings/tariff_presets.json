@@ -7,6 +7,12 @@
     "exciseTax": 5.00,
     "qualityFeeDefault": 33.10
   },
+  "energyActiveByVoltage": {
+    "_comment": "Typowe stawki energii czynnej sprzedawcy netto 2026 [PLN/MWh] per napięcie i strefa",
+    "A": { "flat": 340, "peak": 400, "partial": 340, "offpeak": 280, "valley": 240 },
+    "B": { "flat": 380, "peak": 460, "partial": 380, "offpeak": 300, "valley": 250 },
+    "C": { "flat": 420, "peak": 520, "partial": 420, "offpeak": 320, "valley": 260 }
+  },
   "operators": {
     "PGE": {
       "label": "PGE Dystrybucja",
