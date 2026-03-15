@@ -1,3 +1,11 @@
+/**
+ * PLIK: bess.js
+ * ROLA: BESS frontend — UI sizing display, dispatch visualization, warianty S/M/L.
+ * WEJŚCIE: sharedData (pvData, consumptionValues, settings), odpowiedzi z /sizing i /dispatch
+ * WYJŚCIE: renderowane tabele wariantów, wykresy dispatch, grid search heatmap
+ * NIE ROBI: Nie buduje requestów (to robi bess_request_builder.js), nie liczy NPV (to robi economics.js),
+ *           nie definiuje scenariuszy (SSoT: BESS_SCENARIOS w settings.js)
+ */
 console.log('[BESS] bess.js LOADED v=4.0.0 (Multi-Engine) - timestamp:', new Date().toISOString());
 
 // ============================================
@@ -1178,13 +1186,14 @@ function updateMainMetricsFromSizing(recommended, sizingResult) {
   const totalPvKwh = ds.total_pv_kwh || (sizingResult?.total_pv_mwh || 0) * 1000;
   const directPvKwh = ds.total_direct_pv_kwh || 0;
   const baselineAutoPct = totalPvKwh > 0 ? (directPvKwh / totalPvKwh * 100) : 0;
-  const withBessAutoPct = ds.self_consumption_pct || (totalPvKwh > 0 ? ((directPvKwh + dischargedKwh) / totalPvKwh * 100) : 0);
-  const autoIncreasePct = withBessAutoPct - baselineAutoPct;
+  // Trust backend self_consumption_pct — JS fallback was wrong for grid-charging modes (>100%)
+  const withBessAutoPct = (ds.self_consumption_pct != null) ? ds.self_consumption_pct : null;
+  const autoIncreasePct = withBessAutoPct !== null ? (withBessAutoPct - baselineAutoPct) : null;
 
   // Update energy metrics
   const autoIncrease = document.getElementById('bessAutoIncrease');
   if (autoIncrease) {
-    autoIncrease.textContent = `+${formatNumberEU(autoIncreasePct, 1)}%`;
+    autoIncrease.textContent = autoIncreasePct !== null ? `+${formatNumberEU(autoIncreasePct, 1)}%` : 'N/A';
   }
   const autoCompare = document.getElementById('bessAutoCompare');
   if (autoCompare) {
@@ -4125,7 +4134,7 @@ function displaySizingVariants(sizingResult) {
             ` : ''}
             ${v.savings_breakdown.arbitrage_savings_pln > 0 ? `
             <div class="breakdown-row">
-              <span class="breakdown-label">🕐 ${parseInt((window.sharedData?.settings?.bessScenarioId) || '0', 10) === 9 ? 'Przesunięcie PV (arbitraż RDN)' : 'Arbitraż ToU'}</span>
+              <span class="breakdown-label">🕐 ${window.BESS_SCENARIOS?.[parseInt((window.sharedData?.settings?.bessScenarioId) || '0', 10)]?.requiresRdn ? 'Przesunięcie PV (arbitraż RDN)' : 'Arbitraż ToU'}</span>
               <span class="breakdown-value">${formatNumberEU(v.savings_breakdown.arbitrage_savings_pln, 0)} PLN</span>
             </div>
             ` : ''}
@@ -4859,23 +4868,18 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
             console.log(`[BESS] Passing ${arbitrageConfig.hourly_prices_pln_mwh.length} import prices (no explicit export prices)`);
           }
         }
-        // Determine mode based on scenario
+        // Determine mode and grid charging from scenario declaration (SSoT)
         const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
-        if (scenarioId === 9) {
-          // Scenario 9 (PV + RDN): PV surplus arbitrage — BESS charges ONLY from PV.
-          // Arbitrage = store PV when RDN price low, discharge when RDN price high.
-          // Grid charging is BANNED — battery never buys from grid.
-          overrides.mode = 'pv_surplus';
-          overrides.arbitrage_config.allow_grid_charging = false;
-          console.log('📈 Scenario 9 (PV+RDN): pv_surplus mode, grid charging DISABLED');
-        } else {
-          // Other arbitrage scenarios: stacked (peak shaving + arbitrage)
-          overrides.mode = 'stacked';
+        const scenario = window.BESS_SCENARIOS?.[scenarioId];
+        overrides.mode = scenario?.baseMode || 'stacked';
+        overrides.arbitrage_config.allow_grid_charging = scenario?.gridCharging !== false;
+        if (overrides.mode === 'stacked') {
           const sortedLoad = [...loadData].sort((a, b) => b - a);
           const p95Index = Math.floor(loadData.length * 0.05);
           const p95Load = sortedLoad[p95Index] || sortedLoad[0];
           overrides.peak_limit_kw = bessConfig.peak_limit_kw || p95Load;
         }
+        console.log(`⚡ Scenario ${scenarioId}: mode=${overrides.mode}, gridCharging=${overrides.arbitrage_config.allow_grid_charging}`);
         overrides.reserve_fraction = bessConfig.reserve_fraction || 0.3;
         overrides.start_date = arbitrageConfig.start_date;
         console.log(`⚡ Arbitrage enabled for sizing (mode=${overrides.mode || 'default'}):`, {
@@ -4989,14 +4993,12 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
           console.log(`📊 Passing ${arbitrageConfig.hourly_prices_pln_mwh.length} RDN hourly prices to sizing request`);
         }
         requestBody.start_date = arbitrageConfig.start_date;
-        // Determine mode based on scenario
+        // Determine mode and grid charging from scenario declaration (SSoT)
         const scenarioId2 = parseInt(settings.bessScenarioId || '0', 10);
-        if (scenarioId2 === 9) {
-          // Scenario 9 (PV + RDN): PV surplus arbitrage — grid charging BANNED
-          requestBody.mode = 'pv_surplus';
-          requestBody.arbitrage_config.allow_grid_charging = false;
-        } else {
-          requestBody.mode = 'stacked';
+        const scenario2 = window.BESS_SCENARIOS?.[scenarioId2];
+        requestBody.mode = scenario2?.baseMode || 'stacked';
+        requestBody.arbitrage_config.allow_grid_charging = scenario2?.gridCharging !== false;
+        if (requestBody.mode === 'stacked') {
           const sortedLoad = [...loadData].sort((a, b) => b - a);
           const p95Index = Math.floor(loadData.length * 0.05);
           const p95Load = sortedLoad[p95Index] || sortedLoad[0];
@@ -5118,6 +5120,82 @@ async function fetchSizingVariants(pvData, loadData, bessConfig) {
 }
 
 /**
+ * Resolve PV and consumption data for sizing from sharedData / localStorage.
+ * Single source of truth for data resolution across all sizing flows.
+ */
+function getDataForSizing() {
+  const parentWindow = window.parent !== window ? window.parent : window;
+  const sharedData = parentWindow.sharedData || window.sharedData;
+
+  let consumptionValues = sharedData?.hourlyData?.values || sharedData?.hourlyData || window.hourlyData?.values || window.hourlyData;
+  let pvData = sharedData?.pvData;
+
+  // Calculate pvData from pv_profile if not directly available
+  if (!pvData && sharedData?.analysisResults?.pv_profile?.length > 0) {
+    const capacity = sharedData?.masterVariant?.capacity;
+    if (capacity) {
+      pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
+      sharedData.pvData = pvData;
+      console.log(`📊 getDataForSizing: pvData from pv_profile: ${pvData.length} values, ${(pvData.reduce((a, b) => a + b, 0) / 1000).toFixed(2)} MWh`);
+    }
+  }
+
+  // localStorage fallback for consumption
+  if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
+    try {
+      const storedResults = localStorage.getItem('pv_analysis_results') || localStorage.getItem('analysisResults');
+      if (storedResults) {
+        const results = JSON.parse(storedResults);
+        if (results.hourly_data) {
+          consumptionValues = results.hourly_data.consumption || results.hourly_data.load;
+          pvData = pvData || results.hourly_data.pv_generation;
+        }
+      }
+    } catch (e) {
+      console.warn('getDataForSizing: Failed to load from localStorage:', e);
+    }
+  }
+
+  return { pvData: pvData || [], consumptionValues, sharedData };
+}
+
+/**
+ * Build bessConfig from settings + optional variant metadata.
+ * Single source of truth for BESS configuration across all sizing flows.
+ */
+function buildBessConfigFromSettings(variant, settings) {
+  const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
+  const scenario = window.BESS_SCENARIOS?.[scenarioId];
+  const hasPeakShaving = settings.bessPeakShavingEnabled || [2, 3, 5, 8].includes(scenarioId);
+  const hasArbitrage = settings.bessOsdArbitrageEnabled || settings.bessPriceArbitrageEnabled;
+
+  const dispatchMode = variant?.dispatch_metadata?.dispatch_mode
+    || scenario?.baseMode
+    || ((hasPeakShaving || hasArbitrage) ? 'stacked' : 'pv_surplus');
+  const isStacked = dispatchMode === 'stacked' || dispatchMode === 'load_only' || hasPeakShaving || hasArbitrage;
+
+  return {
+    enabled: true,
+    power_kw: variant?.bess_power_kw || null,
+    energy_kwh: variant?.bess_energy_kwh || null,
+    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.85,
+    house_load_kw_per_mwh: settings.bessHouseLoadKwPerMwh || 2.75,
+    soc_min: settings.bessSocMin || 0.10,
+    soc_max: settings.bessSocMax || 0.90,
+    durations_h: [1, 2, 4],
+    capex_per_kwh: settings.bessCapexPerKwh || 1500,
+    capex_per_kw: settings.bessCapexPerKw || 300,
+    discount_rate: settings.discountRate / 100,
+    analysis_years: settings.analysisYears || 15,
+    stacked_mode: isStacked,
+    dispatch_mode: dispatchMode,
+    peak_limit_kw: settings.bessPeakShavingTargetKw || null,
+    reserve_fraction: settings.bessReserveFraction || 0.30,
+    max_efc_per_year: settings.bessMaxEfcPerYear || null,
+  };
+}
+
+/**
  * Try to fetch sizing variants using existing variant data
  * Generates simulated hourly profile from variant statistics
  */
@@ -5137,75 +5215,22 @@ async function tryFetchSizingVariants(variant) {
     return;
   }
 
-  // Try to get hourly data from shell (check both iframe local and parent window)
-  const parentWindow = window.parent !== window ? window.parent : window;
-  const sharedData = parentWindow.sharedData || window.sharedData;
-
-  const hourlyData = sharedData?.hourlyData || window.hourlyData;
-  const consumptionValues = hourlyData?.values || hourlyData;
-  let pvData = sharedData?.pvData;
-
-  console.log(`📊 tryFetchSizingVariants: checking pvData from sharedData, isParent=${parentWindow !== window}`);
-
-  // *** CRITICAL FALLBACK: Calculate pvData if not available but pv_profile exists ***
-  if (!pvData && sharedData?.analysisResults?.pv_profile?.length > 0) {
-    const capacity = sharedData?.masterVariant?.capacity;
-    if (capacity) {
-      pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
-      sharedData.pvData = pvData;
-      console.log(`📊 tryFetchSizingVariants: pvData calculated from pv_profile: ${pvData.length} values`);
-    }
-  }
+  // Resolve data and config using shared utilities
+  const { pvData, consumptionValues } = getDataForSizing();
 
   if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
-    console.log('⚠️ No hourly data available for S/M/L sizing. Use "Zastosuj konfigurację" button to run sizing manually.');
-    // Show the advanced config section so user can trigger sizing manually
+    console.log('⚠️ No hourly data available for S/M/L sizing.');
     const advSection = document.getElementById('advancedConfigSection');
-    if (advSection) {
-      advSection.style.display = 'block';
-    }
+    if (advSection) advSection.style.display = 'block';
     return;
   }
 
-  // Build BESS config from current variant and settings
   const settings = systemSettings || {};
-  const variantDispatchMode = variant.dispatch_metadata?.dispatch_mode || 'pv_surplus';
-  const isStacked = variantDispatchMode === 'stacked' || variantDispatchMode === 'load_only' || settings.bessPeakShavingEnabled;
-  const bessConfig = {
-    enabled: true,
-    power_kw: variant.bess_power_kw,
-    energy_kwh: variant.bess_energy_kwh,
-    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.85,
-    house_load_kw_per_mwh: settings.bessHouseLoadKwPerMwh || 2.75,
-    soc_min: settings.bessSocMin || 0.10,
-    soc_max: settings.bessSocMax || 0.90,
-    durations_h: [1, 2, 4],  // S/M/L grid
-    capex_per_kwh: settings.bessCapexPerKwh || 1500,
-    capex_per_kw: settings.bessCapexPerKw || 300,
-    discount_rate: settings.discountRate / 100,
-    analysis_years: settings.analysisYears || 15,
-    stacked_mode: isStacked,
-    dispatch_mode: variantDispatchMode,
-    peak_limit_kw: settings.bessPeakShavingTargetKw || null,
-    reserve_fraction: settings.bessReserveFraction || 0.30,
-    max_efc_per_year: settings.bessMaxEfcPerYear || null,
-  };
-  console.log('🔋 bessConfig dispatch_mode:', variantDispatchMode, 'stacked_mode:', isStacked);
+  const bessConfig = buildBessConfigFromSettings(variant, settings);
+  console.log('🔋 bessConfig dispatch_mode:', bessConfig.dispatch_mode, 'stacked_mode:', bessConfig.stacked_mode);
 
-  // *** DEBUG: Log what we're about to send ***
-  const pvDataToSend = pvData || [];
-  const pvSumMWh = pvDataToSend.length > 0 ? pvDataToSend.reduce((a, b) => a + b, 0) / 1000 : 0;
-  console.log('🔋 Calling fetchSizingVariants for S/M/L grid...');
-  console.log(`📊 DEBUG tryFetchSizingVariants: pvData=${pvDataToSend.length} values, sum=${pvSumMWh.toFixed(2)} MWh`);
-  console.log(`📊 DEBUG tryFetchSizingVariants: consumptionValues=${consumptionValues?.length} values`);
-  if (pvDataToSend.length === 0) {
-    console.error('❌ CRITICAL: pvData is EMPTY! This will cause total_pv_mwh=0 in backend!');
-    console.log('📊 DEBUG: window.sharedData.pvData =', window.sharedData?.pvData);
-    console.log('📊 DEBUG: window.sharedData.analysisResults.pv_profile =', window.sharedData?.analysisResults?.pv_profile?.length);
-    console.log('📊 DEBUG: window.sharedData.masterVariant.capacity =', window.sharedData?.masterVariant?.capacity);
-  }
   try {
-    await fetchSizingVariants(pvDataToSend, consumptionValues, bessConfig);
+    await fetchSizingVariants(pvData, consumptionValues, bessConfig);
   } catch (error) {
     console.error('❌ tryFetchSizingVariants error:', error);
   }
@@ -5218,51 +5243,10 @@ async function tryFetchSizingVariants(variant) {
 async function tryFetchSizingVariantsWithSettings(variant) {
   console.log('🔋 tryFetchSizingVariantsWithSettings: fetching sizing based on settings...');
 
-  // *** CRITICAL: Get sharedData from parent window (BESS runs in iframe) ***
-  const parentWindow = window.parent !== window ? window.parent : window;
-  const sharedData = parentWindow.sharedData || window.sharedData;
-  console.log(`📊 tryFetchSizingVariantsWithSettings: isParent=${parentWindow !== window}, sharedData exists=${!!sharedData}`);
-
-  // Try to get hourly data from shell or localStorage
-  let consumptionValues = sharedData?.hourlyData?.values || sharedData?.hourlyData || window.hourlyData?.values || window.hourlyData;
-  let pvData = sharedData?.pvData;
-
-  // *** CRITICAL FALLBACK: Calculate pvData if not available but pv_profile exists ***
-  // This handles the case where shell.js hasn't been updated yet
-  if (!pvData && sharedData?.analysisResults?.pv_profile?.length > 0) {
-    const capacity = sharedData?.masterVariant?.capacity;
-    if (capacity) {
-      pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
-      console.log(`📊 BESS: pvData calculated from pv_profile: ${pvData.length} values, capacity: ${capacity} kWp`);
-      const totalMWh = pvData.reduce((a, b) => a + b, 0) / 1000;
-      console.log(`📊 BESS: Total PV production: ${totalMWh.toFixed(2)} MWh`);
-      // Also store in sharedData for future use
-      sharedData.pvData = pvData;
-    } else {
-      console.warn('⚠️ BESS: Cannot calculate pvData - no masterVariant.capacity available');
-    }
-  }
-
-  // Try localStorage if not available
-  if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
-    try {
-      const storedResults = localStorage.getItem('pv_analysis_results') || localStorage.getItem('analysisResults');
-      if (storedResults) {
-        const results = JSON.parse(storedResults);
-        // Try to extract hourly data from results
-        if (results.hourly_data) {
-          consumptionValues = results.hourly_data.consumption || results.hourly_data.load;
-          pvData = results.hourly_data.pv_generation;
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load hourly data from localStorage:', e);
-    }
-  }
+  const { pvData, consumptionValues } = getDataForSizing();
 
   if (!consumptionValues || !Array.isArray(consumptionValues) || consumptionValues.length < 24) {
-    console.log('⚠️ No hourly data available for sizing. Please run analysis in KONFIGURACJA first.');
-    // Show message in the UI
+    console.log('⚠️ No hourly data available for sizing.');
     const mainCard = document.querySelector('.bess-main-card');
     if (mainCard) {
       mainCard.innerHTML = `
@@ -5282,34 +5266,11 @@ async function tryFetchSizingVariantsWithSettings(variant) {
     return;
   }
 
-  // Build BESS config from settings (not from variant which has no BESS data)
   const settings = window.systemSettings || systemSettings || {};
-  // Determine stacked mode: peak shaving, arbitrage, or scenario 2/3/5/8 (all use stacked)
-  const hasPeakShaving = settings.bessPeakShavingEnabled || [2, 3, 5, 8].includes(settings.bessScenarioId);
-  const hasArbitrage = settings.bessOsdArbitrageEnabled || settings.bessPriceArbitrageEnabled;
-  const isScenario9 = parseInt(settings.bessScenarioId || '0', 10) === 9;
-  const settingsDispatchMode = variant?.dispatch_metadata?.dispatch_mode || (isScenario9 ? 'pv_surplus' : ((hasPeakShaving || hasArbitrage) ? 'stacked' : 'pv_surplus'));
-  const isSettingsStacked = settingsDispatchMode === 'stacked' || settingsDispatchMode === 'load_only' || hasPeakShaving || hasArbitrage;
-  const bessConfig = {
-    enabled: true,
-    // No power/energy from variant - let the optimizer find optimal
-    power_kw: null,
-    energy_kwh: null,
-    roundtrip_efficiency: settings.bessRoundtripEfficiency || 0.85,
-    house_load_kw_per_mwh: settings.bessHouseLoadKwPerMwh || 2.75,
-    soc_min: settings.bessSocMin || 0.10,
-    soc_max: settings.bessSocMax || 0.90,
-    durations_h: [1, 2, 4],  // S/M/L grid
-    capex_per_kwh: settings.bessCapexPerKwh || 1500,
-    capex_per_kw: settings.bessCapexPerKw || 300,
-    discount_rate: settings.discountRate / 100,
-    analysis_years: settings.analysisYears || 15,
-    stacked_mode: isSettingsStacked,
-    dispatch_mode: settingsDispatchMode,
-    peak_limit_kw: settings.bessPeakShavingTargetKw || null,
-    reserve_fraction: settings.bessReserveFraction || 0.30,
-    max_efc_per_year: settings.bessMaxEfcPerYear || null,
-  };
+  const bessConfig = buildBessConfigFromSettings(variant, settings);
+  // Auto sizing — let optimizer find optimal power/energy
+  bessConfig.power_kw = null;
+  bessConfig.energy_kwh = null;
 
   // Show loading indicator
   const mainCard = document.querySelector('.bess-main-card');
@@ -5325,20 +5286,10 @@ async function tryFetchSizingVariantsWithSettings(variant) {
     `;
   }
 
-  // *** DEBUG: Log what we're about to send ***
-  const pvDataToSend = pvData || [];
-  const pvSumMWh = pvDataToSend.length > 0 ? pvDataToSend.reduce((a, b) => a + b, 0) / 1000 : 0;
-  console.log('🔋 Calling fetchSizingVariants with settings-based config...');
-  console.log(`📊 DEBUG tryFetchSizingVariantsWithSettings: pvData=${pvDataToSend.length} values, sum=${pvSumMWh.toFixed(2)} MWh`);
-  console.log(`📊 DEBUG tryFetchSizingVariantsWithSettings: consumptionValues=${consumptionValues?.length} values`);
-  if (pvDataToSend.length === 0) {
-    console.error('❌ CRITICAL: pvData is EMPTY in tryFetchSizingVariantsWithSettings! This will cause total_pv_mwh=0!');
-    console.log('📊 DEBUG: window.sharedData.pvData =', window.sharedData?.pvData);
-    console.log('📊 DEBUG: window.sharedData.analysisResults.pv_profile =', window.sharedData?.analysisResults?.pv_profile?.length);
-    console.log('📊 DEBUG: window.sharedData.masterVariant.capacity =', window.sharedData?.masterVariant?.capacity);
-  }
+  console.log('🔋 bessConfig dispatch_mode:', bessConfig.dispatch_mode, 'stacked_mode:', bessConfig.stacked_mode);
+
   try {
-    await fetchSizingVariants(pvDataToSend, consumptionValues, bessConfig);
+    await fetchSizingVariants(pvData, consumptionValues, bessConfig);
   } catch (error) {
     console.error('❌ tryFetchSizingVariantsWithSettings error:', error);
     // Show error in UI

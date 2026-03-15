@@ -573,7 +573,8 @@ const BESS_SCENARIOS = {
     description: 'Ładuj BESS gdy ceny RDN niskie, rozładuj gdy wysokie. Wymaga cen RDN.',
     topologies: ['pv_bess'],
     modes: ['pro'],
-    baseMode: 'stacked',
+    baseMode: 'pv_surplus',
+    gridCharging: false,  // battery charges ONLY from PV surplus
     presets: {
       bessPeakShavingEnabled: false,
       bessPriceArbitrageEnabled: true,

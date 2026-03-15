@@ -324,6 +324,19 @@
         </div>
       </div>
 
+      <!-- Production scenario selector -->
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:10px 16px;background:linear-gradient(135deg,#3f51b5,#5c6bc0);border-radius:10px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:14px;color:white;font-weight:600;">Scenariusz:</span>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <button id="consumptionBtnP50" onclick="setConsumptionScenario('P50')" style="padding:6px 14px;border:2px solid #27ae60;background:#27ae60;color:white;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px;">P50</button>
+          <button id="consumptionBtnP75" onclick="setConsumptionScenario('P75')" style="padding:6px 14px;border:2px solid #3498db;background:white;color:#3498db;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px;">P75</button>
+          <button id="consumptionBtnP90" onclick="setConsumptionScenario('P90')" style="padding:6px 14px;border:2px solid #e74c3c;background:white;color:#e74c3c;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px;">P90</button>
+        </div>
+        <span id="consumptionScenarioFactor" style="font-size:11px;color:rgba(255,255,255,0.8);">100%</span>
+      </div>
+
       <!-- Excel export and toggle button -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <button onclick="exportKClassToExcel()" style="background:#1565c0;color:white;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:8px;font-weight:500;">

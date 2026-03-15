@@ -1,3 +1,11 @@
+/**
+ * PLIK: economics.js
+ * ROLA: Economics frontend — NPV, IRR, payback, cash flow, CAPEX/EaaS, Excel export.
+ * WEJŚCIE: window.economicsSettings (z settings.js), centralizedMetrics, preciseAnnualSavings (z backendu PV)
+ * WYJŚCIE: renderowane tabele ekonomiczne, wykresy cash flow, pliki Excel
+ * NIE ROBI: Nie liczy dispatch BESS (to robi bess.js + backend), nie buduje requestów (bess_request_builder.js),
+ *           nie zarządza ustawieniami (to robi settings.js)
+ */
 console.log('🚀 economics.js LOADED v=20260314-PLNTOTYPLN - timestamp:', new Date().toISOString());
 
 // DEBUG flag - set to true for verbose logging (or via URL ?debug_economics=1)
@@ -3533,7 +3541,12 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
   // Common parameters - convert to MWh for consistent calculations with PLN/MWh prices
   const capacityKwp = variant.capacity;
-  const productionMwh = kwhToMwh(variant.production * scenarioFactor);
+  // Year 1 LID (early resolve — needed for productionMwh before full degradation block)
+  const settings = systemSettings || {};
+  const rawPvDegYear1 = settings.pvDegradationYear1;
+  const pvDegradationYear1Display = pctToDecimal(rawPvDegYear1 !== undefined ? rawPvDegYear1 : 1.0);
+  // Production: apply scenarioFactor (P90) + Year 1 LID to match precise savings profile
+  const productionMwh = kwhToMwh(variant.production * scenarioFactor * (1 - pvDegradationYear1Display));
   // Use PRECISE hourly self-consumed from backend when available (consistent with Excel)
   const selfConsumedMwh = (preciseAnnualSavings?.energy?.self_consumed_mwh)
     ? preciseAnnualSavings.energy.self_consumed_mwh
@@ -3607,11 +3620,8 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
   // PV degradation Year 1 (LID)
   // When preciseAnnualSavings available: LID already applied to PV profile before backend call,
   // so self_consumed_mwh already includes it → pvDegradationYear1Calc = 0 to avoid double-counting.
-  // pvDegradationYear1Display always reflects actual setting (for tables/Excel).
-  const settings = systemSettings || {};
-  const rawPvDegYear1 = settings.pvDegradationYear1;
+  // pvDegradationYear1Display resolved above (before productionMwh).
   const hasPreciseBase = !!(preciseAnnualSavings?.energy?.self_consumed_mwh);
-  const pvDegradationYear1Display = pctToDecimal(rawPvDegYear1 !== undefined ? rawPvDegYear1 : 1.0);
   const pvDegradationYear1 = hasPreciseBase
     ? 0  // LID already in profile → in self_consumed_mwh
     : pvDegradationYear1Display;
@@ -3646,9 +3656,16 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
                                  preciseAnnualSavings.year1_savings.other_pln;
     preciseYear1CapacitySavings = preciseAnnualSavings.year1_savings.mocowa_pln;
     totalEnergyPrice = preciseAnnualSavings.effective_price_pln_mwh || totalEnergyPrice;
-    energyPriceWithoutCapacity = totalEnergyPrice - (params.capacity_fee || 0);
+    // Derive capacity fee per MWh from backend decomposition (not hardcoded params.capacity_fee)
+    const selfConsumedMwhForPrice = preciseAnnualSavings.energy?.self_consumed_mwh
+      || (preciseAnnualSavings.self_consumed_mwh)
+      || (variant?.self_consumed ? kwhToMwh(variant.self_consumed) : 0);
+    const backendCapFeePerMwh = (preciseYear1CapacitySavings > 0 && selfConsumedMwhForPrice > 0)
+      ? (preciseYear1CapacitySavings / selfConsumedMwhForPrice)
+      : params.capacity_fee; // fallback to user input only if backend has no data
+    energyPriceWithoutCapacity = totalEnergyPrice - backendCapFeePerMwh;
     console.log(`  ✅ PRECISE SAVINGS from backend: total=${preciseYear1TotalSavings.toFixed(0)} PLN (energia=${preciseYear1EnergySavings.toFixed(0)}, mocowa=${preciseYear1CapacitySavings.toFixed(0)})`);
-    console.log(`     Effective price: ${totalEnergyPrice.toFixed(1)} PLN/MWh`);
+    console.log(`     Effective price: ${totalEnergyPrice.toFixed(1)} PLN/MWh, capacity fee: ${backendCapFeePerMwh.toFixed(1)} PLN/MWh (${preciseYear1CapacitySavings > 0 ? 'from backend' : 'from settings'})`);
   } else {
     // Fallback: HYBRID MONTHLY weighted average or flat rate
     const weightedPrice = (pricingMode === 'hybrid_monthly') ? computeWeightedEnergyPrice(params) : null;
@@ -4051,7 +4068,11 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
       capacityFeeSavingsPV: capacityFeeSavingsPV,
       capacityFeeSavingsBESS: capacityFeeSavingsBESS,
       capacityFeeSavingsTotal: capacityFeeSavingsTotal,
-      hasPreciseSavings: hasPreciseSavings && !hasBess
+      hasPreciseSavings: hasPreciseSavings && !hasBess,
+      // === Koszt bazowy (bez PV) — z backendu, do kolumny "Koszt BEZ PV" ===
+      baselineTotalCostPln: (hasPreciseSavings && preciseAnnualSavings.baseline?.total_cost_pln)
+        ? preciseAnnualSavings.baseline.total_cost_pln
+        : null,  // null → fallback do consumption × totalEnergyPrice
     }
   };
 }
@@ -7119,6 +7140,7 @@ function generatePaybackTable(data, capacity_kwp, params) {
   const discountRate = centralizedCalc.common.discountRate;
   const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
   const inflationRate = centralizedCalc.common.inflationRate;
+  const baselineTotalCostPln = centralizedCalc.common.baselineTotalCostPln;
 
   // Get annual consumption using helper function
   const annualConsumptionKwh = getAnnualConsumptionKwh();
@@ -7168,8 +7190,12 @@ function generatePaybackTable(data, capacity_kwp, params) {
     // A. Energia z Sieci OSD = całkowite zużycie zakładu (stałe)
     const gridEnergyMwh = annualConsumptionMwh;
 
-    // B. Koszt Sieci OSD = całe zużycie × cena z inflacją
-    const yearGridCostFull = gridEnergyMwh * totalEnergyPrice * inflationFactor;
+    // B. Koszt BEZ PV = koszt alternatywny (co by kosztowało bez PV)
+    // Gdy dostępny backend baseline: użyj dokładnego kosztu × inflacja
+    // Fallback: całe zużycie × totalEnergyPrice × inflacja
+    const yearGridCostFull = baselineTotalCostPln
+      ? baselineTotalCostPln * inflationFactor
+      : gridEnergyMwh * totalEnergyPrice * inflationFactor;
 
     // C. Autokonsumpcja - breakdown PV/BESS (z degradacją) - dane w kWh, konwersja do MWh
     const selfConsumedMwh = kwhToMwh(cf.selfConsumed || 0);
@@ -7914,7 +7940,7 @@ function formatEaaSResults(result) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Cena energii z sieci</div>
-        <div style="color:#2c3e50;font-size:24px;font-weight:600">${(m.gridPricePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_gridPrice" style="color:#2c3e50;font-size:24px;font-weight:600">${(m.gridPricePLNperKWh * 1000).toFixed(2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
 
@@ -8178,10 +8204,20 @@ async function calculateEaaS() {
     // Annual subscription (fixed for all scenarios)
     const annualSubscriptionPLN = fullModelResult.annualSubscriptionPLN || fullModelResult.annualSubscription;
 
-    // Grid price for comparison (PLN/MWh) - use weighted price for hybrid monthly
+    // Grid price for comparison (PLN/MWh)
+    // Priority: precise baseline rate from backend (baseline_cost / consumption)
+    // Fallback: tariff component sum (less accurate, includes linearized capacity fee)
     let gridPricePLN = calculateTotalEnergyPrice(params);
     const hybridGridPrice = computeWeightedEnergyPrice(params);
     if (hybridGridPrice) gridPricePLN = hybridGridPrice.weightedTotal;
+    // Use precise baseline rate when available (consistent with EaaS table)
+    const preciseBaselineRate = (preciseAnnualSavings?.baseline?.total_cost_pln && preciseAnnualSavings?.baseline?.import_mwh > 0)
+      ? preciseAnnualSavings.baseline.total_cost_pln / preciseAnnualSavings.baseline.import_mwh
+      : null;
+    if (preciseBaselineRate) {
+      console.log(`📊 EaaS cards: using precise baseline rate ${preciseBaselineRate.toFixed(1)} PLN/MWh (was tariff sum ${gridPricePLN.toFixed(1)})`);
+      gridPricePLN = preciseBaselineRate;
+    }
 
     // Calculate metrics for each scenario
     const scenarios = {
@@ -8307,6 +8343,40 @@ async function calculateEaaS() {
   console.log('CENTRALIZED METRICS stored:', centralizedCalc);
   console.log('  - CAPEX NPV:', plnToMlnPln(centralizedCalc.capex.npv).toFixed(2), 'mln PLN');
   console.log('  - EaaS NPV:', plnToMlnPln(centralizedCalc.eaas?.npv || 0).toFixed(2), 'mln PLN');
+
+  // === FIX: Update scenario cards with precise data from centralizedCalc ===
+  // Cards must show values consistent with the EaaS Rok po Roku table.
+  if (centralizedCalc.eaas?.cashFlows?.length > 0 && centralizedCalc.common?.baselineTotalCostPln) {
+    const year1CF = centralizedCalc.eaas.cashFlows[0];
+    const baselineImportMwh = preciseAnnualSavings?.baseline?.import_mwh || 0;
+    const preciseGridRate = baselineImportMwh > 0
+      ? centralizedCalc.common.baselineTotalCostPln / baselineImportMwh
+      : centralizedCalc.common.totalEnergyPrice;
+    const eaasPrice = eaasSubscriptionPLN / (centralizedCalc.common.selfConsumedMwh || 1);
+    const preciseAnnualSavingsNet = year1CF.savings; // gridCost - eaasCost
+
+    // Update scenarios object used by selectProductionScenario
+    const scKey = window.currentProductionScenario || 'P90';
+    if (window.eaasScenarios?.[scKey]) {
+      window.eaasGridPrice = preciseGridRate;
+      Object.keys(window.eaasScenarios).forEach(k => {
+        const s = window.eaasScenarios[k];
+        s.savingsPerMWh = preciseGridRate - s.pricePLN;
+        s.annualSavings = s.energyMWh * s.savingsPerMWh;
+        s.savingsPercent = preciseGridRate > 0 ? decimalToPct(s.savingsPerMWh / preciseGridRate) : 0;
+      });
+      console.log(`📊 EaaS cards updated: gridRate=${preciseGridRate.toFixed(1)}, eaasPrice=${eaasPrice.toFixed(1)}, netSavings(Y1)=${plnToTysPln(preciseAnnualSavingsNet).toFixed(0)}k`);
+
+      // Update grid price card
+      const gridPriceEl = document.getElementById('eaasVal_gridPrice');
+      if (gridPriceEl) gridPriceEl.textContent = formatNumberEU(preciseGridRate, 2);
+
+      // Re-render cards with corrected values
+      if (typeof selectProductionScenario === 'function') {
+        selectProductionScenario(scKey);
+      }
+    }
+  }
 
   // K-class warning banner
   const kclassBanner = document.getElementById('kclassWarningBanner');
@@ -8702,6 +8772,7 @@ function generateEaaSYearlyTable(params, result) {
   // Get total energy price and annual consumption for calculations
   const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
   const inflationRate = centralizedCalc.common.inflationRate;
+  const baselineTotalCostPln = centralizedCalc.common.baselineTotalCostPln;
 
   // A. Energia z sieci = całkowite zużycie zakładu (bez PV musiałby pobrać całość z sieci)
   const annualConsumptionKwh = getAnnualConsumptionKwh();
@@ -8743,9 +8814,11 @@ function generateEaaSYearlyTable(params, result) {
     // Calculate grid energy for this year (total consumption - stays constant, no degradation on demand side)
     const gridEnergyMwh = annualConsumptionMwh;
 
-    // Calculate grid cost (full consumption at grid price with inflation)
+    // Koszt BEZ PV = koszt alternatywny (backend baseline × inflacja, fallback: zużycie × cena)
     const inflationFactor = Math.pow(1 + inflationRate, year - 1);
-    const yearGridCostFull = gridEnergyMwh * totalEnergyPrice * inflationFactor;
+    const yearGridCostFull = baselineTotalCostPln
+      ? baselineTotalCostPln * inflationFactor
+      : gridEnergyMwh * totalEnergyPrice * inflationFactor;
 
     cumulativeNPV += discountedCF;
 
@@ -9066,11 +9139,19 @@ async function exportEaaSToExcel(withFormulas = false) {
     : 'PLN';
 
   // Convert values to contract currency
+  // Use precise baseline rate from backend when available (consistent with portal cards & table)
+  const currentCalc = centralizedMetrics[currentVariant];
+  const preciseBaselineCost = currentCalc?.common?.baselineTotalCostPln;
+  const preciseBaselineImportMwh = preciseAnnualSavings?.baseline?.import_mwh;
+  const preciseGridPricePLNperMWh = (preciseBaselineCost && preciseBaselineImportMwh > 0)
+    ? preciseBaselineCost / preciseBaselineImportMwh
+    : null;
+
   const eaasSubscriptionDisplay = eaasSubscription * currencyMultiplier;
-  const gridPriceDisplay = result.metrics.gridPricePLNperKWh * 1000 * currencyMultiplier;
+  const gridPriceDisplay = (preciseGridPricePLNperMWh || result.metrics.gridPricePLNperKWh * 1000) * currencyMultiplier;
   const eaasPriceDisplay = result.metrics.eaasPricePLNperKWh * 1000 * currencyMultiplier;
-  const priceDiffDisplay = result.metrics.priceDifferencePLNperKWh * 1000 * currencyMultiplier;
-  const annualSavingsDisplay = plnToTysPln(result.metrics.annualSavingsPLN * currencyMultiplier);
+  const priceDiffDisplay = (gridPriceDisplay / currencyMultiplier - result.metrics.eaasPricePLNperKWh * 1000) * currencyMultiplier;
+  const annualSavingsDisplay = plnToTysPln(autoconsumptionMwh * priceDiffDisplay / currencyMultiplier * currencyMultiplier);
 
   const summaryData = [
     [''],  // Row 1 - logo area
@@ -9261,10 +9342,15 @@ async function exportEaaSToExcel(withFormulas = false) {
     const consumptionMwh = annualConsumptionMwh;
     setCell(ws2, 2, row, consumptionFormula, roundNum(consumptionMwh, 2));
 
-    // Column D: Koszt BEZ PV [tys. PLN] = zużycie × cena sieci × inflacja
-    // E15=zużycie, E11=cena sieci bazowa, E5=inflacja
-    const noPvCostFormula = `C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1)`;
-    const noPvCostValue = consumptionMwh * totalEnergyPrice * Math.pow(1 + inflationRate, year - 1) * currencyMultiplier;
+    // Column D: Koszt BEZ PV [tys. PLN] = koszt alternatywny × inflacja
+    // Gdy dostępny backend baseline: dokładny roczny koszt × inflacja
+    // Fallback: zużycie × cena sieci × inflacja
+    const baselineCostPln = centralizedCalc.common.baselineTotalCostPln;
+    const baselineTysCurr = baselineCostPln ? roundNum(plnToTysPln(baselineCostPln * currencyMultiplier), 2) : null;
+    const noPvCostFormula = baselineTysCurr
+      ? `${baselineTysCurr}*POWER(1+$E$5,A${row}-1)`
+      : `C${row}*$E$11/1000*POWER(1+$E$5,A${row}-1)`;
+    const noPvCostValue = (baselineCostPln || (consumptionMwh * totalEnergyPrice)) * Math.pow(1 + inflationRate, year - 1) * currencyMultiplier;
     setCell(ws2, 3, row, noPvCostFormula, roundNum(plnToTysPln(noPvCostValue), 2));
 
     // Column E: Autokonsumpcja [MWh] - formula with Year1 and Years2+ degradation

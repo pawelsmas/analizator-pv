@@ -41,13 +41,95 @@ let consumptionData = null;
 let peakShavingExportData = null; // Store for BESS optimization
 let currentLoadProfile = null; // Load profile for BESS optimization (hourly or 15-min)
 let currentTimestamps = null; // Timestamps for BESS optimization
+
+// Production scenario (P50/P75/P90)
+const productionFactors = { P50: 1.00, P75: 0.97, P90: 0.94 };
+let currentProductionScenario = 'P50';
+let currentScenarioFactor = 1.0;
+let cachedRawPvData = null; // Raw PV data from shell (before scenario scaling)
 let currentIntervalMinutes = 60; // Data interval: 15 for quarter-hourly, 60 for hourly
+
+/**
+ * Set production scenario (P50/P75/P90) and re-run K-class analysis.
+ * @param {string} scenario - 'P50', 'P75', or 'P90'
+ * @param {boolean} broadcast - if true, notify shell to sync other modules
+ */
+function setConsumptionScenario(scenario, broadcast = true) {
+  if (!productionFactors[scenario]) return;
+  currentProductionScenario = scenario;
+  currentScenarioFactor = productionFactors[scenario];
+
+  // Update UI buttons
+  ['P50', 'P75', 'P90'].forEach(s => {
+    const btn = document.getElementById(`consumptionBtn${s}`);
+    if (!btn) return;
+    const colors = { P50: '#27ae60', P75: '#3498db', P90: '#e74c3c' };
+    const active = s === scenario;
+    btn.style.background = active ? colors[s] : 'white';
+    btn.style.color = active ? 'white' : colors[s];
+    btn.style.borderColor = colors[s];
+  });
+
+  // Update factor display
+  const factorEl = document.getElementById('consumptionScenarioFactor');
+  if (factorEl) factorEl.textContent = `${(currentScenarioFactor * 100).toFixed(0)}%`;
+
+  // Re-run K-class with scaled PV data
+  if (cachedRawPvData && consumptionData?.hourlyData?.values) {
+    rerunKClassWithScenario();
+  }
+
+  // Broadcast to shell → other modules
+  if (broadcast) {
+    window.parent.postMessage({
+      type: 'PRODUCTION_SCENARIO_CHANGED',
+      data: { scenario, source: 'consumption' }
+    }, '*');
+  }
+
+  console.log(`📊 Consumption: Scenario set to ${scenario} (factor: ${currentScenarioFactor})`);
+}
+
+/**
+ * Re-run K-class analysis with current scenario factor applied to cached PV data.
+ */
+function rerunKClassWithScenario() {
+  if (!cachedRawPvData || !consumptionData?.hourlyData?.values) return;
+
+  const pvScaled = cachedRawPvData.map(v => v * currentScenarioFactor);
+
+  let loadHourly = consumptionData.hourlyData.values;
+  if (loadHourly.length === 35040) {
+    const hourlyLoad = [];
+    for (let h = 0; h < 8760; h++) {
+      const s = h * 4;
+      hourlyLoad.push((loadHourly[s] + loadHourly[s+1] + loadHourly[s+2] + loadHourly[s+3]) / 4);
+    }
+    loadHourly = hourlyLoad;
+  }
+  if (loadHourly.length < 8760) return;
+
+  let somPLNperKWh = 0.2194;
+  try {
+    const settings = cachedSystemSettings || JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+    if (settings.capacityFeeRate) somPLNperKWh = settings.capacityFeeRate / 1000;
+  } catch (e) {}
+
+  const year = consumptionData?.year || 2025;
+  const analysis = calculateKClassAnalysis(loadHourly, pvScaled, year, somPLNperKWh);
+  updateKClassWidget(analysis);
+
+  if (analysis) {
+    console.log(`⚡ K-class [${currentProductionScenario}]: fee=${analysis.totalFeeBefore?.toFixed(0)}→${analysis.totalFeeAfter?.toFixed(0)}, savings=${analysis.totalSavings?.toFixed(0)} PLN`);
+  }
+}
 
 // Check for data on load
 document.addEventListener('DOMContentLoaded', () => {
-  // Request settings from shell first
+  // Request settings and scenario from shell first
   console.log('📊 Consumption: Requesting settings from shell on load');
   window.parent.postMessage({ type: 'REQUEST_SETTINGS' }, '*');
+  window.parent.postMessage({ type: 'REQUEST_SCENARIO' }, '*');
 
   // Load data after short delay to allow settings to arrive
   setTimeout(() => {
@@ -89,6 +171,17 @@ window.addEventListener('message', (event) => {
       if (event.data.data && event.data.data.settings) {
         cachedSystemSettings = event.data.data.settings;
         console.log('📊 Consumption: Settings from SHARED_DATA_RESPONSE:', cachedSystemSettings.tariffConfig);
+      }
+      // Restore scenario from shared data
+      if (event.data.data?.currentScenario) {
+        setConsumptionScenario(event.data.data.currentScenario, false);
+      }
+      break;
+    case 'SCENARIO_CHANGED':
+      // Production scenario changed from another module (economics/shell)
+      if (event.data.data?.scenario) {
+        console.log(`📊 Consumption: Scenario changed to ${event.data.data.scenario} (source: ${event.data.data.source})`);
+        setConsumptionScenario(event.data.data.scenario, false);
       }
       break;
   }
@@ -3926,6 +4019,7 @@ async function exportKClassToExcel() {
 
   const paramData = [
     ['Stawka opłaty mocowej (SOM)', roundNum(somRate * 1000, 2), 'PLN/MWh'],
+    ['Scenariusz produkcji', `${currentProductionScenario} (×${currentScenarioFactor})`, ''],
     ['Rok analizy', 2025, ''],
     ['Godziny wybrane', '7:00 - 22:00', 'dni robocze']
   ];
@@ -4676,6 +4770,13 @@ function initKClassAnalysis() {
     console.log('⚡ K-class: No PV configured - showing consumption profile only');
   }
 
+  // Cache raw PV for scenario switching & apply current scenario factor
+  if (pvHourly.some(v => v > 0)) {
+    cachedRawPvData = [...pvHourly];
+    pvHourly = pvHourly.map(v => v * currentScenarioFactor);
+    console.log(`⚡ K-class: Applied scenario ${currentProductionScenario} (×${currentScenarioFactor}) to PV profile`);
+  }
+
   // Handle 15-min data - aggregate to hourly
   let hourlyLoad = loadHourly;
   if (loadHourly.length > 10000) {
@@ -4745,44 +4846,16 @@ window.addEventListener('message', (event) => {
   if (event.data?.type === 'PV_DATA_RESPONSE' && pvData?.hourly_generation && pvData.hourly_generation.length > 0) {
     console.log('⚡ K-class: Received PV data from shell:', pvData.hourly_generation.length, 'values, capacity:', pvData.capacity_kwp, 'kWp');
 
+    // Cache raw PV data (P50, before scenario scaling)
+    cachedRawPvData = [...pvData.hourly_generation];
+
     if (!consumptionData?.hourlyData?.values) {
       console.log('⚡ K-class: No consumption data yet, cannot re-run analysis');
       return;
     }
 
-    let loadHourly = consumptionData.hourlyData.values;
-    const pvHourly = pvData.hourly_generation;
-
-    // Handle 15-min data (35040 points) - aggregate to hourly
-    if (loadHourly.length === 35040) {
-      console.log('⚡ K-class: Converting 15-min data to hourly');
-      const hourlyLoad = [];
-      for (let h = 0; h < 8760; h++) {
-        const start = h * 4;
-        const avg = (loadHourly[start] + loadHourly[start+1] + loadHourly[start+2] + loadHourly[start+3]) / 4;
-        hourlyLoad.push(avg);
-      }
-      loadHourly = hourlyLoad;
-    }
-
-    if (loadHourly.length < 8760) return;
-
-    let somPLNperKWh = 0.2194;
-    try {
-      const settings = cachedSystemSettings || JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
-      if (settings.capacityFeeRate) {
-        somPLNperKWh = settings.capacityFeeRate / 1000;
-      }
-    } catch (e) {}
-
-    const loadSum = loadHourly.reduce((a, b) => a + b, 0);
-    const pvSum2 = pvHourly.reduce((a, b) => a + b, 0);
-    console.log(`⚡ K-class: RE-RUN DATA — load: ${loadHourly.length} pts, sum=${loadSum.toFixed(0)}, pv: ${pvHourly.length} pts, sum=${pvSum2.toFixed(0)}`);
-
-    const rerunYear = consumptionData?.year || 2025;
-    const analysis = calculateKClassAnalysis(loadHourly, pvHourly, rerunYear, somPLNperKWh);
-    updateKClassWidget(analysis);
-    console.log(`⚡ K-class: RE-RUN RESULT — feeBefore=${analysis?.totalFeeBefore?.toFixed(0)}, feeAfter=${analysis?.totalFeeAfter?.toFixed(0)}, savings=${analysis?.totalSavings?.toFixed(0)} PLN`);
+    // Re-run with current scenario factor
+    rerunKClassWithScenario();
   }
 });
 

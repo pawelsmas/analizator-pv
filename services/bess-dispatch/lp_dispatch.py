@@ -1,4 +1,11 @@
 """
+PLIK: lp_dispatch.py
+ROLA: LP solver — fizyka baterii (charge/discharge scheduling).
+WEJŚCIE: BatteryParams, numpy arrays load_kw/pv_kw, PriceConfig, DispatchMode, buy/sell price overrides
+WYJŚCIE: DispatchResult z hourly energy flows (charge/discharge/grid/soc), peak_reduction, degradation
+NIE ROBI: Nie liczy oszczędności PLN (to robi build_savings_breakdown w sizing_runner),
+          nie liczy NPV (to robi economics_engine), nie rozstrzyga cen (to robi price_resolver)
+
 LP Dispatch Engine - Linear Programming with Rolling Horizon
 =============================================================
 Globally optimal BESS dispatch using scipy.optimize.linprog (HiGHS backend).

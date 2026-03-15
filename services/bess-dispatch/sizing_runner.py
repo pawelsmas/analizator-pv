@@ -1,7 +1,10 @@
 """
-BESS Sizing Runner
-==================
-Optimization of BESS size (P, E) for different duration variants.
+PLIK: sizing_runner.py
+ROLA: Sizing orchestrator — grid search po mocach/pojemnościach + SavingsBreakdown + NPV.
+WEJŚCIE: SizingRequest (z app.py), numpy arrays load_kw/pv_kw, import/export prices
+WYJŚCIE: SizingResponse z wariantami S/M/L, każdy z DispatchResult + SavingsBreakdown + NPV
+NIE ROBI: Nie rozwiązuje LP (deleguje do lp_dispatch), nie liczy NPV (deleguje do economics_engine),
+          nie buduje requestu (to robi frontend bess_request_builder.js)
 
 Implements:
 - Grid search over power levels for each duration (1h, 2h, 4h)
@@ -1416,6 +1419,322 @@ def compute_pareto_frontier(
     return points
 
 
+def build_savings_breakdown(
+    result: DispatchResult,
+    request: SizingRequest,
+    mode: DispatchMode,
+    load_kw: np.ndarray,
+    pv_kw: np.ndarray,
+    n_timesteps: int,
+    dt_hours: float,
+    arb_enabled: bool,
+    import_prices: Optional[np.ndarray],
+    export_prices: Optional[np.ndarray],
+    power_kw: float,
+    energy_kwh: float,
+) -> SavingsBreakdown:
+    """
+    Build transparent SavingsBreakdown from dispatch result.
+
+    Separates financial accounting (PLN) from physics (dispatch).
+    All savings components are calculated here — dispatch only provides energy flows.
+    """
+    savings_breakdown = SavingsBreakdown()
+
+    # Baseline grid import/export (no BESS)
+    if mode == DispatchMode.LOAD_ONLY:
+        baseline_grid_import_kw = load_kw.copy()
+        baseline_grid_export_kw = np.zeros_like(load_kw)
+    else:
+        baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
+        baseline_grid_export_kw = np.maximum(pv_kw - load_kw, 0)
+
+    # Get actual grid import from dispatch result
+    if result.hourly_grid_import_kw is not None:
+        actual_grid_import_kw = np.array(result.hourly_grid_import_kw)
+    else:
+        actual_grid_import_kw = np.full(n_timesteps, result.total_grid_import_kwh / (n_timesteps * dt_hours))
+
+    # 2a. Base energy savings (ToU tariff or flat pricing)
+    if request.prices.is_tou_enabled:
+        pricing_config = PricingConfig(
+            tariff_id=request.prices.tariff_id,
+            flat_import_pln_mwh=request.prices.import_price_pln_mwh,
+            flat_export_pln_mwh=request.prices.export_price_pln_mwh,
+            other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
+            capacity_fee_method=request.prices.capacity_fee_method,
+            capacity_fee_som_pln_kwh=request.prices.capacity_fee_som_pln_kwh,
+            capacity_fee_fixed_pln_mwh=request.prices.capacity_fee_fixed_pln_mwh,
+            analysis_year=request.prices.analysis_year,
+            export_policy="zero_export",
+        )
+
+        interval_minutes = int(dt_hours * 60)
+        savings_result = calculate_savings(
+            baseline_grid_import_kw,
+            actual_grid_import_kw,
+            pricing_config,
+            interval_minutes,
+            analytical_period=request.analytical_period,
+        )
+
+        savings_breakdown.energy_savings_pln = (
+            savings_result['savings']['tou_savings_pln'] +
+            savings_result['savings']['other_savings_pln']
+        )
+        if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
+            savings_breakdown.capacity_fee_savings_pln = savings_result['savings']['capacity_fee_savings_pln']
+        else:
+            savings_breakdown.capacity_fee_savings_pln = 0.0
+
+        result.prices_summary = {
+            'baseline': savings_result['baseline'],
+            'project': savings_result['project'],
+            'savings': savings_result['savings'],
+            'config': savings_result['config'],
+        }
+
+        logger.info(
+            f"ToU pricing: baseline={savings_result['baseline']['total_cost_pln']:.0f} PLN, "
+            f"project={savings_result['project']['total_cost_pln']:.0f} PLN, "
+            f"savings={savings_result['savings']['total_savings_pln']:.0f} PLN"
+        )
+    else:
+        flat_price = request.prices.import_price_pln_mwh / 1000.0
+        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
+        savings_breakdown.energy_savings_pln = import_reduction_kwh * flat_price
+
+    # 2b. Arbitrage savings
+    if arb_enabled and import_prices is not None:
+        charge_kw = np.array(result.hourly_charge_kw) if result.hourly_charge_kw else np.zeros(n_timesteps)
+        discharge_kw = np.array(result.hourly_discharge_kw) if result.hourly_discharge_kw else np.zeros(n_timesteps)
+
+        if mode == DispatchMode.LOAD_ONLY:
+            pv_surplus_kw = np.zeros(n_timesteps)
+        else:
+            pv_surplus_kw = np.maximum(pv_kw - load_kw, 0.0)
+        charge_from_pv_kw = np.minimum(charge_kw, pv_surplus_kw)
+        charge_from_grid_kw = np.maximum(charge_kw - charge_from_pv_kw, 0.0)
+
+        grid_charge_cost = float(np.sum(charge_from_grid_kw * dt_hours * import_prices))
+        grid_charge_energy_kwh = float(np.sum(charge_from_grid_kw * dt_hours))
+
+        discharge_kwh = discharge_kw * dt_hours
+        discharge_value = float(np.sum(discharge_kwh * import_prices))
+
+        pv_charge_energy_kwh = float(np.sum(charge_from_pv_kw * dt_hours))
+        total_charge_energy_kwh = grid_charge_energy_kwh + pv_charge_energy_kwh
+
+        # PV timing arbitrage
+        if pv_charge_energy_kwh > 0 and export_prices is not None:
+            lost_export_revenue = float(np.sum(charge_from_pv_kw * dt_hours * export_prices))
+            pv_fraction = pv_charge_energy_kwh / total_charge_energy_kwh if total_charge_energy_kwh > 0 else 1.0
+            pv_discharge_value = discharge_value * pv_fraction
+            pv_timing_value = pv_discharge_value - lost_export_revenue
+            savings_breakdown.arbitrage_savings_pln = max(0.0, pv_timing_value)
+
+            logger.warning(
+                f"PV timing arbitrage: pv_charge={pv_charge_energy_kwh:.0f} kWh, "
+                f"lost_export={lost_export_revenue:.0f} PLN, "
+                f"pv_discharge_value={pv_discharge_value:.0f} PLN, "
+                f"pv_timing_value={pv_timing_value:.0f} PLN"
+            )
+
+        # Grid charging arbitrage
+        if grid_charge_energy_kwh > 0:
+            grid_fraction = grid_charge_energy_kwh / total_charge_energy_kwh
+            grid_discharge_value = discharge_value * grid_fraction
+            grid_arbitrage_profit = grid_discharge_value - grid_charge_cost
+            savings_breakdown.arbitrage_savings_pln += max(0.0, grid_arbitrage_profit)
+
+            logger.warning(
+                f"Grid arbitrage: grid_charge_cost={grid_charge_cost:.0f} PLN, "
+                f"grid_charge_energy={grid_charge_energy_kwh:.0f} kWh, "
+                f"grid_discharge_value={grid_discharge_value:.0f} PLN, "
+                f"grid_arbitrage_profit={grid_arbitrage_profit:.0f} PLN"
+            )
+
+        if total_charge_energy_kwh == 0:
+            savings_breakdown.arbitrage_savings_pln = 0.0
+
+        logger.warning(
+            f"Arbitrage TOTAL: {savings_breakdown.arbitrage_savings_pln:.0f} PLN, "
+            f"pv_charge={pv_charge_energy_kwh:.0f} kWh, grid_charge={grid_charge_energy_kwh:.0f} kWh, "
+            f"discharge_value={discharge_value:.0f} PLN"
+        )
+
+    # 2c. Capacity fee savings (if not already set by ToU path)
+    cap_fee_method = getattr(request.prices, 'capacity_fee_method', None) if request.prices else None
+    cap_fee_enabled = cap_fee_method == 'dynamic'
+    if savings_breakdown.capacity_fee_savings_pln == 0.0 and cap_fee_enabled and mode in [
+        DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY
+    ]:
+        savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
+            baseline_grid_import_kw,
+            actual_grid_import_kw,
+            dt_hours,
+            start_date=request.start_date,
+            analytical_period=request.analytical_period,
+        )
+
+    # 3. Demand charge savings (from peak reduction)
+    if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
+        if result.peak_reduction_kw > 0 and request.prices.annual_demand_charge_pln_kw > 0:
+            savings_breakdown.demand_charge_savings_pln = (
+                result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
+            )
+        elif result.peak_reduction_kw > 0:
+            default_demand_charge_monthly = 30.0
+            savings_breakdown.demand_charge_savings_pln = (
+                result.peak_reduction_kw * default_demand_charge_monthly * 12
+            )
+
+    # 4. Export revenue breakdown
+    export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0 if request.prices.export_price_pln_mwh > 0 else 0.0
+    baseline_export_kwh = np.sum(baseline_grid_export_kw) * dt_hours
+    savings_breakdown.baseline_export_revenue_pln = baseline_export_kwh * export_price_pln_kwh
+    project_export_kwh = result.total_grid_export_kwh
+    savings_breakdown.project_export_revenue_pln = project_export_kwh * export_price_pln_kwh
+    savings_breakdown.export_revenue_savings_pln = (
+        savings_breakdown.project_export_revenue_pln - savings_breakdown.baseline_export_revenue_pln
+    )
+    savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
+
+    # 5. Battery throughput and degradation cost
+    throughput_mwh = result.degradation.throughput_total_mwh if result.degradation else 0.0
+    savings_breakdown.battery_throughput_mwh = throughput_mwh
+    if throughput_mwh > 0 and request.degradation_cost_pln_mwh > 0:
+        savings_breakdown.degradation_cost_pln = throughput_mwh * request.degradation_cost_pln_mwh
+    elif arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
+        total_throughput_kwh = throughput_mwh * 1000
+        savings_breakdown.degradation_cost_pln = (
+            total_throughput_kwh * request.arbitrage_config.degradation_cost_pln_kwh
+        )
+
+    # 6. Unserved load penalty
+    if result.constraint_summary is not None:
+        unserved_kwh = result.constraint_summary.unserved_load_kwh
+        if unserved_kwh > 0 and request.grid_constraints is not None:
+            penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
+            if penalty_rate > 0:
+                savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
+
+    # 7. Grid constraint metrics
+    if request.grid_constraints is not None:
+        mode_str = mode.value if hasattr(mode, "value") else str(mode)
+        record_grid_constraint_request(mode=mode_str)
+
+        cs = result.constraint_summary
+        if cs is not None:
+            record_export_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.export_cap_hit_steps,
+                curtailed_kwh=cs.export_cap_curtailed_kwh,
+            )
+            penalty_pln = savings_breakdown.unserved_load_penalty_pln
+            record_import_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.import_cap_hit_steps,
+                unserved_kwh=cs.unserved_load_kwh,
+                penalty_pln=penalty_pln,
+            )
+
+    # Ancillary services revenue (v2.0)
+    if getattr(request, 'ancillary_services_enabled', False) and power_kw > 0:
+        try:
+            from ancillary_services import (
+                AncillaryServiceType,
+                BatteryVirtualizer,
+                StackedServiceOptimizer,
+            )
+            from ancillary_services.models import POLISH_MARKET_PRESETS, PolishMarketPreset
+
+            svc_list = request.ancillary_services_list or [
+                "aFRR_up", "aFRR_down", "mFRR_up", "peak_shaving", "energy_arbitrage",
+            ]
+            service_types = []
+            for svc_name in svc_list:
+                try:
+                    service_types.append(AncillaryServiceType(svc_name))
+                except ValueError:
+                    pass
+
+            if service_types:
+                market_year = getattr(request, 'ancillary_market_year', 2026)
+                market = POLISH_MARKET_PRESETS.get(market_year, PolishMarketPreset(year=market_year))
+                margin = getattr(request, 'ancillary_aggregator_margin_pct', 20.0)
+                market.aggregator_margin_pct = margin
+
+                virt_config = BatteryVirtualizer.create_default_allocation(
+                    total_power_kw=power_kw,
+                    total_energy_kwh=energy_kwh,
+                    services=service_types,
+                    roundtrip_efficiency=request.roundtrip_efficiency,
+                )
+                optimizer = StackedServiceOptimizer(virt_config, market, market_year)
+
+                if import_prices is not None and len(import_prices) == n_timesteps:
+                    buy_p = import_prices / 1000.0
+                else:
+                    buy_p = np.full(n_timesteps, request.prices.import_price_pln_mwh / 1000.0)
+                sell_p = buy_p * 0.8
+
+                peak_lim = power_kw
+                if request.mode == DispatchMode.STACKED and request.stacked_params:
+                    peak_lim = request.stacked_params.peak_limit_kw
+                elif request.peak_limit_kw:
+                    peak_lim = request.peak_limit_kw
+
+                steps_per_day = int(24 / dt_hours)
+                n_days = n_timesteps // steps_per_day
+                sample_days = min(n_days, 16)
+                if sample_days > 0:
+                    day_indices = np.linspace(0, n_days - 1, sample_days, dtype=int)
+                    total_rev = 0.0
+                    afrr_rev = 0.0
+                    mfrr_rev = 0.0
+                    for di in day_indices:
+                        s = di * steps_per_day
+                        e = s + steps_per_day
+                        if e > n_timesteps:
+                            break
+                        day_result = optimizer.optimize_day(
+                            buy_prices=buy_p[s:e],
+                            sell_prices=sell_p[s:e],
+                            load_kw=load_kw[s:e],
+                            pv_kw=pv_kw[s:e],
+                            peak_limit_kw=peak_lim,
+                            dt_hours=dt_hours,
+                        )
+                        if day_result.get("status") == "optimal":
+                            rev = day_result["revenue"]
+                            total_rev += rev.get("net_total_pln", 0)
+                            afrr_rev += rev.get("afrr_up_capacity_pln", 0) + rev.get("afrr_down_capacity_pln", 0)
+                            mfrr_rev += rev.get("mfrr_up_capacity_pln", 0)
+
+                    scale = 365 / sample_days if sample_days > 0 else 0
+                    annual_total = total_rev * scale
+                    annual_afrr = afrr_rev * scale
+                    annual_mfrr = mfrr_rev * scale
+                    agg_margin = margin / 100.0
+
+                    savings_breakdown.ancillary_afrr_revenue_pln = annual_afrr * (1 - agg_margin)
+                    savings_breakdown.ancillary_mfrr_revenue_pln = annual_mfrr * (1 - agg_margin)
+                    savings_breakdown.ancillary_aggregator_fee_pln = (annual_afrr + annual_mfrr) * agg_margin
+                    savings_breakdown.ancillary_total_net_pln = annual_total * (1 - agg_margin)
+
+        except ImportError:
+            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Ancillary revenue calc failed: {e}")
+
+    # Calculate net savings
+    savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
+
+    return savings_breakdown
+
+
 def run_sizing_for_variant(
     pv_kw: np.ndarray,
     load_kw: np.ndarray,
@@ -1555,362 +1874,25 @@ def run_sizing_for_variant(
         record_debug_events(result.debug_events)
 
     # ==========================================================================
-    # Calculate Savings Breakdown (transparent NPV components)
+    # Calculate Savings Breakdown (delegated to build_savings_breakdown)
     # ==========================================================================
-
-    savings_breakdown = SavingsBreakdown()
-
-    # Baseline grid import/export (no BESS)
-    # For modes with PV: net_load = load - pv, clipped to >= 0
-    # For LOAD_ONLY: net_load = load, no export
-    if mode == DispatchMode.LOAD_ONLY:
-        baseline_grid_import_kw = load_kw.copy()
-        baseline_grid_export_kw = np.zeros_like(load_kw)
-    else:
-        baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
-        baseline_grid_export_kw = np.maximum(pv_kw - load_kw, 0)  # PV surplus
-
-    # Get actual grid import from dispatch result
-    if result.hourly_grid_import_kw is not None:
-        actual_grid_import_kw = np.array(result.hourly_grid_import_kw)
-    else:
-        # Fallback: estimate from totals (less accurate)
-        actual_grid_import_kw = np.full(n_timesteps, result.total_grid_import_kwh / (n_timesteps * dt_hours))
-
-    # =========================================================================
-    # 2a. Base energy savings (ToU tariff or flat pricing)
-    # =========================================================================
-    if request.prices.is_tou_enabled:
-        # Convert PriceConfig -> PricingConfig for economics_helper
-        pricing_config = PricingConfig(
-            tariff_id=request.prices.tariff_id,
-            flat_import_pln_mwh=request.prices.import_price_pln_mwh,
-            flat_export_pln_mwh=request.prices.export_price_pln_mwh,
-            other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
-            capacity_fee_method=request.prices.capacity_fee_method,
-            capacity_fee_som_pln_kwh=request.prices.capacity_fee_som_pln_kwh,
-            capacity_fee_fixed_pln_mwh=request.prices.capacity_fee_fixed_pln_mwh,
-            analysis_year=request.prices.analysis_year,
-            export_policy="zero_export",
-        )
-
-        interval_minutes = int(dt_hours * 60)
-        savings_result = calculate_savings(
-            baseline_grid_import_kw,
-            actual_grid_import_kw,
-            pricing_config,
-            interval_minutes,
-            analytical_period=request.analytical_period,
-        )
-
-        savings_breakdown.energy_savings_pln = (
-            savings_result['savings']['tou_savings_pln'] +
-            savings_result['savings']['other_savings_pln']
-        )
-        # Capacity fee savings only for modes that explicitly do peak shaving
-        if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
-            savings_breakdown.capacity_fee_savings_pln = savings_result['savings']['capacity_fee_savings_pln']
-        else:
-            savings_breakdown.capacity_fee_savings_pln = 0.0
-
-        result.prices_summary = {
-            'baseline': savings_result['baseline'],
-            'project': savings_result['project'],
-            'savings': savings_result['savings'],
-            'config': savings_result['config'],
-        }
-
-        logger.info(
-            f"ToU pricing: baseline={savings_result['baseline']['total_cost_pln']:.0f} PLN, "
-            f"project={savings_result['project']['total_cost_pln']:.0f} PLN, "
-            f"savings={savings_result['savings']['total_savings_pln']:.0f} PLN"
-        )
-    else:
-        # Flat pricing - simple calculation
-        flat_price = request.prices.import_price_pln_mwh / 1000.0  # PLN/kWh
-        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
-        savings_breakdown.energy_savings_pln = import_reduction_kwh * flat_price
-
-    # =========================================================================
-    # 2b. Arbitrage savings (TRUE grid-charging arbitrage: buy cheap, discharge expensive)
-    # =========================================================================
-    if arb_enabled and import_prices is not None:
-        # Get charge/discharge arrays from LP result
-        charge_kw = np.array(result.hourly_charge_kw) if result.hourly_charge_kw else np.zeros(n_timesteps)
-        discharge_kw = np.array(result.hourly_discharge_kw) if result.hourly_discharge_kw else np.zeros(n_timesteps)
-
-        # Separate PV charging from grid charging
-        if mode == DispatchMode.LOAD_ONLY:
-            pv_surplus_kw = np.zeros(n_timesteps)
-        else:
-            pv_surplus_kw = np.maximum(pv_kw - load_kw, 0.0)
-        charge_from_pv_kw = np.minimum(charge_kw, pv_surplus_kw)
-        charge_from_grid_kw = np.maximum(charge_kw - charge_from_pv_kw, 0.0)
-
-        # Grid charging cost = energy bought from grid for battery at each hour's price
-        grid_charge_cost = float(np.sum(charge_from_grid_kw * dt_hours * import_prices))
-
-        # Grid charging energy
-        grid_charge_energy_kwh = float(np.sum(charge_from_grid_kw * dt_hours))
-
-        # Discharge value = avoided grid import at each hour's price
-        # Only count discharge that actually reduces grid import (not PV surplus hours)
-        discharge_kwh = discharge_kw * dt_hours
-        discharge_value = float(np.sum(discharge_kwh * import_prices))
-
-        # PV self-consumption value (discharge of PV-charged energy at each hour's price)
-        pv_charge_energy_kwh = float(np.sum(charge_from_pv_kw * dt_hours))
-        total_charge_energy_kwh = grid_charge_energy_kwh + pv_charge_energy_kwh
-
-        # =====================================================================
-        # PV timing arbitrage (Scenario 9: grid charging banned)
-        # Value = discharge at high import prices - lost export at low export prices
-        # The battery stores PV surplus when RDN is cheap, discharges when expensive.
-        # =====================================================================
-        if pv_charge_energy_kwh > 0 and export_prices is not None:
-            # Lost export revenue = PV surplus that went to battery instead of grid
-            lost_export_revenue = float(np.sum(charge_from_pv_kw * dt_hours * export_prices))
-            # PV fraction of discharge
-            pv_fraction = pv_charge_energy_kwh / total_charge_energy_kwh if total_charge_energy_kwh > 0 else 1.0
-            pv_discharge_value = discharge_value * pv_fraction
-            # PV timing arbitrage = what we earned discharging - what we lost not exporting
-            pv_timing_value = pv_discharge_value - lost_export_revenue
-            savings_breakdown.arbitrage_savings_pln = max(0.0, pv_timing_value)
-
-            logger.warning(
-                f"PV timing arbitrage: pv_charge={pv_charge_energy_kwh:.0f} kWh, "
-                f"lost_export={lost_export_revenue:.0f} PLN, "
-                f"pv_discharge_value={pv_discharge_value:.0f} PLN, "
-                f"pv_timing_value={pv_timing_value:.0f} PLN"
-            )
-
-        # Grid charging arbitrage (other scenarios: buy cheap from grid, discharge expensive)
-        if grid_charge_energy_kwh > 0:
-            grid_fraction = grid_charge_energy_kwh / total_charge_energy_kwh
-            grid_discharge_value = discharge_value * grid_fraction
-            grid_arbitrage_profit = grid_discharge_value - grid_charge_cost
-            # Add grid arbitrage on top of PV timing (for mixed scenarios)
-            savings_breakdown.arbitrage_savings_pln += max(0.0, grid_arbitrage_profit)
-
-            logger.warning(
-                f"Grid arbitrage: grid_charge_cost={grid_charge_cost:.0f} PLN, "
-                f"grid_charge_energy={grid_charge_energy_kwh:.0f} kWh, "
-                f"grid_discharge_value={grid_discharge_value:.0f} PLN, "
-                f"grid_arbitrage_profit={grid_arbitrage_profit:.0f} PLN"
-            )
-
-        if total_charge_energy_kwh == 0:
-            savings_breakdown.arbitrage_savings_pln = 0.0
-
-        logger.warning(
-            f"Arbitrage TOTAL: {savings_breakdown.arbitrage_savings_pln:.0f} PLN, "
-            f"pv_charge={pv_charge_energy_kwh:.0f} kWh, grid_charge={grid_charge_energy_kwh:.0f} kWh, "
-            f"discharge_value={discharge_value:.0f} PLN"
-        )
-
-    # =========================================================================
-    # 2c. Capacity fee savings (if not already set by ToU path)
-    # Only calculate if capacity_fee_method is 'dynamic' (user enabled it)
-    # =========================================================================
-    cap_fee_method = getattr(request.prices, 'capacity_fee_method', None) if request.prices else None
-    cap_fee_enabled = cap_fee_method == 'dynamic'
-    if savings_breakdown.capacity_fee_savings_pln == 0.0 and cap_fee_enabled and mode in [
-        DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY
-    ]:
-        savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
-            baseline_grid_import_kw,
-            actual_grid_import_kw,
-            dt_hours,
-            start_date=request.start_date,
-            analytical_period=request.analytical_period,
-        )
-
-    # =========================================================================
-    # 3. Demand charge savings (from peak reduction) - only for peak shaving modes
-    # =========================================================================
-    if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
-        if result.peak_reduction_kw > 0 and request.prices.annual_demand_charge_pln_kw > 0:
-            savings_breakdown.demand_charge_savings_pln = (
-                result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
-            )
-        elif result.peak_reduction_kw > 0:
-            # Even without explicit demand charge rate, estimate peak shaving value
-            default_demand_charge_monthly = 30.0  # PLN/kW/month
-            savings_breakdown.demand_charge_savings_pln = (
-                result.peak_reduction_kw * default_demand_charge_monthly * 12
-            )
-
-    # 4. Export revenue breakdown (baseline vs project)
-    # Baseline: PV surplus without battery (all excess goes to grid)
-    # Project: With battery (some PV is stored, so less export)
-    export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0 if request.prices.export_price_pln_mwh > 0 else 0.0
-
-    # Calculate baseline export (no battery) - in kWh
-    baseline_export_kwh = np.sum(baseline_grid_export_kw) * dt_hours
-    savings_breakdown.baseline_export_revenue_pln = baseline_export_kwh * export_price_pln_kwh
-
-    # Calculate project export (with battery) - in kWh
-    project_export_kwh = result.total_grid_export_kwh
-    savings_breakdown.project_export_revenue_pln = project_export_kwh * export_price_pln_kwh
-
-    # Export revenue change = project - baseline (typically NEGATIVE because battery uses PV)
-    savings_breakdown.export_revenue_savings_pln = (
-        savings_breakdown.project_export_revenue_pln - savings_breakdown.baseline_export_revenue_pln
+    savings_breakdown = build_savings_breakdown(
+        result=result,
+        request=request,
+        mode=mode,
+        load_kw=load_kw,
+        pv_kw=pv_kw,
+        n_timesteps=n_timesteps,
+        dt_hours=dt_hours,
+        arb_enabled=arb_enabled,
+        import_prices=import_prices,
+        export_prices=export_prices,
+        power_kw=power_kw,
+        energy_kwh=energy_kwh,
     )
 
-    # Legacy field for backward compatibility
-    savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
-
-    # 5. Battery throughput and degradation cost
-    # Always set battery_throughput_mwh (SSoT for throughput)
-    throughput_mwh = result.degradation.throughput_total_mwh if result.degradation else 0.0
-    savings_breakdown.battery_throughput_mwh = throughput_mwh
-
-    # Calculate degradation cost using general degradation_cost_pln_mwh parameter
-    # (applies to all modes, not just arbitrage)
-    if throughput_mwh > 0 and request.degradation_cost_pln_mwh > 0:
-        savings_breakdown.degradation_cost_pln = throughput_mwh * request.degradation_cost_pln_mwh
-    # Legacy: also check arbitrage config for backward compatibility
-    elif arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
-        total_throughput_kwh = throughput_mwh * 1000
-        savings_breakdown.degradation_cost_pln = (
-            total_throughput_kwh * request.arbitrage_config.degradation_cost_pln_kwh
-        )
-
-    # 6. Unserved load penalty (v0.7.0 PR4)
-    # If import cap caused unserved load and penalty rate is set, calculate cost
-    if result.constraint_summary is not None:
-        unserved_kwh = result.constraint_summary.unserved_load_kwh
-        if unserved_kwh > 0 and request.grid_constraints is not None:
-            penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
-            if penalty_rate > 0:
-                savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
-
-    # 7. Record grid constraint metrics (v0.7.0 PR6)
-    if request.grid_constraints is not None:
-        mode_str = mode.value if hasattr(mode, "value") else str(mode)
-        record_grid_constraint_request(mode=mode_str)
-
-        cs = result.constraint_summary
-        if cs is not None:
-            # Export cap metrics
-            record_export_cap_metrics(
-                mode=mode_str,
-                hit_steps=cs.export_cap_hit_steps,
-                curtailed_kwh=cs.export_cap_curtailed_kwh,
-            )
-            # Import cap and unserved load metrics
-            penalty_pln = savings_breakdown.unserved_load_penalty_pln
-            record_import_cap_metrics(
-                mode=mode_str,
-                hit_steps=cs.import_cap_hit_steps,
-                unserved_kwh=cs.unserved_load_kwh,
-                penalty_pln=penalty_pln,
-            )
-
-    # ── Ancillary services revenue (v2.0) ──
-    if getattr(request, 'ancillary_services_enabled', False) and power_kw > 0:
-        try:
-            from ancillary_services import (
-                AncillaryServiceType,
-                BatteryVirtualizer,
-                StackedServiceOptimizer,
-            )
-            from ancillary_services.models import POLISH_MARKET_PRESETS, PolishMarketPreset
-
-            svc_list = request.ancillary_services_list or [
-                "aFRR_up", "aFRR_down", "mFRR_up", "peak_shaving", "energy_arbitrage",
-            ]
-            service_types = []
-            for svc_name in svc_list:
-                try:
-                    service_types.append(AncillaryServiceType(svc_name))
-                except ValueError:
-                    pass
-
-            if service_types:
-                market_year = getattr(request, 'ancillary_market_year', 2026)
-                market = POLISH_MARKET_PRESETS.get(market_year, PolishMarketPreset(year=market_year))
-                margin = getattr(request, 'ancillary_aggregator_margin_pct', 20.0)
-                market.aggregator_margin_pct = margin
-
-                virt_config = BatteryVirtualizer.create_default_allocation(
-                    total_power_kw=power_kw,
-                    total_energy_kwh=energy_kwh,
-                    services=service_types,
-                    roundtrip_efficiency=request.roundtrip_efficiency,
-                )
-                optimizer = StackedServiceOptimizer(virt_config, market, market_year)
-
-                # Use import_prices if available, otherwise flat price
-                if import_prices is not None and len(import_prices) == n_timesteps:
-                    buy_p = import_prices / 1000.0  # PLN/MWh -> PLN/kWh
-                else:
-                    buy_p = np.full(n_timesteps, request.prices.import_price_pln_mwh / 1000.0)
-                sell_p = buy_p * 0.8
-
-                peak_lim = power_kw  # default
-                if request.mode == DispatchMode.STACKED and request.stacked_params:
-                    peak_lim = request.stacked_params.peak_limit_kw
-                elif request.peak_limit_kw:
-                    peak_lim = request.peak_limit_kw
-
-                # Run daily LP for representative sample (4 days per season = 16 days)
-                # then extrapolate to full year for speed
-                steps_per_day = int(24 / dt_hours)
-                n_days = n_timesteps // steps_per_day
-                sample_days = min(n_days, 16)
-                if sample_days > 0:
-                    day_indices = np.linspace(0, n_days - 1, sample_days, dtype=int)
-                    total_rev = 0.0
-                    afrr_rev = 0.0
-                    mfrr_rev = 0.0
-                    for di in day_indices:
-                        s = di * steps_per_day
-                        e = s + steps_per_day
-                        if e > n_timesteps:
-                            break
-                        day_result = optimizer.optimize_day(
-                            buy_prices=buy_p[s:e],
-                            sell_prices=sell_p[s:e],
-                            load_kw=load_kw[s:e],
-                            pv_kw=pv_kw[s:e],
-                            peak_limit_kw=peak_lim,
-                            dt_hours=dt_hours,
-                        )
-                        if day_result.get("status") == "optimal":
-                            rev = day_result["revenue"]
-                            total_rev += rev.get("net_total_pln", 0)
-                            afrr_rev += rev.get("afrr_up_capacity_pln", 0) + rev.get("afrr_down_capacity_pln", 0)
-                            mfrr_rev += rev.get("mfrr_up_capacity_pln", 0)
-
-                    # Scale to full year
-                    scale = 365 / sample_days if sample_days > 0 else 0
-                    annual_total = total_rev * scale
-                    annual_afrr = afrr_rev * scale
-                    annual_mfrr = mfrr_rev * scale
-                    agg_margin = margin / 100.0
-
-                    savings_breakdown.ancillary_afrr_revenue_pln = annual_afrr * (1 - agg_margin)
-                    savings_breakdown.ancillary_mfrr_revenue_pln = annual_mfrr * (1 - agg_margin)
-                    savings_breakdown.ancillary_aggregator_fee_pln = (annual_afrr + annual_mfrr) * agg_margin
-                    savings_breakdown.ancillary_total_net_pln = annual_total * (1 - agg_margin)
-
-        except ImportError:
-            pass  # scipy not available, skip ancillary
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Ancillary revenue calc failed: {e}")
-
-    # Calculate net savings
-    savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
-
-    # Always attach savings_breakdown to result for transparency
+    # Attach to result
     result.savings_breakdown = savings_breakdown
-
-    # SSoT: annual_savings_pln ALWAYS equals savings_breakdown.net_savings_pln
-    # This ensures consistency between frontend display (uses annual_savings_pln)
-    # and economics calculations (uses savings_breakdown components)
     result.annual_savings_pln = savings_breakdown.net_savings_pln
 
     # ==========================================================================

@@ -1,5 +1,10 @@
 /**
- * BESS Request Builder - Single Source of Truth
+ * PLIK: bess_request_builder.js
+ * ROLA: SSoT budowania BESS API request — jedyne miejsce tworzenia requestów do /dispatch i /sizing.
+ * WEJŚCIE: settings (z window.PVSettings), load_kw[], pv_generation_kw[], overrides
+ * WYJŚCIE: JSON request body zgodny z SizingRequest/DispatchRequest (backend app.py)
+ * NIE ROBI: Nie wyświetla UI (to robi bess.js), nie liczy ekonomiki (to robi economics.js),
+ *           nie definiuje scenariuszy (SSoT: BESS_SCENARIOS w settings.js)
  *
  * All modules MUST use this builder to ensure consistent parameters.
  * DO NOT build BESS requests manually - always use buildBessRequest().
@@ -217,13 +222,14 @@
       return 'load_only';
     }
 
-    // Scenario 9 (PV + RDN Arbitrage): always pv_surplus
+    // Read baseMode from scenario declaration (SSoT in settings.js)
     const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
-    if (scenarioId === 9) {
-      return 'pv_surplus';
+    const scenario = window.BESS_SCENARIOS?.[scenarioId];
+    if (scenario?.baseMode) {
+      return scenario.baseMode;
     }
 
-    // Check if stacked mode is enabled (peak shaving or arbitrage)
+    // Fallback: check if stacked mode is enabled (peak shaving or arbitrage)
     if (settings.bessStackedMode || settings.bessPeakShavingEnabled ||
         settings.bessOsdArbitrageEnabled || settings.bessPriceArbitrageEnabled) {
       return 'stacked';
@@ -332,11 +338,10 @@
     config.arbitrage_soc_min = parseFloatSafe(settings.bessArbitrageSocMin, 0.20);
     config.degradation_cost_pln_kwh = parseFloatSafe(settings.bessArbitrageDegradationCost, 0.05);
 
-    // Grid charging control:
-    // Scenario 9 (PV + RDN): BANNED — battery charges ONLY from PV surplus.
-    // Other scenarios: allowed by default.
+    // Grid charging control: read from scenario declaration (SSoT in settings.js)
     const scenarioId = parseInt(settings.bessScenarioId || '0', 10);
-    config.allow_grid_charging = (scenarioId === 9) ? false : true;
+    const scenario = window.BESS_SCENARIOS?.[scenarioId];
+    config.allow_grid_charging = scenario?.gridCharging !== false;  // default: true
 
     return config;
   }

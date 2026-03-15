@@ -1,7 +1,10 @@
 """
-BESS Dispatch Service
-=====================
-FastAPI service for BESS dispatch simulation and sizing.
+PLIK: app.py
+ROLA: FastAPI router — HTTP endpoints dla BESS dispatch i sizing.
+WEJŚCIE: JSON request body (DispatchRequest, SizingRequest) z frontendu (bess_request_builder.js)
+WYJŚCIE: JSON response (DispatchResult, SizingResponse) z wynikami symulacji i ekonomiki
+NIE ROBI: Nie liczy fizyki (deleguje do lp_dispatch), nie liczy NPV (deleguje do economics_engine),
+          nie rozstrzyga cen (deleguje do price_resolver)
 
 Endpoints:
 - POST /dispatch - Run dispatch simulation
@@ -4083,6 +4086,21 @@ async def pv_annual_summary(request: PvExcelExportRequest):
         # Effective weighted average price (what self-consumed energy was actually worth)
         effective_price_pln_mwh = (total_savings / (self_consumed_kwh / 1000)) if self_consumed_kwh > 0 else 0
 
+        # --- AUDIT LOG: key values for EaaS savings traceability ---
+        logging.warning(
+            f"📊 PV-ANNUAL-SUMMARY [{request.pv_capacity_kwp} kWp]: "
+            f"baseline_total={bl_total:.0f} PLN, project_total={pj_total:.0f} PLN, "
+            f"savings={total_savings:.0f} PLN | "
+            f"energia={energia_savings:.0f}, mocowa={mocowa_savings:.0f}, "
+            f"dystr={dystr_savings:.0f}, other={other_savings:.0f} | "
+            f"self_consumed={self_consumed_kwh:.0f} kWh ({self_consumed_kwh/1000:.1f} MWh), "
+            f"surplus={surplus_kwh:.0f} kWh | "
+            f"effective_price={effective_price_pln_mwh:.1f} PLN/MWh | "
+            f"baseline_rate={bl_total/(bl_import_kwh/1000) if bl_import_kwh > 0 else 0:.1f} PLN/MWh | "
+            f"K-class: {bl_cap.get('k_class','?')}→{pj_cap.get('k_class','?')}, "
+            f"mocowa: {bl_mocowa:.0f}→{pj_mocowa:.0f} PLN"
+        )
+
         return {
             'status': 'ok',
             'year1_savings': {
@@ -4118,6 +4136,7 @@ async def pv_annual_summary(request: PvExcelExportRequest):
             'monthly': monthly,
         }
     except Exception as e:
+        logging.exception(f"PV annual summary error: {e}")
         raise HTTPException(500, f"PV annual summary error: {str(e)}")
 
 
