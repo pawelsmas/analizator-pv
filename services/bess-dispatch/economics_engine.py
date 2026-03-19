@@ -334,8 +334,9 @@ def calculate_npv(
     # --- IRR ---
     irr = calculate_irr_from_cashflows(cashflows)
 
-    # --- Payback ---
-    payback = calculate_simple_payback(annual_savings, capex)
+    # --- Payback (net of OpEx) ---
+    annual_opex_y1 = capex * config.opex_pct
+    payback = calculate_simple_payback(annual_savings - annual_opex_y1, capex)
 
     # --- Effective years (how many years have positive cashflow) ---
     effective = horizon

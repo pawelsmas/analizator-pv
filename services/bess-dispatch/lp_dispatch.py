@@ -466,6 +466,7 @@ def lp_dispatch_rolling(
     lp_config: Optional[LPSolverParams] = None,
     grid_connection_kw: Optional[float] = None,
     allow_grid_charging: bool = True,
+    marginal_cycle_cost_per_kwh: float = 0.0,
 ) -> np.ndarray:
     """
     Rolling horizon LP dispatch (v7.0.0: always succeeds).
@@ -501,8 +502,16 @@ def lp_dispatch_rolling(
         # Slice data for this window
         pv_win = pv_kw[cursor:window_end]
         load_win = load_kw[cursor:window_end]
-        buy_win = buy_price[cursor:window_end]
-        sell_win = sell_price[cursor:window_end]
+        buy_win = buy_price[cursor:window_end].copy()
+        sell_win = sell_price[cursor:window_end].copy()
+
+        # Apply marginal cycling cost (Wariant B):
+        # Increases effective buy price and decreases effective sell price.
+        # LP will only cycle when spread > 2 × marginal_cost (charge + discharge).
+        # This filters out junk cycles without changing LP structure.
+        if marginal_cycle_cost_per_kwh > 0:
+            buy_win = buy_win + marginal_cycle_cost_per_kwh
+            sell_win = sell_win - marginal_cycle_cost_per_kwh
 
         # Solve LP for this window
         soc_win = solve_lp_window(
@@ -700,6 +709,7 @@ def resolve_buy_sell_for_dispatch(
     import_prices: Optional[np.ndarray] = None,
     export_prices: Optional[np.ndarray] = None,
     arbitrage_config: Optional[Any] = None,
+    mode: Optional[Any] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Unified buy/sell price resolution for both dispatch and sizing.
@@ -720,6 +730,7 @@ def resolve_buy_sell_for_dispatch(
         import_prices: per-timestep buy prices [PLN/kWh] (all-in: RDN + OSD fees)
         export_prices: per-timestep sell prices [PLN/kWh] (raw RDN, prosumer sell)
         arbitrage_config: optional ArbitrageConfig (needs .enabled attribute)
+        mode: optional DispatchMode — LOAD_ONLY forces sell=buy (time-shift semantics)
 
     Returns:
         (buy_price_arr, sell_price_arr) both [PLN/kWh] × n_steps
@@ -732,12 +743,17 @@ def resolve_buy_sell_for_dispatch(
     else:
         _, sell_arr = resolve_price_arrays(prices, n_steps)
         if arbitrage_config and getattr(arbitrage_config, 'enabled', False):
-            if export_prices is not None and len(export_prices) >= n_steps:
-                # Explicit export prices: raw RDN (prosumer sell price without OSD)
+            if mode == DispatchMode.LOAD_ONLY:
+                # LOAD_ONLY (zero-export): discharge reduces import — value = buy_price.
+                # sell_price = buy_price (time-shift semantics).
+                # Using raw_RDN < buy would underestimate discharge value → LP under-cycles.
+                sell_arr = buy_arr.copy()
+            elif export_prices is not None and len(export_prices) >= n_steps:
+                # Export-enabled: raw RDN is the actual grid settlement price
                 sell_arr = export_prices[:n_steps]
-            elif prices and prices.export_price_pln_mwh <= 0.01:
-                # Fallback: buy_price * 0.95 as opportunity-cost proxy
-                sell_arr = buy_arr * 0.95
+            else:
+                # Fallback: sell = buy (no export price configured)
+                sell_arr = buy_arr.copy()
 
     return buy_arr, sell_arr
 
@@ -760,6 +776,7 @@ def dispatch_lp(
     sell_price_override: Optional[np.ndarray] = None,
     grid_connection_kw: Optional[float] = None,
     allow_grid_charging: bool = True,
+    marginal_cycle_cost_per_kwh: float = 0.0,
 ) -> DispatchResult:
     """
     Main LP dispatch entry point (v7.0.0: self-sufficient, never returns None).
@@ -828,6 +845,7 @@ def dispatch_lp(
         lp_config=lp_config,
         grid_connection_kw=grid_connection_kw,
         allow_grid_charging=allow_grid_charging,
+        marginal_cycle_cost_per_kwh=marginal_cycle_cost_per_kwh,
     )
 
     # Post-process: SoC → power arrays
@@ -1146,6 +1164,7 @@ def dispatch_lp_with_capacity_optimization(
     premium_levels: Optional[List[float]] = None,
     grid_connection_kw: Optional[float] = None,
     allow_grid_charging: bool = True,
+    marginal_cycle_cost_per_kwh: float = 0.0,
 ) -> Tuple['DispatchResult', Optional[Dict[str, Any]]]:
     """
     Multi-solve LP dispatch with capacity fee (opłata mocowa) optimization.
@@ -1180,6 +1199,7 @@ def dispatch_lp_with_capacity_optimization(
             buy_price_override, sell_price_override,
             grid_connection_kw=grid_connection_kw,
             allow_grid_charging=allow_grid_charging,
+            marginal_cycle_cost_per_kwh=marginal_cycle_cost_per_kwh,
         )
         return result, None
 
@@ -1220,6 +1240,7 @@ def dispatch_lp_with_capacity_optimization(
             sell_price_override=base_sell,
             grid_connection_kw=grid_connection_kw,
             allow_grid_charging=allow_grid_charging,
+            marginal_cycle_cost_per_kwh=marginal_cycle_cost_per_kwh,
         )
 
         grid_import_kw = np.array(result.hourly_grid_import_kw)

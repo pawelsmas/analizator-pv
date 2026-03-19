@@ -2074,6 +2074,7 @@ def run_dispatch(
         import_prices=import_prices,
         export_prices=export_prices,
         arbitrage_config=getattr(request, 'arbitrage_config', None),
+        mode=request.mode,
     )
 
     # Resolve allow_grid_charging from arbitrage config

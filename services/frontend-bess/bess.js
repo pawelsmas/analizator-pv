@@ -1943,6 +1943,9 @@ function loadBessOnlyResults(bessOnlyResults) {
   displaySizingVariants(sizingResult);
   updateConfigResultsSummary(sizingResult);
 
+  // Display finance section (lifecycle cashflow, sensitivity, IRR)
+  displayFinanceSection(sizingResult);
+
   // Show sizing variants section prominently
   const sizingSection = document.getElementById('sizingVariantsSection');
   if (sizingSection) {
@@ -3155,10 +3158,25 @@ async function exportVariantToXlsx(variantLabel) {
   const pvProfile = window.sharedData?.pvData ||
                     window.sharedData?.analysisResults?.hourly_production ||
                     [];
-  const loadProfile = window.sharedData?.loadData ||
+  let loadProfile = window.sharedData?.loadData ||
                       window.sharedData?.consumptionData?.values ||
                       lastSizingResult?.request_summary?.load_kw ||
                       [];
+  // Fallback: try localStorage for BESS-only scenarios (no PV, loadData not in sharedData)
+  if (loadProfile.length === 0) {
+    try {
+      const cd = JSON.parse(localStorage.getItem('consumptionData') || '{}');
+      if (cd.hourlyData?.values?.length > 0) {
+        loadProfile = cd.hourlyData.values;
+        console.log(`📊 Excel export: recovered loadProfile from localStorage (${loadProfile.length} points)`);
+      }
+    } catch (e) { /* ignore */ }
+  }
+  // Last resort: try to recover from lastSizingResult load_kw
+  if (loadProfile.length === 0 && lastSizingResult?.variants?.[0]?.dispatch_summary?.load_kw) {
+    loadProfile = lastSizingResult.variants[0].dispatch_summary.load_kw;
+    console.log(`📊 Excel export: recovered loadProfile from sizing result (${loadProfile.length} points)`);
+  }
   console.log(`📊 exportVariantToXlsx: pvProfile=${pvProfile.length}, loadProfile=${loadProfile.length}, bt=${n}`);
 
   // Build baseline and project import
@@ -3262,6 +3280,17 @@ async function exportVariantToXlsx(variantLabel) {
           degradation_status: v.degradation_status || '',
           self_consumption_pct: v.self_consumption_pct || 0,
           peak_reduction_pct: v.peak_reduction_pct || 0,
+          irr_pct: v.irr_pct || v.finance_summary?.irr_pct || null,
+          finance_summary: v.finance_summary ? {
+            horizon_years: v.finance_summary.horizon_years,
+            discount_rate: v.finance_summary.discount_rate,
+            npv_pln: v.finance_summary.npv_pln,
+            irr_pct: v.finance_summary.irr_pct,
+            pln_per_efc: v.finance_summary.pln_per_efc,
+            optimal_efc_limit: v.finance_summary.optimal_efc_limit,
+            cashflow_timeseries: v.finance_summary.cashflow_timeseries,
+            efc_optimization_sweep: v.finance_summary.efc_optimization_sweep,
+          } : null,
         }));
         console.log(`📊 Excel export: including ${payload.sizing_variants.length} sizing variants`);
       }
@@ -5783,8 +5812,9 @@ let advancedConfig = {
 
 // Objective descriptions for info display
 const objectiveDescriptions = {
-  npv: 'NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji',
-  payback: 'Minimalizuj okres zwrotu - szybszy zwrot inwestycji',
+  npv: 'NPV uwzględnia wartość pieniądza w czasie i pełne koszty inwestycji. Preferuje mniejsze magazyny z lepszym zwrotem.',
+  max_savings: 'Maksymalizuj roczne oszczędności — największy magazyn dający największy absolutny przychód. CAPEX schodzi na drugi plan.',
+  payback: 'Minimalizuj okres zwrotu — szybszy zwrot inwestycji',
   self_consumption: 'Maksymalizuj wykorzystanie własnej energii z PV',
   peak_reduction: 'Maksymalizuj redukcję szczytów mocy z sieci',
   efc_utilization: 'Optymalizuj wykorzystanie cykli baterii w budżecie degradacji'
@@ -5899,6 +5929,32 @@ function updateOptimizationObjective(value) {
   // Store in localStorage
   localStorage.setItem('bessObjective', value);
 }
+
+/**
+ * Update max payback constraint from quick-access input
+ */
+function updatePaybackConstraint(value) {
+  const maxPayback = parseFloat(value);
+  if (!maxPayback || maxPayback <= 0) {
+    // Remove payback constraint
+    advancedConfig.constraints = advancedConfig.constraints.filter(c => c.type !== 'max_payback');
+    console.log('🎯 Payback constraint removed');
+    return;
+  }
+  // Add or update payback constraint
+  const existing = advancedConfig.constraints.find(c => c.type === 'max_payback');
+  if (existing) {
+    existing.value = maxPayback;
+  } else {
+    advancedConfig.constraints.push({
+      type: 'max_payback',
+      value: maxPayback,
+      hard: false  // Soft constraint — penalizes but doesn't exclude
+    });
+  }
+  console.log(`🎯 Payback constraint set to ${maxPayback} lat`);
+}
+window.updatePaybackConstraint = updatePaybackConstraint;
 
 /**
  * Toggle constraint enabled/disabled
@@ -6857,9 +6913,9 @@ function updateConfigResultsSummary(result) {
 
   // Update values
   const variantLabels = {
-    'small': 'Small (1h)',
-    'medium': 'Medium (2h)',
-    'large': 'Large (4h)'
+    'small': 'Wariant 1h',
+    'medium': 'Wariant 2h',
+    'large': 'Wariant 4h'
   };
 
   setElementText('summaryRecommended', variantLabels[result.recommended_variant] || result.recommended_variant || '-');
@@ -6985,9 +7041,9 @@ function updateTopVariantsCompareTable(result) {
 
   // Variant labels
   const variantLabels = {
-    'small': 'Small (1h)',
-    'medium': 'Medium (2h)',
-    'large': 'Large (4h)'
+    'small': 'Wariant 1h',
+    'medium': 'Wariant 2h',
+    'large': 'Wariant 4h'
   };
 
   // Build table rows
@@ -7043,9 +7099,9 @@ function updateParetoFrontierTable(result) {
 
   // Variant labels
   const variantLabels = {
-    'small': 'Small (1h)',
-    'medium': 'Medium (2h)',
-    'large': 'Large (4h)'
+    'small': 'Wariant 1h',
+    'medium': 'Wariant 2h',
+    'large': 'Wariant 4h'
   };
 
   // Build table rows
@@ -7747,14 +7803,20 @@ function displayCashflowTable(financeSummary) {
     const netClass = cf.net_cashflow_pln >= 0 ? 'positive' : 'negative';
     const cumClass = cf.cumulative_cashflow_pln >= 0 ? 'positive' : 'negative';
 
+    const soh = cf.soh_pct != null ? cf.soh_pct : (isYearZero ? 100 : null);
+    const sohStr = soh != null ? `${soh.toFixed(1)}%` : '-';
+    const sohClass = cf.is_eol ? 'negative' : (soh != null && soh < 80 ? 'warning' : '');
+    const eolBadge = cf.is_eol ? ' <span style="background:#ef5350;color:#fff;padding:1px 5px;border-radius:3px;font-size:9px">EOL</span>' : '';
+
     return `
-      <tr class="${isYearZero ? 'year-zero' : ''}">
+      <tr class="${isYearZero ? 'year-zero' : ''} ${cf.is_eol ? 'eol-row' : ''}">
         <td>${cf.year}</td>
         <td>${isYearZero ? '-' : formatNumberEU(cf.savings_pln / 1000, 1)}</td>
         <td>${isYearZero ? '-' : formatNumberEU(cf.opex_pln / 1000, 1)}</td>
         <td class="${netClass}">${formatNumberEU(cf.net_cashflow_pln / 1000, 1)}</td>
         <td class="${cumClass}">${formatNumberEU(cf.cumulative_cashflow_pln / 1000, 1)}</td>
         <td>${formatNumberEU(cf.discounted_cashflow_pln / 1000, 1)}</td>
+        <td class="${sohClass}">${sohStr}${eolBadge}</td>
       </tr>
     `;
   }).join('');

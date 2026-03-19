@@ -43,6 +43,71 @@
   }
 
   /**
+   * Try to recover analyticalPeriod from localStorage or load_kw length.
+   * Fallback for BESS-only flows where user hasn't run full KONFIGURACJA analysis.
+   */
+  function tryRecoverAnalyticalPeriod(options) {
+    // Try localStorage first (set by config-v2.js or consumption module)
+    try {
+      const stored = localStorage.getItem('consumptionData');
+      if (stored) {
+        const cd = JSON.parse(stored);
+        if (cd.analyticalPeriod) {
+          return cd.analyticalPeriod;
+        }
+        // Reconstruct from stored year + data length
+        if (cd.year && cd.dataPoints) {
+          const nPoints = cd.dataPoints > 8760 ? 8760 : cd.dataPoints;
+          return {
+            start_datetime: `${cd.year}-01-01T00:00:00`,
+            interval_minutes: 60,
+            n_points: nPoints,
+            timezone: 'Europe/Warsaw',
+            clock_mode: 'CET_FIXED'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to recover analyticalPeriod from localStorage:', e);
+    }
+
+    // Try pv_data_info from localStorage
+    try {
+      const dataInfo = localStorage.getItem('pv_data_info');
+      if (dataInfo) {
+        const info = JSON.parse(dataInfo);
+        if (info.year) {
+          return {
+            start_datetime: `${info.year}-01-01T00:00:00`,
+            interval_minutes: 60,
+            n_points: info.points || 8760,
+            timezone: 'Europe/Warsaw',
+            clock_mode: 'CET_FIXED'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Failed to recover analyticalPeriod from pv_data_info:', e);
+    }
+
+    // Last resort: if load_kw is provided, assume current year
+    if (options?.load_kw?.length > 0) {
+      const nPoints = Math.min(options.load_kw.length, 8760);
+      const year = new Date().getFullYear();
+      console.warn(`⚠️ Creating emergency analyticalPeriod from load_kw (${nPoints} points, year=${year})`);
+      return {
+        start_datetime: `${year}-01-01T00:00:00`,
+        interval_minutes: 60,
+        n_points: nPoints,
+        timezone: 'Europe/Warsaw',
+        clock_mode: 'CET_FIXED'
+      };
+    }
+
+    return null;
+  }
+
+  /**
    * Build BESS sizing/dispatch request with consistent parameters.
    *
    * Uses sharedData.analyticalPeriod as the SINGLE SOURCE OF TRUTH for time axis.
@@ -66,14 +131,24 @@
       );
     }
 
-    const analyticalPeriod = sharedData.analyticalPeriod;
+    let analyticalPeriod = sharedData.analyticalPeriod;
     const settings = sharedData.settings || {};
+
+    // Fallback: try to reconstruct analyticalPeriod from localStorage or load_kw data
+    if (!analyticalPeriod) {
+      analyticalPeriod = tryRecoverAnalyticalPeriod(options);
+      if (analyticalPeriod) {
+        // Persist recovered analyticalPeriod back to sharedData
+        sharedData.analyticalPeriod = analyticalPeriod;
+        console.log('📅 AnalyticalPeriod recovered from fallback:', analyticalPeriod);
+      }
+    }
 
     // Validate: analyticalPeriod is required
     if (!analyticalPeriod) {
       throw new Error(
-        'AnalyticalPeriod not set. Load data in KONFIGURACJA first. ' +
-        'buildBessRequest() requires analyticalPeriod to ensure consistent time axis.'
+        'AnalyticalPeriod not set. Wgraj dane zużycia w KONFIGURACJI (plik CSV/Excel). ' +
+        'Dla scenariuszy BESS-only wystarczy sam profil obciążenia — PV nie jest wymagane.'
       );
     }
 
@@ -110,7 +185,7 @@
       // ===== SIZING CONSTRAINTS =====
       min_power_kw: parseFloatSafe(settings.bessProMinPowerKw, 20),
       max_power_kw: parseFloatSafe(settings.bessProMaxPowerKw, 10000),
-      power_steps: 15,
+      power_steps: 20,
       durations_h: parseDurations(settings.bessDurations) || [1.0, 2.0, 4.0],
 
       // ===== BATTERY PARAMS =====
@@ -142,8 +217,44 @@
       demand_charge_pln_kw_month: parseFloatSafe(settings.bessPowerChargePlnPerKwMonth, 50),
 
       // ===== SOLVER (v7.0.0: LP only) =====
-      solver: 'lp'
+      solver: 'lp',
+
+      // ===== MARGINAL CYCLING COST (Wariant B — dispatch friction) =====
+      // Without MCC, LP cycles 1500-1800 times/year (5x/day) — physically impossible.
+      // For arbitrage (priceArbitrageEnabled), force auto-MCC regardless of user setting.
+      // MCC = CAPEX / (2 × cycles_to_eol) ≈ 650/(2×3000) = 108 PLN/MWh.
+      // LP only cycles when spread > 2×MCC → realistic EFC 150-400/year.
+      marginal_cycle_cost_per_kwh: (() => {
+        const mode = settings.bessMarginalCycleCostMode || 'auto';
+        // Force auto MCC for any arbitrage scenario (bess_only topology or price arb enabled)
+        // MCC=0 causes LP to over-cycle (1800+ EFC/yr). auto = CAPEX/(2×cycles_to_eol) ≈ 108 PLN/MWh.
+        const priceArb = settings.bessPriceArbitrageEnabled === true || settings.bessPriceArbitrageEnabled === 'true';
+        const arbTopology = settings.bessTopology === 'bess_only' || settings.bessTopology === 'load_only';
+        if (mode === 'off' && !priceArb && !arbTopology) return 0.0;
+        if (mode === 'manual') return parseFloatSafe(settings.bessMarginalCycleCostManual, 0.125);
+        // Auto (default + forced for arbitrage): -1 → backend calculates CAPEX/(2×cycles_to_eol)
+        return -1.0;
+      })(),
     };
+
+    // ===== OPTIMIZATION OBJECTIVE (from Settings SSoT) =====
+    const objective = options.overrides?.objective
+      || settings.bessProObjective
+      || 'npv';
+    const optConfig = { objective: objective, constraints: [] };
+
+    // Max payback constraint
+    const maxPayback = parseFloat(settings.bessMaxPaybackYears);
+    if (maxPayback > 0) {
+      optConfig.constraints.push({
+        constraint_type: 'max_payback',
+        value: maxPayback,
+        hard: false
+      });
+    }
+
+    request.optimization = optConfig;
+    console.log(`🎯 Optimization: objective=${objective}, constraints=${optConfig.constraints.length}`);
 
     // LP params (v7.0.0)
     request.lp_params = {
@@ -325,6 +436,52 @@
       config.buy_threshold_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageBuyThreshold, 300);
       config.sell_threshold_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageSellThreshold, 600);
       config.min_spread_pln_mwh = parseFloatSafe(settings.bessPriceArbitrageSpread, 100);
+
+      // RDN hourly prices for LP:
+      // SOURCE 1 (preferred): price_config.js all-in array from sharedData (already computed: RDN + distribution + fees)
+      // SOURCE 2 (fallback): raw RDN from localStorage (both buy=sell → spread=0, time-shift only)
+      // Zero-export (LOAD_ONLY/bess_only): sell = buy (time-shift semantics: saving = avoided purchase)
+      // Export-enabled: sell = raw RDN, buy = all-in → spread = distribution + fees
+      try {
+        const topology = settings.bessTopology || 'pv_bess';
+        const isZeroExport = (topology === 'bess_only' || topology === 'load_only');
+
+        // SOURCE 1: price_config.js already computed all-in prices (avg≈676 PLN/MWh)
+        const pcArb = (typeof window !== 'undefined' ? window : {})?.sharedData?.priceConfig?.arbitrageConfig;
+        const allInFromPriceConfig = pcArb?.hourly_prices_pln_mwh;
+        const rawFromPriceConfig = pcArb?.hourly_export_prices_pln_mwh;
+
+        if (Array.isArray(allInFromPriceConfig) && allInFromPriceConfig.length >= 8760) {
+          const buyPrices = allInFromPriceConfig.slice(0, 8760);
+          const sellPrices = isZeroExport
+            ? buyPrices                                                   // time-shift: sell = buy
+            : (Array.isArray(rawFromPriceConfig) && rawFromPriceConfig.length >= 8760
+                ? rawFromPriceConfig.slice(0, 8760)
+                : buyPrices);
+          config.hourly_prices_pln_mwh = buyPrices;
+          config.hourly_export_prices_pln_mwh = sellPrices;
+          const buyAvg = (buyPrices.reduce((s, v) => s + v, 0) / 8760).toFixed(0);
+          const sellAvg = (sellPrices.reduce((s, v) => s + v, 0) / 8760).toFixed(0);
+          console.log(`💹 RDN prices (from price_config): buy avg=${buyAvg} PLN/MWh, sell avg=${sellAvg} PLN/MWh (${isZeroExport ? 'time-shift' : 'export-enabled'})`);
+        } else {
+          // SOURCE 2: fallback — raw RDN from localStorage, buy=sell=raw (spread=0)
+          const raw = localStorage.getItem('rdn_hourly_prices');
+          if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr) && arr.length >= 8760) {
+              const rdnSlice = arr.slice(0, 8760);
+              config.hourly_prices_pln_mwh = rdnSlice;
+              config.hourly_export_prices_pln_mwh = rdnSlice;
+              const rdnAvg = (rdnSlice.reduce((s, v) => s + v, 0) / 8760).toFixed(0);
+              console.warn(`⚠️ RDN prices fallback (no price_config): buy=sell=raw RDN avg=${rdnAvg} PLN/MWh, spread=0`);
+            }
+          } else {
+            console.warn('⚠️ RDN arbitrage enabled but no price data available');
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to attach RDN prices:', e);
+      }
 
       // If both enabled, prefer percentile strategy with RDN prices
       if (!osdEnabled) {
@@ -514,10 +671,32 @@
       console.log(`🎯 Applied profile: ${options.profile} (objective: ${profile.objective})`);
     }
 
-    // Objective override
-    if (options.objective) {
-      driverConfig.optimization = { objective: options.objective };
-      console.log(`🎯 Objective override: ${options.objective}`);
+    // Objective override (from options, then settings, then localStorage)
+    const objectiveSource = options.objective
+      || options.overrides?.objective
+      || settings.bessProObjective
+      || localStorage.getItem('bessObjective')
+      || null;
+    if (objectiveSource) {
+      driverConfig.optimization = { objective: objectiveSource, constraints: [] };
+      console.log(`🎯 Objective: ${objectiveSource}`);
+    }
+
+    // Max payback constraint from settings
+    const maxPayback = parseFloat(settings.bessMaxPaybackYears);
+    if (maxPayback > 0) {
+      if (!driverConfig.optimization) {
+        driverConfig.optimization = { objective: 'npv', constraints: [] };
+      }
+      if (!driverConfig.optimization.constraints) {
+        driverConfig.optimization.constraints = [];
+      }
+      driverConfig.optimization.constraints.push({
+        constraint_type: 'max_payback',
+        value: maxPayback,
+        hard: false
+      });
+      console.log(`🎯 Max payback constraint: ${maxPayback} lat`);
     }
 
     // Custom policy override

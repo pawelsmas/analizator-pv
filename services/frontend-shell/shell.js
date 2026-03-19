@@ -175,6 +175,22 @@ function loadSettingsFromShell() {
   if (saved) {
     try {
       sharedData.settings = JSON.parse(saved);
+      // Migration: old CAPEX defaults (1500/300) → realistic 2025 LFP values (900/200)
+      if (sharedData.settings.bessCapexPerKwh >= 1400) {
+        console.log(`⬆️ Shell CAPEX migration: ${sharedData.settings.bessCapexPerKwh}→900 PLN/kWh`);
+        sharedData.settings.bessCapexPerKwh = 900;
+        sharedData.settings.bessCapexPerKw  = 200;
+        localStorage.setItem('pv_system_settings', JSON.stringify(sharedData.settings));
+      }
+      // Rebuild priceConfig immediately so arbitrageConfig.hourly_prices_pln_mwh
+      // is available for BESS-only analysis (before any settings save).
+      // buildPriceConfig reads rdn_hourly_prices from localStorage internally.
+      if (window.buildPriceConfig) {
+        sharedData.priceConfig = window.buildPriceConfig(sharedData.settings, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+      }
       console.log('Settings loaded from shell localStorage');
       return sharedData.settings;
     } catch (e) {
@@ -1917,7 +1933,7 @@ window.addEventListener('message', (event) => {
         }
 
         // *** AUTO-SAVE PV ANALYSIS TO DB ***
-        if (sharedData.currentProject?.id) {
+        if (sharedData.currentProject?.id && sharedData.analysisResults) {
           // Save PV sizing calculation
           saveCalculationToDb(sharedData.currentProject.id, {
             calc_type: 'pv_sizing',

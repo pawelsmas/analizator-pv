@@ -359,8 +359,8 @@ const DEFAULT_CONFIG = {
   bessSocInitial: 0.50,                // Initial SOC at start of simulation
 
   // BESS Economic Defaults
-  bessCapexPerKwh: 1500,               // CAPEX per kWh capacity [PLN/kWh] (battery cells + BMS)
-  bessCapexPerKw: 300,                 // CAPEX per kW power [PLN/kW] (inverter/PCS)
+  bessCapexPerKwh: 900,                // CAPEX per kWh capacity [PLN/kWh] (battery cells + BMS, LFP 2025)
+  bessCapexPerKw: 200,                 // CAPEX per kW power [PLN/kW] (inverter/PCS)
   bessOpexPctPerYear: 1.5,             // Annual OPEX as % of CAPEX
   bessLifetimeYears: 15,               // Expected battery lifetime [years]
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
@@ -583,6 +583,48 @@ const BESS_SCENARIOS = {
     requiresRdn: true,
     kpiLabels: ['RDN Spread', 'Arbitrage Savings'],
     icon: '📈'
+  },
+  10: {
+    id: 10,
+    name: 'Magazyn — Arbitraż ToU/RDN',
+    shortName: 'Arbitraż BESS',
+    description: 'BESS bez PV. Zarobek na spreadzie cenowym: ładuj tanio (noc/off-peak/niski RDN), rozładuj drogo (dzień/peak/wysoki RDN).',
+    topologies: ['bess_only'],
+    modes: ['light', 'pro'],
+    baseMode: 'load_only',
+    gridCharging: true,  // bateria ładuje wyłącznie z sieci
+    presets: {
+      bessPeakShavingEnabled: false,
+      bessPriceArbitrageEnabled: true,
+      bessOsdArbitrageEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: false,  // działa z ToU, RDN opcjonalnie
+    recommended: false,
+    kpiLabels: ['ToU/RDN Spread', 'Arbitrage Revenue', 'Cycles/year'],
+    icon: '💹'
+  },
+  11: {
+    id: 11,
+    name: 'Magazyn — Pełny Stack',
+    shortName: 'BESS Full Stack',
+    description: 'BESS bez PV: arbitraż (ToU + RDN) + peak shaving + usługi sieciowe (aFRR, mFRR, FCR, rynek mocy).',
+    topologies: ['bess_only'],
+    modes: ['pro'],
+    baseMode: 'load_only',
+    gridCharging: true,  // bateria ładuje z sieci
+    presets: {
+      bessPeakShavingEnabled: true,
+      bessPeakShavingMode: 'auto',
+      bessPriceArbitrageEnabled: true,
+      bessOsdArbitrageEnabled: true,
+      ancillaryServicesEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: false,
+    recommended: true,  // domyślny dla bess_only z pełnym stackiem
+    kpiLabels: ['Total Revenue', 'Arbitrage', 'Peak Shaving', 'Ancillary'],
+    icon: '🏦'
   }
 }
 
@@ -975,8 +1017,8 @@ function getAvailableScenarios(topology, bessMode) {
  * @returns {number|null} - Default scenario ID
  */
 function getDefaultScenarioId(topology) {
-  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 3 (LOAD_ONLY)
-  return topology === 'pv_bess' ? 2 : 3;
+  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 10 (Arbitraż BESS)
+  return topology === 'pv_bess' ? 2 : 10;
 }
 
 /**
@@ -1251,6 +1293,16 @@ window.getAvailableScenarios = getAvailableScenarios;
 window.getCurrentScenarioConfig = getCurrentScenarioConfig;
 window.BESS_SCENARIOS = BESS_SCENARIOS;
 
+// Marginal Cycle Cost UI toggle
+function updateMarginalCycleCostUI() {
+  const mode = document.getElementById('bessMarginalCycleCostMode')?.value || 'auto';
+  const manualRow = document.getElementById('marginalCycleCostManualRow');
+  if (manualRow) {
+    manualRow.style.display = mode === 'manual' ? 'block' : 'none';
+  }
+}
+window.updateMarginalCycleCostUI = updateMarginalCycleCostUI;
+
 // Setup event listeners for auto-save and calculations
 function setupEventListeners() {
   // Fixed charges inputs (without energyActive - now in ToU section)
@@ -1332,6 +1384,16 @@ function loadSettings() {
       });
 
       console.log('Loaded saved settings, merged with defaults');
+
+      // Migration: old CAPEX defaults (1500/300) → realistic 2025 LFP values (900/200)
+      if (config.bessCapexPerKwh >= 1400) {
+        console.log(`⬆️ CAPEX migration: ${config.bessCapexPerKwh}→${DEFAULT_CONFIG.bessCapexPerKwh} PLN/kWh`);
+        config.bessCapexPerKwh = DEFAULT_CONFIG.bessCapexPerKwh;
+      }
+      if (config.bessCapexPerKw >= 280) {
+        console.log(`⬆️ CAPEX migration: ${config.bessCapexPerKw}→${DEFAULT_CONFIG.bessCapexPerKw} PLN/kW`);
+        config.bessCapexPerKw = DEFAULT_CONFIG.bessCapexPerKw;
+      }
     } catch (e) {
       console.error('Failed to parse saved settings:', e);
     }
@@ -1452,6 +1514,28 @@ function applySettingsToUI(config) {
     bessMaxEfcPerYearEl.value = config.bessMaxEfcPerYear;
   }
 
+  // BESS Optimization Objective (new visible select)
+  const bessOptObjEl = document.getElementById('bessOptimizationObjective');
+  if (bessOptObjEl) {
+    bessOptObjEl.value = config.bessProObjective || 'npv';
+  }
+  // Max payback constraint
+  const bessMaxPaybackEl = document.getElementById('bessMaxPaybackYears');
+  if (bessMaxPaybackEl && config.bessMaxPaybackYears) {
+    bessMaxPaybackEl.value = config.bessMaxPaybackYears;
+  }
+
+  // Marginal cycle cost mode
+  const mccModeEl = document.getElementById('bessMarginalCycleCostMode');
+  if (mccModeEl && config.bessMarginalCycleCostMode) {
+    mccModeEl.value = config.bessMarginalCycleCostMode;
+  }
+  const mccManualEl = document.getElementById('bessMarginalCycleCostManual');
+  if (mccManualEl && config.bessMarginalCycleCostManual) {
+    mccManualEl.value = config.bessMarginalCycleCostManual;
+  }
+  if (typeof updateMarginalCycleCostUI === 'function') updateMarginalCycleCostUI();
+
   // BESS Peak Shaving checkbox and fields
   const bessPeakShavingEnabledEl = document.getElementById('bessPeakShavingEnabled');
   if (bessPeakShavingEnabledEl) {
@@ -1504,10 +1588,11 @@ function applySettingsToUI(config) {
   }
 
   // OSD Operator + Tariff Group selector restore
+  // Must populate dropdown options BEFORE setting value, otherwise value is silently ignored
   const savedOsdOperator = config.osdOperator || '';
   const savedOsdTariffGroup = config.osdTariffGroup || '';
   if (savedOsdOperator) {
-    loadTariffPresets().then(() => {
+    populateOsdOperatorDropdown().then(() => {
       const opSelect = document.getElementById('osdOperator');
       if (opSelect) {
         opSelect.value = savedOsdOperator;
@@ -1728,6 +1813,25 @@ function applySettingsToUI(config) {
         if (partialEndEl) partialEndEl.value = tc.threeZone.partial.end || 17;
       }
     }
+    // Four-zone rates
+    if (tc.fourZone) {
+      setValueById('tariffFourPeakRate', tc.fourZone.peakRate || 950);
+      setValueById('tariffFourDayRate', tc.fourZone.dayRate || 700);
+      setValueById('tariffFourOffPeakRate', tc.fourZone.offPeakRate || 400);
+      setValueById('tariffFourValleyRate', tc.fourZone.valleyRate || 200);
+      if (tc.fourZone.peak1) {
+        setValueById('tariffFourPeakStart', tc.fourZone.peak1.start || 7);
+        setValueById('tariffFourPeakEnd', tc.fourZone.peak1.end || 13);
+      }
+      if (tc.fourZone.peak2) {
+        setValueById('tariffFourPeakStart2', tc.fourZone.peak2.start || 16);
+        setValueById('tariffFourPeakEnd2', tc.fourZone.peak2.end || 21);
+      }
+      if (tc.fourZone.valley) {
+        setValueById('tariffFourValleyStart', tc.fourZone.valley.start || 1);
+        setValueById('tariffFourValleyEnd', tc.fourZone.valley.end || 5);
+      }
+    }
     // Update tariff UI visibility
     if (typeof onTariffTypeChange === 'function') {
       onTariffTypeChange();
@@ -1809,17 +1913,22 @@ function applySettingsToUI(config) {
   }
 
   // Apply ESG parameters
-  if (config.esgGridEmissionProvider) {
-    const el = document.getElementById('esgGridEmissionProvider');
-    if (el) el.value = config.esgGridEmissionProvider;
-  }
-  if (config.esgGridEmissionFactor !== undefined) {
-    const el = document.getElementById('esgGridEmissionFactor');
-    if (el) el.value = config.esgGridEmissionFactor;
-  }
-  if (config.esgPvTechnology) {
-    const el = document.getElementById('esgPvTechnology');
-    if (el) el.value = config.esgPvTechnology;
+  const esgFields = [
+    'esgGridEmissionProvider', 'esgGridEmissionFactor', 'esgGridEmissionYear', 'esgGridEmissionSource',
+    'esgEmbodiedCarbonCrystalline', 'esgEmbodiedCarbonCIS', 'esgEmbodiedCarbonCdTe', 'esgEmbodiedCarbonSource',
+    'esgPvTechnology', 'esgTaxonomyActivityCode', 'esgReportingMethod', 'esgComponentCompliance',
+    'electricitymapsApiKey', 'electricitymapsZone'
+  ];
+  esgFields.forEach(field => {
+    if (config[field] !== undefined) {
+      const el = document.getElementById(field);
+      if (el) el.value = config[field];
+    }
+  });
+  // ESG checkbox
+  const esgTaxonomyEl = document.getElementById('esgTaxonomyAligned');
+  if (esgTaxonomyEl && config.esgTaxonomyAligned !== undefined) {
+    esgTaxonomyEl.checked = config.esgTaxonomyAligned;
   }
 
   // Apply RDN Dynamic Pricing Configuration
@@ -2024,7 +2133,10 @@ function getCurrentSettings() {
     bessProDurationMin: parseFloat(document.getElementById('bessProDurationMin')?.value || DEFAULT_CONFIG.bessProDurationMin),
     bessProDurationMax: parseFloat(document.getElementById('bessProDurationMax')?.value || DEFAULT_CONFIG.bessProDurationMax),
     bessProSolver: document.getElementById('bessProSolver')?.value || DEFAULT_CONFIG.bessProSolver,
-    bessProObjective: document.getElementById('bessProObjective')?.value || DEFAULT_CONFIG.bessProObjective,
+    bessProObjective: document.getElementById('bessOptimizationObjective')?.value || document.getElementById('bessProObjective')?.value || DEFAULT_CONFIG.bessProObjective,
+    bessMaxPaybackYears: parseFloat(document.getElementById('bessMaxPaybackYears')?.value) || null,
+    bessMarginalCycleCostMode: document.getElementById('bessMarginalCycleCostMode')?.value || 'auto',
+    bessMarginalCycleCostManual: parseFloat(document.getElementById('bessMarginalCycleCostManual')?.value) || 0.125,
     bessProTimeResolution: document.getElementById('bessProTimeResolution')?.value || DEFAULT_CONFIG.bessProTimeResolution,
     bessProTypicalDays: parseInt(document.getElementById('bessProTypicalDays')?.value || DEFAULT_CONFIG.bessProTypicalDays),
     bessProZeroExport: document.getElementById('bessProZeroExport')?.checked ?? DEFAULT_CONFIG.bessProZeroExport,

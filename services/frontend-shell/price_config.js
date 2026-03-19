@@ -94,10 +94,17 @@
     // -----------------------------------------------------------------
     // 1. COMPONENT BREAKDOWN (PLN/MWh)
     // -----------------------------------------------------------------
+    // OSD zone rates from BESS arbitrage settings (PLN/kWh → PLN/MWh)
+    // These reflect the actual C-class distribution tariff per zone.
+    // Used as fallback when explicit distributionPeak/Day/Night are not set.
+    const _osdPeakMwh = pf(settings.bessOsdPeakRate, 0.75) * 1000;    // e.g. 750 PLN/MWh
+    const _osdOffMwh  = pf(settings.bessOsdOffPeakRate, 0.45) * 1000; // e.g. 450 PLN/MWh
+    const _osdNightMwh = _osdOffMwh * 0.65;  // night ≈ 65% of off-peak (typical C12a)
+
     const components = {
-      distributionPeak: pf(settings.distributionPeak, 200),
-      distributionDay: pf(settings.distributionDay, 200),
-      distributionNight: pf(settings.distributionNight, 200),
+      distributionPeak: pf(settings.distributionPeak, _osdPeakMwh),
+      distributionDay:  pf(settings.distributionDay,  _osdOffMwh),
+      distributionNight: pf(settings.distributionNight, _osdNightMwh),
       distributionValley: pf(settings.distributionValley, 13.5),
       qualityFee: pf(settings.qualityFee, 33.1),
       ozeFee: pf(settings.ozeFee, 7.3),
