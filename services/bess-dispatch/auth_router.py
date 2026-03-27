@@ -1,12 +1,15 @@
 """
-Auth API router for BESS API (v3.0.0, v3.1.0 invites).
+Auth API router for BESS API (v3.0.0, v3.1.0 invites, v3.2.0 refresh tokens).
 
 Endpoints:
-- POST /auth/login - Login with email/password, get JWT
+- POST /auth/login - Login with email/password, get JWT + refresh token
+- POST /auth/refresh - Refresh access token using refresh token
+- POST /auth/logout - Revoke refresh token
 - GET /auth/me - Get current user info
 - POST /auth/accept-invite - Accept invite with token, create account, get JWT
 """
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
@@ -14,6 +17,13 @@ from auth_config import AuthContext, Role, is_auth_enabled
 from auth_deps import get_auth_context
 from auth_jwt import create_access_token, get_token_expiry_seconds
 from auth_store import get_auth_store, hash_password
+from refresh_tokens import (
+    create_refresh_token,
+    use_refresh_token,
+    revoke_refresh_token,
+    revoke_all_user_refresh_tokens,
+    get_refresh_token_expiry_seconds,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -30,10 +40,12 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """Login response with JWT token."""
+    """Login response with JWT and refresh token (v3.2.0)."""
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    refresh_token: str
+    refresh_expires_in: int
 
 
 class MeResponse(BaseModel):
@@ -80,11 +92,117 @@ def login(request: LoginRequest):
     }
     access_token = create_access_token(token_data)
 
+    # Create refresh token (v3.2.0)
+    refresh_token, _ = create_refresh_token(
+        user_id=user["id"],
+        tenant_id=user["tenant_id"],
+        email=user["email"],
+        role=user["role"],
+    )
+
     return LoginResponse(
         access_token=access_token,
         token_type="bearer",
         expires_in=get_token_expiry_seconds(),
+        refresh_token=refresh_token,
+        refresh_expires_in=get_refresh_token_expiry_seconds(),
     )
+
+
+# -------------------------------------------------------------------------
+# Refresh Token (v3.2.0)
+# -------------------------------------------------------------------------
+
+class RefreshRequest(BaseModel):
+    """Refresh token request."""
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    """Refresh response with new tokens."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    refresh_token: Optional[str] = None  # New token if rotation enabled
+    refresh_expires_in: Optional[int] = None
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+def refresh(request: RefreshRequest):
+    """
+    Refresh access token using refresh token.
+
+    If token rotation is enabled (default), returns a new refresh token.
+    The old refresh token is invalidated.
+    """
+    if not is_auth_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "AUTH_DISABLED", "message": "Authentication is disabled"},
+        )
+
+    result = use_refresh_token(request.refresh_token)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error_code": "INVALID_REFRESH_TOKEN", "message": "Invalid or expired refresh token"},
+        )
+
+    user_info, new_refresh_token, _ = result
+
+    # Create new access token
+    token_data = {
+        "sub": user_info["user_id"],
+        "tenant_id": user_info["tenant_id"],
+        "email": user_info["email"],
+        "role": user_info["role"],
+    }
+    access_token = create_access_token(token_data)
+
+    return RefreshResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=get_token_expiry_seconds(),
+        refresh_token=new_refresh_token,
+        refresh_expires_in=get_refresh_token_expiry_seconds() if new_refresh_token else None,
+    )
+
+
+# -------------------------------------------------------------------------
+# Logout (v3.2.0)
+# -------------------------------------------------------------------------
+
+class LogoutRequest(BaseModel):
+    """Logout request."""
+    refresh_token: str
+    logout_all: bool = False  # If true, revoke all refresh tokens for user
+
+
+class LogoutResponse(BaseModel):
+    """Logout response."""
+    success: bool
+    tokens_revoked: int = 1
+
+
+@router.post("/logout", response_model=LogoutResponse)
+def logout(request: LogoutRequest, auth: AuthContext = Depends(get_auth_context)):
+    """
+    Logout by revoking refresh token.
+
+    If logout_all=true, revokes all refresh tokens for the user.
+    """
+    if not is_auth_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "AUTH_DISABLED", "message": "Authentication is disabled"},
+        )
+
+    if request.logout_all and auth.user_id:
+        tokens_revoked = revoke_all_user_refresh_tokens(auth.user_id)
+        return LogoutResponse(success=True, tokens_revoked=tokens_revoked)
+
+    success = revoke_refresh_token(request.refresh_token)
+    return LogoutResponse(success=success, tokens_revoked=1 if success else 0)
 
 
 @router.get("/me", response_model=MeResponse)
@@ -114,13 +232,15 @@ class AcceptInviteRequest(BaseModel):
 
 
 class AcceptInviteResponse(BaseModel):
-    """Response after accepting invite (includes JWT for auto-login)."""
+    """Response after accepting invite (includes JWT + refresh token for auto-login)."""
     user_id: str
     email: str
     role: str
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    refresh_token: str
+    refresh_expires_in: int
 
 
 @router.post("/accept-invite", response_model=AcceptInviteResponse)
@@ -190,6 +310,14 @@ def accept_invite(request: AcceptInviteRequest):
     }
     access_token = create_access_token(token_data)
 
+    # Create refresh token (v3.2.0)
+    refresh_token, _ = create_refresh_token(
+        user_id=user["id"],
+        tenant_id=user["tenant_id"],
+        email=user["email"],
+        role=user["role"],
+    )
+
     return AcceptInviteResponse(
         user_id=user["id"],
         email=user["email"],
@@ -197,4 +325,6 @@ def accept_invite(request: AcceptInviteRequest):
         access_token=access_token,
         token_type="bearer",
         expires_in=get_token_expiry_seconds(),
+        refresh_token=refresh_token,
+        refresh_expires_in=get_refresh_token_expiry_seconds(),
     )
