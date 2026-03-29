@@ -1,5 +1,5 @@
 """
-Auth API router for BESS API (v3.0.0, v3.1.0 invites).
+Auth API router for BESS API (v3.0.0, v3.1.0 invites, v3.2.0 lockout).
 
 Endpoints:
 - POST /auth/login - Login with email/password, get JWT
@@ -8,12 +8,19 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
 from auth_config import AuthContext, Role, is_auth_enabled
 from auth_deps import get_auth_context
 from auth_jwt import create_access_token, get_token_expiry_seconds
 from auth_store import get_auth_store, hash_password
+from login_lockout import (
+    check_lockout,
+    record_login_failure,
+    record_login_success,
+    get_lockout_response_body,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -55,6 +62,7 @@ def login(request: LoginRequest):
     Login with email and password.
 
     Returns JWT access token on success.
+    Returns 423 Locked if account is locked due to too many failed attempts.
     """
     if not is_auth_enabled():
         raise HTTPException(
@@ -62,14 +70,32 @@ def login(request: LoginRequest):
             detail={"error_code": "AUTH_DISABLED", "message": "Authentication is disabled"},
         )
 
+    # Check if account is locked (v3.2.0)
+    is_locked, remaining_seconds = check_lockout(request.email)
+    if is_locked:
+        return JSONResponse(
+            status_code=423,  # Locked
+            content=get_lockout_response_body(request.email, remaining_seconds),
+        )
+
     auth_store = get_auth_store()
     user = auth_store.authenticate_user(request.email, request.password)
 
     if user is None:
+        # Record failure and check if now locked
+        is_now_locked, lockout_seconds = record_login_failure(request.email)
+        if is_now_locked:
+            return JSONResponse(
+                status_code=423,  # Locked
+                content=get_lockout_response_body(request.email, lockout_seconds),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error_code": "INVALID_CREDENTIALS", "message": "Invalid email or password"},
         )
+
+    # Success - clear any failure state
+    record_login_success(request.email)
 
     # Create JWT token
     token_data = {
