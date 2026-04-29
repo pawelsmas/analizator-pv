@@ -175,10 +175,10 @@ function loadSettingsFromShell() {
   if (saved) {
     try {
       sharedData.settings = JSON.parse(saved);
-      // Migration: old CAPEX defaults (1500/300) → realistic 2025 LFP values (900/200)
-      if (sharedData.settings.bessCapexPerKwh >= 1400) {
-        console.log(`⬆️ Shell CAPEX migration: ${sharedData.settings.bessCapexPerKwh}→900 PLN/kWh`);
-        sharedData.settings.bessCapexPerKwh = 900;
+      // Migration: old CAPEX defaults (1500/300 or 900/200) → realistic 2025 LFP values (600/200)
+      if (sharedData.settings.bessCapexPerKwh >= 800) {
+        console.log(`⬆️ Shell CAPEX migration: ${sharedData.settings.bessCapexPerKwh}→600 PLN/kWh`);
+        sharedData.settings.bessCapexPerKwh = 600;
         sharedData.settings.bessCapexPerKw  = 200;
         localStorage.setItem('pv_system_settings', JSON.stringify(sharedData.settings));
       }

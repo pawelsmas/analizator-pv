@@ -107,6 +107,14 @@ def _build_power_constraints(
     ub = np.full(n, c_rate)
     lb = np.full(n, -c_rate)
 
+    # LOAD_ONLY zero-export: discharge cannot exceed instantaneous load demand.
+    # Without this, the LP "exports" when discharge > load because sell = buy gives
+    # full revenue for phantom export — causing inflated savings for large batteries.
+    # Normalized: dSoC/dt >= -load_kw / (cap * eta_dis)
+    if mode == DispatchMode.LOAD_ONLY:
+        zero_export_lb = -load_kw / (cap * eta_dis)
+        lb = np.maximum(lb, zero_export_lb)
+
     # Peak shaving: tighten bounds to enforce grid_import <= peak_limit_kw
     #
     # Grid power = load - pv + P_batt_net
@@ -467,6 +475,7 @@ def lp_dispatch_rolling(
     grid_connection_kw: Optional[float] = None,
     allow_grid_charging: bool = True,
     marginal_cycle_cost_per_kwh: float = 0.0,
+    max_efc_per_year: Optional[float] = None,
 ) -> np.ndarray:
     """
     Rolling horizon LP dispatch (v7.0.0: always succeeds).
@@ -494,6 +503,17 @@ def lp_dispatch_rolling(
     soc_init = battery.soc_initial
     cursor = 0
 
+    # EFC budget enforcement (Option B): physically limit annual throughput.
+    # When max_efc_per_year is set, track cumulative discharge across windows.
+    # Once budget is consumed, sell_price → buy_price (no discharge incentive).
+    # This ensures the LP physically cycles ≤ max_efc_per_year times per year.
+    annual_discharge_budget_kwh = (
+        max_efc_per_year * battery.usable_capacity_kwh
+        if max_efc_per_year and max_efc_per_year > 0 and battery.usable_capacity_kwh > 0
+        else None
+    )
+    cumulative_discharge_kwh = 0.0
+
     while cursor < n_total:
         # Window boundaries
         window_end = min(cursor + forecast_steps, n_total)
@@ -512,6 +532,11 @@ def lp_dispatch_rolling(
         if marginal_cycle_cost_per_kwh > 0:
             buy_win = buy_win + marginal_cycle_cost_per_kwh
             sell_win = sell_win - marginal_cycle_cost_per_kwh
+
+        # EFC budget: if annual budget exhausted, suppress discharge incentive.
+        # Setting sell = buy means no profit margin → LP won't discharge.
+        if annual_discharge_budget_kwh is not None and cumulative_discharge_kwh >= annual_discharge_budget_kwh:
+            sell_win = buy_win.copy()  # No spread → no discharge
 
         # Solve LP for this window
         soc_win = solve_lp_window(
@@ -543,6 +568,13 @@ def lp_dispatch_rolling(
         # Keep results
         actual_keep = min(keep_steps, window_size)
         soc_full[cursor:cursor + actual_keep] = soc_win[:actual_keep]
+
+        # Track cumulative discharge in kept steps (for EFC budget enforcement)
+        if annual_discharge_budget_kwh is not None:
+            kept_soc = soc_win[:actual_keep]
+            prev_socs = np.concatenate([[soc_init], kept_soc[:-1]])
+            step_discharge_kwh = np.maximum(0.0, prev_socs - kept_soc) * battery.energy_kwh
+            cumulative_discharge_kwh += float(np.sum(step_discharge_kwh))
 
         # Update soc_init for next window
         soc_init = soc_win[actual_keep - 1]
@@ -777,6 +809,7 @@ def dispatch_lp(
     grid_connection_kw: Optional[float] = None,
     allow_grid_charging: bool = True,
     marginal_cycle_cost_per_kwh: float = 0.0,
+    max_efc_per_year: Optional[float] = None,
 ) -> DispatchResult:
     """
     Main LP dispatch entry point (v7.0.0: self-sufficient, never returns None).
@@ -846,6 +879,7 @@ def dispatch_lp(
         grid_connection_kw=grid_connection_kw,
         allow_grid_charging=allow_grid_charging,
         marginal_cycle_cost_per_kwh=marginal_cycle_cost_per_kwh,
+        max_efc_per_year=max_efc_per_year,
     )
 
     # Post-process: SoC → power arrays
@@ -923,6 +957,23 @@ def dispatch_lp(
             discharge_hourly=discharge,
             dt_hours=dt_hours,
         )
+    elif mode == DispatchMode.LOAD_ONLY:
+        # LOAD_ONLY: no PV, all cycles are grid arbitrage
+        efc = total_discharge / battery.usable_capacity_kwh if battery.usable_capacity_kwh > 0 else 0.0
+        degradation = DegradationMetrics(
+            throughput_charge_kwh=total_charge,
+            throughput_discharge_kwh=total_discharge,
+            throughput_total_mwh=(total_charge + total_discharge) / 1000,
+            efc_total=efc,
+            throughput_pv_mwh=0.0,
+            throughput_peak_mwh=0.0,
+            efc_pv=0.0,
+            efc_peak=0.0,
+            throughput_arb_mwh=(total_charge + total_discharge) / 1000,
+            efc_arb=efc,
+            arb_charge_from_grid_kwh=total_charge,
+            arb_discharge_kwh=total_discharge,
+        )
     else:
         degradation = calculate_degradation_metrics(
             total_charge, total_discharge, battery, n * dt_hours
@@ -978,8 +1029,6 @@ def dispatch_lp(
 
     # Energy savings = total savings minus demand charge and arbitrage
     energy_savings_pln = total_savings_pln - demand_charge_savings_pln - arbitrage_savings_pln
-    # Ensure non-negative (rounding)
-    energy_savings_pln = max(energy_savings_pln, 0.0)
 
     # Degradation cost — intentionally POST-DISPATCH accounting, not in LP objective.
     # LP minimizes import cost only; degradation enters NPV/economics layer via SavingsBreakdown.

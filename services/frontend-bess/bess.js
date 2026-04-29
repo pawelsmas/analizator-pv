@@ -4110,6 +4110,16 @@ function displaySizingVariants(sizingResult) {
   // Build HTML for variants
   let html = pricingInfoHtml;
 
+  if (sizingResult.grid_search_incomplete) {
+    const nextRange = sizingResult.grid_search_next_range_kw;
+    const rangeStr = nextRange ? `${nextRange[0].toLocaleString('pl-PL')}–${nextRange[1].toLocaleString('pl-PL')} kW` : 'większy zakres';
+    html += `<div style="background:rgba(255,152,0,0.12);border:1px solid rgba(255,152,0,0.5);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;">
+      <strong style="color:#E65100;">&#9888; Wyniki niekompletne — optimum poza przeszukiwanym zakresem</strong><br>
+      Najlepszy wariant leży na granicy max_power_kw. Prawdziwe optimum może być większe.<br>
+      <strong>Zalecany następny zakres:</strong> ${rangeStr}
+    </div>`;
+  }
+
   for (const v of sizingResult.variants) {
     const isRecommended = v.is_recommended;
     const statusClass = getStatusClass(v.degradation_status);
@@ -4305,11 +4315,19 @@ function displaySizingVariants(sizingResult) {
             <span class="variant-deg-label">EFC łącznie:</span>
             <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_total || 0, 0)} cykli/rok</span>
           </div>
-          ${v.degradation?.efc_pv > 0 || v.degradation?.efc_peak > 0 ? `
+          ${v.degradation?.efc_arb > 0 ? `
+          <div class="variant-deg-row">
+            <span class="variant-deg-label">↳ EFC Arbitraż:</span>
+            <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_arb || 0, 0)} cykli</span>
+          </div>
+          ` : ''}
+          ${v.degradation?.efc_pv > 0 ? `
           <div class="variant-deg-row">
             <span class="variant-deg-label">↳ EFC PV surplus:</span>
             <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_pv || 0, 0)} cykli</span>
           </div>
+          ` : ''}
+          ${v.degradation?.efc_peak > 0 ? `
           <div class="variant-deg-row">
             <span class="variant-deg-label">↳ EFC Peak Shaving:</span>
             <span class="variant-deg-value">${formatNumberEU(v.degradation?.efc_peak || 0, 0)} cykli</span>

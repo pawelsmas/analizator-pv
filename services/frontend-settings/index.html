@@ -1588,6 +1588,37 @@
         <!-- Hidden input for scenario ID -->
         <input type="hidden" id="bessScenarioId" value="">
 
+        <!-- Optimization Objective + Payback Constraint -->
+        <div style="margin-top:16px;padding:16px;background:#fff8e1;border-radius:8px;border:1px solid #ffe082">
+          <div style="font-weight:600;color:#e65100;font-size:13px;margin-bottom:12px">
+            🎯 Cel optymalizacji doboru magazynu
+          </div>
+          <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:220px">
+              <label for="bessOptimizationObjective" style="font-size:11px;color:#666;display:block;margin-bottom:4px">Solver optymalizuje pod:</label>
+              <select id="bessOptimizationObjective" onchange="markUnsaved()" style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:6px;font-size:13px;background:#fff">
+                <option value="npv">📈 Maksymalizuj NPV (zwrot z inwestycji)</option>
+                <option value="max_savings">💰 Maksymalizuj Oszczędności (roczny przychód)</option>
+                <option value="payback">⏱️ Minimalizuj Payback (okres zwrotu)</option>
+                <option value="self_consumption">🔋 Maksymalizuj Autokonsumpcję</option>
+                <option value="peak_reduction">⚡ Maksymalizuj Redukcję Szczytów</option>
+              </select>
+            </div>
+            <div style="min-width:140px">
+              <label for="bessMaxPaybackYears" style="font-size:11px;color:#666;display:block;margin-bottom:4px">Maks. payback (opcja):</label>
+              <div style="display:flex;align-items:center;gap:4px">
+                <input type="number" id="bessMaxPaybackYears" placeholder="—" min="1" max="25" step="0.5"
+                       onchange="markUnsaved()"
+                       style="width:80px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+                <span style="font-size:12px;color:#888">lat</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:8px">
+            NPV preferuje mniejsze, efektywne magazyny. Oszczędności preferują duże magazyny z max przychodem. Payback ogranicza wybór do wariantów z szybkim zwrotem.
+          </div>
+        </div>
+
         <!-- Combinable overlays (can be added to any base scenario) -->
         <div style="margin-top:16px;padding:16px;background:#f0f7ff;border-radius:8px;border:1px solid #bbdefb">
           <div style="font-weight:600;color:#1565c0;font-size:13px;margin-bottom:12px">
@@ -1770,6 +1801,21 @@
                 <label>Pobór pomocniczy (house load)</label>
                 <input type="number" id="bessHouseLoadKwPerMwh" value="2.75" min="0" max="10" step="0.25" onchange="syncDegradationParams('light')">
                 <span class="setting-hint">kW / MWh pojemności (HVAC, BMS, PCS standby). Typowo: LFP 2.5-3.0</span>
+              </div>
+              <div class="setting-item" style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0">
+                <label style="font-weight:600;color:#e65100">Koszt marginalny cyklu (dispatch friction)</label>
+                <select id="bessMarginalCycleCostMode" onchange="updateMarginalCycleCostUI(); markUnsaved();"
+                        style="padding:6px;border:1px solid #ccc;border-radius:4px">
+                  <option value="off">Wyłączony (0 — LP robi każdy cykl)</option>
+                  <option value="auto" selected>Auto (wyliczony z CAPEX/cykli)</option>
+                  <option value="manual">Ręczny</option>
+                </select>
+                <span class="setting-hint">Odcina śmieciowe cykle w LP — nie wpływa na savings/cashflow</span>
+              </div>
+              <div class="setting-item" id="marginalCycleCostManualRow" style="display:none">
+                <label>Wartość ręczna</label>
+                <input type="number" id="bessMarginalCycleCostManual" value="0.125" min="0" max="1" step="0.01" onchange="markUnsaved()">
+                <span class="setting-hint">PLN/kWh throughput (typowo: 0.10-0.15 dla LFP)</span>
               </div>
             </div>
           </div>

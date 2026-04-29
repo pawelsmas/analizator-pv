@@ -378,9 +378,12 @@ class PriceResolver:
             )
             return np.maximum(export_kwh, 1e-6)
 
-        # Last resort: buy × 0.95
-        logger.warning("PRICE_RESOLVE: No export prices → fallback sell=buy*0.95")
-        return import_kwh * 0.95
+        # BESS-only (no PV export): sell_price = buy_price
+        # Battery doesn't export to grid — it time-shifts load.
+        # LP uses spread between cheap hours (charge) and expensive hours (discharge).
+        # Setting sell = buy means LP profit = buy_expensive - buy_cheap - RT_losses.
+        logger.warning("PRICE_RESOLVE: No export prices → sell=buy (BESS time-shift mode)")
+        return import_kwh.copy()
 
     # -----------------------------------------------------------------------
     # Build result

@@ -960,11 +960,17 @@ async def geocode_address(
     local_results = []
     search_term = None
 
-    # Try words in order (first word is usually the city)
-    for word in words:
-        local_results = search_cities(word, limit * 2)
+    # Try multi-word phrases first (e.g., "Nowa Sól" before "Nowa")
+    # Build phrases from longest to shortest: "Nowa Sól Przemysłowa", "Nowa Sól", "Nowa"
+    phrases = []
+    for phrase_len in range(len(words), 0, -1):
+        for start in range(len(words) - phrase_len + 1):
+            phrases.append(' '.join(words[start:start + phrase_len]))
+
+    for phrase in phrases:
+        local_results = search_cities(phrase, limit * 2)
         if local_results:
-            search_term = word
+            search_term = phrase
             break
 
     # Sort results: exact match first, then starts with, then contains

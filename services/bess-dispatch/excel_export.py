@@ -686,8 +686,8 @@ def generate_economics_excel(
     time_index = build_time_index_cet_fixed(start_date, n_timesteps, interval_minutes)
 
     # Pre-extract capacity fee hourly allocations (static - too complex for formula)
-    bl_mocowa = baseline_df['mocowa_pln'].values
-    pj_mocowa = project_df['mocowa_pln'].values
+    bl_mocowa = baseline_df['mocowa_pln'].values if 'mocowa_pln' in baseline_df.columns else np.zeros(n_timesteps)
+    pj_mocowa = project_df['mocowa_pln'].values if 'mocowa_pln' in project_df.columns else np.zeros(n_timesteps)
 
     has_rdn = import_prices_pln_mwh is not None and len(import_prices_pln_mwh) >= n_timesteps
     is_pv_only = bess_power_kw < 0.1 and bess_energy_kwh < 0.1
@@ -1373,6 +1373,73 @@ def generate_economics_excel(
         _build_grid_search_sheet(ws_g, grid_search_results, hdr_fill, hdr_font, savings_fill, nfmt)
 
     # =====================================================================
+    # SHEET: Cykl Życia (Lifecycle cashflow year by year)
+    # =====================================================================
+    if sizing_variants:
+        # Find recommended variant with cashflow_timeseries
+        rec_variant = None
+        for sv in sizing_variants:
+            fs = sv.get('finance_summary') if isinstance(sv, dict) else getattr(sv, 'finance_summary', None)
+            if fs:
+                cf = fs.get('cashflow_timeseries') if isinstance(fs, dict) else getattr(fs, 'cashflow_timeseries', None)
+                if cf and len(cf) > 0:
+                    if rec_variant is None or (isinstance(sv, dict) and sv.get('is_recommended')):
+                        rec_variant = sv
+
+        if rec_variant:
+            fs = rec_variant.get('finance_summary') if isinstance(rec_variant, dict) else getattr(rec_variant, 'finance_summary', None)
+            cf_data = (fs.get('cashflow_timeseries') if isinstance(fs, dict) else getattr(fs, 'cashflow_timeseries', None)) or []
+            if cf_data:
+                ws_lc = wb.create_sheet("Cykl Życia")
+                _build_lifecycle_sheet(ws_lc, rec_variant, cf_data, hdr_fill, hdr_font, sec_fill, sec_font, nfmt, savings_fill)
+
+    # =====================================================================
+    # SHEET: Optimum EFC (lifecycle NPV vs cycle limit)
+    # =====================================================================
+    if sizing_variants:
+        for sv in sizing_variants:
+            fs2 = sv.get('finance_summary') if isinstance(sv, dict) else getattr(sv, 'finance_summary', None)
+            if fs2:
+                efc_sweep = fs2.get('efc_optimization_sweep') if isinstance(fs2, dict) else getattr(fs2, 'efc_optimization_sweep', None)
+                if efc_sweep and len(efc_sweep) > 0:
+                    ws_efc = wb.create_sheet("Optimum EFC")
+                    ws_efc.sheet_properties.tabColor = "FF6F00"
+
+                    ws_efc.merge_cells('A1:G1')
+                    c = ws_efc.cell(row=1, column=1, value="OPTYMALIZACJA LIMITU CYKLI (EFC)")
+                    c.font = Font(bold=True, size=14, color="FFFFFF")
+                    c.fill = PatternFill(start_color="E65100", end_color="E65100", fill_type="solid")
+
+                    ws_efc.cell(row=3, column=1, value="Więcej cykli = więcej zarobków ale krótszy EOL baterii.").font = Font(italic=True, size=10, color="666666")
+                    ws_efc.cell(row=4, column=1, value="Optimum = limit cykli przy którym lifecycle NPV jest najwyższe.").font = Font(italic=True, size=10, color="666666")
+
+                    efc_headers = ['Limit EFC/rok', 'Oszczędności/rok [PLN]', 'EOL [rok]', 'Lifecycle NPV [PLN]', 'PLN/EFC', 'Optymalny']
+                    for j, h in enumerate(efc_headers, 1):
+                        c = ws_efc.cell(row=6, column=j, value=h)
+                        c.font = hdr_font
+                        c.fill = hdr_fill
+                        c.alignment = Alignment(horizontal='center')
+
+                    for j, w in enumerate([14, 20, 10, 20, 12, 12], 1):
+                        ws_efc.column_dimensions[chr(64 + j)].width = w
+
+                    for i, pt in enumerate(efc_sweep):
+                        row = 7 + i
+                        ws_efc.cell(row=row, column=1, value=pt.get('efc_limit', 0)).alignment = Alignment(horizontal='center')
+                        ws_efc.cell(row=row, column=2, value=round(pt.get('annual_savings_pln', 0), 0)).number_format = '#,##0'
+                        ws_efc.cell(row=row, column=3, value=pt.get('eol_year', 0)).alignment = Alignment(horizontal='center')
+                        ws_efc.cell(row=row, column=4, value=round(pt.get('lifecycle_npv_pln', 0), 0)).number_format = '#,##0'
+                        ws_efc.cell(row=row, column=5, value=round(pt.get('pln_per_efc', 0), 1)).number_format = '#,##0.0'
+
+                        is_opt = pt.get('is_optimal', False)
+                        if is_opt:
+                            ws_efc.cell(row=row, column=6, value="★ OPTIMUM").font = Font(bold=True, color="006600")
+                            for j2 in range(1, 7):
+                                ws_efc.cell(row=row, column=j2).fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+
+                    break  # Only first variant with sweep
+
+    # =====================================================================
     # Save
     # =====================================================================
     output = io.BytesIO()
@@ -1497,6 +1564,153 @@ def _build_variants_sheet(ws, variants, hdr_fill, hdr_font, sec_fill, sec_font, 
 # =============================================================================
 # Helper: Pełna siatka doboru sheet
 # =============================================================================
+
+def _build_lifecycle_sheet(ws, variant, cashflow_data, hdr_fill, hdr_font, sec_fill, sec_font, nfmt, savings_fill):
+    """Build lifecycle cashflow year-by-year sheet."""
+    from openpyxl.styles import Alignment, Border, Side, numbers
+    ws.sheet_properties.tabColor = "2E7D32"
+
+    thin = Side(style='thin', color='999999')
+    border = Border(bottom=thin)
+
+    # Get variant info
+    v = variant if isinstance(variant, dict) else {}
+    label = v.get('variant_label', 'BESS')
+    power_kw = v.get('power_kw', 0)
+    energy_kwh = v.get('energy_kwh', 0)
+    capex = v.get('capex_pln', 0)
+    fs = v.get('finance_summary', {}) or {}
+    irr = fs.get('irr_pct')
+    horizon = fs.get('horizon_years', len(cashflow_data) - 1)
+    dr = fs.get('discount_rate', 0.10)
+
+    # Title
+    ws.merge_cells('A1:H1')
+    c = ws.cell(row=1, column=1, value=f"CYKL ŻYCIA PROJEKTU — {label}")
+    c.font = Font(bold=True, size=14, color="FFFFFF")
+    c.fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+    ws.row_dimensions[1].height = 30
+
+    # Parameters section
+    params = [
+        ('Moc [kW]', round(power_kw, 1)),
+        ('Pojemność [kWh]', round(energy_kwh, 1)),
+        ('CAPEX [tys. PLN]', round(capex / 1000, 1)),
+        ('Horyzont [lat]', horizon),
+        ('Stopa dyskontowa', dr),
+        ('IRR', irr / 100 if irr else None),
+    ]
+    for i, (name, val) in enumerate(params):
+        ws.cell(row=3 + i, column=1, value=name).font = Font(bold=True, size=10)
+        c = ws.cell(row=3 + i, column=2, value=val)
+        if 'dyskontowa' in name or name == 'IRR':
+            c.number_format = '0.0%'
+        elif 'tys' in name:
+            c.number_format = '#,##0.0'
+        else:
+            c.number_format = '#,##0.0'
+
+    # Cashflow table header
+    header_row = 11
+    headers = [
+        'Rok', 'Oszczędności [PLN]', 'OPEX [PLN]', 'Net Cashflow [PLN]',
+        'Skumulowany [PLN]', 'Zdyskontowany [PLN]', 'SoH [%]'
+    ]
+    for j, h in enumerate(headers, 1):
+        c = ws.cell(row=header_row, column=j, value=h)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal='center', wrap_text=True)
+
+    # Column widths
+    widths = [8, 18, 14, 18, 18, 18, 10]
+    for j, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64 + j)].width = w
+
+    # Data rows
+    for i, cf in enumerate(cashflow_data):
+        row = header_row + 1 + i
+        if isinstance(cf, dict):
+            year = cf.get('year', i)
+            savings = cf.get('savings_pln', 0)
+            opex = cf.get('opex_pln', 0)
+            net = cf.get('net_cashflow_pln', 0)
+            cumul = cf.get('cumulative_cashflow_pln', 0)
+            disc = cf.get('discounted_cashflow_pln', 0)
+        else:
+            year = getattr(cf, 'year', i)
+            savings = getattr(cf, 'savings_pln', 0)
+            opex = getattr(cf, 'opex_pln', 0)
+            net = getattr(cf, 'net_cashflow_pln', 0)
+            cumul = getattr(cf, 'cumulative_cashflow_pln', 0)
+            disc = getattr(cf, 'discounted_cashflow_pln', 0)
+
+        ws.cell(row=row, column=1, value=year).alignment = Alignment(horizontal='center')
+        ws.cell(row=row, column=2, value=round(savings, 0)).number_format = '#,##0'
+        ws.cell(row=row, column=3, value=round(opex, 0)).number_format = '#,##0'
+
+        c_net = ws.cell(row=row, column=4, value=round(net, 0))
+        c_net.number_format = '#,##0'
+        if net < 0:
+            c_net.font = Font(color="CC0000")
+        else:
+            c_net.font = Font(color="006600")
+
+        c_cum = ws.cell(row=row, column=5, value=round(cumul, 0))
+        c_cum.number_format = '#,##0'
+        if cumul < 0:
+            c_cum.font = Font(color="CC0000")
+        else:
+            c_cum.font = Font(color="006600")
+            c_cum.fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+
+        ws.cell(row=row, column=6, value=round(disc, 0)).number_format = '#,##0'
+
+        # SoH from backend (precise combined calendar + cycle model)
+        soh_pct = cf.get('soh_pct') if isinstance(cf, dict) else getattr(cf, 'soh_pct', None)
+        is_eol = cf.get('is_eol') if isinstance(cf, dict) else getattr(cf, 'is_eol', None)
+        if soh_pct is not None:
+            c_soh = ws.cell(row=row, column=7, value=soh_pct / 100.0)
+            c_soh.number_format = '0.0%'
+            if is_eol:
+                c_soh.font = Font(color="CC0000", bold=True)
+                c_soh.fill = PatternFill(start_color="FFEBEE", end_color="FFEBEE", fill_type="solid")
+        elif year == 0:
+            ws.cell(row=row, column=7, value=1.0).number_format = '0.0%'
+
+        # Thin border
+        for j in range(1, 8):
+            ws.cell(row=row, column=j).border = border
+
+    # NPV summary row
+    last_data_row = header_row + len(cashflow_data)
+    summary_row = last_data_row + 2
+    ws.cell(row=summary_row, column=1, value='NPV').font = Font(bold=True, size=12)
+    npv_val = fs.get('npv_pln', 0)
+    c = ws.cell(row=summary_row, column=4, value=round(npv_val, 0))
+    c.number_format = '#,##0'
+    c.font = Font(bold=True, size=12, color="006600" if npv_val >= 0 else "CC0000")
+
+    ws.cell(row=summary_row + 1, column=1, value='IRR').font = Font(bold=True, size=12)
+    if irr is not None:
+        ws.cell(row=summary_row + 1, column=4, value=irr / 100).number_format = '0.0%'
+        ws.cell(row=summary_row + 1, column=4).font = Font(bold=True, size=12)
+
+    # Find EOL year dynamically
+    eol_year = None
+    for cf in cashflow_data:
+        is_eol = cf.get('is_eol') if isinstance(cf, dict) else getattr(cf, 'is_eol', None)
+        if is_eol:
+            eol_year = cf.get('year') if isinstance(cf, dict) else getattr(cf, 'year', None)
+            break
+
+    eol_row = summary_row + 3
+    ws.cell(row=eol_row, column=1, value='EOL baterii (SoH < 70%)').font = Font(bold=True, size=11, color="CC0000")
+    if eol_year:
+        ws.cell(row=eol_row, column=4, value=f"Rok {eol_year}").font = Font(bold=True, size=11, color="CC0000")
+    else:
+        ws.cell(row=eol_row, column=4, value=f"Poza horyzontem ({horizon} lat)").font = Font(size=11, color="006600")
+
 
 def _build_grid_search_sheet(ws, grid_results, hdr_fill, hdr_font, savings_fill, nfmt):
     """Build full grid search results table."""

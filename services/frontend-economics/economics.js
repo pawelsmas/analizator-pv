@@ -1298,6 +1298,14 @@ function recalculateEaaSWithScenario(scenario) {
     omPerKwp: eaasOM
   });
 
+  // Re-set window aliases from recalculated centralizedCalc (SSoT)
+  const recalcCalc = centralizedMetrics[currentVariant];
+  if (recalcCalc?.eaas) {
+    window.eaasScenarios = recalcCalc.eaas.scenarios;
+    window.eaasGridPrice = recalcCalc.eaas.gridRatePLNperMWh;
+    window.eaasSubscription = recalcCalc.eaas.subscriptionPLN;
+  }
+
   // Recalculate RDN year-by-year if TCSL data available
   if (tcslMetrics[currentVariant]?.rdn_tcsl_annual_pln != null) {
     try { calculateRdnYearByYear(); } catch (e) { console.error('RDN YbY recalc error:', e); }
@@ -3944,13 +3952,47 @@ function calculateCentralizedFinancialMetrics(variant, params, eaasParams = null
 
     console.log('  ✅ Final EaaS NPV:', plnToMlnPln(eaasNPV).toFixed(2), 'mln PLN');
 
+    // --- Build per-scenario metrics (P50/P75/P90) from centralizedMetrics SSoT ---
+    const factors = window.productionFactors || { P50: 1.0, P75: 0.97, P90: 0.94 };
+    const eaasScenarios = {};
+    // Precise grid rate: baseline_cost / baseline_import (accurate)
+    // Fallback: totalEnergyPrice (tariff component sum)
+    const baselineCostPln = (hasPreciseSavings && preciseAnnualSavings?.baseline?.total_cost_pln) || null;
+    const baselineImportMwh = preciseAnnualSavings?.baseline?.import_mwh || 0;
+    const eaasGridRate = (baselineCostPln && baselineImportMwh > 0)
+      ? baselineCostPln / baselineImportMwh
+      : totalEnergyPrice;
+    const eaasYear1Savings = eaasCashFlows.length > 0 ? eaasCashFlows[0].savings : 0;
+
+    for (const [key, factor] of Object.entries(factors)) {
+      const scenarioSelfConsumed = selfConsumedMwh * (factor / scenarioFactor);
+      const scenarioEffPrice = baseSubscriptionCost / (scenarioSelfConsumed || 1);
+      const scenarioPriceDiff = eaasGridRate - scenarioEffPrice;
+      const scenarioAnnualSavings = scenarioSelfConsumed * scenarioPriceDiff;
+      eaasScenarios[key] = {
+        factor,
+        energyMWh: scenarioSelfConsumed,
+        pricePLN: scenarioEffPrice,
+        savingsPerMWh: scenarioPriceDiff,
+        annualSavings: scenarioAnnualSavings,
+        savingsPercent: eaasGridRate > 0 ? decimalToPct(scenarioPriceDiff / eaasGridRate) : 0
+      };
+    }
+
     eaasMetrics = {
       npv: eaasNPV,
       duration: eaasDuration,
       baseSubscription: baseSubscriptionCost,
       baseOmCost: baseOmCost,
       baseInsuranceCost: baseInsuranceCost,
-      cashFlows: eaasCashFlows
+      cashFlows: eaasCashFlows,
+      scenarios: eaasScenarios,
+      // --- SSoT EaaS card values ---
+      gridRatePLNperMWh: eaasGridRate,
+      effectivePricePLNperMWh: baseSubscriptionCost / (selfConsumedMwh || 1),
+      priceDiffPLNperMWh: eaasGridRate - baseSubscriptionCost / (selfConsumedMwh || 1),
+      annualSavingsYear1: eaasYear1Savings,
+      subscriptionPLN: baseSubscriptionCost
     };
   }
 
@@ -7922,37 +7964,55 @@ function formatEaaSResults(result) {
 
   const m = result.metrics;
 
-  // Store base metrics for scenario calculations
+  // SSoT: Use centralizedMetrics when available for accurate card values
+  const cc = centralizedMetrics[currentVariant];
+  const hasCC = cc && cc.eaas;
+
+  const gridPricePLNperMWh = hasCC ? cc.eaas.gridRatePLNperMWh : m.gridPricePLNperKWh * 1000;
+  const effectivePricePLNperMWh = hasCC ? cc.eaas.effectivePricePLNperMWh : m.eaasPricePLNperKWh * 1000;
+  const priceDiffPLNperMWh = hasCC ? cc.eaas.priceDiffPLNperMWh : m.priceDifferencePLNperKWh * 1000;
+  const annualSavingsY1 = hasCC ? cc.eaas.annualSavingsYear1 : m.annualSavingsPLN;
+  const subscriptionPLN = hasCC ? cc.eaas.baseSubscription : (m.breakdown?.subscriptionCost || 0);
+  const omCostPLN = hasCC ? cc.eaas.baseOmCost : (m.breakdown?.omCost || 0);
+  const insurancePLN = hasCC ? cc.eaas.baseInsuranceCost : (m.breakdown?.insuranceCost || 0);
+  const totalAnnualCost = subscriptionPLN + omCostPLN + insurancePLN;
+  const selfConsumedMwh = hasCC ? (cc.common?.selfConsumedMwh || 0) : kwhToMwh(m.breakdown?.pvSelfConsumedKWh || 0);
+  const savingsPercent = gridPricePLNperMWh > 0 ? decimalToPct(priceDiffPLNperMWh / gridPricePLNperMWh) : 0;
+  const capex = m.pvCapexPLN || 0;
+  const paybackYears = annualSavingsY1 > 0 ? capex / annualSavingsY1 : null;
+  const roi = capex > 0 && annualSavingsY1 > 0 ? (annualSavingsY1 / capex) * 100 : null;
+
+  // Store base metrics for scenario calculations (SSoT)
   window.eaasBaseMetrics = {
-    gridPricePLNperMWh: m.gridPricePLNperKWh * 1000,
-    eaasPricePLNperMWh: m.eaasPricePLNperKWh * 1000,
-    annualSavingsPLN: m.annualSavingsPLN,
-    savingsPercent: m.savingsPercentageVsBaseline,
-    paybackYears: m.eaasEquivalentPaybackYears,
-    roi: m.eaasEquivalentROI,
-    capex: m.pvCapexPLN || 0,  // Use pvCapexPLN from metrics (was previously missing)
-    annualCost: m.breakdown?.totalAnnualCost || 0,
-    pvSelfConsumedMWh: kwhToMwh(m.breakdown?.pvSelfConsumedKWh || 0)
+    gridPricePLNperMWh,
+    eaasPricePLNperMWh: effectivePricePLNperMWh,
+    annualSavingsPLN: annualSavingsY1,
+    savingsPercent,
+    paybackYears,
+    roi,
+    capex,
+    annualCost: totalAnnualCost,
+    pvSelfConsumedMWh: selfConsumedMwh
   };
-  console.log('📊 eaasBaseMetrics set with CAPEX:', window.eaasBaseMetrics.capex);
+  console.log('📊 eaasBaseMetrics set from', hasCC ? 'centralizedMetrics' : 'calculateEaaSFinancialMetrics', '- CAPEX:', capex);
 
   return `
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Cena energii z sieci</div>
-        <div id="eaasVal_gridPrice" style="color:#2c3e50;font-size:24px;font-weight:600">${(m.gridPricePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_gridPrice" style="color:#2c3e50;font-size:24px;font-weight:600">${formatNumberEU(gridPricePLNperMWh, 2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
 
       <div id="eaasCard_effectivePrice" style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Efektywna cena EaaS</div>
-        <div id="eaasVal_effectivePrice" style="color:#27ae60;font-size:24px;font-weight:600">${(m.eaasPricePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_effectivePrice" style="color:#27ae60;font-size:24px;font-weight:600">${formatNumberEU(effectivePricePLNperMWh, 2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
 
       <div id="eaasCard_priceDiff" style="background:#f8f9fa;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Różnica cen</div>
-        <div id="eaasVal_priceDiff" style="color:#27ae60;font-size:24px;font-weight:600">${(m.priceDifferencePLNperKWh * 1000).toFixed(2)}</div>
+        <div id="eaasVal_priceDiff" style="color:#27ae60;font-size:24px;font-weight:600">${formatNumberEU(priceDiffPLNperMWh, 2)}</div>
         <div style="color:#7f8c8d;font-size:11px">PLN/MWh</div>
       </div>
     </div>
@@ -7960,19 +8020,19 @@ function formatEaaSResults(result) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div id="eaasCard_annualSavings" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Roczne oszczędności</div>
-        <div id="eaasVal_annualSavings" style="color:#27ae60;font-size:24px;font-weight:600">${plnToTysPln(m.annualSavingsPLN).toFixed(1)}</div>
-        <div id="eaasVal_savingsPercent" style="color:#7f8c8d;font-size:11px">tys. PLN (${m.savingsPercentageVsBaseline.toFixed(1)}% kosztu energii)</div>
+        <div id="eaasVal_annualSavings" style="color:#27ae60;font-size:24px;font-weight:600">${formatNumberEU(plnToTysPln(annualSavingsY1), 1)}</div>
+        <div id="eaasVal_savingsPercent" style="color:#7f8c8d;font-size:11px">tys. PLN (${formatNumberEU(savingsPercent, 1)}% kosztu energii)</div>
       </div>
 
       <div id="eaasCard_payback" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Równoważny okres zwrotu</div>
-        <div id="eaasVal_payback" style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentPaybackYears !== null ? m.eaasEquivalentPaybackYears.toFixed(1) : '–'}</div>
+        <div id="eaasVal_payback" style="color:#27ae60;font-size:24px;font-weight:600">${paybackYears !== null ? formatNumberEU(paybackYears, 1) : '–'}</div>
         <div style="color:#7f8c8d;font-size:11px">lat (względem CAPEX)</div>
       </div>
 
       <div id="eaasCard_roi" style="background:#e8f8f5;padding:16px;border-radius:8px;border-left:4px solid #27ae60">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Równoważny ROI</div>
-        <div id="eaasVal_roi" style="color:#27ae60;font-size:24px;font-weight:600">${m.eaasEquivalentROI !== null ? m.eaasEquivalentROI.toFixed(1) : '–'}</div>
+        <div id="eaasVal_roi" style="color:#27ae60;font-size:24px;font-weight:600">${roi !== null ? formatNumberEU(roi, 1) : '–'}</div>
         <div style="color:#7f8c8d;font-size:11px">% rocznie</div>
       </div>
     </div>
@@ -7981,19 +8041,19 @@ function formatEaaSResults(result) {
     <div id="eaasScenarioRow" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
       <div id="eaasCard_production" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Produkcja roczna (<span id="eaasScenarioLabel">P50</span>)</div>
-        <div id="eaasVal_production" style="color:#3f51b5;font-size:24px;font-weight:600">${kwhToMwh(m.breakdown?.pvSelfConsumedKWh || 0).toFixed(0)}</div>
+        <div id="eaasVal_production" style="color:#3f51b5;font-size:24px;font-weight:600">${formatNumberEU(selfConsumedMwh, 0)}</div>
         <div style="color:#7f8c8d;font-size:11px">MWh/rok</div>
       </div>
 
       <div id="eaasCard_subscription" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">Abonament EaaS</div>
-        <div id="eaasVal_subscription" style="color:#3f51b5;font-size:24px;font-weight:600">${plnToTysPln(m.breakdown?.subscriptionCost || 0).toFixed(0)}</div>
+        <div id="eaasVal_subscription" style="color:#3f51b5;font-size:24px;font-weight:600">${formatNumberEU(plnToTysPln(subscriptionPLN), 0)}</div>
         <div style="color:#7f8c8d;font-size:11px">tys. PLN/rok</div>
       </div>
 
       <div id="eaasCard_escoIrr" style="background:#e8eaf6;padding:16px;border-radius:8px;border-left:4px solid #3f51b5">
         <div style="color:#7f8c8d;font-size:12px;margin-bottom:4px">ESCO IRR (fixed)</div>
-        <div id="eaasVal_escoIrr" style="color:#3f51b5;font-size:24px;font-weight:600">${decimalToPct(window.eaasEscoIrr || 0).toFixed(1)}</div>
+        <div id="eaasVal_escoIrr" style="color:#3f51b5;font-size:24px;font-weight:600">${formatNumberEU(decimalToPct(window.eaasEscoIrr || 0), 1)}</div>
         <div style="color:#7f8c8d;font-size:11px">% (stała subskrypcja)</div>
       </div>
     </div>
@@ -8001,10 +8061,10 @@ function formatEaaSResults(result) {
     <div style="padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0;font-size:12px">
       <div style="color:#7f8c8d;font-weight:600;margin-bottom:6px">Rozbicie kosztów EaaS (rocznych):</div>
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px;color:#2c3e50">
-        <span>• Abonament: <strong>${plnToTysPln(m.breakdown.subscriptionCost).toFixed(1)}</strong> tys. PLN</span>
-        <span>• O&M: <strong>${plnToTysPln(m.breakdown.omCost).toFixed(1)}</strong> tys. PLN</span>
-        <span>• Ubezpieczenie: <strong>${plnToTysPln(m.breakdown.insuranceCost).toFixed(1)}</strong> tys. PLN</span>
-        <span>• Suma: <strong>${plnToTysPln(m.breakdown.totalAnnualCost).toFixed(1)}</strong> tys. PLN/rok</span>
+        <span>• Abonament: <strong>${formatNumberEU(plnToTysPln(subscriptionPLN), 1)}</strong> tys. PLN</span>
+        <span>• O&M: <strong>${formatNumberEU(plnToTysPln(omCostPLN), 1)}</strong> tys. PLN</span>
+        <span>• Ubezpieczenie: <strong>${formatNumberEU(plnToTysPln(insurancePLN), 1)}</strong> tys. PLN</span>
+        <span>• Suma: <strong>${formatNumberEU(plnToTysPln(totalAnnualCost), 1)}</strong> tys. PLN/rok</span>
       </div>
     </div>
   `;
@@ -8204,58 +8264,8 @@ async function calculateEaaS() {
     // Annual subscription (fixed for all scenarios)
     const annualSubscriptionPLN = fullModelResult.annualSubscriptionPLN || fullModelResult.annualSubscription;
 
-    // Grid price for comparison (PLN/MWh)
-    // Priority: precise baseline rate from backend (baseline_cost / consumption)
-    // Fallback: tariff component sum (less accurate, includes linearized capacity fee)
-    let gridPricePLN = calculateTotalEnergyPrice(params);
-    const hybridGridPrice = computeWeightedEnergyPrice(params);
-    if (hybridGridPrice) gridPricePLN = hybridGridPrice.weightedTotal;
-    // Use precise baseline rate when available (consistent with EaaS table)
-    const preciseBaselineRate = (preciseAnnualSavings?.baseline?.total_cost_pln && preciseAnnualSavings?.baseline?.import_mwh > 0)
-      ? preciseAnnualSavings.baseline.total_cost_pln / preciseAnnualSavings.baseline.import_mwh
-      : null;
-    if (preciseBaselineRate) {
-      console.log(`📊 EaaS cards: using precise baseline rate ${preciseBaselineRate.toFixed(1)} PLN/MWh (was tariff sum ${gridPricePLN.toFixed(1)})`);
-      gridPricePLN = preciseBaselineRate;
-    }
-
-    // Calculate metrics for each scenario
-    const scenarios = {
-      P50: {
-        factor: p50Factor,
-        energyMWh: annualEnergyMWh * p50Factor,
-        pricePLN: annualEnergyMWh * p50Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p50Factor) : 0,
-      },
-      P75: {
-        factor: p75Factor,
-        energyMWh: annualEnergyMWh * p75Factor,
-        pricePLN: annualEnergyMWh * p75Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p75Factor) : 0,
-      },
-      P90: {
-        factor: p90Factor,
-        energyMWh: annualEnergyMWh * p90Factor,
-        pricePLN: annualEnergyMWh * p90Factor > 0 ? annualSubscriptionPLN / (annualEnergyMWh * p90Factor) : 0,
-      }
-    };
-
-    // Add derived metrics
-    Object.keys(scenarios).forEach(key => {
-      const s = scenarios[key];
-      s.savingsPerMWh = gridPricePLN - s.pricePLN;           // PLN/MWh saved vs grid
-      s.annualSavings = s.energyMWh * s.savingsPerMWh;       // PLN/year total savings
-      s.savingsPercent = gridPricePLN > 0 ? decimalToPct(s.savingsPerMWh / gridPricePLN) : 0;
-    });
-
-    console.log('Production scenarios (client perspective):', {
-      gridPricePLN,
-      annualSubscriptionPLN,
-      scenarios
-    });
-
-    // Store scenarios globally for button handlers
-    window.eaasScenarios = scenarios;
-    window.eaasGridPrice = gridPricePLN;
-    window.eaasSubscription = annualSubscriptionPLN;
+    // NOTE: Scenarios and grid price are now computed inside calculateCentralizedFinancialMetrics()
+    // as centralizedCalc.eaas.scenarios — SSoT. We only set window aliases here for backward compat.
     window.currentProductionScenario = window.currentProductionScenario || 'P50';
 
     // Update production scenarios display (buttons are in HTML, only update metrics here)
@@ -8344,38 +8354,14 @@ async function calculateEaaS() {
   console.log('  - CAPEX NPV:', plnToMlnPln(centralizedCalc.capex.npv).toFixed(2), 'mln PLN');
   console.log('  - EaaS NPV:', plnToMlnPln(centralizedCalc.eaas?.npv || 0).toFixed(2), 'mln PLN');
 
-  // === FIX: Update scenario cards with precise data from centralizedCalc ===
-  // Cards must show values consistent with the EaaS Rok po Roku table.
-  if (centralizedCalc.eaas?.cashFlows?.length > 0 && centralizedCalc.common?.baselineTotalCostPln) {
-    const year1CF = centralizedCalc.eaas.cashFlows[0];
-    const baselineImportMwh = preciseAnnualSavings?.baseline?.import_mwh || 0;
-    const preciseGridRate = baselineImportMwh > 0
-      ? centralizedCalc.common.baselineTotalCostPln / baselineImportMwh
-      : centralizedCalc.common.totalEnergyPrice;
-    const eaasPrice = eaasSubscriptionPLN / (centralizedCalc.common.selfConsumedMwh || 1);
-    const preciseAnnualSavingsNet = year1CF.savings; // gridCost - eaasCost
-
-    // Update scenarios object used by selectProductionScenario
-    const scKey = window.currentProductionScenario || 'P90';
-    if (window.eaasScenarios?.[scKey]) {
-      window.eaasGridPrice = preciseGridRate;
-      Object.keys(window.eaasScenarios).forEach(k => {
-        const s = window.eaasScenarios[k];
-        s.savingsPerMWh = preciseGridRate - s.pricePLN;
-        s.annualSavings = s.energyMWh * s.savingsPerMWh;
-        s.savingsPercent = preciseGridRate > 0 ? decimalToPct(s.savingsPerMWh / preciseGridRate) : 0;
-      });
-      console.log(`📊 EaaS cards updated: gridRate=${preciseGridRate.toFixed(1)}, eaasPrice=${eaasPrice.toFixed(1)}, netSavings(Y1)=${plnToTysPln(preciseAnnualSavingsNet).toFixed(0)}k`);
-
-      // Update grid price card
-      const gridPriceEl = document.getElementById('eaasVal_gridPrice');
-      if (gridPriceEl) gridPriceEl.textContent = formatNumberEU(preciseGridRate, 2);
-
-      // Re-render cards with corrected values
-      if (typeof selectProductionScenario === 'function') {
-        selectProductionScenario(scKey);
-      }
-    }
+  // === SSoT: Set window aliases from centralizedCalc.eaas ===
+  // All scenario data comes from calculateCentralizedFinancialMetrics() — single source of truth.
+  if (centralizedCalc.eaas) {
+    window.eaasScenarios = centralizedCalc.eaas.scenarios;
+    window.eaasGridPrice = centralizedCalc.eaas.gridRatePLNperMWh;
+    window.eaasSubscription = centralizedCalc.eaas.subscriptionPLN;
+    window.eaasEscoIrr = fullModelResult.projectIrr;
+    console.log(`📊 EaaS SSoT aliases set: gridRate=${centralizedCalc.eaas.gridRatePLNperMWh.toFixed(1)}, subscription=${plnToTysPln(centralizedCalc.eaas.subscriptionPLN).toFixed(0)}k`);
   }
 
   // K-class warning banner
@@ -8708,21 +8694,11 @@ async function calculateOptimization() {
   // If current variant was recalculated with fresh PRECISE data, re-render tables
   if (preciseAnnualSavingsCache[currentVariant] && centralizedMetrics[currentVariant]?.common?.hasPreciseSavings) {
     console.log('🔄 Re-rendering EaaS/CAPEX tables with PRECISE data for variant', currentVariant);
-    // Re-render EaaS yearly table
     const variant = variants[currentVariant];
     if (variant) {
       const p = getEconomicParameters();
-      const r = calculateEaaSFinancialMetrics({
-        annualConsumptionKWh: getAnnualConsumptionKwh(),
-        annualPVProductionKWh: variant.production * (window.currentScenarioFactor || 1.0),
-        selfConsumptionRatio: variant.self_consumed / variant.production,
-        pvPowerKWp: variant.capacity,
-        pvCapexPLN: variant.capacity * getCapexForCapacity(variant.capacity),
-        eaasSubscriptionPLNperYear: window.eaasSubscription || 800000,
-        omCostPerKWp: p.opex_per_kwp || (systemSettings?.opexPerKwp || 15),
-        tariffComponents: { energyActive: p.energy_active, distribution: p.distribution, quality: p.quality_fee, oze: p.oze_fee, cogeneration: p.cogeneration_fee, capacity: p.capacity_fee, excise: p.excise_tax }
-      });
-      if (!r.error) generateEaaSYearlyTable(p, r);
+      // generateEaaSYearlyTable reads from centralizedMetrics (SSoT) — pass dummy result for error guard
+      generateEaaSYearlyTable(p, { error: null });
       // Re-render CAPEX payback table
       const economicData = window._lastEconomicData;
       if (economicData) {
@@ -9113,8 +9089,15 @@ async function exportEaaSToExcel(withFormulas = false) {
     return;
   }
 
+  // SSoT: Use centralizedMetrics for grid price and EaaS effective price
+  const currentCalc = centralizedMetrics[currentVariant];
+  const gridPricePLNperMWh = currentCalc?.eaas?.gridRatePLNperMWh
+    || result.metrics.gridPricePLNperKWh * 1000;
+  const eaasPricePLNperMWh = currentCalc?.eaas?.effectivePricePLNperMWh
+    || result.metrics.eaasPricePLNperKWh * 1000;
+
   // Grid price for year-by-year calculations (PLN/kWh)
-  const gridPrice = result.metrics.gridPricePLNperKWh;
+  const gridPrice = gridPricePLNperMWh / 1000;
 
   // Create workbook
   const wb = XLSX.utils.book_new();
@@ -9128,30 +9111,20 @@ async function exportEaaSToExcel(withFormulas = false) {
   const annualConsumptionMwh = kwhToMwh(annualConsumptionKwh);
 
   // Sheet 1: Summary (client-facing - no sensitive ESCO data)
-  // Rows 1-3: Header area (logo + title merged A1:B3)
   // Currency conversion multiplier (1 for PLN, 1/fx for EUR)
   const currencyMultiplier = currency === 'EUR' ? 1 / fxPlnEur : 1;
   const currencyLabel = currency;
-  // Currency info for display - separate label and value
   const currencyInfoLabel = currency === 'EUR' ? 'Waluta EUR:' : 'Waluta:';
   const currencyInfoValue = currency === 'EUR'
     ? `${fxPlnEur.toFixed(2).replace('.', ',')} PLN/EUR`
     : 'PLN';
 
-  // Convert values to contract currency
-  // Use precise baseline rate from backend when available (consistent with portal cards & table)
-  const currentCalc = centralizedMetrics[currentVariant];
-  const preciseBaselineCost = currentCalc?.common?.baselineTotalCostPln;
-  const preciseBaselineImportMwh = preciseAnnualSavings?.baseline?.import_mwh;
-  const preciseGridPricePLNperMWh = (preciseBaselineCost && preciseBaselineImportMwh > 0)
-    ? preciseBaselineCost / preciseBaselineImportMwh
-    : null;
-
+  // Convert values to contract currency (from centralizedMetrics SSoT)
   const eaasSubscriptionDisplay = eaasSubscription * currencyMultiplier;
-  const gridPriceDisplay = (preciseGridPricePLNperMWh || result.metrics.gridPricePLNperKWh * 1000) * currencyMultiplier;
-  const eaasPriceDisplay = result.metrics.eaasPricePLNperKWh * 1000 * currencyMultiplier;
-  const priceDiffDisplay = (gridPriceDisplay / currencyMultiplier - result.metrics.eaasPricePLNperKWh * 1000) * currencyMultiplier;
-  const annualSavingsDisplay = plnToTysPln(autoconsumptionMwh * priceDiffDisplay / currencyMultiplier * currencyMultiplier);
+  const gridPriceDisplay = gridPricePLNperMWh * currencyMultiplier;
+  const eaasPriceDisplay = eaasPricePLNperMWh * currencyMultiplier;
+  const priceDiffDisplay = (gridPricePLNperMWh - eaasPricePLNperMWh) * currencyMultiplier;
+  const annualSavingsDisplay = plnToTysPln(autoconsumptionMwh * (gridPricePLNperMWh - eaasPricePLNperMWh));
 
   const summaryData = [
     [''],  // Row 1 - logo area
@@ -9182,7 +9155,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     [`Cena energii z sieci [${currencyLabel}/MWh]:`, roundNum(gridPriceDisplay, 2)],
     [`Efektywna cena EaaS [${currencyLabel}/MWh]:`, roundNum(eaasPriceDisplay, 2)],
     [`Różnica cen [${currencyLabel}/MWh]:`, roundNum(priceDiffDisplay, 2)],
-    ['Procent oszczędności [%]:', roundNum((result.metrics.priceDifferencePLNperKWh / result.metrics.gridPricePLNperKWh) * 100, 1)],
+    ['Procent oszczędności [%]:', roundNum(gridPricePLNperMWh > 0 ? ((gridPricePLNperMWh - eaasPricePLNperMWh) / gridPricePLNperMWh) * 100 : 0, 1)],
     [''],
     [`Roczne oszczędności [tys. ${currencyLabel}]:`, roundNum(annualSavingsDisplay, 1)]
   ];
@@ -11414,7 +11387,7 @@ async function exportEaaSToExcel(withFormulas = false) {
     [`Grid energy price [${currencyLabel}/MWh]:`, roundNum(gridPriceDisplay, 2)],
     [`Effective EaaS price [${currencyLabel}/MWh]:`, roundNum(eaasPriceDisplay, 2)],
     [`Price difference [${currencyLabel}/MWh]:`, roundNum(priceDiffDisplay, 2)],
-    ['Savings percentage [%]:', roundNum((result.metrics.priceDifferencePLNperKWh / result.metrics.gridPricePLNperKWh) * 100, 1)],
+    ['Savings percentage [%]:', roundNum(gridPricePLNperMWh > 0 ? ((gridPricePLNperMWh - eaasPricePLNperMWh) / gridPricePLNperMWh) * 100 : 0, 1)],
     [''],
     [`Annual savings [k${currencyLabel}]:`, roundNum(annualSavingsDisplay, 1)]
   ];

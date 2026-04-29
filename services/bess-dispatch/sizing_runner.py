@@ -144,6 +144,8 @@ from economics_engine import (
     calculate_irr_from_cashflows as _unified_irr_from_cashflows,
     combined_soh as _unified_combined_soh,
     battery_lifetime_years as _unified_battery_lifetime_years,
+    calculate_scenario_npv as _unified_calculate_scenario_npv,
+    ScenarioNpvResult as _ScenarioNpvResult,
 )
 from price_resolver import PriceResolver as _PriceResolver, ResolvedPrices as _ResolvedPrices
 
@@ -2020,6 +2022,11 @@ def run_sizing_for_variant(
             marginal_cycle_cost_per_kwh=sr_marginal_cycle_cost,
         )
     else:
+        _sr_max_efc = (
+            request.degradation_budget.max_efc_per_year
+            if request.degradation_budget and request.degradation_budget.max_efc_per_year
+            else None
+        )
         result = dispatch_lp(
             pv_kw=pv_kw,
             load_kw=load_kw,
@@ -2035,6 +2042,7 @@ def run_sizing_for_variant(
             grid_connection_kw=request.grid_connection_kw,
             allow_grid_charging=sr_allow_grid_charging,
             marginal_cycle_cost_per_kwh=sr_marginal_cycle_cost,
+            max_efc_per_year=_sr_max_efc,
         )
 
     # Check degradation budget
@@ -2703,11 +2711,17 @@ def find_optimal_power_for_duration(
     arb_load_only = (mode == DispatchMode.LOAD_ONLY and
                      request.arbitrage_config and request.arbitrage_config.enabled)
     if arb_load_only:
-        # Search from 2% to 120% of p_max_candidate (was 10%-120%).
-        # Starting at 10% hid cases where NPV peaks below the old p_min —
-        # e.g. a 219 kW result at the very first step means smaller might be even better.
-        p_min = max(request.min_power_kw, p_max_candidate * 0.02)
-        p_max = min(request.max_power_kw, p_max_candidate * 1.2)
+        # Search from p_min_arb (5% daily energy / duration_h) to 150% of p_max_candidate.
+        # Cap p_min at 20% of load_peak to prevent it from being too small (which would
+        # include tiny batteries unrepresentative of the customer's scale) or too large.
+        # p_min_arb already encodes the minimum sensible storage for this duration.
+        _p_min_energy = min(p_min_arb, load_peak_for_sizing * 0.20)
+        p_min = max(request.min_power_kw, _p_min_energy)
+        heuristic_max = p_max_candidate * 1.5
+        # For LOAD_ONLY, cap p_max at 1.5× load_peak to get fine grid resolution
+        # over the economically relevant range (avoid coarse 500 kW steps when
+        # request.max_power_kw=10000 kW but load_peak is only 2000 kW).
+        p_max = min(request.max_power_kw, heuristic_max)
     else:
         p_min = max(request.min_power_kw, p_max_candidate * 0.2)
         p_max = min(request.max_power_kw, p_max_candidate * 2.0)
@@ -2759,11 +2773,55 @@ def find_optimal_power_for_duration(
 
     for power, result, capex, npv, eff_years in futures:
         energy = power * duration_h
-        payback = _unified_simple_payback(result.annual_savings_pln, capex)
+
+        # EFC constraint: shorten NPV horizon to min(analysis_years, battery_lifetime)
+        # This prevents inflated NPV for fast-cycling batteries that die before analysis horizon.
+        _fc_inner = request.finance_config
+        _efc_per_year = result.degradation.efc_total if result.degradation else 0.0
+        _cycles_eol_inner = (_fc_inner.cycles_to_eol if _fc_inner else 6000.0)
+        # When EFC budget is active (Option A+), use constrained EFC for horizon.
+        # The LP ran free (e.g. 517 EFC) but we limit savings to max_efc (300).
+        # Horizon must reflect the constrained rate: 3000 cycles / 300 EFC/yr = 10yr,
+        # not 3000/517=6yr which unfairly penalises the battery for exceeding budget.
+        _efc_for_horizon = (min(_efc_per_year, max_efc)
+                            if max_efc and max_efc > 0 and _efc_per_year > max_efc
+                            else _efc_per_year)
+        if _efc_for_horizon > 0 and _cycles_eol_inner > 0:
+            _efc_horizon = max(1, int(min(request.analysis_years, _cycles_eol_inner / _efc_for_horizon)))
+        else:
+            _efc_horizon = request.analysis_years
+
+        # Option A+ — EFC budget scaling (top-cycles correction):
+        # LP dispatches without EFC limit → actual cycles may exceed max_efc_per_year.
+        # Top-f cycle assumption: cycles ranked by spread; top-f fraction earns 1-(1-f)^2 of total.
+        # More accurate than linear (f) scaling — linear underestimates savings by ~30-40%.
+        # Derivation: uniform spread distribution, integral of top-f quantile = 1 - (1-f)^2.
+        _efc_scale = 1.0
+        if max_efc is not None and max_efc > 0 and _efc_per_year > max_efc:
+            f = max_efc / _efc_per_year
+            _efc_scale = 1.0 - (1.0 - f) ** 2  # ~79% savings at f=300/555, vs 54% linear
+        _effective_savings = result.annual_savings_pln * _efc_scale
+
+        _efc_cfg = _NpvConfig(
+            discount_rate=request.discount_rate,
+            analysis_years=_efc_horizon,
+            opex_pct=request.opex_pct_per_year,
+        )
+        _efc_result = _unified_calculate_npv(_effective_savings, capex, _efc_cfg)
+        # Override simple ranking NPV with EFC-constrained lifecycle NPV
+        npv = _efc_result.npv_pln
+        irr_pct = _efc_result.irr_pct
+        profitability_index = _efc_result.profitability_index
+
+        payback = _unified_simple_payback(_effective_savings, capex)
         _thr = result.degradation.throughput_total_mwh if result.degradation else 0
-        print(f"  📊 P={power:.0f}kW E={energy:.0f}kWh → savings={result.annual_savings_pln:.0f} PLN, "
+        _scale_info = f" [EFC scaled {_efc_scale:.2f}x]" if _efc_scale < 1.0 else ""
+        _irr_str = f"{irr_pct:.1f}" if irr_pct is not None else "N/A"
+        _pi_str = f"{profitability_index:.2f}" if profitability_index is not None else "N/A"
+        print(f"  📊 P={power:.0f}kW E={energy:.0f}kWh → savings={_effective_savings:.0f} PLN{_scale_info}, "
               f"throughput={_thr:.0f} MWh, EFC={result.degradation.efc_total:.0f}, "
-              f"NPV={npv:.0f}, payback={payback:.1f}", flush=True)
+              f"NPV={npv:.0f} (horizon={_efc_horizon}y), IRR={_irr_str}% PI={_pi_str}, "
+              f"payback={payback:.1f}", flush=True)
 
         # Check constraints
         passes_hard, penalty, violations = check_constraints(
@@ -2807,7 +2865,7 @@ def find_optimal_power_for_duration(
             "energy_kwh": round(energy, 0),
             "duration_h": duration_h,
             "capex_pln": round(capex, 0),
-            "annual_savings_pln": round(result.annual_savings_pln, 0),
+            "annual_savings_pln": round(_effective_savings, 0),
             "btm_savings_pln": round(btm_savings, 0),
             "ancillary_revenue_pln": round(ancillary_net, 0),
             # Per-source savings breakdown
@@ -2819,12 +2877,16 @@ def find_optimal_power_for_duration(
             "degradation_cost_pln": round(sb.degradation_cost_pln, 0) if sb else 0,
             "npv_pln": round(npv, 0),
             "npv_per_kwh": round(npv_per_kwh, 2),
-            "payback_years": round(payback, 1),
+            "simple_payback_years": round(payback, 1),
+            "payback_years": round(payback, 1),  # alias for backward compat
             "score": round(score, 2),
             "efc_total": round(result.degradation.efc_total, 1),
             "efc_limit": max_efc if max_efc is not None and max_efc > 0 else None,
             "efc_penalty_pln": round(efc_penalty_pln, 0),
             "lifetime_years": eff_years,
+            "efc_horizon_years": _efc_horizon,
+            "irr_pct": round(irr_pct, 1) if irr_pct is not None else None,
+            "profitability_index": round(profitability_index, 3),
             "auxiliary_cost_pln": result.info.get('annual_auxiliary_cost_pln', 0),
             "house_load_kw": result.info.get('house_load_kw', 0),
             "self_consumption_pct": round(result.self_consumption_pct, 1),
@@ -2846,9 +2908,28 @@ def find_optimal_power_for_duration(
         )
         payback = _unified_simple_payback(result.annual_savings_pln, capex)
         _, _, violations = check_constraints(opt_config, capex, npv, payback, result)
-        return power, power * duration_h, result, float('-inf'), violations, grid_points
+        return power, power * duration_h, result, float('-inf'), violations, grid_points, False, None
 
-    return best_power, best_power * duration_h, best_result, best_score, best_violations, grid_points
+    # Monotonicity detection: if best point is at upper boundary → search is incomplete
+    # (true optimum may be at a larger size — user should widen max_power_kw)
+    upper_bound = power_steps[-1]
+    grid_search_incomplete = bool(abs(best_power - upper_bound) < 1e-3)
+    grid_search_next_range_kw = None
+    if grid_search_incomplete:
+        next_min = upper_bound * 0.8   # slight overlap for continuity
+        next_max = upper_bound * 3.0
+        grid_search_next_range_kw = [round(next_min, 0), round(next_max, 0)]
+        print(f"  ⚠️  GRID SEARCH INCOMPLETE for {duration_h}h: best={best_power:.0f}kW = upper boundary. "
+              f"Suggest re-run with range [{next_min:.0f}, {next_max:.0f}] kW", flush=True)
+
+    # Lower-boundary detection: if best point is at lower boundary → NPV decreasing with size
+    # (CAPEX grows faster than savings for this duration — duration economically unfavorable)
+    lower_bound = power_steps[0]
+    if not grid_search_incomplete and abs(best_power - lower_bound) < 1e-3:
+        print(f"  ⚠️  GRID DEGENERATE for {duration_h}h: best={best_power:.0f}kW = lower boundary. "
+              f"NPV decreasing with battery size — this duration uneconomical at current CAPEX.", flush=True)
+
+    return best_power, best_power * duration_h, best_result, best_score, best_violations, grid_points, grid_search_incomplete, grid_search_next_range_kw
 
 
 def run_sizing(request: SizingRequest) -> SizingResult:
@@ -2954,6 +3035,8 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     # For each duration, independently find optimal power.
     # Also collect ALL evaluated grid points for transparency (top_variants_details).
     all_grid_points = []  # Collect all power x duration combinations
+    duration_incomplete: dict = {}       # {dur_h: bool} — monotonicity flag per duration
+    duration_next_range: dict = {}       # {dur_h: [min_kw, max_kw]} when incomplete
 
     # --- Parallel grid search across durations (1h, 2h, 4h) ---
     from concurrent.futures import ThreadPoolExecutor as _DurTPE
@@ -2970,6 +3053,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             duration_results[dur_h] = result_tuple[:5]
             if len(result_tuple) > 5:
                 all_grid_points.extend(result_tuple[5])
+            if len(result_tuple) > 6:
+                duration_incomplete[dur_h] = result_tuple[6]
+            if len(result_tuple) > 7:
+                duration_next_range[dur_h] = result_tuple[7]
 
     for duration_h in request.durations_h:
         power_kw, energy_kwh, dispatch_result, score, constraint_violations = duration_results[duration_h]
@@ -3028,6 +3115,19 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         _variant_result = _unified_calculate_npv(dispatch_result.annual_savings_pln, capex, _variant_cfg)
         npv = _variant_result.npv_pln
         irr = _variant_result.irr_pct
+        variant_pi = _variant_result.profitability_index
+
+        # Scenario NPV: pessimistic (×0.65), base (×1.00), optimistic (×1.40) weighted average
+        _scen = _unified_calculate_scenario_npv(dispatch_result.annual_savings_pln, capex, _variant_cfg)
+        variant_scenario_npv = {
+            "weighted_npv": round(_scen.weighted_npv, 0),
+            "irr_base_pct": round(_scen.irr_base_pct, 1) if _scen.irr_base_pct is not None else None,
+            "probability_positive_npv": round(_scen.probability_positive_npv, 2),
+            "npv_p5": round(_scen.npv_p5, 0),
+            "npv_pessimistic": round(_scen.npv_pessimistic, 0),
+            "npv_base": round(_scen.npv_base, 0),
+            "npv_optimistic": round(_scen.npv_optimistic, 0),
+        }
 
         # Recalculate objective score using final NPV (after EOL adjustment)
         # This ensures score reflects the actual economics of the sized variant
@@ -3244,6 +3344,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 # Fallback: use total discharge from dispatch (always available from LP)
                 object.__setattr__(variant_result, 'hourly_discharge_kw', dispatch_result.hourly_discharge_kw)
 
+        # Profitability Index and Scenario NPV (v3.2.0)
+        object.__setattr__(variant_result, 'profitability_index', variant_pi)
+        object.__setattr__(variant_result, 'scenario_npv', variant_scenario_npv)
+
         # Evaluate feasibility against user constraints (v0.8.0)
         feasibility = evaluate_feasibility(variant_result, request.constraints_config)
         # Use object.__setattr__ to set on Pydantic model after creation
@@ -3382,6 +3486,40 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     # Build constraints_report (v0.8.0)
     constraints_report = build_constraints_report(variants, request.constraints_config)
     none_feasible = constraints_report.none_feasible
+
+    # PATH-aware scoring override (v3.2.0)
+    # Detect pricing path to choose appropriate selection criterion:
+    #   PATH 1 (hourly RDN prices): argmax(NPV) with IRR ≥ 15% hurdle
+    #   PATH 2 (ToU tariff, is_tou_enabled): argmax(PI) — better for CAPEX-efficiency comparison
+    #   PATH 0 (flat/hybrid): argmax(IRR) — maximize return on invested capital
+    _has_hourly_prices = import_prices is not None
+    _is_tou = bool(getattr(request.prices, 'is_tou_enabled', False))
+    _is_path1 = _has_hourly_prices and not _is_tou
+    _is_path2 = _is_tou
+    IRR_HURDLE_PCT = 15.0  # Polish industrial hurdle rate (INSTRUKCJA)
+
+    print(f"🔍 PATH DEBUG: has_hourly={_has_hourly_prices}, is_tou={_is_tou}, path1={_is_path1}, path2={_is_path2}, objective={objective}", flush=True)
+    for v in variants:
+        _v_irr = f"{v.irr_pct:.1f}" if v.irr_pct is not None else "N/A"
+        _v_pi = f"{v.profitability_index:.2f}" if v.profitability_index is not None else "N/A"
+        print(f"  📋 Variant {v.variant.value} dur={v.duration_h}h pwr={v.power_kw:.0f}kW: score={v.score:.0f}, npv={v.npv_pln:.0f}, irr={_v_irr}%, pi={_v_pi}", flush=True)
+
+    if variants and objective == OptimizationObjective.NPV:
+        if _has_hourly_prices:
+            # PATH 1 (hourly RDN prices present): NPV is the score — highest priority.
+            # Hourly prices dominate over ToU bands — use NPV regardless of is_tou flag.
+            # IRR hurdle removed: user explicitly selected NPV objective, trust the NPV.
+            pass  # scores already set to npv in calculate_objective_score()
+        elif _is_path2:
+            # PATH 2: ToU tariff only (no hourly prices) — score by Profitability Index
+            for v in variants:
+                pi = v.profitability_index if v.profitability_index is not None else 0.0
+                object.__setattr__(v, 'score', pi)
+        else:
+            # PATH 0: flat/hybrid — score by IRR
+            for v in variants:
+                irr_v = v.irr_pct if v.irr_pct is not None else -999.0
+                object.__setattr__(v, 'score', irr_v)
 
     # Find recommended variant (highest score, with deterministic tie-breaking)
     # v1.6.0: Use deterministic selection for reproducibility
@@ -3820,6 +3958,10 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         pareto_frontier=pareto_frontier,  # v0.8.0
         stacked_decomposition=stacked_decomposition_model,  # v3.1.0 Stacked decomposition
         grid_search_results=sorted(all_grid_points, key=lambda x: x.get('npv_per_kwh', 0), reverse=True) if all_grid_points else None,
+        grid_search_incomplete=any(duration_incomplete.values()) if duration_incomplete else None,
+        grid_search_next_range_kw=next(
+            (v for v in duration_next_range.values() if v is not None), None
+        ) if duration_next_range else None,
         warnings=warnings,
         advisor_response=advisor_response_dict,  # v3.0.0 BESS Advisor
     )

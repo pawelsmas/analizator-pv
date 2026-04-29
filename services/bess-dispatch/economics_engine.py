@@ -99,6 +99,27 @@ class NpvResult:
     effective_years: int          # Ile lat trwa analiza (= analysis_years lub battery EOL)
     battery_lifetime_years: int   # Kiedy SoH < EOL (= analysis_years jeśli brak degradacji)
     yearly_cashflows: List[float] = field(default_factory=list)  # [CF_0, CF_1, ..., CF_n]
+    profitability_index: float = 0.0  # PI = PV_cashflows / CAPEX = NPV/CAPEX + 1
+
+
+@dataclass
+class ScenarioNpvResult:
+    """
+    Analiza scenariuszowa NPV (pesymistyczny/bazowy/optymistyczny).
+
+    Scenariusze oparte o mnożnik savings:
+      pesymistyczny: ×0.65, waga 25%
+      bazowy:        ×1.00, waga 50%
+      optymistyczny: ×1.40, waga 25%
+    """
+    weighted_npv: float            # Σ(w_i × npv_i) — oczekiwana wartość NPV
+    irr_base_pct: Optional[float]  # IRR scenariusza bazowego
+    probability_positive_npv: float  # Suma wag scenariuszy z NPV > 0 (0.0–1.0)
+    npv_p5: float                  # NPV scenariusza pesymistycznego (≈ P5 proxy)
+    npv_cvar_5pct: float           # CVaR 5% — oczekiwany NPV w najgorszych 5%
+    npv_pessimistic: float         # NPV × 0.65
+    npv_base: float                # NPV × 1.00
+    npv_optimistic: float          # NPV × 1.40
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +364,9 @@ def calculate_npv(
     if config.include_degradation and not config.include_replacement:
         effective = min(bat_life, horizon)
 
+    # --- Profitability Index: PI = (NPV + CAPEX) / CAPEX ---
+    profitability_index = (npv + capex) / capex if capex > 0 else 0.0
+
     return NpvResult(
         npv_pln=npv,
         irr_pct=irr,
@@ -350,4 +374,74 @@ def calculate_npv(
         effective_years=effective,
         battery_lifetime_years=bat_life,
         yearly_cashflows=cashflows,
+        profitability_index=profitability_index,
+    )
+
+
+# ---------------------------------------------------------------------------
+# SCENARIO NPV: calculate_scenario_npv
+# ---------------------------------------------------------------------------
+
+# Scenariusze: (mnożnik_savings, waga)
+_SCENARIO_WEIGHTS = [
+    (0.65, 0.25),   # pesymistyczny
+    (1.00, 0.50),   # bazowy
+    (1.40, 0.25),   # optymistyczny
+]
+
+
+def calculate_scenario_npv(
+    annual_savings: float,
+    capex: float,
+    config: Optional[NpvConfig] = None,
+) -> ScenarioNpvResult:
+    """
+    Analiza scenariuszowa NPV dla inwestycji BESS.
+
+    Oblicza NPV dla 3 scenariuszy (pesymistyczny/bazowy/optymistyczny),
+    wylicza średnią ważoną (weighted_npv) i prawdopodobieństwo dodatniego NPV.
+
+    Parametry scenariuszy:
+      pesymistyczny: savings × 0.65, waga 0.25
+      bazowy:        savings × 1.00, waga 0.50
+      optymistyczny: savings × 1.40, waga 0.25
+    """
+    if config is None:
+        config = NpvConfig()
+
+    scenario_npvs = []
+    irr_base: Optional[float] = None
+
+    for multiplier, weight in _SCENARIO_WEIGHTS:
+        result = calculate_npv(annual_savings * multiplier, capex, config)
+        scenario_npvs.append((result.npv_pln, weight))
+        if abs(multiplier - 1.0) < 1e-9:
+            irr_base = result.irr_pct
+
+    npv_pess, w_pess = scenario_npvs[0]
+    npv_base, w_base = scenario_npvs[1]
+    npv_opt,  w_opt  = scenario_npvs[2]
+
+    # Weighted NPV
+    weighted_npv = npv_pess * w_pess + npv_base * w_base + npv_opt * w_opt
+
+    # Probability of positive NPV (sum of weights where NPV > 0)
+    prob_positive = sum(w for npv_s, w in scenario_npvs if npv_s > 0)
+
+    # P5 proxy: pesymistyczny NPV (25th percentile ≈ dolna granica)
+    npv_p5 = npv_pess
+
+    # CVaR 5%: w dyskretnej 3-punktowej dystrybucji, CVaR_5% ≈ pesymistyczny
+    # (worst 5% of probability mass falls in the tail of the pessimistic scenario)
+    npv_cvar_5pct = npv_pess
+
+    return ScenarioNpvResult(
+        weighted_npv=weighted_npv,
+        irr_base_pct=irr_base,
+        probability_positive_npv=prob_positive,
+        npv_p5=npv_p5,
+        npv_cvar_5pct=npv_cvar_5pct,
+        npv_pessimistic=npv_pess,
+        npv_base=npv_base,
+        npv_optimistic=npv_opt,
     )

@@ -198,17 +198,27 @@
       annual_degradation_pct: parseFloatSafe(settings.bessAnnualDegradationPct, 2.0),
 
       // ===== CAPEX =====
-      capex_per_kwh: parseFloatSafe(settings.bessCapexPerKwh, 1500),
-      capex_per_kw: parseFloatSafe(settings.bessCapexPerKw, 300),
+      capex_per_kwh: parseFloatSafe(settings.bessCapexPerKwh, 600),
+      capex_per_kw: parseFloatSafe(settings.bessCapexPerKw, 200),
       opex_pct_per_year: parseFloatSafe(settings.bessOpexPctPerYear, 1.5) / 100,
 
       // ===== ANALYSIS =====
-      discount_rate: parseFloatSafe(settings.discountRate) / 100,
-      analysis_years: parseInt(settings.analysisYears || settings.bessLifetimeYears || settings.analysisPeriod, 10),
+      discount_rate: parseFloatSafe(settings.discountRate, 10) / 100,
+      analysis_years: parseInt(settings.analysisYears || settings.bessLifetimeYears || settings.analysisPeriod, 10) || 15,
 
       // ===== DEGRADATION BUDGET =====
-      max_efc_per_year: settings.bessMaxEfcPerYear || null,
-      max_throughput_mwh_per_year: settings.bessMaxThroughputMwhPerYear || null,
+      // Always send degradation_budget so LP enforces EFC constraint.
+      // Default max_efc_per_year=300 (LFP lifetime 3000 cycles / 10yr at 300 EFC/yr).
+      // User can override in settings (bessMaxEfcPerYear).
+      degradation_budget: {
+        max_efc_per_year: parseFloatSafe(settings.bessMaxEfcPerYear, 300),
+        ...(settings.bessMaxThroughputMwhPerYear
+          ? { max_throughput_mwh_per_year: parseFloat(settings.bessMaxThroughputMwhPerYear) }
+          : {}),
+      },
+
+      // ===== PHYSICAL LIMITS =====
+      grid_connection_kw: settings.bessGridConnectionKw || null,
 
       // ===== PRICING =====
       prices: buildPricesConfig(settings, analyticalPeriod),

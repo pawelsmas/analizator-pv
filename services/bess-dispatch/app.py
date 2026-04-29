@@ -2187,10 +2187,10 @@ async def run_sizing_optimization(
                     400,
                     "start_date is required when arbitrage_config.enabled=True"
                 )
-            if request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS):
+            if request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS, DispatchMode.LOAD_ONLY):
                 raise HTTPException(
                     400,
-                    "Arbitrage sizing requires STACKED or PV_SURPLUS mode."
+                    "Arbitrage sizing requires STACKED, PV_SURPLUS, or LOAD_ONLY mode."
                 )
 
         stacked_params = None
@@ -2663,8 +2663,8 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
     if api_request.arbitrage_config and api_request.arbitrage_config.enabled:
         if not api_request.start_date:
             raise ValueError("start_date is required when arbitrage_config.enabled=True")
-        if api_request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS):
-            raise ValueError("Arbitrage sizing requires STACKED or PV_SURPLUS mode")
+        if api_request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS, DispatchMode.LOAD_ONLY):
+            raise ValueError("Arbitrage sizing requires STACKED, PV_SURPLUS, or LOAD_ONLY mode")
 
     stacked_params = None
     if api_request.mode == DispatchMode.STACKED:

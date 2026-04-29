@@ -2224,11 +2224,21 @@ class SizingRequest(BaseModel):
     # Pricing
     prices: PriceConfig = Field(default_factory=PriceConfig)
 
-    # Degradation cost (general parameter)
+    # Degradation cost (DEPRECATED — kept for backward compat, not used in savings)
     degradation_cost_pln_mwh: float = Field(
-        50.0,
+        0.0,
         ge=0,
-        description="Degradation cost per MWh throughput [PLN/MWh]. Used for savings_breakdown."
+        description="DEPRECATED. SoH curve handles degradation. Set to 0."
+    )
+
+    # Marginal cycling cost — dispatch friction in LP objective (Wariant B)
+    # Filters junk cycles by making LP see higher effective buy / lower sell prices.
+    # NOT a financial cost — does not appear in savings or cashflow.
+    # Modes: 0 = off (default), >0 = manual value, -1 = auto (CAPEX/2/cycles_to_eol)
+    marginal_cycle_cost_per_kwh: float = Field(
+        0.0,
+        description="Marginal cycling cost [PLN/kWh] added to LP objective. "
+                    "0=off, -1=auto-calculate from CAPEX/cycles_to_eol, >0=manual value."
     )
 
     # Degradation budget
@@ -2421,6 +2431,18 @@ class SizingVariantResult(BaseModel):
     # Degradation
     degradation: DegradationMetrics
     degradation_status: DegradationStatus
+
+    # Profitability Index and scenario NPV (v3.2.0)
+    profitability_index: Optional[float] = Field(
+        None,
+        description="PI = PV_cashflows / CAPEX = NPV/CAPEX + 1. "
+                    "PI > 1 means profitable. Better than NPV for comparing different-sized investments."
+    )
+    scenario_npv: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Scenario NPV analysis: weighted_npv, irr_base_pct, probability_positive_npv, "
+                    "npv_pessimistic (×0.65), npv_base (×1.00), npv_optimistic (×1.40)."
+    )
 
     # Recommendation score (0-100)
     score: float = 0.0
@@ -2750,6 +2772,19 @@ class FinanceSummary(BaseModel):
         None,
         description="NPV at different CAPEX multipliers. Only present when capex_multiplier_sweep provided."
     )
+    # EFC optimization sweep (v1.6.0)
+    efc_optimization_sweep: Optional[List[dict]] = Field(
+        None,
+        description="Lifecycle NPV at different EFC limits. Shows optimal cycle count for max NPV."
+    )
+    pln_per_efc: Optional[float] = Field(
+        None,
+        description="Annual savings per Equivalent Full Cycle [PLN/EFC]. Efficiency metric."
+    )
+    optimal_efc_limit: Optional[int] = Field(
+        None,
+        description="EFC limit that maximizes lifecycle NPV."
+    )
 
 
 class CashflowYear(BaseModel):
@@ -2777,6 +2812,14 @@ class CashflowYear(BaseModel):
     nominal_cashflow_pln: Optional[float] = Field(
         None,
         description="Undiscounted net cashflow = net_cashflow_pln (for IRR calculation convenience)"
+    )
+    soh_pct: Optional[float] = Field(
+        None,
+        description="Battery State of Health at end of this year [%]. 100 = new, 70 = typical EOL."
+    )
+    is_eol: Optional[bool] = Field(
+        None,
+        description="True if SoH dropped below EOL threshold this year."
     )
 
 
@@ -2980,6 +3023,19 @@ class SizingResult(BaseModel):
                     "power_kw, energy_kwh, duration_h, capex_pln, annual_savings_pln, "
                     "npv_pln, npv_per_kwh, payback_years, efc_total, self_consumption_pct, "
                     "peak_reduction_pct. Sorted by npv_per_kwh descending."
+    )
+
+    # Grid search completeness (v3.2.0)
+    grid_search_incomplete: Optional[bool] = Field(
+        None,
+        description="True when the grid search optimum is at the upper boundary of the search range "
+                    "(NPV monotonically increasing) — the true optimum may be larger. "
+                    "Frontend should warn user to increase max_power_kw."
+    )
+    grid_search_next_range_kw: Optional[List[float]] = Field(
+        None,
+        description="Suggested next search range [min_kw, max_kw] when grid_search_incomplete=True. "
+                    "Example: [500, 2000] means rerun with power range 500–2000 kW."
     )
 
     # Warnings
@@ -3198,6 +3254,7 @@ class OptimizationObjective(str, Enum):
     SELF_CONSUMPTION_RATE = "self_consumption_rate"  # Alias for self_consumption
     PEAK_REDUCTION = "peak_reduction"       # Maximize peak reduction %
     EFC_UTILIZATION = "efc_utilization"     # Maximize EFC utilization within budget
+    MAX_SAVINGS = "max_savings"             # Maximize annual savings (largest absolute revenue)
     LCOS = "lcos"                           # Minimize Levelized Cost of Storage [PLN/MWh]
     LCOE = "lcoe"                           # Alias for LCOS (maps to lcos internally)
     RESILIENCE = "resilience"               # Minimize unserved load / maximize backup capability

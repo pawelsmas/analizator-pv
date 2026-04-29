@@ -1037,7 +1037,8 @@ async function runAnalysis() {
 
     // Check if BESS-only mode (no PV)
     const bessTopology = systemSettings?.bessTopology || 'pv_bess';
-    if (bessTopology === 'bess_only') {
+    const _bessModeCfg = systemSettings?.bessMode || 'off';
+    if (bessTopology === 'bess_only' && _bessModeCfg !== 'off') {
       console.log('🔋 BESS-only mode detected - running BESS sizing without PV');
       await runBessOnlyAnalysis(hourlyData, updateProgress);
       return;
@@ -2194,13 +2195,32 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
       };
     }
 
+    // Add finance_config for lifecycle analysis (cashflow timeseries, degradation, NPV)
+    const bessHorizonYears = Math.min(systemSettings?.analysisPeriod || 15, 30);
+    const discountRateDecimal = (systemSettings?.discountRate || 10) / 100;
+    const inflationRate = (systemSettings?.inflationRate || 2.5) / 100;
+    sizingRequest.finance_config = {
+      horizon_years: bessHorizonYears,
+      discount_rate: discountRateDecimal,
+      include_cashflow_timeseries: true,
+      discount_rate_sweep: [0.04, 0.06, 0.08, 0.10, 0.12, 0.15],
+      bess_degradation_year1_pct: systemSettings?.bessDegradationYear1 || 3.0,
+      bess_degradation_pct_per_year: systemSettings?.bessDegradationPctPerYear || 2.0,
+      pv_degradation_pct_per_year: 0,  // No PV in BESS-only
+      savings_escalation_rate: inflationRate,
+      opex_escalation_rate: inflationRate,
+      energy_price_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+      capex_multiplier_sweep: [0.8, 0.9, 1.0, 1.1, 1.2],
+    };
+
     console.log('🔋 BESS-only sizing request (scenario ' + scenarioConfig.scenarioId + '):', {
       loadPoints: loadData.length,
       loadSum: (loadData.reduce((a, b) => a + b, 0) / 1000).toFixed(0) + ' MWh',
       peakLimit: sizingRequest.peak_limit_kw,
       mode: sizingRequest.mode,
       reserveFraction: sizingRequest.reserve_fraction,
-      durations: sizingRequest.durations_h
+      durations: sizingRequest.durations_h,
+      financeHorizon: bessHorizonYears + ' years'
     });
 
     // Call bess-dispatch sizing API
@@ -2221,17 +2241,43 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
     updateProgress(4, 'Zapisywanie wyników', 80);
 
     // Save results to localStorage for BESS and Economics modules
+    // Strip hourly dispatch arrays (load_kw, pv_kw, dispatch, soc etc.) to stay within quota
+    function stripHourlyArrays(obj) {
+      if (!obj || typeof obj !== 'object') return obj;
+      if (Array.isArray(obj)) return obj;
+      const stripped = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (Array.isArray(v) && v.length > 100) continue; // drop 8760-point arrays
+        stripped[k] = (v && typeof v === 'object' && !Array.isArray(v))
+          ? stripHourlyArrays(v)
+          : v;
+      }
+      return stripped;
+    }
+
     const bessResults = {
       topology: 'bess_only',
       mode: 'load_only',
       timestamp: new Date().toISOString(),
       totalLoadMwh: sizingResult.total_load_mwh,
-      variants: sizingResult.variants,
+      variants: (sizingResult.variants || []).map(stripHourlyArrays),
       recommendedVariant: sizingResult.recommended_variant,
+      grid_search_results: (sizingResult.grid_search_results || []).map(stripHourlyArrays),
       warnings: sizingResult.warnings || []
     };
 
-    localStorage.setItem('bessOnlyResults', JSON.stringify(bessResults));
+    try {
+      localStorage.setItem('bessOnlyResults', JSON.stringify(bessResults));
+    } catch (e) {
+      console.warn('⚠️ bessOnlyResults too large for localStorage, storing minimal summary:', e);
+      const minimal = {
+        topology: bessResults.topology, mode: bessResults.mode,
+        timestamp: bessResults.timestamp, totalLoadMwh: bessResults.totalLoadMwh,
+        variants: bessResults.variants, recommendedVariant: bessResults.recommendedVariant,
+        grid_search_results: [], warnings: bessResults.warnings
+      };
+      localStorage.setItem('bessOnlyResults', JSON.stringify(minimal));
+    }
 
     // Also save as variants for BESS module
     const variantsData = {};
@@ -2294,10 +2340,11 @@ async function runBessOnlyAnalysis(hourlyData, updateProgress) {
       recommended_power_kw: sizingResult.recommended_power_kw || sizingResult.recommended_variant?.power_kw || 0,
       recommended_energy_kwh: sizingResult.recommended_energy_kwh || sizingResult.recommended_variant?.energy_kwh || 0,
       variants: sizingResult.variants,
+      grid_search_results: sizingResult.grid_search_results || [],
       total_load_mwh: sizingResult.total_load_mwh,
       topology: 'load_only',
       timestamp: new Date().toISOString(),
-      period_info: sizingResult.period_info,  // Include period info from backend
+      period_info: sizingResult.period_info,
       warnings: sizingResult.warnings || []
     });
 
@@ -2378,11 +2425,11 @@ function displayBessOnlyResults(sizingResult) {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px">
           <div style="text-align:center;background:#252545;padding:10px;border-radius:6px">
-            <div style="font-size:20px;color:#4fc3f7;font-weight:600">${v.power_kw}</div>
+            <div style="font-size:20px;color:#4fc3f7;font-weight:600">${Math.round(v.power_kw)}</div>
             <div style="font-size:10px;color:#888">kW</div>
           </div>
           <div style="text-align:center;background:#252545;padding:10px;border-radius:6px">
-            <div style="font-size:20px;color:#ba68c8;font-weight:600">${v.energy_kwh}</div>
+            <div style="font-size:20px;color:#ba68c8;font-weight:600">${Math.round(v.energy_kwh)}</div>
             <div style="font-size:10px;color:#888">kWh</div>
           </div>
         </div>
