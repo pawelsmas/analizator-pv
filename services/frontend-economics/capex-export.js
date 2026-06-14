@@ -1,8 +1,86 @@
 // ============================================================================
 // === CAPEX EXCEL EXPORT ===
 // ============================================================================
-// Version: v12 - Native Excel charts (dynamic - update with data)
+// Version: v14 - Non-linear sensitivity + error handling
 // ============================================================================
+console.log('📦 capex-export.js LOADED v14 - timestamp:', new Date().toISOString());
+
+// ============================================================================
+// === INLINE WATERMARK (self-contained, no cross-file dependency) ===
+// ============================================================================
+function _capexWatermarkHash(input) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36).padStart(12, '0');
+}
+
+function _capexEncodeZW(payload) {
+  let e = '\uFEFF';
+  for (let i = 0; i < payload.length; i++) {
+    if (i > 0) e += '\u200D';
+    const bits = payload.charCodeAt(i).toString(2).padStart(8, '0');
+    for (const b of bits) e += b === '0' ? '\u200B' : '\u200C';
+  }
+  return e + '\uFEFF';
+}
+
+function _capexApplyWatermark(workbook, options = {}) {
+  const proj = (window.parent && window.parent.sharedData && window.parent.sharedData.currentProject) || {};
+  const now = new Date();
+  const pid = proj.id || proj.uuid || 'unknown';
+  const cid = proj.companyId || 'none';
+  const variant = (typeof currentVariant !== 'undefined' ? currentVariant : '?');
+  const payload = `${pid}|${cid}|${now.toISOString()}|${variant}`;
+  const hash = _capexWatermarkHash(payload);
+  const shortId = `PV-${pid}-${hash}`;
+
+  console.log(`🔒 CAPEX Watermark: fingerprint=${hash}, project=${pid}`);
+
+  // LAYER 1: Document properties
+  workbook.creator = 'Analizator PV';
+  workbook.lastModifiedBy = 'Analizator PV';
+  workbook.created = now;
+  workbook.modified = now;
+  workbook.subject = shortId;
+  workbook.keywords = `pv,analizator,${hash}`;
+
+  // LAYER 2: veryHidden sheet
+  const ws = workbook.addWorksheet('_sys_config', { state: 'veryHidden' });
+  ws.state = 'veryHidden';
+  ws.getCell('A1').value = 'WATERMARK_V1';
+  ws.getCell('A2').value = hash;
+  ws.getCell('A3').value = String(pid);
+  ws.getCell('A4').value = String(cid);
+  ws.getCell('A5').value = proj.name || 'draft';
+  ws.getCell('A6').value = now.toISOString();
+  ws.getCell('A7').value = variant;
+  ws.getCell('A8').value = payload;
+  ws.getCell('A9').value = _capexWatermarkHash(hash + payload);
+  console.log(`🔒 CAPEX Watermark: veryHidden sheet created, worksheets count=${workbook.worksheets.length}`);
+
+  // LAYER 3: Zero-width chars in title cells
+  const zwPayload = _capexEncodeZW(hash);
+  (options.visibleSheets || []).forEach(name => {
+    const s = workbook.getWorksheet(name);
+    if (!s) return;
+    for (let c = 1; c <= 10; c++) {
+      const cell = s.getRow(1).getCell(c);
+      if (cell.value && typeof cell.value === 'string' && cell.value.length > 5) {
+        cell.value = cell.value + zwPayload;
+        break;
+      }
+    }
+  });
+
+  console.log(`🔒 CAPEX Watermark: ALL 3 layers applied`);
+  return { hash, shortId };
+}
 
 // ============================================================================
 // === NATIVE EXCEL CHART INJECTION ===
@@ -218,11 +296,50 @@ function generateBarChartXml(config, axId1, axId2) {
 // ============================================================================
 
 /**
+ * Compute annual self-consumption [kWh] for a given yield factor using hourly profiles.
+ * Returns null if hourly data is not available (caller should use linear fallback).
+ *
+ * yieldFactor: 1.0 = base, 1.15 = +15% yield, 0.85 = -15% yield
+ * Applies scenario factor (P50/P75/P90) on top of yieldFactor.
+ */
+function _computeSelfConsumptionForYield(yieldFactor) {
+  const hourlyLoad = hourlyData?.values || hourlyData || [];
+  const variantKey = typeof currentVariant !== 'undefined' ? currentVariant : 'B';
+  const variantData = analysisResults?.key_variants?.[variantKey];
+  const hourlyPV = variantData?.hourly_production || [];
+  const scenarioFactor = window.currentScenarioFactor || 1.0;
+
+  if (!Array.isArray(hourlyLoad) || !Array.isArray(hourlyPV) ||
+      hourlyLoad.length < 720 || hourlyPV.length < 720) {
+    return null;
+  }
+
+  const n = Math.min(hourlyLoad.length, hourlyPV.length);
+  let selfConsumed = 0;
+  for (let h = 0; h < n; h++) {
+    const pv = (hourlyPV[h] || 0) * scenarioFactor * yieldFactor;
+    const load = hourlyLoad[h] || 0;
+    selfConsumed += Math.min(pv, load);
+  }
+
+  // Annualize if data is less than a full year
+  if (n < 8760 && n >= 720) {
+    selfConsumed = selfConsumed * (8760 / n);
+  }
+
+  return selfConsumed; // kWh
+}
+
+/**
  * Export CAPEX year-by-year analysis to Excel
  * Similar structure to EaaS export but for investor (CAPEX) perspective
  */
 async function exportCapexToExcel(withFormulas = false) {
-  console.log('📥 Exporting CAPEX analysis to Excel...', withFormulas ? '(WITH FORMULAS)' : '(values only)');
+  console.log('📥 exportCapexToExcel() CALLED', { withFormulas, currentVariant, hasCentralizedMetrics: !!centralizedMetrics?.[currentVariant] });
+  try {
+  const scenarioName = window.currentProductionScenario || 'P50';
+  const scenarioFactor = window.currentScenarioFactor || 1.0;
+  console.log(`📥 Exporting CAPEX analysis to Excel (${scenarioName}, factor=${scenarioFactor})...`, withFormulas ? '(WITH FORMULAS)' : '(values only)');
 
   // Get centralized CAPEX metrics
   const centralizedCalc = centralizedMetrics[currentVariant];
@@ -241,19 +358,32 @@ async function exportCapexToExcel(withFormulas = false) {
   const params = getEconomicParameters();
   const cashFlows = centralizedCalc.capex.cashFlows;
   const investment = centralizedCalc.capex.investment;
-  const discountRate = centralizedCalc.common.discountRate || 0.07;
-  const inflationRate = centralizedCalc.common.inflationRate || 0.025;
-  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice || 800;
+  const discountRate = centralizedCalc.common.discountRate;
+  const inflationRate = centralizedCalc.common.inflationRate;
+  const totalEnergyPrice = centralizedCalc.common.totalEnergyPrice;
   const analysisPeriod = params.analysis_period || cashFlows.length;
+  const useInflation = centralizedCalc.common.useInflation ?? false;
 
   // Capacity and production data
   const capacityKwp = variant.capacity;
   const annualConsumptionKwh = getAnnualConsumptionKwh();
   const annualConsumptionMwh = annualConsumptionKwh / 1000;
+
+  // In RDN mode, compute effective price per MWh from actual TCSL annual cost
+  // Must be AFTER annualConsumptionMwh declaration
+  const isRdn = !!window._rdnExportMode;
+  const rdnBL = isRdn ? (centralizedCalc.capex?.rdnBaseline || null) : null;
+  const rdnGridCostYear1Tys = rdnBL ? rdnBL.nopvRdnTcslAnnual / 1000 : 0;
+  const rdnEffectivePrice = (rdnBL && annualConsumptionMwh > 0)
+    ? rdnBL.nopvRdnTcslAnnual / annualConsumptionMwh
+    : totalEnergyPrice;
+  const effectiveEnergyPrice = isRdn ? rdnEffectivePrice : totalEnergyPrice;
   const baseAutoconsumptionMwh = centralizedCalc.common.selfConsumedMwh || (variant.self_consumed || 0) / 1000;
 
-  // Degradation rates
-  const pvDegradationYear1 = (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 2.0) / 100;
+  // Degradation rates - LID already in profile when precise data available
+  const hasPreciseBaseCapex = !!(window.preciseAnnualSavings?.energy?.self_consumed_mwh);
+  const pvDegradationYear1 = hasPreciseBaseCapex
+    ? 0 : (systemSettings?.pvDegradationYear1 !== undefined ? systemSettings.pvDegradationYear1 : 1.0) / 100;
   const pvDegradationYears2Plus = params.degradation_rate;
   const bessDegradationRate = (systemSettings?.bessDegradationRate !== undefined ? systemSettings.bessDegradationRate : 2.5) / 100;
 
@@ -300,7 +430,8 @@ async function exportCapexToExcel(withFormulas = false) {
 
   // Title
   sheet1.mergeCells('B1:C3');
-  sheet1.getCell('B1').value = 'ANALIZA CAPEX - Perspektywa Inwestora';
+  const rdnLabel = window._rdnExportMode ? ' (ceny RDN)' : '';
+  sheet1.getCell('B1').value = `ANALIZA CAPEX${rdnLabel} - Perspektywa Inwestora - Scenariusz ${scenarioName}`;
   sheet1.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FF1565C0' } };
   sheet1.getCell('B1').alignment = { horizontal: 'center', vertical: 'bottom' };
 
@@ -317,8 +448,9 @@ async function exportCapexToExcel(withFormulas = false) {
   const roi = ((totalUndiscountedSavings - investment) / investment) * 100;
 
   // Summary data - reference to Sheet 2 for formulas
-  const dataStartRow = 18; // First data row in Sheet 2 (Year 1) - row 17 is Year 0
-  const lastDataRow = 17 + analysisPeriod; // Header row 16, Year 0 row 17, data from row 18
+  // Layout: PARAMETRY rows 4-14, header row 16, Year 0 row 17, data from row 18
+  const dataStartRow = 18;
+  const lastDataRow = 17 + analysisPeriod;
 
   const summaryRows = [
     ['', ''],
@@ -343,21 +475,22 @@ async function exportCapexToExcel(withFormulas = false) {
     ['WYNIKI EKONOMICZNE', ''],
   ];
 
-  // Add KPI rows with formulas or values
-  // Note: Sheet2 has margin column A, so: B=Rok, L=Oszczędn., M=NPV Skum., F=Parameters
+  // Add KPI rows with formulas or values [label, value, numFmt]
+  // Note: Sheet2 has margin column A, so: B=Rok, L=Oszcz., M=NPV Skum., F=Parameters
   if (withFormulas) {
-    summaryRows.push(['NPV [mln PLN]:', { formula: "'CAPEX Rok po Roku'!M" + lastDataRow }]);
-    summaryRows.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1)]);
-    summaryRows.push(['ROI [%]:', { formula: "(SUM('CAPEX Rok po Roku'!L" + dataStartRow + ":L" + lastDataRow + ")*1000-'CAPEX Rok po Roku'!F10*1000)/('CAPEX Rok po Roku'!F10*1000)*100" }]);
-    summaryRows.push(['Prosty zwrot [lat]:', { formula: "'CAPEX Rok po Roku'!F10*1000/AVERAGE('CAPEX Rok po Roku'!L" + dataStartRow + ":L" + (dataStartRow + 4) + ")/1000" }]);
+    summaryRows.push(['NPV [mln PLN]:', { formula: "'CAPEX Rok po Roku'!M" + lastDataRow }, '0.00']);
+    summaryRows.push(['IRR [%]:', { formula: "IRR('CAPEX Rok po Roku'!L17:L" + lastDataRow + ")*100" }, '0.0']);
+    summaryRows.push(['ROI [%]:', { formula: "(SUM('CAPEX Rok po Roku'!L" + dataStartRow + ":L" + lastDataRow + ")*1000-'CAPEX Rok po Roku'!F10*1000)/('CAPEX Rok po Roku'!F10*1000)*100" }, '0.0']);
+    summaryRows.push(['Prosty zwrot [lat]:', { formula: "'CAPEX Rok po Roku'!F10*1000/AVERAGE('CAPEX Rok po Roku'!L" + dataStartRow + ":L" + (dataStartRow + 4) + ")/1000" }, '0.0']);
   } else {
-    summaryRows.push(['NPV [mln PLN]:', roundNum(centralizedCalc.capex.npv / 1000000, 2)]);
-    summaryRows.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1)]);
-    summaryRows.push(['ROI [%]:', roundNum(roi, 1)]);
-    summaryRows.push(['Prosty zwrot [lat]:', roundNum(centralizedCalc.capex.simplePayback, 1)]);
+    summaryRows.push(['NPV [mln PLN]:', roundNum(centralizedCalc.capex.npv / 1000000, 2), '0.00']);
+    summaryRows.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1), '0.0']);
+    summaryRows.push(['ROI [%]:', roundNum(roi, 1), '0.0']);
+    summaryRows.push(['Prosty zwrot [lat]:', roundNum(centralizedCalc.capex.simplePayback, 1), '0.0']);
   }
-  summaryRows.push(['Zdyskontowany zwrot [lat]:', centralizedCalc.capex.discountedPayback ? roundNum(centralizedCalc.capex.discountedPayback, 1) : 'Powyżej okresu analizy']);
-  summaryRows.push(['LCOE [PLN/MWh]:', roundNum(centralizedCalc.capex.lcoe, 0)]);
+  const dpp = centralizedCalc.capex.discountedPayback;
+  summaryRows.push(['Zdyskontowany zwrot [lat]:', (dpp !== null && dpp !== undefined) ? roundNum(dpp, 1) : 'Powyzej okresu analizy', '0.0']);
+  summaryRows.push(['LCOE [PLN/MWh]:', roundNum(centralizedCalc.capex.lcoe, 0), '0']);
 
   summaryRows.forEach((row, idx) => {
     const excelRow = sheet1.getRow(idx + 5);
@@ -366,6 +499,10 @@ async function exportCapexToExcel(withFormulas = false) {
       excelRow.getCell(3).value = row[1];
     } else {
       excelRow.getCell(3).value = row[1];
+    }
+    // Apply number format if specified
+    if (row[2] && typeof row[1] !== 'string') {
+      excelRow.getCell(3).numFmt = row[2];
     }
     // Style section headers
     if (row[0] && (row[0].includes('INSTALACJI') || row[0].includes('INWESTYCJI') || row[0] === 'DEGRADACJA' || row[0].includes('EKONOMICZNE'))) {
@@ -398,7 +535,7 @@ async function exportCapexToExcel(withFormulas = false) {
 
   // Title row with height
   sheet2.getRow(1).height = 22;
-  sheet2.getCell('B1').value = 'ANALIZA CAPEX ROK PO ROKU Z NPV';
+  sheet2.getCell('B1').value = `ANALIZA CAPEX${rdnLabel} ROK PO ROKU Z NPV - Scenariusz ${scenarioName}`;
   sheet2.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FF1565C0' } };
 
   // Add logo to Sheet 2 (after charts - col R)
@@ -415,6 +552,21 @@ async function exportCapexToExcel(withFormulas = false) {
   // Get base OPEX (before inflation) in tys. PLN
   const baseOpexTysPln = cashFlows.length > 0 ? cashFlows[0].opex / 1000 : 0;
 
+  // STREAM 2/3: Oszczędność opłaty mocowej (SOM K-klasa) rok 1 - bazowe wartości
+  // Wartości wynikają z różnicy WOM między scenariuszem "Bez PV" a "Z PV" (K3/K4 redukcja)
+  // Eskalacja per rok: deg_PV (kolumna C) lub deg_BESS (kolumna D) × CPI (PV_PowR(1+F5,year-1))
+  const baseSomPvTysPln = cashFlows.length > 0 ? (cashFlows[0].capacitySavings || 0) / 1000 : 0;
+  const baseSomBessTysPln = cashFlows.length > 0 ? (cashFlows[0].bessCapacitySavings || 0) / 1000 : 0;
+  // Year 1 already includes deg+CPI (factors == 1 for year 1), so "bazowy" = year 1 value / factors
+  // For year 1: pvDeg = (1 - pvDegradationYear1), bessDeg = (1 - bessDegradationRate), CPI = 1
+  // So base = cf[0].capacitySavings / pvDeg_y1 (rough - for display purposes we use cf[0] directly)
+  const baseSomPvForExcel = cashFlows.length > 0 && (1 - pvDegradationYear1) !== 0
+    ? (cashFlows[0].capacitySavings || 0) / 1000 / (1 - pvDegradationYear1)
+    : 0;
+  const baseSomBessForExcel = cashFlows.length > 0 && (1 - bessDegradationRate) !== 0
+    ? (cashFlows[0].bessCapacitySavings || 0) / 1000 / (1 - bessDegradationRate)
+    : 0;
+
   const paramData = [
     { row: 3, label: 'PARAMETRY:', value: null, numFmt: null, isHeader: true },
     { row: 4, label: 'Stopa dyskontowa:', value: discountRate, numFmt: '0.00%' },
@@ -425,7 +577,9 @@ async function exportCapexToExcel(withFormulas = false) {
     { row: 9, label: 'Okres analizy [lat]:', value: analysisPeriod, numFmt: '0' },
     { row: 10, label: 'CAPEX [tys. PLN]:', value: roundNum(investment / 1000, 2), numFmt: '# ##0.00' },
     { row: 11, label: 'Autokonsumpcja bazowa [MWh]:', value: roundNum(baseAutoconsumptionMwh, 2), numFmt: '# ##0.00' },
-    { row: 12, label: 'Cena sieci bazowa [PLN/MWh]:', value: roundNum(totalEnergyPrice, 2), numFmt: '# ##0.00' },
+    isRdn
+      ? { row: 12, label: 'Koszt RDN bez PV rok 1 [tys. PLN]:', value: roundNum(rdnGridCostYear1Tys, 2), numFmt: '# ##0.00', rdnFormula: true }
+      : { row: 12, label: 'Średnia cena MWh autokon. PV [PLN/MWh]:', value: roundNum(totalEnergyPrice, 2), numFmt: '# ##0.00', priceNote: true },
     { row: 13, label: 'Zużycie roczne [MWh]:', value: roundNum(annualConsumptionMwh, 2), numFmt: '# ##0.00' },
     { row: 14, label: 'OPEX bazowy [tys. PLN/rok]:', value: roundNum(baseOpexTysPln, 2), numFmt: '# ##0.00' }
   ];
@@ -447,19 +601,28 @@ async function exportCapexToExcel(withFormulas = false) {
     // Value in column F - left aligned with bold blue color (shifted +1)
     if (p.value !== null) {
       const valueCell = sheet2.getCell(`F${p.row}`);
-      valueCell.value = p.value;
+      // RDN formula: F12 references audit sheet D31 (nopv TCSL RAZEM) / 1000
+      if (p.rdnFormula && withFormulas) {
+        valueCell.value = { formula: "'Dane bazowe TCSL (Rok 1)'!D31/1000", result: p.value };
+      } else {
+        valueCell.value = p.value;
+      }
       valueCell.alignment = { horizontal: 'left', indent: 1 };
       valueCell.font = { bold: true, color: { argb: 'FF1976D2' } };
       valueCell.border = { bottom: { style: 'thin', color: { argb: 'FFEEEEEE' } } };
       if (p.numFmt) {
         valueCell.numFmt = p.numFmt;
       }
+      // Excel note for grid price cell — explain dualizm
+      if (p.priceNote) {
+        valueCell.note = '-- effective_price_pln_mwh (cena godzin PV)\n-- = oszczednosci PV Year 1 / autokonsumpcja MWh\n-- Wyzsza niz srednia roczna bo PV produkuje w drogich strefach (Day/Szczyt)\n-- Niska, jednorazowa wartosc dla MWh ktora PV zastapi';
+      }
     }
   });
 
   // Header row (row 16) - shifted +1 for margin column
-  const headers = ['Rok', 'Deg PV [%]', 'Deg BESS [%]', 'Zużycie [MWh]', 'Koszt OSD [tys.]',
-    'Auto PV [MWh]', 'Auto BESS [MWh]', 'Suma Auto [MWh]', 'Równow. OSD [tys.]',
+  const headers = ['Rok', 'Deg PV [%]', 'Deg BESS [%]', 'Zużycie [MWh]', isRdn ? 'Koszt RDN [tys.]' : 'Koszt OSD [tys.]',
+    'Auto PV [MWh]', 'Auto BESS [MWh]', 'Suma Auto [MWh]', isRdn ? 'Oszcz. RDN [tys.]' : 'Równow. OSD [tys.]',
     'OPEX [tys.]', 'Oszczędn. [tys.]', 'NPV Skum. [mln]'];
   const headerRow = sheet2.getRow(16);
   headerRow.height = 40;  // Taller for wrapped text
@@ -478,11 +641,11 @@ async function exportCapexToExcel(withFormulas = false) {
   // Year 0 - Initial investment (row 17) - shifted +1
   const year0Row = sheet2.getRow(17);
   year0Row.getCell(2).value = 0;  // Column B (was A)
-  year0Row.getCell(12).value = roundNum(-investment / 1000, 0);  // Column L (was K)
-  year0Row.getCell(12).numFmt = '# ##0';
+  year0Row.getCell(12).value = roundNum(-investment / 1000, 2);  // Column L (was K)
+  year0Row.getCell(12).numFmt = '# ##0.00';
   year0Row.getCell(12).alignment = { horizontal: 'right', indent: 1 };
-  year0Row.getCell(13).value = roundNum(-investment / 1000000, 2);  // Column M (was L)
-  year0Row.getCell(13).numFmt = '# ##0.00';
+  year0Row.getCell(13).value = roundNum(-investment / 1000000, 3);  // Column M (was L)
+  year0Row.getCell(13).numFmt = '# ##0.000';
   year0Row.getCell(13).alignment = { horizontal: 'right', indent: 1 };
   year0Row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
 
@@ -501,11 +664,14 @@ async function exportCapexToExcel(withFormulas = false) {
     // Calculate values
     const pvDeg = year === 1 ? (1 - pvDegradationYear1) : (1 - pvDegradationYear1) * Math.pow(1 - pvDegradationYears2Plus, year - 1);
     const bessDeg = Math.pow(1 - bessDegradationRate, year);
-    const inflFactor = Math.pow(1 + inflationRate, year);
+    const savingsInflFactor = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;  // grid cost + savings: year-1
     const autoPvMwh = baseAutoconsumptionMwh * pvDeg;
     const autoBessMwh = (cf.selfConsumedBess || 0) / 1000;
     const sumaAutoMwh = autoPvMwh + autoBessMwh;
-    const discountedCF = cf.net_cash_flow / Math.pow(1 + discountRate, year);
+    // cf.savings JUŻ ZAWIERA wszystkie streams (energy + cap PV + cap BESS + arb + peak)
+    // patrz economics.js:3844-3845. NIE dodawać cap/bessCap osobno — to byłoby liczenie podwójnie.
+    const _netAllStreamsPln = (cf.savings || 0) - (cf.opex || 0);
+    const discountedCF = _netAllStreamsPln / Math.pow(1 + discountRate, year);
     cumulativeNPV += discountedCF;
 
     if (withFormulas) {
@@ -524,8 +690,14 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(5).value = { formula: '$F$13', result: annualConsumptionMwh };
       row.getCell(5).numFmt = numFmtStandard;
       row.getCell(5).alignment = { horizontal: 'right', indent: 1 };
-      // Koszt OSD
-      row.getCell(6).value = { formula: '$F$13*$F$12*POWER(1+$F$5,' + year + ')/1000', result: annualConsumptionMwh * totalEnergyPrice * inflFactor / 1000 };
+      // Koszt OSD / Koszt RDN - CPI^(year-1): rok 1 = cena bazowa, rok 2+ eskalacja
+      if (isRdn) {
+        const gridCpiPart = useInflation ? '*POWER(1+$F$5,' + (year - 1) + ')' : '';
+        row.getCell(6).value = { formula: '$F$12' + gridCpiPart, result: rdnGridCostYear1Tys * savingsInflFactor };
+      } else {
+        const gridCpiPart = useInflation ? '*POWER(1+$F$5,' + (year - 1) + ')' : '';
+        row.getCell(6).value = { formula: '$F$13*$F$12' + gridCpiPart + '/1000', result: annualConsumptionMwh * totalEnergyPrice * savingsInflFactor / 1000 };
+      }
       row.getCell(6).numFmt = numFmtStandard;
       row.getCell(6).alignment = { horizontal: 'right', indent: 1 };
       // Auto PV - formula: F11 (base autoconsumption) * degradation from column C
@@ -540,16 +712,37 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(9).value = { formula: 'G' + dataRow + '+H' + dataRow, result: sumaAutoMwh };
       row.getCell(9).numFmt = numFmtStandard;
       row.getCell(9).alignment = { horizontal: 'right', indent: 1 };
-      // Równow. OSD (savings from autoconsumption)
-      row.getCell(10).value = { formula: 'I' + dataRow + '*$F$12*POWER(1+$F$5,' + year + ')/1000', result: cf.savings / 1000 };
+      // Równow. OSD — GOLD STANDARD SSoT
+      // Year 1: preferuj backend preciseAnnualSavings.year1_savings.total_pln (= identyczne z PV_Economics)
+      // Fallback: cf.savings (już zawiera wszystkie streams: energy + cap + arb + peak)
+      // Year N>1: $J$18 × POWER(1-F7, N-1) × POWER(1+F5, N-1)
+      const _preciseY1TotalPln = window.preciseAnnualSavings?.year1_savings?.total_pln;
+      const totalSavingsY = (year === 1 && _preciseY1TotalPln)
+        ? _preciseY1TotalPln / 1000
+        : (cf.savings || 0) / 1000;
+
+      if (isRdn) {
+        const A = "'Dane bazowe TCSL (Rok 1)'!";
+        const cpi = useInflation ? `POWER(1+$F$5,${year}-1)` : '1';
+        const rdnFormula = `(${A}F18*C${dataRow}*${cpi}+${A}F21*${cpi})/1000`;
+        row.getCell(10).value = { formula: rdnFormula, result: roundNum(totalSavingsY, 2) };
+      } else if (year === 1) {
+        // Year 1: hardcoded backend value — Gold Standard, 1:1 z PV_Economics
+        row.getCell(10).value = roundNum(totalSavingsY, 2);
+      } else {
+        // Year N>1: relative to J19 (Year 1 base)
+        const cpiPart = useInflation ? `*POWER(1+$F$5,${year - 1})` : '';
+        const formula = `$J$${dataStartRow}*POWER(1-$F$7,${year - 1})${cpiPart}`;
+        row.getCell(10).value = { formula, result: roundNum(totalSavingsY, 2) };
+      }
       row.getCell(10).numFmt = numFmtStandard;
       row.getCell(10).alignment = { horizontal: 'right', indent: 1 };
-      // OPEX - formula with inflation: base OPEX * (1+inflation)^year
+      // OPEX - formula with inflation: base OPEX * (1+inflation)^year (always applied)
       row.getCell(11).value = { formula: '$F$14*POWER(1+$F$5,' + year + ')', result: cf.opex / 1000 };
       row.getCell(11).numFmt = numFmtStandard;
       row.getCell(11).alignment = { horizontal: 'right', indent: 1 };
-      // Oszczędn. (net)
-      row.getCell(12).value = { formula: 'J' + dataRow + '-K' + dataRow, result: cf.net_cash_flow / 1000 };
+      // Oszczędn. (net = Stream 1+2+3 MINUS OPEX) - result uses _netAllStreamsPln to match Excel formula
+      row.getCell(12).value = { formula: 'J' + dataRow + '-K' + dataRow, result: roundNum(_netAllStreamsPln / 1000, 2) };
       row.getCell(12).numFmt = numFmtStandard;
       row.getCell(12).alignment = { horizontal: 'right', indent: 1 };
       // NPV Skum.
@@ -570,7 +763,9 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(5).value = roundNum(annualConsumptionMwh, 2);
       row.getCell(5).numFmt = numFmtStandard;
       row.getCell(5).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(6).value = roundNum(annualConsumptionMwh * totalEnergyPrice * inflFactor / 1000, 2);
+      row.getCell(6).value = isRdn
+        ? roundNum(rdnGridCostYear1Tys * savingsInflFactor, 2)
+        : roundNum(annualConsumptionMwh * totalEnergyPrice * savingsInflFactor / 1000, 2);
       row.getCell(6).numFmt = numFmtStandard;
       row.getCell(6).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(7).value = roundNum(autoPvMwh, 2);
@@ -582,13 +777,19 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(9).value = roundNum(sumaAutoMwh, 2);
       row.getCell(9).numFmt = numFmtStandard;
       row.getCell(9).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(10).value = roundNum(cf.savings / 1000, 2);
+      // Stream 1 + Stream 2 (SOM PV) + Stream 3 (SOM BESS) - match formulas branch above
+      const _stream1Pl = (cf.savings || 0) / 1000;
+      const _somPvPl = (cf.capacitySavings || 0) / 1000;
+      const _somBessPl = (cf.bessCapacitySavings || 0) / 1000;
+      const _totalSavingsAllStreamsPl = _stream1Pl + _somPvPl + _somBessPl;
+      row.getCell(10).value = roundNum(_totalSavingsAllStreamsPl, 2);
       row.getCell(10).numFmt = numFmtStandard;
       row.getCell(10).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(11).value = roundNum(cf.opex / 1000, 2);
       row.getCell(11).numFmt = numFmtStandard;
       row.getCell(11).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(12).value = roundNum(cf.net_cash_flow / 1000, 2);
+      const _netAllStreamsPl = _totalSavingsAllStreamsPl - (cf.opex || 0) / 1000;
+      row.getCell(12).value = roundNum(_netAllStreamsPl, 2);
       row.getCell(12).numFmt = numFmtStandard;
       row.getCell(12).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(13).value = roundNum(cumulativeNPV / 1000000, 3);
@@ -618,27 +819,23 @@ async function exportCapexToExcel(withFormulas = false) {
     ]
   });
 
-  // DPP Row Highlighting - highlight entire row where NPV becomes positive (Zdyskontowany zwrot)
-  // Find the first year where cumulative NPV >= 0
-  const dppYear = centralizedCalc.capex.discountedPayback;
-  if (dppYear && dppYear <= analysisPeriod) {
-    const dppRowNumber = 17 + Math.ceil(dppYear); // Row 17 is Year 0, so Year N is row 17+N
-    const dppRow = sheet2.getRow(dppRowNumber);
-    // Apply gold/amber highlight to entire DPP row (columns B-M, skip margin A)
-    const dppFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF8E1' } }; // Light amber
-    const dppBorder = {
-      top: { style: 'medium', color: { argb: 'FFFFC107' } },
-      bottom: { style: 'medium', color: { argb: 'FFFFC107' } }
-    };
-    for (let col = 2; col <= 13; col++) {  // Columns B-M (indices 2-13)
-      const cell = dppRow.getCell(col);
-      cell.fill = dppFill;
-      cell.border = dppBorder;
-    }
-    // Add marker in column B to indicate DPP
-    dppRow.getCell(2).font = { bold: true, color: { argb: 'FFFF8F00' } };
-    console.log(`📍 DPP Row highlighted: Year ${Math.ceil(dppYear)} (row ${dppRowNumber})`);
-  }
+  // DPP Row Highlighting - DYNAMIC conditional formatting (updates when parameters change)
+  // Condition: this row's cumulative NPV >= 0 AND previous row's cumulative NPV < 0
+  // Only amber border frame (no fill/font change)
+  sheet2.addConditionalFormatting({
+    ref: 'B' + dataStartRow + ':M' + lastDataRow,
+    rules: [{
+      type: 'expression',
+      formulae: ['AND($M' + dataStartRow + '>=0,$M' + (dataStartRow - 1) + '<0)'],
+      style: {
+        border: {
+          top: { style: 'medium', color: { argb: 'FFFFC107' } },
+          bottom: { style: 'medium', color: { argb: 'FFFFC107' } }
+        }
+      },
+      priority: 3
+    }]
+  });
 
   // Freeze header row (row 16) with clean look
   sheet2.views = [{ state: 'frozen', ySplit: 16, xSplit: 0, showGridLines: false, showRowColHeaders: false }];
@@ -657,11 +854,16 @@ async function exportCapexToExcel(withFormulas = false) {
   // Simple Payback formula: CAPEX / average annual savings (first 5 years)
   const simplePaybackFormula = '$F$10/(AVERAGE(L' + dataStartRow + ':L' + Math.min(dataStartRow + 4, lastDataRow) + '))';
 
-  // DPP formula: Find first year where cumulative NPV >= 0
-  const dppFormula = 'SUMPRODUCT((M' + dataStartRow + ':M' + lastDataRow + '<0)*1)+1';
+  // DPP formula: Find first year where cumulative NPV >= 0, with interpolation
+  // n = count of years with negative NPV, p = last negative NPV, q = first non-negative NPV
+  // DPP = n + (-p) / (q - p) for fractional year precision
+  // Using repeated SUMPRODUCT instead of LET for ExcelJS compatibility (LET adds @)
+  const _n = 'SUMPRODUCT((M' + dataStartRow + ':M' + lastDataRow + '<0)*1)';
+  const _mRange = 'M' + (dataStartRow - 1) + ':M' + lastDataRow;
+  const dppFormula = _n + '\n+ (-INDEX(' + _mRange + ', ' + _n + ' + 1))\n/ (INDEX(' + _mRange + ', ' + _n + ' + 2)\n   - INDEX(' + _mRange + ', ' + _n + ' + 1))';
 
-  // LCOE formula: shifted columns J->K, H->I, E->F, A->B
-  const lcoeFormula = '($F$10*1000+SUMPRODUCT(K' + dataStartRow + ':K' + lastDataRow + '/POWER(1+$F$4,B' + dataStartRow + ':B' + lastDataRow + ')))/SUMPRODUCT(I' + dataStartRow + ':I' + lastDataRow + '/POWER(1+$F$4,B' + dataStartRow + ':B' + lastDataRow + '))';
+  // LCOE formula - EXACT from reference Excel
+  const lcoeFormula = '($F$10 * 1000\n + SUMPRODUCT(\n     K' + dataStartRow + ':K' + lastDataRow + '\n     / POWER(1 + $F$4,\n             B' + dataStartRow + ':B' + lastDataRow + ')))\n/ SUMPRODUCT(\n     I' + dataStartRow + ':I' + lastDataRow + '\n     / POWER(1 + $F$4,\n             B' + dataStartRow + ':B' + lastDataRow + '))';
 
   const kpiRows = [
     ['CAPEX (inwestycja):', withFormulas ? { formula: '$F$10' } : roundNum(investment / 1000, 2), 'tys. PLN', '= Nakład początkowy', '# ##0.00'],
@@ -670,7 +872,7 @@ async function exportCapexToExcel(withFormulas = false) {
     ['IRR:', withFormulas ? { formula: irrFormula } : roundNum(centralizedCalc.capex.irr * 100, 2), '%', '= Wewnętrzna stopa zwrotu', '# ##0.00'],
     ['ROI:', withFormulas ? { formula: '(F' + (summaryStartRow + 2) + '-F' + (summaryStartRow + 1) + ')/F' + (summaryStartRow + 1) + '*100' } : roundNum(roi, 2), '%', '= (Oszczędności - CAPEX) / CAPEX', '# ##0.00'],
     ['Prosty zwrot (Payback):', withFormulas ? { formula: simplePaybackFormula } : roundNum(centralizedCalc.capex.simplePayback, 2), 'lat', '= CAPEX / średnie roczne oszczędności', '# ##0.00'],
-    ['Zdyskontowany zwrot (DPP):', withFormulas ? { formula: dppFormula } : (centralizedCalc.capex.discountedPayback ? roundNum(centralizedCalc.capex.discountedPayback, 2) : '-'), 'lat', '= Rok gdy NPV ≥ 0', '# ##0.00'],
+    ['Zdyskontowany zwrot (DPP):', withFormulas ? { formula: dppFormula } : (centralizedCalc.capex.discountedPayback !== null && centralizedCalc.capex.discountedPayback !== undefined ? roundNum(centralizedCalc.capex.discountedPayback, 2) : '-'), 'lat', '= Rok gdy NPV >= 0', '# ##0.00'],
     ['LCOE (koszt energii):', withFormulas ? { formula: lcoeFormula } : roundNum(centralizedCalc.capex.lcoe, 2), 'PLN/MWh', '= Levelized Cost of Energy', '# ##0.00']
   ];
 
@@ -703,13 +905,152 @@ async function exportCapexToExcel(withFormulas = false) {
     }
   });
 
-  // Note about formulas
+  // Note about formulas + cell notes on complex KPI formulas
   if (withFormulas) {
+    // DPP note (row index 6 in kpiRows)
+    sheet2.getRow(summaryStartRow + 7).getCell(6).note = `-- Interpolowany DPP\n-- n = lata z ujemnym NPV\n-- DPP = n + (-ostatni_ujemny) / (pierwszy_dodatni - ostatni_ujemny)`;
+    // LCOE note (row index 7 in kpiRows)
+    sheet2.getRow(summaryStartRow + 8).getCell(6).note = `-- (CAPEX + PV_OPEX) / PV_produkcja\n-- Levelized Cost of Energy`;
+
     const noteRow = summaryStartRow + 11;
     sheet2.getCell('C' + noteRow).value = 'UWAGA: Zmień parametry w komórkach F4:F14 aby zobaczyć wpływ na wyniki.';
     sheet2.getCell('C' + noteRow).font = { italic: true, color: { argb: 'FF666666' } };
     sheet2.getCell('C' + (noteRow + 1)).value = 'Wszystkie obliczenia w kolumnach C-M zawierają formuły Excel.';
     sheet2.getCell('C' + (noteRow + 1)).font = { italic: true, color: { argb: 'FF666666' } };
+  }
+
+  // ========== SHEET 2b: Rozbicie Oszczędności (5 strumieni × N lat) ==========
+  // Czysta prezentacja - wartości już policzone w capexCashFlows[year-1].
+  // Bez formuł, by uniknąć rozjazdów z silnikiem JS.
+  try {
+    const sheetBreak = workbook.addWorksheet('Rozbicie Oszczędności');
+    sheetBreak.columns = [
+      { width: 3 },   // A: margin
+      { width: 6 },   // B: Rok
+      { width: 22 },  // C: Energia (PV+BESS)
+      { width: 22 },  // D: K-klasa (PV)
+      { width: 22 },  // E: K-klasa (BESS)
+      { width: 20 },  // F: Arbitraż BESS
+      { width: 22 },  // G: Peak Shaving BESS
+      { width: 18 },  // H: RAZEM
+      { width: 18 },  // I: OPEX
+      { width: 18 },  // J: Net CF
+    ];
+    sheetBreak.views = [{ showGridLines: false, showRowColHeaders: false }];
+
+    sheetBreak.getRow(1).height = 22;
+    sheetBreak.getCell('B1').value = `ROZBICIE OSZCZĘDNOŚCI WG STRUMIENI - Scenariusz ${scenarioName}`;
+    sheetBreak.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FF1565C0' } };
+
+    sheetBreak.getCell('B3').value = 'Wartości w tys. PLN. Strumienie są zsumowane w kolumnie RAZEM = E + D + E + F + G.';
+    sheetBreak.getCell('B3').font = { italic: true, color: { argb: 'FF666666' } };
+    sheetBreak.mergeCells('B3:J3');
+
+    sheetBreak.getCell('B4').value = 'Stream 1: Energia czynna + opłaty (autokonsumpcja × cena bez SOM)';
+    sheetBreak.getCell('B4').font = { size: 9, color: { argb: 'FF616161' } };
+    sheetBreak.mergeCells('B4:J4');
+    sheetBreak.getCell('B5').value = 'Stream 2-3: Oszczędność z opłaty mocowej (klasa K) - PV i BESS osobno, z degradacją';
+    sheetBreak.getCell('B5').font = { size: 9, color: { argb: 'FF616161' } };
+    sheetBreak.mergeCells('B5:J5');
+    sheetBreak.getCell('B6').value = 'Stream 4-5: BESS - arbitraż cenowy ToU/RDN + peak shaving (demand charge)';
+    sheetBreak.getCell('B6').font = { size: 9, color: { argb: 'FF616161' } };
+    sheetBreak.mergeCells('B6:J6');
+
+    const breakHeaders = ['Rok', 'Energia [tys.]', 'K-klasa PV [tys.]',
+                          'K-klasa BESS [tys.]', 'Arbitraż BESS [tys.]',
+                          'Peak Shaving [tys.]', 'RAZEM [tys.]',
+                          'OPEX [tys.]', 'Net CF [tys.]'];
+    const hdr = sheetBreak.getRow(8);
+    hdr.height = 36;
+    breakHeaders.forEach((h, i) => {
+      const c = hdr.getCell(i + 2);
+      c.value = h;
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF37474F' } };
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 };
+      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      c.border = {
+        top: { style: 'thin', color: { argb: 'FF263238' } },
+        bottom: { style: 'thin', color: { argb: 'FF263238' } },
+      };
+    });
+
+    let sumEnergy = 0, sumCapPv = 0, sumCapBess = 0, sumArb = 0, sumPeak = 0;
+    let sumTotal = 0, sumOpex = 0, sumNet = 0;
+
+    cashFlows.forEach((cf, idx) => {
+      const r = 9 + idx;
+      const energy = (cf.energyFeesSavings || 0) / 1000;
+      const capPv = (cf.capacitySavings || 0) / 1000;
+      const capBess = (cf.bessCapacitySavings || 0) / 1000;
+      const arb = (cf.bessArbitrage || 0) / 1000;
+      const peak = (cf.bessPeakShaving || 0) / 1000;
+      const total = energy + capPv + capBess + arb + peak;
+      const opex = (cf.opex || 0) / 1000;
+      const net = (cf.net_cash_flow || 0) / 1000;
+
+      sumEnergy += energy; sumCapPv += capPv; sumCapBess += capBess;
+      sumArb += arb; sumPeak += peak; sumTotal += total;
+      sumOpex += opex; sumNet += net;
+
+      const vals = [idx + 1, energy, capPv, capBess, arb, peak, total, opex, net];
+      vals.forEach((v, i) => {
+        const cell = sheetBreak.getRow(r).getCell(i + 2);
+        cell.value = v;
+        if (i > 0) cell.numFmt = '# ##0.00';
+        cell.alignment = { horizontal: i === 0 ? 'center' : 'right', indent: 1 };
+        cell.font = { color: { argb: 'FF212121' }, size: 10 };
+        if (idx % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
+        }
+      });
+    });
+
+    // Suma row
+    const sumR = 9 + cashFlows.length;
+    const sumVals = ['RAZEM', sumEnergy, sumCapPv, sumCapBess, sumArb, sumPeak, sumTotal, sumOpex, sumNet];
+    sumVals.forEach((v, i) => {
+      const cell = sheetBreak.getRow(sumR).getCell(i + 2);
+      cell.value = v;
+      if (i > 0) cell.numFmt = '# ##0.00';
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1565C0' } };
+      cell.alignment = { horizontal: i === 0 ? 'center' : 'right', indent: 1 };
+      cell.border = { top: { style: 'medium', color: { argb: 'FF0D47A1' } } };
+    });
+
+    // Year 1 KPI mini-summary
+    if (cashFlows.length > 0) {
+      const y1 = cashFlows[0];
+      const kpiR = sumR + 3;
+      sheetBreak.getCell(`B${kpiR}`).value = 'KPI ROK 1:';
+      sheetBreak.getCell(`B${kpiR}`).font = { bold: true, color: { argb: 'FF1565C0' } };
+      const totY1 = ((y1.energyFeesSavings || 0) + (y1.capacitySavings || 0)
+                   + (y1.bessCapacitySavings || 0) + (y1.bessArbitrage || 0)
+                   + (y1.bessPeakShaving || 0)) / 1000;
+      const capTotY1 = ((y1.capacitySavings || 0) + (y1.bessCapacitySavings || 0)) / 1000;
+      const energyShare = totY1 > 0 ? ((y1.energyFeesSavings || 0) / 1000 / totY1 * 100) : 0;
+      const capShare = totY1 > 0 ? (capTotY1 / totY1 * 100) : 0;
+
+      const kpiData = [
+        ['Suma oszczędności rok 1:', `${roundNum(totY1, 1)} tys. PLN`],
+        ['  • Energia:', `${roundNum((y1.energyFeesSavings || 0) / 1000, 1)} tys. PLN (${roundNum(energyShare, 0)}%)`],
+        ['  • Opłata mocowa (K-klasa, PV+BESS):', `${roundNum(capTotY1, 1)} tys. PLN (${roundNum(capShare, 0)}%)`],
+        ['  • Arbitraż BESS:', `${roundNum((y1.bessArbitrage || 0) / 1000, 1)} tys. PLN`],
+        ['  • Peak shaving BESS:', `${roundNum((y1.bessPeakShaving || 0) / 1000, 1)} tys. PLN`],
+      ];
+      kpiData.forEach((kv, idx) => {
+        const rr = kpiR + 1 + idx;
+        sheetBreak.getCell(`B${rr}`).value = kv[0];
+        sheetBreak.getCell(`B${rr}`).font = { size: 10, color: { argb: 'FF424242' } };
+        sheetBreak.getCell(`D${rr}`).value = kv[1];
+        sheetBreak.getCell(`D${rr}`).font = { bold: true, color: { argb: 'FF1976D2' } };
+        sheetBreak.mergeCells(`B${rr}:C${rr}`);
+      });
+    }
+
+    console.log('✅ Sheet "Rozbicie Oszczędności" added with', cashFlows.length, 'years');
+  } catch (e) {
+    console.warn('⚠️ Could not generate Rozbicie Oszczędności sheet:', e);
   }
 
   // ========== SHEET 3: Analiza CFO ==========
@@ -783,10 +1124,10 @@ async function exportCapexToExcel(withFormulas = false) {
     : roundNum(baseAutoconsumptionMwh, 1);
   sheet3.getCell(`C${cfoRow}`).numFmt = '# ##0.0';
   sheet3.getCell(`C${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`D${cfoRow}`).value = 'Cena energii [PLN/MWh]';
-  sheet3.getCell(`E${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}F12`, result: roundNum(totalEnergyPrice, 0) }
-    : roundNum(totalEnergyPrice, 0);
+  sheet3.getCell(`D${cfoRow}`).value = isRdn ? 'Efekt. cena RDN [PLN/MWh]' : 'Cena energii [PLN/MWh]';
+  sheet3.getCell(`E${cfoRow}`).value = isRdn
+    ? roundNum(effectiveEnergyPrice, 0)
+    : (withFormulas ? { formula: `${s2}F12`, result: roundNum(totalEnergyPrice, 0) } : roundNum(totalEnergyPrice, 0));
   sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0';
   sheet3.getCell(`E${cfoRow}`).font = { bold: true };
   sheet3.getCell(`F${cfoRow}`).value = 'Inflacja';
@@ -837,7 +1178,9 @@ async function exportCapexToExcel(withFormulas = false) {
   const kpiIrrFormula = `IRR(${s2}L17:${s2}L${lastDataRow})`;  // IRR needs Year 0 (-CAPEX) - column L
   const kpiRoiFormula = `(SUM(${s2}L${dataStartRow}:${s2}L${lastDataRow})-${s2}F10)/${s2}F10`;
   const kpiPaybackFormula = `${s2}F10/AVERAGE(${s2}L${dataStartRow}:${s2}L${Math.min(dataStartRow + 4, lastDataRow)})`;
-  const kpiDppFormula = `SUMPRODUCT((${s2}M${dataStartRow}:${s2}M${lastDataRow}<0)*1)+1`;
+  const _nCfo = `SUMPRODUCT((${s2}M${dataStartRow}:${s2}M${lastDataRow}<0)*1)`;
+  const _mCfo = `${s2}M${dataStartRow - 1}:${s2}M${lastDataRow}`;
+  const kpiDppFormula = `${_nCfo}+(-INDEX(${_mCfo},${_nCfo}+1))/(INDEX(${_mCfo},${_nCfo}+2)-INDEX(${_mCfo},${_nCfo}+1))`;
   const kpiLcoeFormula = `(${s2}F10*1000+SUMPRODUCT(${s2}K${dataStartRow}:${s2}K${lastDataRow}/POWER(1+${s2}F4,${s2}B${dataStartRow}:${s2}B${lastDataRow})))/SUMPRODUCT(${s2}I${dataStartRow}:${s2}I${lastDataRow}/POWER(1+${s2}F4,${s2}B${dataStartRow}:${s2}B${lastDataRow}))`;
 
   cfoRow++;
@@ -924,14 +1267,15 @@ async function exportCapexToExcel(withFormulas = false) {
   cfoRow++;
   sheet3.getCell(`B${cfoRow}`).value = '⏱️ Zdyskontowany zwrot (DPP)';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true };
+  const hasDpp = dppValue !== null && dppValue !== undefined;
   sheet3.getCell(`C${cfoRow}`).value = withFormulas
-    ? { formula: kpiDppFormula, result: dppValue ? roundNum(dppValue, 1) : analysisPeriod + 1 }
-    : (dppValue ? roundNum(dppValue, 1) : 'Powyżej okresu');
-  sheet3.getCell(`C${cfoRow}`).numFmt = dppValue ? '0.0' : '@';
+    ? { formula: kpiDppFormula, result: hasDpp ? roundNum(dppValue, 1) : analysisPeriod + 1 }
+    : (hasDpp ? roundNum(dppValue, 1) : 'Powyzej okresu');
+  sheet3.getCell(`C${cfoRow}`).numFmt = hasDpp ? '0.0' : '@';
   sheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' } };
-  sheet3.getCell(`D${cfoRow}`).value = dppValue ? 'lat' : '';
+  sheet3.getCell(`D${cfoRow}`).value = hasDpp ? 'lat' : '';
   sheet3.mergeCells(`E${cfoRow}:G${cfoRow}`);
-  sheet3.getCell(`E${cfoRow}`).value = 'Rok gdy skumulowane NPV ≥ 0';
+  sheet3.getCell(`E${cfoRow}`).value = 'Rok gdy skumulowane NPV >= 0';
   sheet3.getCell(`E${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRow++;
@@ -941,10 +1285,11 @@ async function exportCapexToExcel(withFormulas = false) {
     ? { formula: kpiLcoeFormula, result: roundNum(lcoeValue, 0) }
     : roundNum(lcoeValue, 0);
   sheet3.getCell(`C${cfoRow}`).numFmt = '# ##0';
-  sheet3.getCell(`C${cfoRow}`).font = { bold: true, color: lcoeValue < totalEnergyPrice ? { argb: 'FF2E7D32' } : { argb: 'FFC62828' } };
+  sheet3.getCell(`C${cfoRow}`).font = { bold: true, color: lcoeValue < effectiveEnergyPrice ? { argb: 'FF2E7D32' } : { argb: 'FFC62828' } };
   sheet3.getCell(`D${cfoRow}`).value = 'PLN/MWh';
   sheet3.mergeCells(`E${cfoRow}:G${cfoRow}`);
-  sheet3.getCell(`E${cfoRow}`).value = lcoeValue < totalEnergyPrice ? `LCOE < cena sieci (${roundNum(totalEnergyPrice, 0)} PLN/MWh)` : `LCOE > cena sieci`;
+  const priceLabel = isRdn ? 'efekt. cena RDN' : 'cena sieci';
+  sheet3.getCell(`E${cfoRow}`).value = lcoeValue < effectiveEnergyPrice ? `LCOE < ${priceLabel} (${roundNum(effectiveEnergyPrice, 0)} PLN/MWh)` : `LCOE > ${priceLabel}`;
   sheet3.getCell(`E${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   // Add borders to KPI section
@@ -965,8 +1310,77 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`B${cfoRow}`).value = `Wpływ na NPV [mln PLN] przy zmianie parametru:`;
   sheet3.getCell(`B${cfoRow}`).font = { italic: true, size: 10, color: { argb: 'FF616161' } };
 
-  // Calculate sensitivity - simplified approach for NPV
+  // Calculate sensitivity - proper NPV recalculation for each scenario
+  // NPV = -CAPEX + Σ(discounted cash flows), so parameter changes have leverage effect
   const baseNpvMln = npvValue / 1000000;
+
+  // Base parameters for calculateCapexNPV() recalculation
+  const capexNpvBaseParams = {
+    capacity_kwp: capacityKwp,
+    self_consumed_annual_kwh: baseAutoconsumptionMwh * 1000,
+    total_energy_price_per_kwh: effectiveEnergyPrice / 1000,
+    capex_per_kwp: investment / capacityKwp,
+    opex_per_kwp: params.opex_per_kwp,
+    degradation_rate: pvDegradationYears2Plus,
+    discount_rate: discountRate,
+    analysis_period: analysisPeriod,
+    inflation_rate: inflationRate
+  };
+
+  // Recalculate NPV for each tornado scenario using full financial model
+  const npvEnergyPess = calculateCapexNPV({...capexNpvBaseParams, total_energy_price_per_kwh: effectiveEnergyPrice / 1000 * 0.80});
+  const npvEnergyOpt  = calculateCapexNPV({...capexNpvBaseParams, total_energy_price_per_kwh: effectiveEnergyPrice / 1000 * 1.20});
+  const npvCapexPess  = calculateCapexNPV({...capexNpvBaseParams, capex_per_kwp: (investment / capacityKwp) * 1.20});
+  const npvCapexOpt   = calculateCapexNPV({...capexNpvBaseParams, capex_per_kwp: (investment / capacityKwp) * 0.80});
+  const npvYieldPess  = calculateCapexNPV({...capexNpvBaseParams, self_consumed_annual_kwh: baseAutoconsumptionMwh * 1000 * 0.85});
+  const npvYieldOpt   = calculateCapexNPV({...capexNpvBaseParams, self_consumed_annual_kwh: baseAutoconsumptionMwh * 1000 * 1.15});
+  const npvDiscPess   = calculateCapexNPV({...capexNpvBaseParams, discount_rate: discountRate + 0.02});
+  const npvDiscOpt    = calculateCapexNPV({...capexNpvBaseParams, discount_rate: Math.max(0.01, discountRate - 0.02)});
+
+  // Common SUMPRODUCT formula references for tornado (matching reference Excel 1:1)
+  const tIRange = `${s2}$I$${dataStartRow}:$I$${lastDataRow}`;
+  const tBRange = `${s2}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const tKRange = `${s2}$K$${dataStartRow}:$K$${lastDataRow}`;
+  const tF4 = `${s2}$F$4`;   // discount rate
+  const tF5 = `${s2}$F$5`;   // inflation rate
+  const tF10 = `${s2}$F$10`; // CAPEX tys. PLN
+  const tF12 = `${s2}$F$12`; // energy price PLN/MWh
+
+  // Build tornado data array - formulas are SUMPRODUCT with cell references (no hardcoded multipliers)
+  const tornadoItems = [
+    {
+      param: 'Cena energii z sieci', variationValue: 0.20,
+      pessNpv: npvEnergyPess / 1e6, optNpv: npvEnergyOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*(1-${cRef})*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*(1+${cRef})*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})/1000`
+    },
+    {
+      param: 'CAPEX (koszt inwestycji)', variationValue: 0.20,
+      pessNpv: npvCapexPess / 1e6, optNpv: npvCapexOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10}*(1+${cRef}))/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10}*(1-${cRef}))/1000`
+    },
+    {
+      param: 'Yield PV (produkcja)', variationValue: 0.15,
+      pessNpv: npvYieldPess / 1e6, optNpv: npvYieldOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${tIRange}*(1-${cRef})*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${tIRange}*(1+${cRef})*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})/1000`
+    },
+    {
+      param: 'Stopa dyskontowa', variationValue: 0.02,
+      pessNpv: npvDiscPess / 1e6, optNpv: npvDiscOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4}+${cRef},${tBRange}))-${tF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${tIRange}*${tF12}*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4}-${cRef},${tBRange}))-${tF10})/1000`
+    }
+  ];
+
+  // Calculate range and sort by impact (biggest first)
+  tornadoItems.forEach(t => { t.range = Math.abs(t.optNpv - t.pessNpv); });
+  tornadoItems.sort((a, b) => b.range - a.range);
+
+  console.log('📊 CAPEX Tornado (recalculated):', tornadoItems.map(t =>
+    `${t.param}: ${roundNum(t.pessNpv, 2)} / ${roundNum(baseNpvMln, 2)} / ${roundNum(t.optNpv, 2)} (range: ${roundNum(t.range, 2)})`
+  ));
 
   // Tornado table header
   cfoRow += 2;
@@ -995,155 +1409,51 @@ async function exportCapexToExcel(withFormulas = false) {
     sheet3.getRow(cfoRow).getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
   }
 
-  // Tornado data with formulas - Cena energii z sieci (sorted by impact, highest first)
-  // Row 1: Cena energii - ±20% -> -40%/+40% NPV impact
-  cfoRow++;
-  const tornadoRow1 = cfoRow;
-  sheet3.getCell(`B${cfoRow}`).value = 'Cena energii z sieci';
-  sheet3.getCell(`C${cfoRow}`).value = '±20%';
-  sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.6 (price -20% = -40% savings impact)
-  sheet3.getCell(`D${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*0.6`, result: roundNum(baseNpvMln * 0.6, 2) }
-    : roundNum(baseNpvMln * 0.6, 2);
-  sheet3.getCell(`D${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
-  sheet3.getCell(`D${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet3.getCell(`E${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`E${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.4
-  sheet3.getCell(`F${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*1.4`, result: roundNum(baseNpvMln * 1.4, 2) }
-    : roundNum(baseNpvMln * 1.4, 2);
-  sheet3.getCell(`F${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`F${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet3.getCell(`F${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet3.getCell(`G${cfoRow}`).value = withFormulas
-    ? { formula: `F${cfoRow}-D${cfoRow}`, result: roundNum(baseNpvMln * 0.8, 2) }
-    : roundNum(baseNpvMln * 0.8, 2);
-  sheet3.getCell(`G${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`G${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`G${cfoRow}`).font = { bold: true };
+  // Render tornado data rows (sorted by impact)
+  tornadoItems.forEach(t => {
+    cfoRow++;
+    const cRef = `C${cfoRow}`;
+    sheet3.getCell(`B${cfoRow}`).value = t.param;
+    // Column C: variation value (referenced by D/F formulas)
+    sheet3.getCell(cRef).value = t.variationValue;
+    sheet3.getCell(cRef).numFmt = t.variationValue < 0.1 ? '0.0%' : '0%';
+    sheet3.getCell(cRef).alignment = { horizontal: 'center' };
 
-  // Row 2: CAPEX - ±20%
-  cfoRow++;
-  sheet3.getCell(`B${cfoRow}`).value = 'CAPEX (koszt inwestycji)';
-  sheet3.getCell(`C${cfoRow}`).value = '±20%';
-  sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV - CAPEX*0.2 (higher CAPEX)
-  sheet3.getCell(`D${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}-${s2}F10*0.2/1000`, result: roundNum(baseNpvMln - investment / 1000000 * 0.2, 2) }
-    : roundNum(baseNpvMln - investment / 1000000 * 0.2, 2);
-  sheet3.getCell(`D${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
-  sheet3.getCell(`D${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet3.getCell(`E${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`E${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV + CAPEX*0.2 (lower CAPEX)
-  sheet3.getCell(`F${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}+${s2}F10*0.2/1000`, result: roundNum(baseNpvMln + investment / 1000000 * 0.2, 2) }
-    : roundNum(baseNpvMln + investment / 1000000 * 0.2, 2);
-  sheet3.getCell(`F${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`F${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet3.getCell(`F${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet3.getCell(`G${cfoRow}`).value = withFormulas
-    ? { formula: `F${cfoRow}-D${cfoRow}`, result: roundNum(investment / 1000000 * 0.4, 2) }
-    : roundNum(investment / 1000000 * 0.4, 2);
-  sheet3.getCell(`G${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`G${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`G${cfoRow}`).font = { bold: true };
+    // Pessimistic - full SUMPRODUCT NPV recalculation referencing C cell
+    sheet3.getCell(`D${cfoRow}`).value = withFormulas
+      ? { formula: t.buildPessFormula(cRef), result: roundNum(t.pessNpv, 2) }
+      : roundNum(t.pessNpv, 2);
+    sheet3.getCell(`D${cfoRow}`).numFmt = '# ##0.00';
+    sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
+    sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
+    sheet3.getCell(`D${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
 
-  // Row 3: Yield PV - ±15%
-  cfoRow++;
-  sheet3.getCell(`B${cfoRow}`).value = 'Yield PV (produkcja)';
-  sheet3.getCell(`C${cfoRow}`).value = '±15%';
-  sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.85
-  sheet3.getCell(`D${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*0.85`, result: roundNum(baseNpvMln * 0.85, 2) }
-    : roundNum(baseNpvMln * 0.85, 2);
-  sheet3.getCell(`D${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
-  sheet3.getCell(`D${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet3.getCell(`E${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`E${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.15
-  sheet3.getCell(`F${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*1.15`, result: roundNum(baseNpvMln * 1.15, 2) }
-    : roundNum(baseNpvMln * 1.15, 2);
-  sheet3.getCell(`F${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`F${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet3.getCell(`F${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet3.getCell(`G${cfoRow}`).value = withFormulas
-    ? { formula: `F${cfoRow}-D${cfoRow}`, result: roundNum(baseNpvMln * 0.3, 2) }
-    : roundNum(baseNpvMln * 0.3, 2);
-  sheet3.getCell(`G${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`G${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`G${cfoRow}`).font = { bold: true };
+    // Base
+    sheet3.getCell(`E${cfoRow}`).value = withFormulas
+      ? { formula: `${s2}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
+      : roundNum(baseNpvMln, 2);
+    sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0.00';
+    sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
+    sheet3.getCell(`E${cfoRow}`).font = { bold: true };
+    sheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
-  // Row 4: Stopa dyskontowa - ±2pp
-  cfoRow++;
-  sheet3.getCell(`B${cfoRow}`).value = 'Stopa dyskontowa';
-  sheet3.getCell(`C${cfoRow}`).value = '±2pp';
-  sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.85 (higher discount)
-  sheet3.getCell(`D${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*0.85`, result: roundNum(baseNpvMln * 0.85, 2) }
-    : roundNum(baseNpvMln * 0.85, 2);
-  sheet3.getCell(`D${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
-  sheet3.getCell(`D${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet3.getCell(`E${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet3.getCell(`E${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`E${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`E${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.20 (lower discount)
-  sheet3.getCell(`F${cfoRow}`).value = withFormulas
-    ? { formula: `${s2}M${lastDataRow}*1.2`, result: roundNum(baseNpvMln * 1.2, 2) }
-    : roundNum(baseNpvMln * 1.2, 2);
-  sheet3.getCell(`F${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`F${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet3.getCell(`F${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet3.getCell(`G${cfoRow}`).value = withFormulas
-    ? { formula: `F${cfoRow}-D${cfoRow}`, result: roundNum(baseNpvMln * 0.35, 2) }
-    : roundNum(baseNpvMln * 0.35, 2);
-  sheet3.getCell(`G${cfoRow}`).numFmt = '# ##0.00';
-  sheet3.getCell(`G${cfoRow}`).alignment = { horizontal: 'center' };
-  sheet3.getCell(`G${cfoRow}`).font = { bold: true };
+    // Optimistic - full SUMPRODUCT NPV recalculation referencing C cell
+    sheet3.getCell(`F${cfoRow}`).value = withFormulas
+      ? { formula: t.buildOptFormula(cRef), result: roundNum(t.optNpv, 2) }
+      : roundNum(t.optNpv, 2);
+    sheet3.getCell(`F${cfoRow}`).numFmt = '# ##0.00';
+    sheet3.getCell(`F${cfoRow}`).alignment = { horizontal: 'center' };
+    sheet3.getCell(`F${cfoRow}`).font = { color: { argb: 'FF2E7D32' } };
+    sheet3.getCell(`F${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+
+    // Range
+    sheet3.getCell(`G${cfoRow}`).value = withFormulas
+      ? { formula: `F${cfoRow}-D${cfoRow}`, result: roundNum(t.range, 2) }
+      : roundNum(t.range, 2);
+    sheet3.getCell(`G${cfoRow}`).numFmt = '# ##0.00';
+    sheet3.getCell(`G${cfoRow}`).alignment = { horizontal: 'center' };
+    sheet3.getCell(`G${cfoRow}`).font = { bold: true };
+  });
 
   // Add borders to tornado rows
   for (let r = tornadoHeaderRow + 1; r <= cfoRow; r++) {
@@ -1159,11 +1469,44 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 12, color: { argb: 'FF7B1FA2' } };
   sheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } };
 
-  cfoRow += 2;
   const yieldVariations = [-0.15, -0.10, -0.05, 0, 0.05, 0.10, 0.15];
   const priceVariations = [-0.20, -0.10, 0, 0.10, 0.20];
+  const _col = (n) => String.fromCharCode(64 + n); // 1=A, 2=B, 3=C, ...
 
-  // Header row
+  // Pre-compute self-consumption for each yield variation using hourly profiles
+  const selfConsumptionByYield = {};
+  let hasHourlyData = false;
+  try {
+    hasHourlyData = yieldVariations.some(yv => _computeSelfConsumptionForYield(1 + yv) !== null);
+    yieldVariations.forEach(yv => {
+      const sc = _computeSelfConsumptionForYield(1 + yv);
+      selfConsumptionByYield[yv] = sc !== null ? sc : baseAutoconsumptionMwh * 1000 * (1 + yv);
+    });
+  } catch (scErr) {
+    console.warn('⚠️ Self-consumption pre-compute failed, using linear fallback:', scErr);
+    yieldVariations.forEach(yv => {
+      selfConsumptionByYield[yv] = baseAutoconsumptionMwh * 1000 * (1 + yv);
+    });
+  }
+  if (hasHourlyData) {
+    console.log('📊 Sensitivity matrix: using non-linear self-consumption from hourly profiles');
+  } else {
+    console.log('📊 Sensitivity matrix: hourly data unavailable, using linear approximation');
+  }
+
+  const baseNpvTys = npvValue / 1000;
+  const capexNpvBaseForMatrix = {
+    capacity_kwp: capacityKwp,
+    capex_per_kwp: investment / capacityKwp,
+    opex_per_kwp: params.opex_per_kwp || 24,
+    degradation_rate: pvDegradationYears2Plus || 0.004,
+    discount_rate: discountRate,
+    analysis_period: analysisPeriod || 30,
+    inflation_rate: inflationRate
+  };
+
+  // Matrix headers
+  cfoRow += 2;
   sheet3.getCell(`B${cfoRow}`).value = 'NPV [tys. PLN]';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 9 };
   sheet3.mergeCells(`C${cfoRow}:I${cfoRow}`);
@@ -1172,42 +1515,63 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
 
   cfoRow++;
+  const matrixHeaderRow = cfoRow;
   sheet3.getCell(`B${cfoRow}`).value = 'Cena sieci ↓';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 9 };
   sheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'right' };
   yieldVariations.forEach((yv, i) => {
-    sheet3.getCell(cfoRow, 3 + i).value = `${yv >= 0 ? '+' : ''}${(yv * 100).toFixed(0)}%`;
+    sheet3.getCell(cfoRow, 3 + i).value = yv;
+    sheet3.getCell(cfoRow, 3 + i).numFmt = '+0%;-0%;0%';
     sheet3.getCell(cfoRow, 3 + i).font = { bold: true, size: 9 };
     sheet3.getCell(cfoRow, 3 + i).alignment = { horizontal: 'center' };
     sheet3.getCell(cfoRow, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
   });
 
-  // Matrix data - NPV in tys. PLN
-  // Formula: (NPV_mln*1000 + CAPEX_tys) * (1+priceVar) * (1+yieldVar) - CAPEX_tys
-  // Where NPV_mln = 'CAPEX Rok po Roku'!L{lastDataRow}, CAPEX_tys = 'CAPEX Rok po Roku'!E10
-  const baseNpvTys = npvValue / 1000;
+  // Matrix data - full NPV recalculation per cell
   priceVariations.forEach(pv => {
     cfoRow++;
-    sheet3.getCell(`B${cfoRow}`).value = `${pv >= 0 ? '+' : ''}${(pv * 100).toFixed(0)}%`;
+    sheet3.getCell(`B${cfoRow}`).value = pv;
+    sheet3.getCell(`B${cfoRow}`).numFmt = '+0%;-0%;0%';
     sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 9 };
     sheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'right' };
     sheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
     yieldVariations.forEach((yv, i) => {
-      // NPV = -CAPEX + PV(savings), savings proportional to price and yield
-      const savingsMultiplier = (1 + pv) * (1 + yv);
-      const adjNpv = (baseNpvTys + (investment / 1000)) * savingsMultiplier - (investment / 1000);
+      // Always compute the value (used as result hint for formulas or as the cell value)
+      let adjNpv;
+      try {
+        adjNpv = calculateCapexNPV({
+          ...capexNpvBaseForMatrix,
+          self_consumed_annual_kwh: selfConsumptionByYield[yv],
+          total_energy_price_per_kwh: effectiveEnergyPrice / 1000 * (1 + pv)
+        }) / 1000;
+      } catch (npvErr) {
+        console.error(`❌ NPV calc failed for pv=${pv}, yv=${yv}:`, npvErr);
+        const sm = (1 + pv) * (1 + yv);
+        adjNpv = (baseNpvTys + (investment / 1000)) * sm - (investment / 1000);
+      }
+      if (!isFinite(adjNpv)) adjNpv = 0;
 
       const cell = sheet3.getCell(cfoRow, 3 + i);
-
-      // Formula: (NPV*1000 + CAPEX) * priceMultiplier * yieldMultiplier - CAPEX
       if (withFormulas) {
-        const priceMultiplier = (1 + pv).toFixed(2);
-        const yieldMultiplier = (1 + yv).toFixed(2);
-        cell.value = {
-          formula: `(${s2}M${lastDataRow}*1000+${s2}F10)*${priceMultiplier}*${yieldMultiplier}-${s2}F10`,
-          result: roundNum(adjNpv, 0)
-        };
+        const colLetter = _col(3 + i);
+        const yieldRef = `${colLetter}$${matrixHeaderRow}`;
+        const priceRef = `$B${cfoRow}`;
+        const bRange = `${s2}$B$${dataStartRow}:$B$${lastDataRow}`;
+        const cRange = `${s2}$C$${dataStartRow}:$C$${lastDataRow}`;
+        const kRange = `${s2}$K$${dataStartRow}:$K$${lastDataRow}`;
+        const iRange = `${s2}$I$${dataStartRow}:$I$${lastDataRow}`;
+        let formula;
+        if (isRdn) {
+          // RDN mode: uses TCSL audit sheet (F18=variable energy savings, F21=capacity fee savings)
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s2}$F$4, ${bRange}))\n- ${s2}$F$10`;
+        } else {
+          // Non-RDN: uses Suma Auto (col I) * energy price ($F$12) with CPI
+          formula = `SUMPRODUCT(\n  (${iRange} * ${s2}$F$12\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s2}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s2}$F$4, ${bRange}))\n- ${s2}$F$10`;
+        }
+        cell.value = { formula, result: roundNum(adjNpv, 0) };
+        cell.note = `-- NPV CAPEX przy yield ${yieldRef} i cena ${priceRef}`;
       } else {
         cell.value = roundNum(adjNpv, 0);
       }
@@ -1288,6 +1652,7 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`D${cfoRow}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRow++;
+  const esgCo2TotalRow = cfoRow;  // Store for decision summary formulas
   sheet3.getCell(`B${cfoRow}`).value = `🌍 Redukcja CO₂ (${analysisPeriod} lat) [tony]`;
   sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 11 };
   sheet3.getCell(`C${cfoRow}`).value = withFormulas
@@ -1330,7 +1695,7 @@ async function exportCapexToExcel(withFormulas = false) {
 
   // --- SECTION 5: BREAK-EVEN ---
   const breakEvenPrice = lcoeValue;
-  const safetyMarginPct = (totalEnergyPrice - lcoeValue) / totalEnergyPrice;
+  const safetyMarginPct = (effectiveEnergyPrice - lcoeValue) / effectiveEnergyPrice;
 
   // Break-even formulas
   const bePriceFormula = `${s2}F12`;
@@ -1349,11 +1714,11 @@ async function exportCapexToExcel(withFormulas = false) {
 
   cfoRow++;
   const bePriceRow = cfoRow;
-  sheet3.getCell(`B${cfoRow}`).value = 'Obecna cena energii z sieci';
+  sheet3.getCell(`B${cfoRow}`).value = isRdn ? 'Efektywna cena RDN (TCSL/MWh)' : 'Obecna cena energii z sieci';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true };
-  sheet3.getCell(`C${cfoRow}`).value = withFormulas
-    ? { formula: bePriceFormula, result: roundNum(totalEnergyPrice, 0) }
-    : roundNum(totalEnergyPrice, 0);
+  sheet3.getCell(`C${cfoRow}`).value = isRdn
+    ? roundNum(effectiveEnergyPrice, 0)
+    : (withFormulas ? { formula: bePriceFormula, result: roundNum(totalEnergyPrice, 0) } : roundNum(totalEnergyPrice, 0));
   sheet3.getCell(`C${cfoRow}`).numFmt = '# ##0';
   sheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   sheet3.getCell(`D${cfoRow}`).value = 'PLN/MWh';
@@ -1434,16 +1799,16 @@ async function exportCapexToExcel(withFormulas = false) {
     const weightedNpv = scenarioNpv * s.prob;
     weightedNpvSum += weightedNpv;
 
-    // Scenario NPV formula: (NPV*1000 + CAPEX) * priceMultiplier * yieldMultiplier - CAPEX
-    const priceMultiplier = (1 + s.priceChg).toFixed(2);
-    const yieldMultiplier = (1 + s.yieldChg).toFixed(2);
-    const scenarioNpvFormula = `(${s2}M${lastDataRow}*1000+${s2}F10)*${priceMultiplier}*${yieldMultiplier}-${s2}F10`;
+    // Scenario NPV formula: full SUMPRODUCT with cell references to C (price) and D (yield)
+    const scenarioNpvFormula = `(SUMPRODUCT((${tIRange}*(1+D${cfoRow})*${tF12}*(1+C${cfoRow})*POWER(1+${tF5},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})`;
 
     sheet3.getCell(`B${cfoRow}`).value = s.name;
     sheet3.getCell(`B${cfoRow}`).font = { bold: true, color: { argb: s.textColor } };
-    sheet3.getCell(`C${cfoRow}`).value = `${s.priceChg >= 0 ? '+' : ''}${(s.priceChg * 100).toFixed(0)}%`;
+    sheet3.getCell(`C${cfoRow}`).value = s.priceChg;
+    sheet3.getCell(`C${cfoRow}`).numFmt = '+0%;-0%;0%';
     sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-    sheet3.getCell(`D${cfoRow}`).value = `${s.yieldChg >= 0 ? '+' : ''}${(s.yieldChg * 100).toFixed(0)}%`;
+    sheet3.getCell(`D${cfoRow}`).value = s.yieldChg;
+    sheet3.getCell(`D${cfoRow}`).numFmt = '+0%;-0%;0%';
     sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
 
     // NPV for scenario with formula
@@ -1502,11 +1867,16 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`B${cfoRow}`).font = { italic: true, size: 10, color: { argb: 'FF616161' } };
 
   cfoRow += 2;
-  const inflationRates = [0, 0.02, 0.03, 0.05, 0.07, 0.10];
+  // Include base inflation rate (from F5) so user can verify NPV matches base
+  const baseInflPct = inflationRate;
+  const inflationRatesSet = new Set([0, 0.02, baseInflPct, 0.05, 0.07, 0.10]);
+  const inflationRates = [...inflationRatesSet].sort((a, b) => a - b);
   sheet3.getCell(`B${cfoRow}`).value = 'Roczna inflacja cen energii';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true };
+  const inflHeaderRow = cfoRow;
   inflationRates.forEach((ir, i) => {
-    sheet3.getCell(cfoRow, 3 + i).value = `${(ir * 100).toFixed(0)}%`;
+    sheet3.getCell(cfoRow, 3 + i).value = ir;
+    sheet3.getCell(cfoRow, 3 + i).numFmt = ir % 0.01 === 0 ? '0%' : '0.0%';
     sheet3.getCell(cfoRow, 3 + i).font = { bold: true };
     sheet3.getCell(cfoRow, 3 + i).alignment = { horizontal: 'center' };
     sheet3.getCell(cfoRow, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
@@ -1516,14 +1886,14 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet3.getCell(`B${cfoRow}`).value = 'NPV [tys. PLN]';
   sheet3.getCell(`B${cfoRow}`).font = { bold: true };
   inflationRates.forEach((ir, i) => {
-    // Higher energy price inflation = higher future savings = higher NPV
-    // Approximate: NPV increases by ~period/2 * inflationRate relative multiplier
+    // Full SUMPRODUCT NPV recalculation with varied energy price inflation from header cell
     const inflationMultiplier = 1 + (ir - inflationRate) * analysisPeriod * 0.4;
     const adjNpv = baseNpvTys * inflationMultiplier;
 
-    // Formula: NPV * (1 + (ir - baseInflation) * period * 0.4)
-    const inflMultiplierVal = inflationMultiplier.toFixed(3);
-    const inflNpvFormula = `${s2}M${lastDataRow}*1000*${inflMultiplierVal}`;
+    const inflColLetter = _col(3 + i);
+    const inflHeaderRef = `${inflColLetter}$${inflHeaderRow}`;
+    // SUMPRODUCT: energy savings use varied inflation from header, OPEX stays at base inflation (from Sheet2 K column)
+    const inflNpvFormula = `(SUMPRODUCT((${tIRange}*${tF12}*POWER(1+${inflHeaderRef},${tBRange}-1))/1000-${tKRange},1/POWER(1+${tF4},${tBRange}))-${tF10})`;
 
     const cell = sheet3.getCell(cfoRow, 3 + i);
     cell.value = withFormulas
@@ -1533,8 +1903,8 @@ async function exportCapexToExcel(withFormulas = false) {
     cell.font = { bold: true };
     cell.alignment = { horizontal: 'center' };
 
-    // Highlight base case (3% = current inflation)
-    if (ir === inflationRate || (ir === 0.03 && inflationRate > 0.02 && inflationRate < 0.04)) {
+    // Highlight base case (matching base inflation from settings)
+    if (ir === baseInflPct) {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
       cell.font = { bold: true, color: { argb: 'FF1565C0' } };
     } else if (adjNpv > baseNpvTys * 1.1) {
@@ -1561,32 +1931,98 @@ async function exportCapexToExcel(withFormulas = false) {
   });
 
   // Calculate 30-year grid cost without PV
-  const gridCost30Years = baseAutoconsumptionMwh * totalEnergyPrice * analysisPeriod / 1000; // tys. PLN (simplified)
+  const gridCost30Years = isRdn
+    ? rdnGridCostYear1Tys * analysisPeriod  // RDN: use real annual cost from TCSL
+    : baseAutoconsumptionMwh * totalEnergyPrice * analysisPeriod / 1000; // tys. PLN (simplified)
 
-  // Decision criteria
+  // Decision criteria - with formula support for dynamic rows
   const decisionRows = [
-    { criterion: 'Nakład inwestycyjny', capex: `${roundNum(investment / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'Status Quo' },
-    { criterion: `Koszt energii ${analysisPeriod} lat`, capex: '0 tys.', statusQuo: `${roundNum(gridCost30Years, 0)} tys.`, winner: 'CAPEX' },
-    { criterion: `Oszczędności ${analysisPeriod} lat`, capex: `${roundNum(totalSavings / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'CAPEX' },
-    { criterion: 'NPV (wartość bieżąca)', capex: `${roundNum(npvValue / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: npvValue > 0 ? 'CAPEX' : 'Status Quo' },
-    { criterion: 'Ryzyko cenowe', capex: 'Częściowe zabezp.', statusQuo: '100% ekspozycji', winner: 'CAPEX' },
-    { criterion: 'Własność aktywów', capex: 'TAK', statusQuo: 'NIE', winner: 'CAPEX' },
-    { criterion: 'Zielona energia', capex: 'TAK', statusQuo: 'NIE', winner: 'CAPEX' },
-    { criterion: `Redukcja CO₂ (${analysisPeriod} lat)`, capex: `${roundNum(totalCO2Tons, 0)} ton`, statusQuo: '0 ton', winner: 'CAPEX' }
+    { criterion: 'Nakład inwestycyjny', capex: `${roundNum(investment / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'Status Quo', useFormula: true, formulaType: 'investment' },
+    { criterion: `Koszt energii ${analysisPeriod} lat`, capex: `${roundNum((gridCost30Years - totalSavings / 1000), 0)} tys.`, statusQuo: `${roundNum(gridCost30Years, 0)} tys.`, winner: 'CAPEX', useFormula: true, formulaType: 'energyCost' },
+    { criterion: `Oszczędności ${analysisPeriod} lat`, capex: `${roundNum(totalSavings / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: 'CAPEX', useFormula: true, formulaType: 'savings' },
+    { criterion: 'NPV (wartość bieżąca)', capex: `${roundNum(npvValue / 1000, 0)} tys. PLN`, statusQuo: '0 PLN', winner: npvValue > 0 ? 'CAPEX' : 'Status Quo', useFormula: true, formulaType: 'npv' },
+    { criterion: 'Ryzyko cenowe', capex: 'Częściowe zabezp.', statusQuo: '100% ekspozycji', winner: 'CAPEX', useFormula: false },
+    { criterion: 'Własność aktywów', capex: 'TAK', statusQuo: 'NIE', winner: 'CAPEX', useFormula: false },
+    { criterion: 'Zielona energia', capex: 'TAK', statusQuo: 'NIE', winner: 'CAPEX', useFormula: false },
+    { criterion: `Redukcja CO₂ (${analysisPeriod} lat)`, capex: `${roundNum(totalCO2Tons, 0)} ton`, statusQuo: '0 ton', winner: 'CAPEX', useFormula: true, formulaType: 'co2' }
   ];
 
+  const capexDecisionFirstRow = cfoRow + 1;
   let capexWins = 0;
   decisionRows.forEach(row => {
     cfoRow++;
     sheet3.getCell(`B${cfoRow}`).value = row.criterion;
     sheet3.getCell(`B${cfoRow}`).font = { color: { argb: 'FF424242' } };
-    sheet3.getCell(`C${cfoRow}`).value = row.capex;
+
+    // C column (CAPEX value) - formulas matching reference ROUND pattern
+    if (withFormulas && row.useFormula) {
+      if (row.formulaType === 'investment') {
+        sheet3.getCell(`C${cfoRow}`).value = { formula: `ROUND(${s2}F10,0)\n&" tys. PLN"`, result: row.capex };
+      } else if (row.formulaType === 'savings') {
+        sheet3.getCell(`C${cfoRow}`).value = {
+          formula: `ROUND(\n  SUM(${s2}L${dataStartRow}:${s2}L${lastDataRow}),\n  0)\n&" tys. PLN"`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'npv') {
+        sheet3.getCell(`C${cfoRow}`).value = {
+          formula: `ROUND(\n  ${s2}M${lastDataRow}*1000,\n  0)\n&" tys. PLN"`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'energyCost') {
+        sheet3.getCell(`C${cfoRow}`).value = {
+          formula: `ROUND(${s2}F11*${s2}F12*${s2}F9/1000-SUM(${s2}L${dataStartRow}:${s2}L${lastDataRow}),0)&" tys."`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'co2') {
+        sheet3.getCell(`C${cfoRow}`).value = {
+          formula: `ROUND(\n  SUM(${s2}I${dataStartRow}:${s2}I${lastDataRow})*0.7,\n  0)\n&" ton"`,
+          result: row.capex
+        };
+      } else {
+        sheet3.getCell(`C${cfoRow}`).value = row.capex;
+      }
+    } else {
+      sheet3.getCell(`C${cfoRow}`).value = row.capex;
+    }
     sheet3.getCell(`C${cfoRow}`).font = { bold: true, color: { argb: 'FF1565C0' } };
     sheet3.getCell(`C${cfoRow}`).alignment = { horizontal: 'center' };
-    sheet3.getCell(`D${cfoRow}`).value = row.statusQuo;
+
+    // D column (Status Quo value) - formulas when applicable
+    if (withFormulas && row.useFormula && row.formulaType === 'energyCost') {
+      sheet3.getCell(`D${cfoRow}`).value = {
+        formula: `ROUND(\n  ${s2}F12*${s2}F9,\n  0)\n&" tys."`,
+        result: row.statusQuo
+      };
+    } else {
+      sheet3.getCell(`D${cfoRow}`).value = row.statusQuo;
+    }
     sheet3.getCell(`D${cfoRow}`).font = { color: { argb: 'FFC62828' } };
     sheet3.getCell(`D${cfoRow}`).alignment = { horizontal: 'center' };
-    sheet3.getCell(`E${cfoRow}`).value = row.winner;
+
+    // E column (Winner) - formulas when applicable
+    if (withFormulas && row.useFormula) {
+      if (row.formulaType === 'investment') {
+        sheet3.getCell(`E${cfoRow}`).value = { formula: `IF(${s2}F10>0,\n  "Status Quo","Remis")`, result: row.winner };
+      } else if (row.formulaType === 'energyCost') {
+        sheet3.getCell(`E${cfoRow}`).value = {
+          formula: `IF(\n  SUM(${s2}F${dataStartRow}:${s2}F${lastDataRow})>0,\n  "CAPEX","Status Quo")`,
+          result: row.winner
+        };
+      } else if (row.formulaType === 'savings') {
+        sheet3.getCell(`E${cfoRow}`).value = {
+          formula: `IF(\n  SUM(${s2}L${dataStartRow}:${s2}L${lastDataRow})>0,\n  "CAPEX","Status Quo")`,
+          result: row.winner
+        };
+      } else if (row.formulaType === 'npv') {
+        sheet3.getCell(`E${cfoRow}`).value = { formula: `IF(${s2}M${lastDataRow}>0,\n  "CAPEX","Status Quo")`, result: row.winner };
+      } else if (row.formulaType === 'co2') {
+        sheet3.getCell(`E${cfoRow}`).value = { formula: `IF($C$${esgCo2TotalRow}>0,\n  "CAPEX","Status Quo")`, result: row.winner };
+      } else {
+        sheet3.getCell(`E${cfoRow}`).value = row.winner;
+      }
+    } else {
+      sheet3.getCell(`E${cfoRow}`).value = row.winner;
+    }
     sheet3.getCell(`E${cfoRow}`).font = { bold: true, color: { argb: row.winner === 'CAPEX' ? 'FF2E7D32' : 'FFE65100' } };
     sheet3.getCell(`E${cfoRow}`).alignment = { horizontal: 'center' };
 
@@ -1596,19 +2032,36 @@ async function exportCapexToExcel(withFormulas = false) {
       sheet3.getRow(cfoRow).getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
     }
   });
+  const capexDecisionLastRow = cfoRow;
 
-  // Final recommendation
+  // Final recommendation - dynamic COUNTIF formula
   cfoRow += 2;
   const recommendation = capexWins >= 5 ? 'CAPEX' : 'Status Quo';
   sheet3.mergeCells(`B${cfoRow}:E${cfoRow}`);
-  sheet3.getCell(`B${cfoRow}`).value = `✅ REKOMENDACJA: Inwestycja CAPEX - wygrywa w ${capexWins} z ${decisionRows.length} kryteriów`;
+  if (withFormulas) {
+    const eRange = `E${capexDecisionFirstRow}:E${capexDecisionLastRow}`;
+    const nCrit = decisionRows.length;
+    sheet3.getCell(`B${cfoRow}`).value = {
+      formula: `IF(\n  COUNTIF(${eRange},"CAPEX")\n  > COUNTIF(${eRange},"Status Quo"),\n  "✅ REKOMENDACJA: Inwestycja CAPEX - wygrywa w "\n  & COUNTIF(${eRange},"CAPEX")\n  & " z ${nCrit} kryteriów",\n  "⛔ REKOMENDACJA: Status Quo - wygrywa w "\n  & COUNTIF(${eRange},"Status Quo")\n  & " z ${nCrit} kryteriów")`,
+      result: `✅ REKOMENDACJA: Inwestycja CAPEX - wygrywa w ${capexWins} z ${nCrit} kryteriów`
+    };
+  } else {
+    sheet3.getCell(`B${cfoRow}`).value = `✅ REKOMENDACJA: Inwestycja CAPEX - wygrywa w ${capexWins} z ${decisionRows.length} kryteriów`;
+  }
   sheet3.getCell(`B${cfoRow}`).font = { bold: true, size: 12, color: { argb: recommendation === 'CAPEX' ? 'FF2E7D32' : 'FFC62828' } };
   sheet3.getCell(`B${cfoRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: recommendation === 'CAPEX' ? 'FFE8F5E9' : 'FFFFEBEE' } };
   sheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'center' };
 
   cfoRow++;
   sheet3.mergeCells(`B${cfoRow}:E${cfoRow}`);
-  sheet3.getCell(`B${cfoRow}`).value = `NPV = ${roundNum(npvValue / 1000, 0)} tys. PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Zwrot = ${roundNum(simplePaybackValue, 1)} lat`;
+  if (withFormulas) {
+    sheet3.getCell(`B${cfoRow}`).value = {
+      formula: `"NPV = "\n&ROUND(${s2}M${lastDataRow}*1000,0)\n&" tys. PLN | IRR = "\n&ROUND(${kpiIrrFormula}*100,0)\n&"% | Zwrot = "\n&FIXED(${kpiPaybackFormula},1)\n&" lat"`,
+      result: `NPV = ${roundNum(npvValue / 1000, 0)} tys. PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Zwrot = ${roundNum(simplePaybackValue, 1)} lat`
+    };
+  } else {
+    sheet3.getCell(`B${cfoRow}`).value = `NPV = ${roundNum(npvValue / 1000, 0)} tys. PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Zwrot = ${roundNum(simplePaybackValue, 1)} lat`;
+  }
   sheet3.getCell(`B${cfoRow}`).font = { italic: true, size: 10, color: { argb: 'FF1565C0' } };
   sheet3.getCell(`B${cfoRow}`).alignment = { horizontal: 'center' };
 
@@ -1627,7 +2080,8 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet4.getRow(3).height = 24;
 
   sheet4.mergeCells('B1:C3');
-  sheet4.getCell('B1').value = 'CAPEX ANALYSIS - Investor Perspective';
+  const rdnLabelEng = window._rdnExportMode ? ' (RDN prices)' : '';
+  sheet4.getCell('B1').value = `CAPEX ANALYSIS${rdnLabelEng} - Investor Perspective - Scenario ${scenarioName}`;
   sheet4.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FF1565C0' } };
   sheet4.getCell('B1').alignment = { horizontal: 'center', vertical: 'bottom' };
 
@@ -1662,18 +2116,19 @@ async function exportCapexToExcel(withFormulas = false) {
   ];
 
   if (withFormulas) {
-    summaryRowsEng.push(['NPV [M PLN]:', { formula: "'CAPEX Year by Year'!M" + lastDataRow }]);
-    summaryRowsEng.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1)]);
-    summaryRowsEng.push(['ROI [%]:', { formula: "(SUM('CAPEX Year by Year'!L" + dataStartRow + ":L" + lastDataRow + ")*1000-'CAPEX Year by Year'!F10*1000)/('CAPEX Year by Year'!F10*1000)*100" }]);
-    summaryRowsEng.push(['Simple payback [years]:', { formula: "'CAPEX Year by Year'!F10*1000/AVERAGE('CAPEX Year by Year'!L" + dataStartRow + ":L" + (dataStartRow + 4) + ")/1000" }]);
+    summaryRowsEng.push(['NPV [M PLN]:', { formula: "'CAPEX Year by Year'!M" + lastDataRow }, '0.00']);
+    summaryRowsEng.push(['IRR [%]:', { formula: "IRR('CAPEX Year by Year'!L17:L" + lastDataRow + ")*100" }, '0.0']);
+    summaryRowsEng.push(['ROI [%]:', { formula: "(SUM('CAPEX Year by Year'!L" + dataStartRow + ":L" + lastDataRow + ")*1000-'CAPEX Year by Year'!F10*1000)/('CAPEX Year by Year'!F10*1000)*100" }, '0.0']);
+    summaryRowsEng.push(['Simple payback [years]:', { formula: "'CAPEX Year by Year'!F10*1000/AVERAGE('CAPEX Year by Year'!L" + dataStartRow + ":L" + (dataStartRow + 4) + ")/1000" }, '0.0']);
   } else {
-    summaryRowsEng.push(['NPV [M PLN]:', roundNum(centralizedCalc.capex.npv / 1000000, 2)]);
-    summaryRowsEng.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1)]);
-    summaryRowsEng.push(['ROI [%]:', roundNum(roi, 1)]);
-    summaryRowsEng.push(['Simple payback [years]:', roundNum(centralizedCalc.capex.simplePayback, 1)]);
+    summaryRowsEng.push(['NPV [M PLN]:', roundNum(centralizedCalc.capex.npv / 1000000, 2), '0.00']);
+    summaryRowsEng.push(['IRR [%]:', roundNum(centralizedCalc.capex.irr * 100, 1), '0.0']);
+    summaryRowsEng.push(['ROI [%]:', roundNum(roi, 1), '0.0']);
+    summaryRowsEng.push(['Simple payback [years]:', roundNum(centralizedCalc.capex.simplePayback, 1), '0.0']);
   }
-  summaryRowsEng.push(['Discounted payback [years]:', centralizedCalc.capex.discountedPayback ? roundNum(centralizedCalc.capex.discountedPayback, 1) : 'Beyond analysis period']);
-  summaryRowsEng.push(['LCOE [PLN/MWh]:', roundNum(centralizedCalc.capex.lcoe, 0)]);
+  const dppEng = centralizedCalc.capex.discountedPayback;
+  summaryRowsEng.push(['Discounted payback [years]:', (dppEng !== null && dppEng !== undefined) ? roundNum(dppEng, 1) : 'Beyond analysis period', '0.0']);
+  summaryRowsEng.push(['LCOE [PLN/MWh]:', roundNum(centralizedCalc.capex.lcoe, 0), '0']);
 
   summaryRowsEng.forEach((row, idx) => {
     const excelRow = sheet4.getRow(idx + 5);
@@ -1682,6 +2137,9 @@ async function exportCapexToExcel(withFormulas = false) {
       excelRow.getCell(3).value = row[1];
     } else {
       excelRow.getCell(3).value = row[1];
+    }
+    if (row[2] && typeof row[1] !== 'string') {
+      excelRow.getCell(3).numFmt = row[2];
     }
     if (row[0] && (row[0].includes('INSTALLATION') || row[0].includes('INVESTMENT') || row[0] === 'DEGRADATION' || row[0].includes('ECONOMIC'))) {
       excelRow.getCell(2).font = { bold: true, color: { argb: 'FF1565C0' } };
@@ -1711,7 +2169,7 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet5.views = [{ showGridLines: false, showRowColHeaders: false }];
 
   sheet5.getRow(1).height = 22;
-  sheet5.getCell('B1').value = 'CAPEX YEAR BY YEAR ANALYSIS WITH NPV';
+  sheet5.getCell('B1').value = `CAPEX${rdnLabelEng} YEAR BY YEAR ANALYSIS WITH NPV - Scenario ${scenarioName}`;
   sheet5.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FF1565C0' } };
 
   if (logoImageId !== null) {
@@ -1733,7 +2191,9 @@ async function exportCapexToExcel(withFormulas = false) {
     { row: 9, label: 'Analysis period [years]:', value: analysisPeriod, numFmt: '0' },
     { row: 10, label: 'CAPEX [k PLN]:', value: roundNum(investment / 1000, 2), numFmt: '# ##0.00' },
     { row: 11, label: 'Base self-consumption [MWh]:', value: roundNum(baseAutoconsumptionMwh, 2), numFmt: '# ##0.00' },
-    { row: 12, label: 'Base grid price [PLN/MWh]:', value: roundNum(totalEnergyPrice, 2), numFmt: '# ##0.00' },
+    isRdn
+      ? { row: 12, label: 'RDN annual cost w/o PV Yr1 [k PLN]:', value: roundNum(rdnGridCostYear1Tys, 2), numFmt: '# ##0.00' }
+      : { row: 12, label: 'Avg. PV self-cons. MWh price [PLN/MWh]:', value: roundNum(totalEnergyPrice, 2), numFmt: '# ##0.00', priceNote: true },
     { row: 13, label: 'Annual consumption [MWh]:', value: roundNum(annualConsumptionMwh, 2), numFmt: '# ##0.00' },
     { row: 14, label: 'Base OPEX [k PLN/year]:', value: roundNum(baseOpexTysPlnEng, 2), numFmt: '# ##0.00' }
   ];
@@ -1759,12 +2219,16 @@ async function exportCapexToExcel(withFormulas = false) {
       if (p.numFmt) {
         valueCell.numFmt = p.numFmt;
       }
+      // Excel note for grid price cell — explain price source
+      if (p.priceNote) {
+        valueCell.note = '-- effective_price_pln_mwh (PV-hours price)\n-- = PV savings Year 1 / self-consumption MWh\n-- Higher than annual avg because PV produces in expensive tariff zones (Day/Peak)\n-- Used to value each MWh that PV replaces';
+      }
     }
   });
 
   // Header row (row 16)
-  const headersEng = ['Year', 'PV Deg [%]', 'BESS Deg [%]', 'Consump. [MWh]', 'Grid Cost [k]',
-    'Self PV [MWh]', 'Self BESS [MWh]', 'Total Self [MWh]', 'Grid Equiv. [k]',
+  const headersEng = ['Year', 'PV Deg [%]', 'BESS Deg [%]', 'Consump. [MWh]', isRdn ? 'RDN Cost [k]' : 'Grid Cost [k]',
+    'Self PV [MWh]', 'Self BESS [MWh]', 'Total Self [MWh]', isRdn ? 'RDN Savings [k]' : 'Grid Equiv. [k]',
     'OPEX [k]', 'Savings [k]', 'Cumul. NPV [M]'];
   const headerRowEng = sheet5.getRow(16);
   headerRowEng.height = 40;
@@ -1783,11 +2247,11 @@ async function exportCapexToExcel(withFormulas = false) {
   // Year 0 - Initial investment (row 17)
   const year0RowEng = sheet5.getRow(17);
   year0RowEng.getCell(2).value = 0;
-  year0RowEng.getCell(12).value = roundNum(-investment / 1000, 0);
-  year0RowEng.getCell(12).numFmt = '# ##0';
+  year0RowEng.getCell(12).value = roundNum(-investment / 1000, 2);
+  year0RowEng.getCell(12).numFmt = '# ##0.00';
   year0RowEng.getCell(12).alignment = { horizontal: 'right', indent: 1 };
-  year0RowEng.getCell(13).value = roundNum(-investment / 1000000, 2);
-  year0RowEng.getCell(13).numFmt = '# ##0.00';
+  year0RowEng.getCell(13).value = roundNum(-investment / 1000000, 3);
+  year0RowEng.getCell(13).numFmt = '# ##0.000';
   year0RowEng.getCell(13).alignment = { horizontal: 'right', indent: 1 };
   year0RowEng.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
 
@@ -1801,11 +2265,13 @@ async function exportCapexToExcel(withFormulas = false) {
 
     const pvDeg = year === 1 ? (1 - pvDegradationYear1) : (1 - pvDegradationYear1) * Math.pow(1 - pvDegradationYears2Plus, year - 1);
     const bessDeg = Math.pow(1 - bessDegradationRate, year);
-    const inflFactor = Math.pow(1 + inflationRate, year);
+    const savingsInflFactor = useInflation ? Math.pow(1 + inflationRate, year - 1) : 1;  // grid cost + savings: year-1
     const autoPvMwh = baseAutoconsumptionMwh * pvDeg;
     const autoBessMwh = (cf.selfConsumedBess || 0) / 1000;
     const sumaAutoMwh = autoPvMwh + autoBessMwh;
-    const discountedCF = cf.net_cash_flow / Math.pow(1 + discountRate, year);
+    // Net cash flow EN — cf.savings already includes all streams (no double count)
+    const _netAllStreamsPlnEng = (cf.savings || 0) - (cf.opex || 0);
+    const discountedCF = _netAllStreamsPlnEng / Math.pow(1 + discountRate, year);
     cumulativeNPVEng += discountedCF;
 
     if (withFormulas) {
@@ -1821,7 +2287,14 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(5).value = { formula: '$F$13', result: annualConsumptionMwh };
       row.getCell(5).numFmt = numFmtStandard;
       row.getCell(5).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(6).value = { formula: '$F$13*$F$12*POWER(1+$F$5,' + year + ')/1000', result: annualConsumptionMwh * totalEnergyPrice * inflFactor / 1000 };
+      // Grid cost EN - CPI^(year-1): year 1 = base price, year 2+ escalated
+      if (isRdn) {
+        const gridCpiPart = useInflation ? '*POWER(1+$F$5,' + (year - 1) + ')' : '';
+        row.getCell(6).value = { formula: '$F$12' + gridCpiPart, result: rdnGridCostYear1Tys * savingsInflFactor };
+      } else {
+        const gridCpiPart = useInflation ? '*POWER(1+$F$5,' + (year - 1) + ')' : '';
+        row.getCell(6).value = { formula: '$F$13*$F$12' + gridCpiPart + '/1000', result: annualConsumptionMwh * totalEnergyPrice * savingsInflFactor / 1000 };
+      }
       row.getCell(6).numFmt = numFmtStandard;
       row.getCell(6).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(7).value = { formula: '$F$11*C' + dataRowEng, result: autoPvMwh };
@@ -1833,13 +2306,28 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(9).value = { formula: 'G' + dataRowEng + '+H' + dataRowEng, result: sumaAutoMwh };
       row.getCell(9).numFmt = numFmtStandard;
       row.getCell(9).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(10).value = { formula: 'I' + dataRowEng + '*$F$12*POWER(1+$F$5,' + year + ')/1000', result: cf.savings / 1000 };
+      // Savings EN — GOLD STANDARD SSoT (matches PV_Economics + PL sheet)
+      const _preciseY1TotalPlnEng = window.preciseAnnualSavings?.year1_savings?.total_pln;
+      const _totalAllStreamsEng = (year === 1 && _preciseY1TotalPlnEng)
+        ? _preciseY1TotalPlnEng / 1000
+        : (cf.savings || 0) / 1000;
+      if (isRdn) {
+        row.getCell(10).value = roundNum(_totalAllStreamsEng, 2);
+      } else if (year === 1) {
+        row.getCell(10).value = roundNum(_totalAllStreamsEng, 2);
+      } else {
+        const cpiPart = useInflation ? `*POWER(1+$F$5,${year - 1})` : '';
+        const formulaEng = `$J$${dataStartRow}*POWER(1-$F$7,${year - 1})${cpiPart}`;
+        row.getCell(10).value = { formula: formulaEng, result: roundNum(_totalAllStreamsEng, 2) };
+      }
       row.getCell(10).numFmt = numFmtStandard;
       row.getCell(10).alignment = { horizontal: 'right', indent: 1 };
+      // OPEX EN - formula with inflation: base OPEX * (1+inflation)^year (always applied)
       row.getCell(11).value = { formula: '$F$14*POWER(1+$F$5,' + year + ')', result: cf.opex / 1000 };
       row.getCell(11).numFmt = numFmtStandard;
       row.getCell(11).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(12).value = { formula: 'J' + dataRowEng + '-K' + dataRowEng, result: cf.net_cash_flow / 1000 };
+      // Net = J - K (all streams - opex)
+      row.getCell(12).value = { formula: 'J' + dataRowEng + '-K' + dataRowEng, result: roundNum(_netAllStreamsPlnEng / 1000, 2) };
       row.getCell(12).numFmt = numFmtStandard;
       row.getCell(12).alignment = { horizontal: 'right', indent: 1 };
       if (year === 1) {
@@ -1858,7 +2346,9 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(5).value = roundNum(annualConsumptionMwh, 2);
       row.getCell(5).numFmt = numFmtStandard;
       row.getCell(5).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(6).value = roundNum(annualConsumptionMwh * totalEnergyPrice * inflFactor / 1000, 2);
+      row.getCell(6).value = isRdn
+        ? roundNum(rdnGridCostYear1Tys * savingsInflFactor, 2)
+        : roundNum(annualConsumptionMwh * totalEnergyPrice * savingsInflFactor / 1000, 2);
       row.getCell(6).numFmt = numFmtStandard;
       row.getCell(6).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(7).value = roundNum(autoPvMwh, 2);
@@ -1870,13 +2360,15 @@ async function exportCapexToExcel(withFormulas = false) {
       row.getCell(9).value = roundNum(sumaAutoMwh, 2);
       row.getCell(9).numFmt = numFmtStandard;
       row.getCell(9).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(10).value = roundNum(cf.savings / 1000, 2);
+      // EN values-only: total savings = Stream 1 + Stream 2 + Stream 3
+      const _totalSavingsEng = ((cf.savings || 0) + (cf.capacitySavings || 0) + (cf.bessCapacitySavings || 0)) / 1000;
+      row.getCell(10).value = roundNum(_totalSavingsEng, 2);
       row.getCell(10).numFmt = numFmtStandard;
       row.getCell(10).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(11).value = roundNum(cf.opex / 1000, 2);
       row.getCell(11).numFmt = numFmtStandard;
       row.getCell(11).alignment = { horizontal: 'right', indent: 1 };
-      row.getCell(12).value = roundNum(cf.net_cash_flow / 1000, 2);
+      row.getCell(12).value = roundNum(_netAllStreamsPlnEng / 1000, 2);
       row.getCell(12).numFmt = numFmtStandard;
       row.getCell(12).alignment = { horizontal: 'right', indent: 1 };
       row.getCell(13).value = roundNum(cumulativeNPVEng / 1000000, 3);
@@ -1906,23 +2398,22 @@ async function exportCapexToExcel(withFormulas = false) {
     ]
   });
 
-  // DPP Row Highlighting
-  const dppYearEng = centralizedCalc.capex.discountedPayback;
-  if (dppYearEng && dppYearEng <= analysisPeriod) {
-    const dppRowNumberEng = 17 + Math.ceil(dppYearEng);
-    const dppRowObjEng = sheet5.getRow(dppRowNumberEng);
-    const dppFillEng = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF8E1' } };
-    const dppBorderEng = {
-      top: { style: 'medium', color: { argb: 'FFFFC107' } },
-      bottom: { style: 'medium', color: { argb: 'FFFFC107' } }
-    };
-    for (let col = 2; col <= 13; col++) {
-      const cell = dppRowObjEng.getCell(col);
-      cell.fill = dppFillEng;
-      cell.border = dppBorderEng;
-    }
-    dppRowObjEng.getCell(2).font = { bold: true, color: { argb: 'FFFF8F00' } };
-  }
+  // DPP Row Highlighting - DYNAMIC conditional formatting (ENG)
+  // Only amber top+bottom border (no fill/font change)
+  sheet5.addConditionalFormatting({
+    ref: 'B' + dataStartRow + ':M' + lastDataRow,
+    rules: [{
+      type: 'expression',
+      formulae: ['AND($M' + dataStartRow + '>=0,$M' + (dataStartRow - 1) + '<0)'],
+      style: {
+        border: {
+          top: { style: 'medium', color: { argb: 'FFFFC107' } },
+          bottom: { style: 'medium', color: { argb: 'FFFFC107' } }
+        }
+      },
+      priority: 3
+    }]
+  });
 
   sheet5.views = [{ state: 'frozen', ySplit: 16, xSplit: 0, showGridLines: false, showRowColHeaders: false }];
 
@@ -1935,8 +2426,11 @@ async function exportCapexToExcel(withFormulas = false) {
 
   const irrFormulaEng = 'IRR(L17:L' + lastDataRow + ')*100';
   const simplePaybackFormulaEng = '$F$10/(AVERAGE(L' + dataStartRow + ':L' + Math.min(dataStartRow + 4, lastDataRow) + '))';
-  const dppFormulaEng = 'SUMPRODUCT((M' + dataStartRow + ':M' + lastDataRow + '<0)*1)+1';
-  const lcoeFormulaEng = '($F$10*1000+SUMPRODUCT(K' + dataStartRow + ':K' + lastDataRow + '/POWER(1+$F$4,B' + dataStartRow + ':B' + lastDataRow + ')))/SUMPRODUCT(I' + dataStartRow + ':I' + lastDataRow + '/POWER(1+$F$4,B' + dataStartRow + ':B' + lastDataRow + '))';
+  const _nEng = 'SUMPRODUCT((M' + dataStartRow + ':M' + lastDataRow + '<0)*1)';
+  const _mRangeEng = 'M' + (dataStartRow - 1) + ':M' + lastDataRow;
+  const dppFormulaEng = _nEng + '\n+ (-INDEX(' + _mRangeEng + ', ' + _nEng + ' + 1))\n/ (INDEX(' + _mRangeEng + ', ' + _nEng + ' + 2)\n   - INDEX(' + _mRangeEng + ', ' + _nEng + ' + 1))';
+  // LCOE formula - EXACT from reference Excel
+  const lcoeFormulaEng = '($F$10 * 1000\n + SUMPRODUCT(\n     K' + dataStartRow + ':K' + lastDataRow + '\n     / POWER(1 + $F$4,\n             B' + dataStartRow + ':B' + lastDataRow + ')))\n/ SUMPRODUCT(\n     I' + dataStartRow + ':I' + lastDataRow + '\n     / POWER(1 + $F$4,\n             B' + dataStartRow + ':B' + lastDataRow + '))';
 
   const kpiRowsEng = [
     ['CAPEX (investment):', withFormulas ? { formula: '$F$10' } : roundNum(investment / 1000, 2), 'k PLN', '= Initial investment', '# ##0.00'],
@@ -1945,7 +2439,7 @@ async function exportCapexToExcel(withFormulas = false) {
     ['IRR:', withFormulas ? { formula: irrFormulaEng } : roundNum(centralizedCalc.capex.irr * 100, 2), '%', '= Internal Rate of Return', '# ##0.00'],
     ['ROI:', withFormulas ? { formula: '(F' + (summaryStartRowEng + 2) + '-F' + (summaryStartRowEng + 1) + ')/F' + (summaryStartRowEng + 1) + '*100' } : roundNum(roi, 2), '%', '= (Savings - CAPEX) / CAPEX', '# ##0.00'],
     ['Simple Payback:', withFormulas ? { formula: simplePaybackFormulaEng } : roundNum(centralizedCalc.capex.simplePayback, 2), 'years', '= CAPEX / avg annual savings', '# ##0.00'],
-    ['Discounted Payback (DPP):', withFormulas ? { formula: dppFormulaEng } : (centralizedCalc.capex.discountedPayback ? roundNum(centralizedCalc.capex.discountedPayback, 2) : '-'), 'years', '= Year when NPV ≥ 0', '# ##0.00'],
+    ['Discounted Payback (DPP):', withFormulas ? { formula: dppFormulaEng } : (centralizedCalc.capex.discountedPayback !== null && centralizedCalc.capex.discountedPayback !== undefined ? roundNum(centralizedCalc.capex.discountedPayback, 2) : '-'), 'years', '= Year when NPV >= 0', '# ##0.00'],
     ['LCOE (energy cost):', withFormulas ? { formula: lcoeFormulaEng } : roundNum(centralizedCalc.capex.lcoe, 2), 'PLN/MWh', '= Levelized Cost of Energy', '# ##0.00']
   ];
 
@@ -1977,6 +2471,11 @@ async function exportCapexToExcel(withFormulas = false) {
   });
 
   if (withFormulas) {
+    // DPP note (row index 6 in kpiRowsEng)
+    sheet5.getRow(summaryStartRowEng + 7).getCell(6).note = `-- Interpolated DPP\n-- n = years with negative NPV\n-- DPP = n + (-last_negative) / (first_positive - last_negative)`;
+    // LCOE note (row index 7 in kpiRowsEng)
+    sheet5.getRow(summaryStartRowEng + 8).getCell(6).note = `-- (CAPEX + PV_OPEX) / PV_production\n-- Levelized Cost of Energy`;
+
     const noteRowEng = summaryStartRowEng + 11;
     sheet5.getCell('C' + noteRowEng).value = 'NOTE: Change parameters in cells F4:F14 to see impact on results.';
     sheet5.getCell('C' + noteRowEng).font = { italic: true, color: { argb: 'FF666666' } };
@@ -2001,7 +2500,7 @@ async function exportCapexToExcel(withFormulas = false) {
   const s5 = "'CAPEX Year by Year'!";
 
   sheet6.mergeCells('B1:H1');
-  sheet6.getCell('B1').value = 'CFO ANALYSIS - CAPEX Model (Investor)';
+  sheet6.getCell('B1').value = `CFO ANALYSIS - CAPEX Model (Investor) - Scenario ${scenarioName}`;
   sheet6.getCell('B1').font = { bold: true, size: 16, color: { argb: 'FF1565C0' } };
   sheet6.getCell('B1').alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -2050,10 +2549,10 @@ async function exportCapexToExcel(withFormulas = false) {
     : roundNum(baseAutoconsumptionMwh, 1);
   sheet6.getCell(`C${cfoRowEng}`).numFmt = '# ##0.0';
   sheet6.getCell(`C${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`D${cfoRowEng}`).value = 'Energy price [PLN/MWh]';
-  sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}F12`, result: roundNum(totalEnergyPrice, 0) }
-    : roundNum(totalEnergyPrice, 0);
+  sheet6.getCell(`D${cfoRowEng}`).value = isRdn ? 'Eff. RDN price [PLN/MWh]' : 'Energy price [PLN/MWh]';
+  sheet6.getCell(`E${cfoRowEng}`).value = isRdn
+    ? roundNum(effectiveEnergyPrice, 0)
+    : (withFormulas ? { formula: `${s5}F12`, result: roundNum(totalEnergyPrice, 0) } : roundNum(totalEnergyPrice, 0));
   sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0';
   sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
   sheet6.getCell(`F${cfoRowEng}`).value = 'Inflation';
@@ -2091,7 +2590,9 @@ async function exportCapexToExcel(withFormulas = false) {
   const kpiIrrFormulaEng = `IRR(${s5}L17:${s5}L${lastDataRow})`;
   const kpiRoiFormulaEng = `(SUM(${s5}L${dataStartRow}:${s5}L${lastDataRow})-${s5}F10)/${s5}F10`;
   const kpiPaybackFormulaEng = `${s5}F10/AVERAGE(${s5}L${dataStartRow}:${s5}L${Math.min(dataStartRow + 4, lastDataRow)})`;
-  const kpiDppFormulaEng = `SUMPRODUCT((${s5}M${dataStartRow}:${s5}M${lastDataRow}<0)*1)+1`;
+  const _nCfoEng = `SUMPRODUCT((${s5}M${dataStartRow}:${s5}M${lastDataRow}<0)*1)`;
+  const _mCfoEng = `${s5}M${dataStartRow - 1}:${s5}M${lastDataRow}`;
+  const kpiDppFormulaEng = `${_nCfoEng}+(-INDEX(${_mCfoEng},${_nCfoEng}+1))/(INDEX(${_mCfoEng},${_nCfoEng}+2)-INDEX(${_mCfoEng},${_nCfoEng}+1))`;
   const kpiLcoeFormulaEng = `(${s5}F10*1000+SUMPRODUCT(${s5}K${dataStartRow}:${s5}K${lastDataRow}/POWER(1+${s5}F4,${s5}B${dataStartRow}:${s5}B${lastDataRow})))/SUMPRODUCT(${s5}I${dataStartRow}:${s5}I${lastDataRow}/POWER(1+${s5}F4,${s5}B${dataStartRow}:${s5}B${lastDataRow}))`;
 
   cfoRowEng++;
@@ -2178,14 +2679,15 @@ async function exportCapexToExcel(withFormulas = false) {
   cfoRowEng++;
   sheet6.getCell(`B${cfoRowEng}`).value = '⏱️ Discounted Payback (DPP)';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true };
+  const hasDppEng = dppValue !== null && dppValue !== undefined;
   sheet6.getCell(`C${cfoRowEng}`).value = withFormulas
-    ? { formula: kpiDppFormulaEng, result: dppValue ? roundNum(dppValue, 1) : analysisPeriod + 1 }
-    : (dppValue ? roundNum(dppValue, 1) : 'Beyond period');
-  sheet6.getCell(`C${cfoRowEng}`).numFmt = dppValue ? '0.0' : '@';
+    ? { formula: kpiDppFormulaEng, result: hasDppEng ? roundNum(dppValue, 1) : analysisPeriod + 1 }
+    : (hasDppEng ? roundNum(dppValue, 1) : 'Beyond period');
+  sheet6.getCell(`C${cfoRowEng}`).numFmt = hasDppEng ? '0.0' : '@';
   sheet6.getCell(`C${cfoRowEng}`).font = { bold: true, color: { argb: 'FF1565C0' } };
-  sheet6.getCell(`D${cfoRowEng}`).value = dppValue ? 'years' : '';
+  sheet6.getCell(`D${cfoRowEng}`).value = hasDppEng ? 'years' : '';
   sheet6.mergeCells(`E${cfoRowEng}:G${cfoRowEng}`);
-  sheet6.getCell(`E${cfoRowEng}`).value = 'Year when cumulative NPV ≥ 0';
+  sheet6.getCell(`E${cfoRowEng}`).value = 'Year when cumulative NPV >= 0';
   sheet6.getCell(`E${cfoRowEng}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRowEng++;
@@ -2195,10 +2697,11 @@ async function exportCapexToExcel(withFormulas = false) {
     ? { formula: kpiLcoeFormulaEng, result: roundNum(lcoeValue, 0) }
     : roundNum(lcoeValue, 0);
   sheet6.getCell(`C${cfoRowEng}`).numFmt = '# ##0';
-  sheet6.getCell(`C${cfoRowEng}`).font = { bold: true, color: lcoeValue < totalEnergyPrice ? { argb: 'FF2E7D32' } : { argb: 'FFC62828' } };
+  sheet6.getCell(`C${cfoRowEng}`).font = { bold: true, color: lcoeValue < effectiveEnergyPrice ? { argb: 'FF2E7D32' } : { argb: 'FFC62828' } };
   sheet6.getCell(`D${cfoRowEng}`).value = 'PLN/MWh';
   sheet6.mergeCells(`E${cfoRowEng}:G${cfoRowEng}`);
-  sheet6.getCell(`E${cfoRowEng}`).value = lcoeValue < totalEnergyPrice ? `LCOE < grid price (${roundNum(totalEnergyPrice, 0)} PLN/MWh)` : `LCOE > grid price`;
+  const priceLabelEng = isRdn ? 'eff. RDN price' : 'grid price';
+  sheet6.getCell(`E${cfoRowEng}`).value = lcoeValue < effectiveEnergyPrice ? `LCOE < ${priceLabelEng} (${roundNum(effectiveEnergyPrice, 0)} PLN/MWh)` : `LCOE > ${priceLabelEng}`;
   sheet6.getCell(`E${cfoRowEng}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   // Add borders to KPI section
@@ -2229,153 +2732,78 @@ async function exportCapexToExcel(withFormulas = false) {
     sheet6.getCell(cfoRowEng, 2 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
   });
 
-  // Row 1: Grid price - ±20%
-  cfoRowEng++;
-  sheet6.getCell(`B${cfoRowEng}`).value = 'Grid price';
-  sheet6.getCell(`C${cfoRowEng}`).value = '±20%';
-  sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.6
-  sheet6.getCell(`D${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*0.6`, result: roundNum(baseNpvMln * 0.6, 2) }
-    : roundNum(baseNpvMln * 0.6, 2);
-  sheet6.getCell(`D${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
-  sheet6.getCell(`D${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`E${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.4
-  sheet6.getCell(`F${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*1.4`, result: roundNum(baseNpvMln * 1.4, 2) }
-    : roundNum(baseNpvMln * 1.4, 2);
-  sheet6.getCell(`F${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`F${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`F${cfoRowEng}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet6.getCell(`F${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet6.getCell(`G${cfoRowEng}`).value = withFormulas
-    ? { formula: `F${cfoRowEng}-D${cfoRowEng}`, result: roundNum(baseNpvMln * 0.8, 2) }
-    : roundNum(baseNpvMln * 0.8, 2);
-  sheet6.getCell(`G${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`G${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`G${cfoRowEng}`).font = { bold: true };
+  // English tornado - SUMPRODUCT formulas referencing English Sheet5
+  const eIRange = `${s5}$I$${dataStartRow}:$I$${lastDataRow}`;
+  const eBRange = `${s5}$B$${dataStartRow}:$B$${lastDataRow}`;
+  const eKRange = `${s5}$K$${dataStartRow}:$K$${lastDataRow}`;
+  const eF4 = `${s5}$F$4`;
+  const eF5 = `${s5}$F$5`;
+  const eF10 = `${s5}$F$10`;
+  const eF12 = `${s5}$F$12`;
 
-  // Row 2: CAPEX - ±20%
-  cfoRowEng++;
-  sheet6.getCell(`B${cfoRowEng}`).value = 'CAPEX (investment cost)';
-  sheet6.getCell(`C${cfoRowEng}`).value = '±20%';
-  sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV - CAPEX*0.2 (higher CAPEX)
-  sheet6.getCell(`D${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}-${s5}F10*0.2/1000`, result: roundNum(baseNpvMln - investment / 1000000 * 0.2, 2) }
-    : roundNum(baseNpvMln - investment / 1000000 * 0.2, 2);
-  sheet6.getCell(`D${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
-  sheet6.getCell(`D${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`E${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV + CAPEX*0.2 (lower CAPEX)
-  sheet6.getCell(`F${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}+${s5}F10*0.2/1000`, result: roundNum(baseNpvMln + investment / 1000000 * 0.2, 2) }
-    : roundNum(baseNpvMln + investment / 1000000 * 0.2, 2);
-  sheet6.getCell(`F${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`F${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`F${cfoRowEng}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet6.getCell(`F${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet6.getCell(`G${cfoRowEng}`).value = withFormulas
-    ? { formula: `F${cfoRowEng}-D${cfoRowEng}`, result: roundNum(investment / 1000000 * 0.4, 2) }
-    : roundNum(investment / 1000000 * 0.4, 2);
-  sheet6.getCell(`G${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`G${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`G${cfoRowEng}`).font = { bold: true };
+  const tornadoItemsEng = [
+    { param: 'Grid price', variationValue: 0.20, pessNpv: npvEnergyPess / 1e6, optNpv: npvEnergyOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*(1-${cRef})*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*(1+${cRef})*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})/1000` },
+    { param: 'CAPEX (investment cost)', variationValue: 0.20, pessNpv: npvCapexPess / 1e6, optNpv: npvCapexOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10}*(1+${cRef}))/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10}*(1-${cRef}))/1000` },
+    { param: 'PV Yield (production)', variationValue: 0.15, pessNpv: npvYieldPess / 1e6, optNpv: npvYieldOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${eIRange}*(1-${cRef})*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${eIRange}*(1+${cRef})*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})/1000` },
+    { param: 'Discount rate', variationValue: 0.02, pessNpv: npvDiscPess / 1e6, optNpv: npvDiscOpt / 1e6,
+      buildPessFormula: (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4}+${cRef},${eBRange}))-${eF10})/1000`,
+      buildOptFormula:  (cRef) => `(SUMPRODUCT((${eIRange}*${eF12}*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4}-${cRef},${eBRange}))-${eF10})/1000` }
+  ];
 
-  // Row 3: Yield PV - ±15%
-  cfoRowEng++;
-  sheet6.getCell(`B${cfoRowEng}`).value = 'PV Yield (production)';
-  sheet6.getCell(`C${cfoRowEng}`).value = '±15%';
-  sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.85
-  sheet6.getCell(`D${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*0.85`, result: roundNum(baseNpvMln * 0.85, 2) }
-    : roundNum(baseNpvMln * 0.85, 2);
-  sheet6.getCell(`D${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
-  sheet6.getCell(`D${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`E${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.15
-  sheet6.getCell(`F${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*1.15`, result: roundNum(baseNpvMln * 1.15, 2) }
-    : roundNum(baseNpvMln * 1.15, 2);
-  sheet6.getCell(`F${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`F${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`F${cfoRowEng}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet6.getCell(`F${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet6.getCell(`G${cfoRowEng}`).value = withFormulas
-    ? { formula: `F${cfoRowEng}-D${cfoRowEng}`, result: roundNum(baseNpvMln * 0.3, 2) }
-    : roundNum(baseNpvMln * 0.3, 2);
-  sheet6.getCell(`G${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`G${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`G${cfoRowEng}`).font = { bold: true };
+  // Sort by impact
+  tornadoItemsEng.forEach(t => { t.range = Math.abs(t.optNpv - t.pessNpv); });
+  tornadoItemsEng.sort((a, b) => b.range - a.range);
 
-  // Row 4: Discount rate - ±2pp
-  cfoRowEng++;
-  sheet6.getCell(`B${cfoRowEng}`).value = 'Discount rate';
-  sheet6.getCell(`C${cfoRowEng}`).value = '±2pp';
-  sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-  // Pessimistic: NPV * 0.85 (higher discount)
-  sheet6.getCell(`D${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*0.85`, result: roundNum(baseNpvMln * 0.85, 2) }
-    : roundNum(baseNpvMln * 0.85, 2);
-  sheet6.getCell(`D${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
-  sheet6.getCell(`D${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
-  // Base
-  sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
-    : roundNum(baseNpvMln, 2);
-  sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`E${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
-  // Optimistic: NPV * 1.20 (lower discount)
-  sheet6.getCell(`F${cfoRowEng}`).value = withFormulas
-    ? { formula: `${s5}M${lastDataRow}*1.2`, result: roundNum(baseNpvMln * 1.2, 2) }
-    : roundNum(baseNpvMln * 1.2, 2);
-  sheet6.getCell(`F${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`F${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`F${cfoRowEng}`).font = { color: { argb: 'FF2E7D32' } };
-  sheet6.getCell(`F${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-  // Range
-  sheet6.getCell(`G${cfoRowEng}`).value = withFormulas
-    ? { formula: `F${cfoRowEng}-D${cfoRowEng}`, result: roundNum(baseNpvMln * 0.35, 2) }
-    : roundNum(baseNpvMln * 0.35, 2);
-  sheet6.getCell(`G${cfoRowEng}`).numFmt = '# ##0.00';
-  sheet6.getCell(`G${cfoRowEng}`).alignment = { horizontal: 'center' };
-  sheet6.getCell(`G${cfoRowEng}`).font = { bold: true };
+  // Render English tornado rows
+  tornadoItemsEng.forEach(t => {
+    cfoRowEng++;
+    const cRef = `C${cfoRowEng}`;
+    sheet6.getCell(`B${cfoRowEng}`).value = t.param;
+    sheet6.getCell(cRef).value = t.variationValue;
+    sheet6.getCell(cRef).numFmt = t.variationValue < 0.1 ? '0.0%' : '0%';
+    sheet6.getCell(cRef).alignment = { horizontal: 'center' };
+
+    // Pessimistic - full SUMPRODUCT NPV recalculation
+    sheet6.getCell(`D${cfoRowEng}`).value = withFormulas
+      ? { formula: t.buildPessFormula(cRef), result: roundNum(t.pessNpv, 2) }
+      : roundNum(t.pessNpv, 2);
+    sheet6.getCell(`D${cfoRowEng}`).numFmt = '# ##0.00';
+    sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
+    sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
+    sheet6.getCell(`D${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
+
+    // Base
+    sheet6.getCell(`E${cfoRowEng}`).value = withFormulas
+      ? { formula: `${s5}M${lastDataRow}`, result: roundNum(baseNpvMln, 2) }
+      : roundNum(baseNpvMln, 2);
+    sheet6.getCell(`E${cfoRowEng}`).numFmt = '# ##0.00';
+    sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
+    sheet6.getCell(`E${cfoRowEng}`).font = { bold: true };
+    sheet6.getCell(`E${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+
+    // Optimistic - full SUMPRODUCT NPV recalculation
+    sheet6.getCell(`F${cfoRowEng}`).value = withFormulas
+      ? { formula: t.buildOptFormula(cRef), result: roundNum(t.optNpv, 2) }
+      : roundNum(t.optNpv, 2);
+    sheet6.getCell(`F${cfoRowEng}`).numFmt = '# ##0.00';
+    sheet6.getCell(`F${cfoRowEng}`).alignment = { horizontal: 'center' };
+    sheet6.getCell(`F${cfoRowEng}`).font = { color: { argb: 'FF2E7D32' } };
+    sheet6.getCell(`F${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+
+    // Range
+    sheet6.getCell(`G${cfoRowEng}`).value = withFormulas
+      ? { formula: `F${cfoRowEng}-D${cfoRowEng}`, result: roundNum(t.range, 2) }
+      : roundNum(t.range, 2);
+    sheet6.getCell(`G${cfoRowEng}`).numFmt = '# ##0.00';
+    sheet6.getCell(`G${cfoRowEng}`).alignment = { horizontal: 'center' };
+    sheet6.getCell(`G${cfoRowEng}`).font = { bold: true };
+  });
 
   // Add borders to tornado rows ENG
   for (let r = tornadoHeaderRowEng + 1; r <= cfoRowEng; r++) {
@@ -2391,11 +2819,11 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 12, color: { argb: 'FF7B1FA2' } };
   sheet6.getCell(`B${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E5F5' } };
 
-  cfoRowEng += 2;
   const yieldVariationsEng = [-0.15, -0.10, -0.05, 0, 0.05, 0.10, 0.15];
   const priceVariationsEng = [-0.20, -0.10, 0, 0.10, 0.20];
 
-  // Header row
+  // Matrix headers
+  cfoRowEng += 2;
   sheet6.getCell(`B${cfoRowEng}`).value = 'NPV [k PLN]';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 9 };
   sheet6.mergeCells(`C${cfoRowEng}:I${cfoRowEng}`);
@@ -2404,37 +2832,59 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
 
   cfoRowEng++;
+  const matrixHeaderRowEng = cfoRowEng;
   sheet6.getCell(`B${cfoRowEng}`).value = 'Grid price ↓';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 9 };
   sheet6.getCell(`B${cfoRowEng}`).alignment = { horizontal: 'right' };
   yieldVariationsEng.forEach((yv, i) => {
-    sheet6.getCell(cfoRowEng, 3 + i).value = `${yv >= 0 ? '+' : ''}${(yv * 100).toFixed(0)}%`;
+    sheet6.getCell(cfoRowEng, 3 + i).value = yv;
+    sheet6.getCell(cfoRowEng, 3 + i).numFmt = '+0%;-0%;0%';
     sheet6.getCell(cfoRowEng, 3 + i).font = { bold: true, size: 9 };
     sheet6.getCell(cfoRowEng, 3 + i).alignment = { horizontal: 'center' };
     sheet6.getCell(cfoRowEng, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
   });
 
-  // Matrix data - NPV in k PLN
+  // Matrix data - NPV in k PLN - FULL RECALCULATION with formulas
   priceVariationsEng.forEach(pv => {
     cfoRowEng++;
-    sheet6.getCell(`B${cfoRowEng}`).value = `${pv >= 0 ? '+' : ''}${(pv * 100).toFixed(0)}%`;
+    sheet6.getCell(`B${cfoRowEng}`).value = pv;
+    sheet6.getCell(`B${cfoRowEng}`).numFmt = '+0%;-0%;0%';
     sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 9 };
     sheet6.getCell(`B${cfoRowEng}`).alignment = { horizontal: 'right' };
     sheet6.getCell(`B${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
 
     yieldVariationsEng.forEach((yv, i) => {
-      const savingsMultiplier = (1 + pv) * (1 + yv);
-      const adjNpv = (baseNpvTys + (investment / 1000)) * savingsMultiplier - (investment / 1000);
+      let adjNpv;
+      try {
+        adjNpv = calculateCapexNPV({
+          ...capexNpvBaseForMatrix,
+          self_consumed_annual_kwh: selfConsumptionByYield[yv],
+          total_energy_price_per_kwh: effectiveEnergyPrice / 1000 * (1 + pv)
+        }) / 1000;
+      } catch (npvErr) {
+        const sm = (1 + pv) * (1 + yv);
+        adjNpv = (baseNpvTys + (investment / 1000)) * sm - (investment / 1000);
+      }
+      if (!isFinite(adjNpv)) adjNpv = 0;
 
       const cell = sheet6.getCell(cfoRowEng, 3 + i);
-
       if (withFormulas) {
-        const priceMultiplier = (1 + pv).toFixed(2);
-        const yieldMultiplier = (1 + yv).toFixed(2);
-        cell.value = {
-          formula: `(${s5}M${lastDataRow}*1000+${s5}F10)*${priceMultiplier}*${yieldMultiplier}-${s5}F10`,
-          result: roundNum(adjNpv, 0)
-        };
+        const colLetter = _col(3 + i);
+        const yieldRef = `${colLetter}$${matrixHeaderRowEng}`;
+        const priceRef = `$B${cfoRowEng}`;
+        const bRange = `${s5}$B$${dataStartRow}:$B$${lastDataRow}`;
+        const cRange = `${s5}$C$${dataStartRow}:$C$${lastDataRow}`;
+        const kRange = `${s5}$K$${dataStartRow}:$K$${lastDataRow}`;
+        const iRange = `${s5}$I$${dataStartRow}:$I$${lastDataRow}`;
+        let formula;
+        if (isRdn) {
+          const A = "'Dane bazowe TCSL (Rok 1)'!";
+          formula = `SUMPRODUCT(\n  (${A}$F$18 * ${cRange}\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1)\n   + ${A}$F$21 * (1 + ${yieldRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s5}$F$4, ${bRange}))\n- ${s5}$F$10`;
+        } else {
+          formula = `SUMPRODUCT(\n  (${iRange} * ${s5}$F$12\n   * (1 + ${yieldRef}) * (1 + ${priceRef})\n   * POWER(1 + ${s5}$F$5, ${bRange} - 1))\n  / 1000 - ${kRange},\n  1 / POWER(1 + ${s5}$F$4, ${bRange}))\n- ${s5}$F$10`;
+        }
+        cell.value = { formula, result: roundNum(adjNpv, 0) };
+        cell.note = `-- NPV CAPEX at yield ${yieldRef} & price ${priceRef}`;
       } else {
         cell.value = roundNum(adjNpv, 0);
       }
@@ -2507,6 +2957,7 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet6.getCell(`D${cfoRowEng}`).font = { italic: true, color: { argb: 'FF757575' } };
 
   cfoRowEng++;
+  const esgCo2TotalRowEng = cfoRowEng;  // Store for decision summary formulas
   sheet6.getCell(`B${cfoRowEng}`).value = `🌍 CO₂ reduction (${analysisPeriod} years) [tons]`;
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 11 };
   sheet6.getCell(`C${cfoRowEng}`).value = withFormulas
@@ -2549,7 +3000,7 @@ async function exportCapexToExcel(withFormulas = false) {
 
   // --- SECTION 5 ENG: BREAK-EVEN ANALYSIS ---
   const breakEvenPriceEng = lcoeValue;
-  const safetyMarginPctEng = (totalEnergyPrice - lcoeValue) / totalEnergyPrice;
+  const safetyMarginPctEng = (effectiveEnergyPrice - lcoeValue) / effectiveEnergyPrice;
 
   const bePriceFormulaEng = `${s5}F12`;
   const beLcoeFormulaEng = kpiLcoeFormulaEng;
@@ -2567,11 +3018,11 @@ async function exportCapexToExcel(withFormulas = false) {
 
   cfoRowEng++;
   const bePriceRowEng = cfoRowEng;
-  sheet6.getCell(`B${cfoRowEng}`).value = 'Current grid energy price';
+  sheet6.getCell(`B${cfoRowEng}`).value = isRdn ? 'Effective RDN price (TCSL/MWh)' : 'Current grid energy price';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true };
-  sheet6.getCell(`C${cfoRowEng}`).value = withFormulas
-    ? { formula: bePriceFormulaEng, result: roundNum(totalEnergyPrice, 0) }
-    : roundNum(totalEnergyPrice, 0);
+  sheet6.getCell(`C${cfoRowEng}`).value = isRdn
+    ? roundNum(effectiveEnergyPrice, 0)
+    : (withFormulas ? { formula: bePriceFormulaEng, result: roundNum(totalEnergyPrice, 0) } : roundNum(totalEnergyPrice, 0));
   sheet6.getCell(`C${cfoRowEng}`).numFmt = '# ##0';
   sheet6.getCell(`C${cfoRowEng}`).font = { bold: true, color: { argb: 'FF1565C0' } };
   sheet6.getCell(`D${cfoRowEng}`).value = 'PLN/MWh';
@@ -2652,15 +3103,16 @@ async function exportCapexToExcel(withFormulas = false) {
     const weightedNpv = scenarioNpv * s.prob;
     weightedNpvSumEng += weightedNpv;
 
-    const priceMultiplier = (1 + s.priceChg).toFixed(2);
-    const yieldMultiplier = (1 + s.yieldChg).toFixed(2);
-    const scenarioNpvFormulaEng = `(${s5}M${lastDataRow}*1000+${s5}F10)*${priceMultiplier}*${yieldMultiplier}-${s5}F10`;
+    // Scenario NPV formula: full SUMPRODUCT with cell references to C (price) and D (yield)
+    const scenarioNpvFormulaEng = `(SUMPRODUCT((${eIRange}*(1+D${cfoRowEng})*${eF12}*(1+C${cfoRowEng})*POWER(1+${eF5},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})`;
 
     sheet6.getCell(`B${cfoRowEng}`).value = s.name;
     sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, color: { argb: s.textColor } };
-    sheet6.getCell(`C${cfoRowEng}`).value = `${s.priceChg >= 0 ? '+' : ''}${(s.priceChg * 100).toFixed(0)}%`;
+    sheet6.getCell(`C${cfoRowEng}`).value = s.priceChg;
+    sheet6.getCell(`C${cfoRowEng}`).numFmt = '+0%;-0%;0%';
     sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-    sheet6.getCell(`D${cfoRowEng}`).value = `${s.yieldChg >= 0 ? '+' : ''}${(s.yieldChg * 100).toFixed(0)}%`;
+    sheet6.getCell(`D${cfoRowEng}`).value = s.yieldChg;
+    sheet6.getCell(`D${cfoRowEng}`).numFmt = '+0%;-0%;0%';
     sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
 
     // NPV for scenario with formula
@@ -2719,11 +3171,13 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet6.getCell(`B${cfoRowEng}`).font = { italic: true, size: 10, color: { argb: 'FF616161' } };
 
   cfoRowEng += 2;
-  const inflationRatesEng = [0, 0.02, 0.03, 0.05, 0.07, 0.10];
+  const inflationRatesEng = inflationRates; // Same dynamic set as PL (includes base inflation)
   sheet6.getCell(`B${cfoRowEng}`).value = 'Annual energy price inflation';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true };
+  const inflHeaderRowEng = cfoRowEng;
   inflationRatesEng.forEach((ir, i) => {
-    sheet6.getCell(cfoRowEng, 3 + i).value = `${(ir * 100).toFixed(0)}%`;
+    sheet6.getCell(cfoRowEng, 3 + i).value = ir;
+    sheet6.getCell(cfoRowEng, 3 + i).numFmt = ir % 0.01 === 0 ? '0%' : '0.0%';
     sheet6.getCell(cfoRowEng, 3 + i).font = { bold: true };
     sheet6.getCell(cfoRowEng, 3 + i).alignment = { horizontal: 'center' };
     sheet6.getCell(cfoRowEng, 3 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
@@ -2733,12 +3187,14 @@ async function exportCapexToExcel(withFormulas = false) {
   sheet6.getCell(`B${cfoRowEng}`).value = 'NPV [k PLN]';
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true };
   inflationRatesEng.forEach((ir, i) => {
-    // Higher energy price inflation = higher future savings = higher NPV
+    // Full SUMPRODUCT NPV recalculation with varied energy price inflation from header cell
     const inflationMultiplier = 1 + (ir - inflationRate) * analysisPeriod * 0.4;
     const adjNpv = baseNpvTys * inflationMultiplier;
 
-    const inflMultiplierVal = inflationMultiplier.toFixed(3);
-    const inflNpvFormulaEng = `${s5}M${lastDataRow}*1000*${inflMultiplierVal}`;
+    const inflColLetter = _col(3 + i);
+    const inflHeaderRef = `${inflColLetter}$${inflHeaderRowEng}`;
+    // SUMPRODUCT: energy savings use varied inflation from header, OPEX stays at base
+    const inflNpvFormulaEng = `(SUMPRODUCT((${eIRange}*${eF12}*POWER(1+${inflHeaderRef},${eBRange}-1))/1000-${eKRange},1/POWER(1+${eF4},${eBRange}))-${eF10})`;
 
     const cell = sheet6.getCell(cfoRowEng, 3 + i);
     cell.value = withFormulas
@@ -2748,8 +3204,8 @@ async function exportCapexToExcel(withFormulas = false) {
     cell.font = { bold: true };
     cell.alignment = { horizontal: 'center' };
 
-    // Highlight base case (3% = current inflation)
-    if (ir === inflationRate || (ir === 0.03 && inflationRate > 0.02 && inflationRate < 0.04)) {
+    // Highlight base case (matching base inflation from settings)
+    if (ir === baseInflPct) {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
       cell.font = { bold: true, color: { argb: 'FF1565C0' } };
     } else if (adjNpv > baseNpvTys * 1.1) {
@@ -2774,31 +3230,97 @@ async function exportCapexToExcel(withFormulas = false) {
     sheet6.getCell(cfoRowEng, 2 + i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
   });
 
-  const gridCost30YearsEng = baseAutoconsumptionMwh * totalEnergyPrice * analysisPeriod / 1000;
+  const gridCost30YearsEng = isRdn
+    ? rdnGridCostYear1Tys * analysisPeriod
+    : baseAutoconsumptionMwh * totalEnergyPrice * analysisPeriod / 1000;
 
   const decisionRowsEng = [
-    { criterion: 'Investment outlay', capex: `${roundNum(investment / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: 'Status Quo' },
-    { criterion: `Energy cost ${analysisPeriod} years`, capex: '0 k', statusQuo: `${roundNum(gridCost30YearsEng, 0)} k`, winner: 'CAPEX' },
-    { criterion: `Savings ${analysisPeriod} years`, capex: `${roundNum(totalSavings / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: 'CAPEX' },
-    { criterion: 'NPV (present value)', capex: `${roundNum(npvValue / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: npvValue > 0 ? 'CAPEX' : 'Status Quo' },
-    { criterion: 'Price risk', capex: 'Partial hedge', statusQuo: '100% exposure', winner: 'CAPEX' },
-    { criterion: 'Asset ownership', capex: 'YES', statusQuo: 'NO', winner: 'CAPEX' },
-    { criterion: 'Green energy', capex: 'YES', statusQuo: 'NO', winner: 'CAPEX' },
-    { criterion: `CO₂ reduction (${analysisPeriod} years)`, capex: `${roundNum(totalCO2Tons, 0)} tons`, statusQuo: '0 tons', winner: 'CAPEX' }
+    { criterion: 'Investment outlay', capex: `${roundNum(investment / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: 'Status Quo', useFormula: true, formulaType: 'investment' },
+    { criterion: `Energy cost ${analysisPeriod} years`, capex: `${roundNum((gridCost30YearsEng - totalSavings / 1000), 0)} k`, statusQuo: `${roundNum(gridCost30YearsEng, 0)} k`, winner: 'CAPEX', useFormula: true, formulaType: 'energyCost' },
+    { criterion: `Savings ${analysisPeriod} years`, capex: `${roundNum(totalSavings / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: 'CAPEX', useFormula: true, formulaType: 'savings' },
+    { criterion: 'NPV (present value)', capex: `${roundNum(npvValue / 1000, 0)} k PLN`, statusQuo: '0 PLN', winner: npvValue > 0 ? 'CAPEX' : 'Status Quo', useFormula: true, formulaType: 'npv' },
+    { criterion: 'Price risk', capex: 'Partial hedge', statusQuo: '100% exposure', winner: 'CAPEX', useFormula: false },
+    { criterion: 'Asset ownership', capex: 'YES', statusQuo: 'NO', winner: 'CAPEX', useFormula: false },
+    { criterion: 'Green energy', capex: 'YES', statusQuo: 'NO', winner: 'CAPEX', useFormula: false },
+    { criterion: `CO₂ reduction (${analysisPeriod} years)`, capex: `${roundNum(totalCO2Tons, 0)} tons`, statusQuo: '0 tons', winner: 'CAPEX', useFormula: true, formulaType: 'co2' }
   ];
 
+  const capexDecisionFirstRowEng = cfoRowEng + 1;
   let capexWinsEng = 0;
   decisionRowsEng.forEach(row => {
     cfoRowEng++;
     sheet6.getCell(`B${cfoRowEng}`).value = row.criterion;
     sheet6.getCell(`B${cfoRowEng}`).font = { color: { argb: 'FF424242' } };
-    sheet6.getCell(`C${cfoRowEng}`).value = row.capex;
+
+    // C column (CAPEX value) - formulas matching reference ROUND pattern
+    if (withFormulas && row.useFormula) {
+      if (row.formulaType === 'investment') {
+        sheet6.getCell(`C${cfoRowEng}`).value = { formula: `ROUND(${s5}F10,0)\n&" k PLN"`, result: row.capex };
+      } else if (row.formulaType === 'savings') {
+        sheet6.getCell(`C${cfoRowEng}`).value = {
+          formula: `ROUND(\n  SUM(${s5}L${dataStartRow}:${s5}L${lastDataRow}),\n  0)\n&" k PLN"`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'npv') {
+        sheet6.getCell(`C${cfoRowEng}`).value = {
+          formula: `ROUND(\n  ${s5}M${lastDataRow}*1000,\n  0)\n&" k PLN"`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'energyCost') {
+        sheet6.getCell(`C${cfoRowEng}`).value = {
+          formula: `ROUND(${s5}F11*${s5}F12*${s5}F9/1000-SUM(${s5}L${dataStartRow}:${s5}L${lastDataRow}),0)&" k"`,
+          result: row.capex
+        };
+      } else if (row.formulaType === 'co2') {
+        sheet6.getCell(`C${cfoRowEng}`).value = {
+          formula: `ROUND(\n  SUM(${s5}I${dataStartRow}:${s5}I${lastDataRow})*0.7,\n  0)\n&" tons"`,
+          result: row.capex
+        };
+      } else {
+        sheet6.getCell(`C${cfoRowEng}`).value = row.capex;
+      }
+    } else {
+      sheet6.getCell(`C${cfoRowEng}`).value = row.capex;
+    }
     sheet6.getCell(`C${cfoRowEng}`).font = { bold: true, color: { argb: 'FF1565C0' } };
     sheet6.getCell(`C${cfoRowEng}`).alignment = { horizontal: 'center' };
-    sheet6.getCell(`D${cfoRowEng}`).value = row.statusQuo;
+
+    // D column (Status Quo value) - formulas when applicable
+    if (withFormulas && row.useFormula && row.formulaType === 'energyCost') {
+      sheet6.getCell(`D${cfoRowEng}`).value = {
+        formula: `ROUND(\n  ${s5}F12*${s5}F9,\n  0)\n&" k"`,
+        result: row.statusQuo
+      };
+    } else {
+      sheet6.getCell(`D${cfoRowEng}`).value = row.statusQuo;
+    }
     sheet6.getCell(`D${cfoRowEng}`).font = { color: { argb: 'FFC62828' } };
     sheet6.getCell(`D${cfoRowEng}`).alignment = { horizontal: 'center' };
-    sheet6.getCell(`E${cfoRowEng}`).value = row.winner;
+
+    // E column (Winner) - formulas when applicable
+    if (withFormulas && row.useFormula) {
+      if (row.formulaType === 'investment') {
+        sheet6.getCell(`E${cfoRowEng}`).value = { formula: `IF(${s5}F10>0,\n  "Status Quo","Tie")`, result: row.winner };
+      } else if (row.formulaType === 'energyCost') {
+        sheet6.getCell(`E${cfoRowEng}`).value = {
+          formula: `IF(\n  SUM(${s5}F${dataStartRow}:${s5}F${lastDataRow})>0,\n  "CAPEX","Status Quo")`,
+          result: row.winner
+        };
+      } else if (row.formulaType === 'savings') {
+        sheet6.getCell(`E${cfoRowEng}`).value = {
+          formula: `IF(\n  SUM(${s5}L${dataStartRow}:${s5}L${lastDataRow})>0,\n  "CAPEX","Status Quo")`,
+          result: row.winner
+        };
+      } else if (row.formulaType === 'npv') {
+        sheet6.getCell(`E${cfoRowEng}`).value = { formula: `IF(${s5}M${lastDataRow}>0,\n  "CAPEX","Status Quo")`, result: row.winner };
+      } else if (row.formulaType === 'co2') {
+        sheet6.getCell(`E${cfoRowEng}`).value = { formula: `IF($C$${esgCo2TotalRowEng}>0,\n  "CAPEX","Status Quo")`, result: row.winner };
+      } else {
+        sheet6.getCell(`E${cfoRowEng}`).value = row.winner;
+      }
+    } else {
+      sheet6.getCell(`E${cfoRowEng}`).value = row.winner;
+    }
     sheet6.getCell(`E${cfoRowEng}`).font = { bold: true, color: { argb: row.winner === 'CAPEX' ? 'FF2E7D32' : 'FFE65100' } };
     sheet6.getCell(`E${cfoRowEng}`).alignment = { horizontal: 'center' };
 
@@ -2808,28 +3330,219 @@ async function exportCapexToExcel(withFormulas = false) {
       sheet6.getRow(cfoRowEng).getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE0E0E0' } } };
     }
   });
+  const capexDecisionLastRowEng = cfoRowEng;
 
+  // Final recommendation - dynamic COUNTIF formula
   cfoRowEng += 2;
   const recommendationEng = capexWinsEng >= 5 ? 'CAPEX' : 'Status Quo';
   sheet6.mergeCells(`B${cfoRowEng}:E${cfoRowEng}`);
-  sheet6.getCell(`B${cfoRowEng}`).value = `✅ RECOMMENDATION: CAPEX Investment - wins in ${capexWinsEng} of ${decisionRowsEng.length} criteria`;
+  if (withFormulas) {
+    const eRangeEng = `E${capexDecisionFirstRowEng}:E${capexDecisionLastRowEng}`;
+    const nCritEng = decisionRowsEng.length;
+    sheet6.getCell(`B${cfoRowEng}`).value = {
+      formula: `IF(\n  COUNTIF(${eRangeEng},"CAPEX")\n  > COUNTIF(${eRangeEng},"Status Quo"),\n  "✅ RECOMMENDATION: CAPEX Investment - wins in "\n  & COUNTIF(${eRangeEng},"CAPEX")\n  & " of ${nCritEng} criteria",\n  "⛔ RECOMMENDATION: Status Quo - wins in "\n  & COUNTIF(${eRangeEng},"Status Quo")\n  & " of ${nCritEng} criteria")`,
+      result: `✅ RECOMMENDATION: CAPEX Investment - wins in ${capexWinsEng} of ${nCritEng} criteria`
+    };
+  } else {
+    sheet6.getCell(`B${cfoRowEng}`).value = `✅ RECOMMENDATION: CAPEX Investment - wins in ${capexWinsEng} of ${decisionRowsEng.length} criteria`;
+  }
   sheet6.getCell(`B${cfoRowEng}`).font = { bold: true, size: 12, color: { argb: recommendationEng === 'CAPEX' ? 'FF2E7D32' : 'FFC62828' } };
   sheet6.getCell(`B${cfoRowEng}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: recommendationEng === 'CAPEX' ? 'FFE8F5E9' : 'FFFFEBEE' } };
   sheet6.getCell(`B${cfoRowEng}`).alignment = { horizontal: 'center' };
 
   cfoRowEng++;
   sheet6.mergeCells(`B${cfoRowEng}:E${cfoRowEng}`);
-  sheet6.getCell(`B${cfoRowEng}`).value = `NPV = ${roundNum(npvValue / 1000, 0)} k PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Payback = ${roundNum(simplePaybackValue, 1)} years`;
+  if (withFormulas) {
+    sheet6.getCell(`B${cfoRowEng}`).value = {
+      formula: `"NPV = "\n&ROUND(${s5}M${lastDataRow}*1000,0)\n&" k PLN | IRR = "\n&ROUND(${kpiIrrFormulaEng}*100,0)\n&"% | Payback = "\n&FIXED(${kpiPaybackFormulaEng},1)\n&" years"`,
+      result: `NPV = ${roundNum(npvValue / 1000, 0)} k PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Payback = ${roundNum(simplePaybackValue, 1)} years`
+    };
+  } else {
+    sheet6.getCell(`B${cfoRowEng}`).value = `NPV = ${roundNum(npvValue / 1000, 0)} k PLN | IRR = ${roundNum(irrValue * 100, 1)}% | Payback = ${roundNum(simplePaybackValue, 1)} years`;
+  }
   sheet6.getCell(`B${cfoRowEng}`).font = { italic: true, size: 10, color: { argb: 'FF1565C0' } };
   sheet6.getCell(`B${cfoRowEng}`).alignment = { horizontal: 'center' };
 
   console.log('✅ English sheets added (CAPEX Summary, CAPEX Year by Year, CFO Analysis)');
 
+  // ========== OPTIONAL: RDN vs TARYFA SHEET ==========
+  // Only added when RDN metrics exist for the current variant
+  const rdnResult = (typeof rdnMetrics !== 'undefined') && rdnMetrics[currentVariant];
+  if (rdnResult) {
+    try {
+      const sheetRdn = workbook.addWorksheet('RDN vs Taryfa');
+      const monthNamesRdn = ['Styczeń', 'Luty', 'Marzec', 'Kwiecień', 'Maj', 'Czerwiec',
+                              'Lipiec', 'Sierpień', 'Wrzesień', 'Październik', 'Listopad', 'Grudzień'];
+
+      sheetRdn.columns = [
+        { width: 2 },  // A: margin
+        { width: 30 }, // B: Parameter
+        { width: 22 }, // C: Taryfa stała
+        { width: 22 }, // D: RDN dynamiczne
+        { width: 22 }, // E: Delta
+      ];
+
+      // Title
+      sheetRdn.getCell('B1').value = `RDN vs TARYFA - Porównanie Oszczędności - Scenariusz ${scenarioName}`;
+      sheetRdn.getCell('B1').font = { bold: true, size: 14, color: { argb: 'FFE65100' } };
+      sheetRdn.mergeCells('B1:E1');
+
+      // Summary section
+      let row = 3;
+      const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF424242' } };
+      const headerFont = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      const numFmt = '#,##0';
+
+      sheetRdn.getCell(`B${row}`).value = 'Parametr';
+      sheetRdn.getCell(`C${row}`).value = 'Taryfa Stała/ToU';
+      sheetRdn.getCell(`D${row}`).value = 'RDN Dynamiczne';
+      sheetRdn.getCell(`E${row}`).value = 'Delta';
+      ['B','C','D','E'].forEach(col => {
+        sheetRdn.getCell(`${col}${row}`).fill = headerFill;
+        sheetRdn.getCell(`${col}${row}`).font = headerFont;
+        sheetRdn.getCell(`${col}${row}`).alignment = { horizontal: 'center' };
+      });
+
+      row++;
+      const summaryRows = [
+        ['Roczne oszczędności [PLN]', rdnResult.fixed_annual_savings_pln, rdnResult.rdn_annual_savings_pln],
+        ['Cena efektywna [PLN/MWh]', rdnResult.fixed_total_price_plnmwh, rdnResult.rdn_avg_effective_price_plnmwh],
+        ['Autokonsumpcja [kWh]', rdnResult.annual_self_consumed_kwh, rdnResult.annual_self_consumed_kwh],
+        ['Produkcja roczna [kWh]', rdnResult.annual_production_kwh, rdnResult.annual_production_kwh],
+        ['Zużycie roczne [kWh]', rdnResult.annual_consumption_kwh, rdnResult.annual_consumption_kwh],
+      ];
+
+      summaryRows.forEach(([label, fixedVal, rdnVal]) => {
+        sheetRdn.getCell(`B${row}`).value = label;
+        sheetRdn.getCell(`B${row}`).font = { bold: true };
+        sheetRdn.getCell(`C${row}`).value = Math.round(fixedVal);
+        sheetRdn.getCell(`C${row}`).numFmt = numFmt;
+        sheetRdn.getCell(`D${row}`).value = Math.round(rdnVal);
+        sheetRdn.getCell(`D${row}`).numFmt = numFmt;
+        sheetRdn.getCell(`E${row}`).value = Math.round(rdnVal - fixedVal);
+        sheetRdn.getCell(`E${row}`).numFmt = '+#,##0;-#,##0;0';
+        sheetRdn.getCell(`E${row}`).font = {
+          color: { argb: (rdnVal - fixedVal) >= 0 ? 'FF2E7D32' : 'FFC62828' },
+          bold: true
+        };
+        row++;
+      });
+
+      // Delta summary
+      row++;
+      sheetRdn.getCell(`B${row}`).value = 'Delta roczna';
+      sheetRdn.getCell(`B${row}`).font = { bold: true, size: 12 };
+      sheetRdn.getCell(`C${row}`).value = `${rdnResult.rdn_vs_fixed_delta_pln >= 0 ? '+' : ''}${Math.round(rdnResult.rdn_vs_fixed_delta_pln)} PLN (${rdnResult.rdn_vs_fixed_delta_pct.toFixed(1)}%)`;
+      sheetRdn.getCell(`C${row}`).font = {
+        bold: true, size: 12,
+        color: { argb: rdnResult.rdn_vs_fixed_delta_pln >= 0 ? 'FF2E7D32' : 'FFC62828' }
+      };
+
+      // Monthly breakdown
+      row += 2;
+      sheetRdn.getCell(`B${row}`).value = 'Miesiąc';
+      sheetRdn.getCell(`C${row}`).value = 'Oszcz. Taryfa [PLN]';
+      sheetRdn.getCell(`D${row}`).value = 'Oszcz. RDN [PLN]';
+      sheetRdn.getCell(`E${row}`).value = 'Delta [PLN]';
+      ['B','C','D','E'].forEach(col => {
+        sheetRdn.getCell(`${col}${row}`).fill = headerFill;
+        sheetRdn.getCell(`${col}${row}`).font = headerFont;
+        sheetRdn.getCell(`${col}${row}`).alignment = { horizontal: 'center' };
+      });
+
+      row++;
+      if (rdnResult.monthly_comparison) {
+        rdnResult.monthly_comparison.forEach((m, i) => {
+          const delta = m.rdn_savings_pln - m.fixed_savings_pln;
+          sheetRdn.getCell(`B${row}`).value = monthNamesRdn[i] || `Miesiąc ${i+1}`;
+          sheetRdn.getCell(`C${row}`).value = Math.round(m.fixed_savings_pln);
+          sheetRdn.getCell(`C${row}`).numFmt = numFmt;
+          sheetRdn.getCell(`D${row}`).value = Math.round(m.rdn_savings_pln);
+          sheetRdn.getCell(`D${row}`).numFmt = numFmt;
+          sheetRdn.getCell(`E${row}`).value = Math.round(delta);
+          sheetRdn.getCell(`E${row}`).numFmt = '+#,##0;-#,##0;0';
+          sheetRdn.getCell(`E${row}`).font = {
+            color: { argb: delta >= 0 ? 'FF2E7D32' : 'FFC62828' },
+            bold: true
+          };
+          // Alternating row colors
+          if (i % 2 === 0) {
+            ['B','C','D','E'].forEach(col => {
+              sheetRdn.getCell(`${col}${row}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F5F5' } };
+            });
+          }
+          row++;
+        });
+      }
+
+      // Price statistics
+      row += 2;
+      sheetRdn.getCell(`B${row}`).value = 'Statystyki cen RDN (w godzinach autokonsumpcji)';
+      sheetRdn.getCell(`B${row}`).font = { bold: true, size: 11 };
+      row++;
+      const priceStats = rdnResult.rdn_price_stats || {};
+      const statsData = [
+        ['Średnia ważona', priceStats.weighted_avg || rdnResult.rdn_avg_effective_price_plnmwh],
+        ['Minimum', priceStats.min],
+        ['Maksimum', priceStats.max],
+        ['Mediana', priceStats.median],
+      ];
+      statsData.forEach(([label, val]) => {
+        sheetRdn.getCell(`B${row}`).value = label;
+        sheetRdn.getCell(`C${row}`).value = val ? Math.round(val) : '-';
+        if (val) sheetRdn.getCell(`C${row}`).numFmt = numFmt;
+        sheetRdn.getCell(`D${row}`).value = 'PLN/MWh';
+        row++;
+      });
+
+      console.log('✅ RDN vs Taryfa sheet added');
+    } catch (rdnErr) {
+      console.warn('⚠️ Failed to add RDN sheet:', rdnErr);
+    }
+  }
+
+  // TCSL Audit sheet (only in RDN mode)
+  if (isRdn && rdnBL && window.addTcslAuditSheet) {
+    try {
+      window.addTcslAuditSheet(workbook, rdnBL, {
+        inflationRate,
+        discountRate,
+        pvDegYear1: pvDegradationYear1,
+        pvDegYear2Plus: pvDegradationYears2Plus,
+        analysisPeriod,
+      }, logoImageId);
+    } catch (auditErr) {
+      console.warn('⚠️ Failed to add TCSL audit sheet:', auditErr);
+    }
+  }
+
+  // Apply watermark (inline, self-contained - no cross-file dependency)
+  try {
+    _capexApplyWatermark(workbook, {
+      visibleSheets: ['Podsumowanie CAPEX', 'CAPEX Summary'],
+    });
+  } catch (wmErr) {
+    console.error('🔒 CAPEX Watermark FAILED:', wmErr.message, wmErr.stack);
+  }
+
   // Generate filename
   const dateStr = new Date().toISOString().split('T')[0];
+  const rdnPrefix = window._rdnExportMode ? 'CAPEX_RDN' : 'CAPEX';
   const filename = withFormulas
-    ? `CAPEX_Analiza_${currentVariant}_${capacityKwp}kWp_${dateStr}_FORMULY.xlsx`
-    : `CAPEX_Analiza_${currentVariant}_${capacityKwp}kWp_${dateStr}.xlsx`;
+    ? `${rdnPrefix}_Analiza_${currentVariant}_${capacityKwp}kWp_${scenarioName}_${dateStr}_FORMULY.xlsx`
+    : `${rdnPrefix}_Analiza_${currentVariant}_${capacityKwp}kWp_${scenarioName}_${dateStr}.xlsx`;
+
+  // Hide internal/diagnostic sheets via veryHidden (cannot be shown via right-click in Excel)
+  ['Rozliczenie Godzinowe', 'Rozbicie Oszczędności'].forEach(name => {
+    const ws = workbook.getWorksheet(name);
+    if (ws) ws.state = 'veryHidden';
+  });
+
+  // Remove sheets that are not needed in final output
+  ['Assumptions_Financing', 'Cashflow', 'Decision_Summary'].forEach(name => {
+    const ws = workbook.getWorksheet(name);
+    if (ws) workbook.removeWorksheet(ws.id);
+  });
 
   // Generate Excel buffer
   const buffer = await workbook.xlsx.writeBuffer();
@@ -2882,13 +3595,17 @@ async function exportCapexToExcel(withFormulas = false) {
     }
   ];
 
-  let finalBlob;
-  try {
-    finalBlob = await injectNativeExcelCharts(buffer, chartConfigs, 1);
-  } catch (e) {
-    console.warn('⚠️ Charts failed:', e);
-    finalBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  }
+  // Native Excel chart injection (JSZip manipulation of OOXML) disabled
+  // - Windows Defender SmartScreen flagged the resulting file as suspicious
+  // (false positive - heuristic detects "post-processing of Office document via ZIP"
+  // pattern identical to Office trojan techniques like Emotet/TrickBot).
+  // Charts remain available in-portal (Chart.js / Plotly). The Excel file keeps
+  // full tables + formulas, so audit value (the main reason for _FORMULY export)
+  // is preserved. If charts in-file become a must-have again, refactor to
+  // Chart.js → canvas → PNG → ExcelJS sheet.addImage() (no JSZip manipulation).
+  // chartConfigs array above kept as documentation of original chart specs.
+  void chartConfigs; // silence unused-var warning
+  const finalBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
   // Download
   const url = URL.createObjectURL(finalBlob);
@@ -2898,16 +3615,39 @@ async function exportCapexToExcel(withFormulas = false) {
   a.click();
   URL.revokeObjectURL(url);
 
-  console.log('✅ CAPEX exported:', filename);
+  console.log('✅ CAPEX exported:', filename, '(charts skipped - AV-safe)');
+  } catch (exportErr) {
+    console.error('❌ CAPEX Excel export failed:', exportErr);
+    alert('Błąd eksportu CAPEX Excel: ' + exportErr.message);
+  }
 }
 
 async function exportCapexToExcelWithFormulas() {
   await exportCapexToExcel(true);
 }
 
+// RDN wrapper: swap centralizedMetrics with centralizedMetricsRdn, export, restore
+async function exportCapexRdnToExcel(withFormulas = false) {
+  const rdnCalc = (window.centralizedMetricsRdn || {})[currentVariant];
+  if (!rdnCalc || !rdnCalc.capex) {
+    alert('Brak danych CAPEX (RDN) do eksportu. Najpierw wykonaj analizę TCSL.');
+    return;
+  }
+  const backup = centralizedMetrics[currentVariant];
+  centralizedMetrics[currentVariant] = rdnCalc;
+  window._rdnExportMode = true;
+  try {
+    await exportCapexToExcel(withFormulas);
+  } finally {
+    centralizedMetrics[currentVariant] = backup;
+    window._rdnExportMode = false;
+  }
+}
+
 // Export CAPEX functions to window for HTML onclick handlers
 window.exportCapexToExcel = exportCapexToExcel;
 window.exportCapexToExcelWithFormulas = exportCapexToExcelWithFormulas;
+window.exportCapexRdnToExcel = exportCapexRdnToExcel;
 
 // Note: English sheets (CAPEX Summary, CAPEX Year by Year, CFO Analysis)
 // are now automatically included in the main export function above.

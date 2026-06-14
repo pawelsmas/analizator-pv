@@ -195,92 +195,308 @@
 
     <!-- BESS Cycle Animation Section -->
     <div class="chart-section full-width bess-animation-section">
-      <h2>🔄 Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
+      <h2>⚡ Animacja Cyklu BESS - Przepływ Energii w Czasie</h2>
       <div class="bess-animation-container">
-        <!-- Visual Energy Flow Diagram -->
-        <div class="bess-flow-diagram">
-          <!-- PV Panel -->
-          <div class="flow-node pv-node">
-            <div class="node-icon">☀️</div>
-            <div class="node-label">PV</div>
-            <div class="node-value" id="animPvPower">0 kW</div>
+        <!-- Visual Energy Flow Diagram - SVG Based -->
+        <div class="bess-flow-diagram" id="bessFlowDiagram">
+          <!-- SVG Layer for Flow Paths -->
+          <svg class="flow-svg" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <!-- PV flow gradient (golden yellow) -->
+              <linearGradient id="pvGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#fcd34d;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#fbbf24;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#f59e0b;stop-opacity:1" />
+              </linearGradient>
+              <!-- Battery flow gradient (emerald green) -->
+              <linearGradient id="batteryGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#6ee7b7;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#34d399;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#10b981;stop-opacity:1" />
+              </linearGradient>
+              <!-- Grid flow gradient (coral red) -->
+              <linearGradient id="gridGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#fca5a5;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#f87171;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#ef4444;stop-opacity:1" />
+              </linearGradient>
+              <!-- Arbitrage charging gradient (electric blue) -->
+              <linearGradient id="arbitrageChargeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" style="stop-color:#93c5fd;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#60a5fa;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+              </linearGradient>
+
+              <!-- Glow filters for paths -->
+              <filter id="glowPv" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feFlood flood-color="#fbbf24" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowBattery" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feFlood flood-color="#34d399" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowGrid" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feFlood flood-color="#f87171" flood-opacity="0.6" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="glowArbitrage" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="7" result="blur"/>
+                <feFlood flood-color="#60a5fa" flood-opacity="0.7" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="glow"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+
+              <!-- Particle glow filters -->
+              <filter id="particleGlowYellow" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feFlood flood-color="#fbbf24" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowGreen" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feFlood flood-color="#34d399" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowRed" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="3" result="blur"/>
+                <feFlood flood-color="#f87171" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <filter id="particleGlowBlue" x="-200%" y="-200%" width="500%" height="500%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feFlood flood-color="#60a5fa" flood-opacity="0.9"/>
+                <feComposite in2="blur" operator="in"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+
+            <!-- Background glow paths (wider, more diffuse) -->
+            <g id="pathGlowGroup" opacity="0.4">
+              <path id="glowPvBattery" class="flow-glow-path" d="M 300 75 C 240 95, 180 140, 130 195" fill="none" stroke="#fbbf24" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowPvLoad" class="flow-glow-path" d="M 300 75 C 360 85, 420 110, 475 145" fill="none" stroke="#fbbf24" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowBatteryLoad" class="flow-glow-path" d="M 130 195 C 250 175, 380 155, 475 145" fill="none" stroke="#34d399" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowGridLoad" class="flow-glow-path" d="M 505 310 C 515 250, 500 190, 485 155" fill="none" stroke="#f87171" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowGridBattery" class="flow-glow-path" d="M 505 310 C 380 340, 250 330, 130 225" fill="none" stroke="#60a5fa" stroke-width="0" stroke-linecap="round"/>
+              <path id="glowBatteryGrid" class="flow-glow-path" d="M 130 225 C 250 300, 380 320, 505 310" fill="none" stroke="#34d399" stroke-width="0" stroke-linecap="round"/>
+            </g>
+
+            <!-- Main flow paths (cubic Bezier for smoother curves) -->
+            <g id="pathMainGroup">
+              <!-- PV to Battery -->
+              <path id="pathPvBattery" class="flow-path flow-pv"
+                    d="M 300 75 C 240 95, 180 140, 130 195"
+                    fill="none" stroke="url(#pvGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowPv)"/>
+              <!-- PV to Load -->
+              <path id="pathPvLoad" class="flow-path flow-pv"
+                    d="M 300 75 C 360 85, 420 110, 475 145"
+                    fill="none" stroke="url(#pvGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowPv)"/>
+              <!-- Battery to Load -->
+              <path id="pathBatteryLoad" class="flow-path flow-battery"
+                    d="M 130 195 C 250 175, 380 155, 475 145"
+                    fill="none" stroke="url(#batteryGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowBattery)"/>
+              <!-- Grid to Load -->
+              <path id="pathGridLoad" class="flow-path flow-grid"
+                    d="M 505 310 C 515 250, 500 190, 485 155"
+                    fill="none" stroke="url(#gridGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowGrid)"/>
+              <!-- Grid to Battery (arbitrage) -->
+              <path id="pathGridBattery" class="flow-path flow-arbitrage"
+                    d="M 505 310 C 380 340, 250 330, 130 225"
+                    fill="none" stroke="url(#arbitrageChargeGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowArbitrage)"/>
+              <!-- Battery to Grid -->
+              <path id="pathBatteryGrid" class="flow-path flow-battery"
+                    d="M 130 225 C 250 300, 380 320, 505 310"
+                    fill="none" stroke="url(#batteryGradient)" stroke-width="0"
+                    stroke-linecap="round" filter="url(#glowBattery)"/>
+            </g>
+
+            <!-- Animated particles container -->
+            <g id="particlesGroup"></g>
+
+            <!-- Flow value labels with background -->
+            <g id="labelsGroup" class="flow-labels">
+              <g id="labelGroupPvBattery" opacity="0">
+                <rect x="165" y="115" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelPvBattery" class="flow-label-svg" x="190" y="130" fill="#fcd34d">0 kW</text>
+              </g>
+              <g id="labelGroupPvLoad" opacity="0">
+                <rect x="375" y="85" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelPvLoad" class="flow-label-svg" x="400" y="100" fill="#fcd34d">0 kW</text>
+              </g>
+              <g id="labelGroupBatteryLoad" opacity="0">
+                <rect x="275" y="150" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelBatteryLoad" class="flow-label-svg" x="300" y="165" fill="#6ee7b7">0 kW</text>
+              </g>
+              <g id="labelGroupGridLoad" opacity="0">
+                <rect x="515" y="220" width="50" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelGridLoad" class="flow-label-svg" x="540" y="235" fill="#fca5a5">0 kW</text>
+              </g>
+              <g id="labelGroupGridBattery" opacity="0">
+                <rect x="290" y="315" width="60" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelGridBattery" class="flow-label-svg" x="320" y="330" fill="#93c5fd">0 kW</text>
+              </g>
+              <g id="labelGroupBatteryGrid" opacity="0">
+                <rect x="290" y="280" width="60" height="20" rx="4" fill="rgba(0,0,0,0.6)"/>
+                <text id="labelBatteryGrid" class="flow-label-svg" x="320" y="295" fill="#6ee7b7">0 kW</text>
+              </g>
+            </g>
+          </svg>
+
+          <!-- Node: PV Panel -->
+          <div class="energy-node node-pv" id="nodePv">
+            <div class="node-glow pv-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="56" height="56">
+                <circle cx="32" cy="32" r="20" fill="#fbbf24" opacity="0.3"/>
+                <circle cx="32" cy="32" r="14" fill="#f59e0b"/>
+                <g stroke="#fbbf24" stroke-width="3" stroke-linecap="round">
+                  <line x1="32" y1="4" x2="32" y2="12"/>
+                  <line x1="32" y1="52" x2="32" y2="60"/>
+                  <line x1="4" y1="32" x2="12" y2="32"/>
+                  <line x1="52" y1="32" x2="60" y2="32"/>
+                  <line x1="12" y1="12" x2="18" y2="18"/>
+                  <line x1="46" y1="46" x2="52" y2="52"/>
+                  <line x1="12" y1="52" x2="18" y2="46"/>
+                  <line x1="46" y1="18" x2="52" y2="12"/>
+                </g>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">PV</span>
+              <span class="node-power" id="animPvPower">0,0  kW</span>
+            </div>
           </div>
 
-          <!-- Flow arrows container -->
-          <div class="flow-arrows">
-            <!-- PV to Battery -->
-            <div class="flow-arrow arrow-pv-battery" id="arrowPvBattery">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesPvBattery"></div>
+          <!-- Node: Battery -->
+          <div class="energy-node node-battery" id="nodeBattery">
+            <div class="node-glow battery-glow"></div>
+            <div class="battery-3d">
+              <div class="battery-outer">
+                <div class="battery-terminal"></div>
+                <div class="battery-inner">
+                  <div class="battery-charge" id="batteryFill">
+                    <div class="battery-charge-glow"></div>
+                  </div>
+                  <span class="battery-percent" id="batteryLevel">0%</span>
+                </div>
               </div>
-              <div class="arrow-value" id="flowPvBattery">0</div>
             </div>
-
-            <!-- PV to Load -->
-            <div class="flow-arrow arrow-pv-load" id="arrowPvLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesPvLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowPvLoad">0</div>
-            </div>
-
-            <!-- Battery to Load -->
-            <div class="flow-arrow arrow-battery-load" id="arrowBatteryLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesBatteryLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowBatteryLoad">0</div>
-            </div>
-
-            <!-- Grid to Load -->
-            <div class="flow-arrow arrow-grid-load" id="arrowGridLoad">
-              <div class="arrow-line">
-                <div class="arrow-particles" id="particlesGridLoad"></div>
-              </div>
-              <div class="arrow-value" id="flowGridLoad">0</div>
-            </div>
-
-            <!-- Curtailment -->
-            <div class="flow-arrow arrow-curtailment" id="arrowCurtailment">
-              <div class="arrow-line">
-                <div class="arrow-particles curtailment-particles" id="particlesCurtailment"></div>
-              </div>
-              <div class="arrow-value" id="flowCurtailment">0</div>
+            <div class="node-info">
+              <span class="node-name">BESS</span>
+              <span class="node-power" id="animBatteryKwh">0  kWh</span>
             </div>
           </div>
 
-          <!-- Battery -->
-          <div class="flow-node battery-node">
-            <div class="battery-visual">
-              <div class="battery-body">
-                <div class="battery-fill" id="batteryFill"></div>
-                <div class="battery-level" id="batteryLevel">0%</div>
-              </div>
-              <div class="battery-cap"></div>
+          <!-- Node: Load (Factory) -->
+          <div class="energy-node node-load" id="nodeLoad">
+            <div class="node-glow load-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="48" height="48">
+                <rect x="8" y="24" width="48" height="32" rx="2" fill="#64748b"/>
+                <rect x="12" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="28" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="44" y="28" width="12" height="10" fill="#94a3b8"/>
+                <rect x="20" y="44" width="8" height="12" fill="#475569"/>
+                <rect x="36" y="44" width="8" height="12" fill="#475569"/>
+                <polygon points="8,24 32,8 56,24" fill="#475569"/>
+                <rect x="46" y="12" width="6" height="16" fill="#78716c"/>
+                <ellipse cx="49" cy="10" rx="5" ry="3" fill="#a8a29e" opacity="0.6"/>
+              </svg>
             </div>
-            <div class="node-label">BESS</div>
-            <div class="node-value" id="animBatteryKwh">0 kWh</div>
+            <div class="node-info">
+              <span class="node-name">Zużycie</span>
+              <span class="node-power" id="animLoadPower">0,0  kW</span>
+            </div>
           </div>
 
-          <!-- Load -->
-          <div class="flow-node load-node">
-            <div class="node-icon">🏭</div>
-            <div class="node-label">Zużycie</div>
-            <div class="node-value" id="animLoadPower">0 kW</div>
+          <!-- Node: Grid -->
+          <div class="energy-node node-grid" id="nodeGrid">
+            <div class="node-glow grid-glow"></div>
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="48" height="48">
+                <rect x="28" y="16" width="8" height="40" fill="#78716c"/>
+                <line x1="32" y1="20" x2="12" y2="32" stroke="#78716c" stroke-width="4"/>
+                <line x1="32" y1="20" x2="52" y2="32" stroke="#78716c" stroke-width="4"/>
+                <line x1="32" y1="32" x2="8" y2="44" stroke="#78716c" stroke-width="3"/>
+                <line x1="32" y1="32" x2="56" y2="44" stroke="#78716c" stroke-width="3"/>
+                <circle cx="32" cy="20" r="6" fill="#f59e0b"/>
+                <path d="M30 17 L34 17 L32 23 L35 20 L31 20 L33 14 Z" fill="#fef3c7"/>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">Sieć</span>
+              <span class="node-power" id="animGridPower">0  kW</span>
+            </div>
+            <!-- Energy Price Badge -->
+            <div class="price-badge-modern" id="priceBadge">
+              <span class="price-indicator" id="priceIcon">💚</span>
+              <span class="price-text" id="priceLabel">TANIA</span>
+              <span class="price-amount" id="priceValue">350 PLN/MWh</span>
+            </div>
           </div>
 
-          <!-- Grid -->
-          <div class="flow-node grid-node">
-            <div class="node-icon">⚡</div>
-            <div class="node-label">Sieć</div>
-            <div class="node-value" id="animGridPower">0 kW</div>
+          <!-- Arbitrage Status Indicator -->
+          <div class="arbitrage-status" id="arbitrageIndicator" style="display: none;">
+            <div class="arbitrage-badge-modern" id="arbitrageBadge">
+              <span class="arbitrage-icon-modern">📈</span>
+              <span class="arbitrage-text-modern" id="arbitrageText">Arbitraż aktywny</span>
+            </div>
           </div>
 
-          <!-- Curtailment indicator -->
-          <div class="flow-node curtailment-node" id="curtailmentNode" style="display: none;">
-            <div class="node-icon">🚫</div>
-            <div class="node-label">Strata</div>
-            <div class="node-value" id="animCurtailment">0 kW</div>
+          <!-- Curtailment indicator (hidden by default) -->
+          <div class="energy-node node-curtailment" id="curtailmentNode" style="display: none;">
+            <div class="node-icon-wrapper">
+              <svg class="node-icon-svg" viewBox="0 0 64 64" width="40" height="40">
+                <circle cx="32" cy="32" r="24" fill="none" stroke="#9ca3af" stroke-width="4"/>
+                <line x1="16" y1="16" x2="48" y2="48" stroke="#9ca3af" stroke-width="4"/>
+              </svg>
+            </div>
+            <div class="node-info">
+              <span class="node-name">Strata</span>
+              <span class="node-power" id="animCurtailment">0 kW</span>
+            </div>
           </div>
         </div>
 
@@ -308,6 +524,32 @@
             <div class="anim-stat">
               <span class="anim-stat-label">Cykle dziś:</span>
               <span class="anim-stat-value" id="animDailyCycles">0,0</span>
+            </div>
+          </div>
+
+          <!-- NEW: Arbitrage Stats Section -->
+          <div class="anim-arbitrage-stats" id="animArbitrageStats">
+            <div class="arbitrage-stats-header">
+              <span class="arbitrage-stats-title">📈 Arbitraż ToU</span>
+              <span class="arbitrage-stats-toggle" id="arbitrageStatsToggle" onclick="toggleArbitrageStats()">▼</span>
+            </div>
+            <div class="arbitrage-stats-grid" id="arbitrageStatsGrid">
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Ładowanie tanie:</span>
+                <span class="anim-stat-value" id="animDailyGridCharge">0 kWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Rozładowanie drogie:</span>
+                <span class="anim-stat-value" id="animDailyPeakDischarge">0 kWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat">
+                <span class="anim-stat-label">Spread dziś:</span>
+                <span class="anim-stat-value" id="animDailySpread">0 PLN/MWh</span>
+              </div>
+              <div class="anim-stat arbitrage-stat highlight">
+                <span class="anim-stat-label">💰 Oszczędność:</span>
+                <span class="anim-stat-value" id="animDailyArbitrageSavings">0 PLN</span>
+              </div>
             </div>
           </div>
 
@@ -347,6 +589,7 @@
         </div>
 
         <button class="anim-btn anim-btn-secondary" onclick="resetBessAnimation()">🔄 Reset</button>
+        <button class="anim-btn anim-btn-secondary" onclick="exportAnimationDataToExcel()" id="exportAnimDataBtn" title="Eksportuj dane animacji do Excel/CSV">📊 Export Excel</button>
       </div>
 
       <div class="info-banner" style="margin-top: 16px;">
@@ -354,6 +597,8 @@
         <div class="banner-text">
           Animacja pokazuje godzinowy przepływ energii przez cały rok. Żółte cząsteczki = energia z PV,
           zielone = energia z/do baterii, czerwone = pobór z sieci, szare = curtailment (strata).
+          <strong>Niebieskie = arbitraż (ładowanie tanim prądem z sieci).</strong>
+          Wskaźnik ceny przy sieci pokazuje aktualną stawkę ToU.
         </div>
       </div>
     </div>
@@ -565,6 +810,250 @@
       </div>
     </div>
 
+    <!-- Ancillary Services Panel (v2.0) -->
+    <div class="stats-section full-width ancillary-section" id="ancillarySection" style="display:none;">
+      <h2>Zrodla przychodow z magazynu energii</h2>
+      <div class="chart-info">
+        Kazde zaznaczone zrodlo przychodow jest wliczane do NPV i payback w grid search.
+        Wylaczone zrodla = konserwatywna wycena (tylko pewne przychody).
+      </div>
+
+      <!-- ══════════ STREFA 1: MAINSTREAM - pewne przychody w PL ══════════ -->
+      <div style="margin-bottom:12px;padding:16px;background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border-radius:8px;border:2px solid #4caf50;">
+        <div style="font-size:13px;font-weight:700;color:#1b5e20;margin-bottom:10px;display:flex;align-items:center;gap:6px;">
+          <span style="background:#4caf50;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">PEWNE</span>
+          Standardowe zrodla przychodow C&amp;I w Polsce
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+
+          <!-- Autokonsumpcja -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <div style="font-weight:600;color:#2e7d32;font-size:12px;">Autokonsumpcja (BTM)</div>
+            <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+              Magazyn laduje sie z nadwyzki PV, rozladowuje gdy potrzebujesz pradu.
+              Unikasz zakupu z sieci po pelnej cenie (~0.80 PLN/kWh).
+            </div>
+            <div style="font-size:10px;margin-top:4px;color:#2e7d32;font-weight:600;">Zawsze wlaczone &mdash; to podstawa business case</div>
+          </div>
+
+          <!-- Peak Shaving -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <div style="font-weight:600;color:#2e7d32;font-size:12px;">Redukcja szczytow (Peak Shaving)</div>
+            <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+              Bateria rozladowuje sie w godzinach szczytu, obnizajac moc zamowiona.
+              Oszczednosci na oplacie mocowej (SOM) i dystrybucyjnej.
+            </div>
+            <div style="font-size:10px;margin-top:4px;color:#2e7d32;font-weight:600;">Zawsze wlaczone w trybie STACKED</div>
+          </div>
+
+          <!-- Arbitraz Taryfowy -->
+          <div style="padding:10px;background:#fff;border-radius:6px;border:1px solid #a5d6a7;">
+            <label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="arbTariffToggle" onchange="toggleTariffArbitrage()" style="margin-top:2px;width:16px;height:16px;">
+              <div>
+                <div style="font-weight:600;color:#2e7d32;font-size:12px;">Arbitraz taryfowy OSD</div>
+                <div style="font-size:11px;color:#555;line-height:1.4;margin-top:4px;">
+                  Laduj w strefie taniej (noc/weekend), rozladuj w drozszej (dzien).
+                  Wymaga taryfy C12a/C22a. Spread ~0.20-0.30 PLN/kWh.
+                </div>
+                <div style="font-size:10px;margin-top:4px;color:#1565c0;font-weight:500;">Wlacz w Ustawieniach &rarr; Arbitraz Taryfowy</div>
+              </div>
+            </label>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ══════════ STREFA 2: WCZESNA FAZA - pilotaze w PL ══════════ -->
+      <div style="margin-bottom:12px;padding:16px;background:linear-gradient(135deg,#fff8e1,#ffecb3);border-radius:8px;border:2px solid #ffa726;">
+        <div style="font-size:13px;font-weight:700;color:#e65100;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+          <span style="background:#ff9800;color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">WCZESNA FAZA</span>
+          Uslugi bilansujace &mdash; pilotaze w PL, mainstream w DE
+        </div>
+        <div style="font-size:11px;color:#795548;margin-bottom:10px;">
+          PSE otwiera rynek (PICASSO/MARI od 2024), ale aktywnych agregatorow dla C&amp;I jest garstka.
+          Wlacz tylko jesli masz konkretnogo agregatora. Przychody oznaczone jako <b>niepewne</b> w tabelach.
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+
+          <!-- aFRR Up -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcAfrrUp" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Regulacja czestotliwosci w gore (aFRR+)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Bateria rozladowuje sie na zadanie PSE. ~200 PLN/MW/h za gotowosc.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+          <!-- aFRR Down -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcAfrrDown" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Regulacja czestotliwosci w dol (aFRR-)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Bateria laduje sie na zadanie PSE. ~130 PLN/MW/h za gotowosc.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+          <!-- mFRR Up -->
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #ffe0b2;">
+            <input type="checkbox" id="ancSvcMfrrUp" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;color:#e65100;">Rezerwa reczna w gore (mFRR+)</div>
+              <div style="font-size:10px;color:#666;line-height:1.3;">Rezerwa awaryjna. ~95 PLN/MW/h, aktywacja kilka razy/rok.</div>
+              <div style="font-size:10px;margin-top:2px;color:#f57c00;">C&amp;I od ~500 kW w agregacji</div>
+            </div>
+          </label>
+
+        </div>
+
+        <!-- Aggregator margin -->
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #ffe0b2;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:#795548;"><b>Marza agregatora</b> (np. Polenergia, Enel X):</span>
+          <input type="number" id="ancAggregatorMargin" value="20" min="0" max="50" step="1"
+                 style="width:50px;padding:3px 5px;border:1px solid #ffcc80;border-radius:4px;font-size:12px;font-weight:600;text-align:center;"
+                 onchange="updateAncillaryConfig()">
+          <span style="font-size:12px;font-weight:600;">%</span>
+          <span style="font-size:10px;color:#9e9e9e;">typowo 15-25%</span>
+        </div>
+      </div>
+
+      <!-- ══════════ STREFA 3: NIEREALNE dla C&I ══════════ -->
+      <details style="margin-bottom:16px;">
+        <summary style="cursor:pointer;padding:12px 16px;background:linear-gradient(135deg,#fafafa,#f0f0f0);border-radius:8px;border:1px solid #e0e0e0;font-size:13px;font-weight:600;color:#9e9e9e;">
+          <span style="background:#e0e0e0;color:#757575;padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:0.5px;">UTILITY-SCALE</span>
+          Uslugi tylko dla duzych magazynow standalone (&gt;1 MW) &mdash; nieadekwatne dla C&amp;I
+        </summary>
+        <div style="padding:12px 16px;background:#fafafa;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+
+            <!-- FCR -->
+            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #eee;opacity:0.7;">
+              <input type="checkbox" id="ancSvcFcr" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+              <div>
+                <div style="font-weight:600;color:#757575;">Rezerwa pierwotna (FCR)</div>
+                <div style="font-size:10px;color:#999;line-height:1.3;">Automatyczna reakcja na odchylenia czestotliwosci. Min. 1 MW, certyfikacja PSE, telemetria &lt;1s.</div>
+                <div style="font-size:10px;margin-top:2px;color:#c62828;">Nie dla C&amp;I &mdash; tylko standalone &gt;1 MW</div>
+              </div>
+            </label>
+
+            <!-- Rynek Mocy -->
+            <label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border-radius:6px;border:1px solid #eee;opacity:0.7;">
+              <input type="checkbox" id="ancSvcCapMarket" onchange="updateAncillaryConfig()" style="margin-top:2px;">
+              <div>
+                <div style="font-weight:600;color:#757575;">Rynek Mocy (Capacity Market)</div>
+                <div style="font-size:10px;color:#999;line-height:1.3;">~280 tys. PLN/MW/rok. Wymaga aukcji PSE na lata wprzod, min. 2 MW, certyfikacja JGW.</div>
+                <div style="font-size:10px;margin-top:2px;color:#c62828;">Nie dla C&amp;I &mdash; tylko standalone &gt;2 MW + aukcja</div>
+              </div>
+            </label>
+
+          </div>
+        </div>
+      </details>
+
+      <!-- Revenue cards -->
+      <div class="stats-cards">
+        <div class="stat-card bess-green">
+          <div class="stat-icon">&#9889;</div>
+          <div class="stat-content">
+            <div class="stat-label">Regulacja czestotliwosci (aFRR)</div>
+            <div class="stat-value" id="ancAfrrRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail">Platnosc za gotowosc + aktywacje</div>
+          </div>
+        </div>
+        <div class="stat-card bess-blue">
+          <div class="stat-icon">&#128296;</div>
+          <div class="stat-content">
+            <div class="stat-label">Rezerwa reczna (mFRR)</div>
+            <div class="stat-value" id="ancMfrrRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail">Platnosc za gotowosc awaryjnej mocy</div>
+          </div>
+        </div>
+        <div class="stat-card bess-purple">
+          <div class="stat-icon">&#128176;</div>
+          <div class="stat-content">
+            <div class="stat-label">Uslugi sieciowe razem</div>
+            <div class="stat-value" id="ancTotalRevenue">0</div>
+            <div class="stat-unit">tys. PLN/rok netto</div>
+            <div class="stat-detail" id="ancTotalInfo">po odliczeniu prowizji agregatora</div>
+          </div>
+        </div>
+        <div class="stat-card bess-orange">
+          <div class="stat-icon">&#128200;</div>
+          <div class="stat-content">
+            <div class="stat-label">Laczny przychod z magazynu</div>
+            <div class="stat-value" id="ancStackedTotal">0</div>
+            <div class="stat-unit">tys. PLN/rok</div>
+            <div class="stat-detail">Autokonsumpcja + uslugi sieciowe</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Run optimization button -->
+      <div style="margin-top:12px;text-align:center;">
+        <button id="ancRunOptBtn" onclick="runAncillaryOptimization()" style="
+          background:linear-gradient(135deg,#1565c0 0%,#0d47a1 100%);
+          color:white;border:none;padding:10px 24px;border-radius:8px;
+          font-size:13px;font-weight:600;cursor:pointer;
+          display:inline-flex;align-items:center;gap:8px;
+          box-shadow:0 2px 8px rgba(21,101,192,0.3);transition:all 0.2s;">
+          Oblicz przychody z uslug pomocniczych
+        </button>
+        <div id="ancStatus" style="margin-top:6px;font-size:12px;color:#666;"></div>
+      </div>
+    </div>
+
+    <!-- Stacked Revenue Summary (shows after ancillary optimization) -->
+    <div class="stats-section full-width" id="stackedRevenueSummary" style="display:none;">
+      <h2>Podsumowanie przychodow (Revenue Stacking)</h2>
+      <div class="chart-info">
+        Zestawienie oszczednosci BTM + przychodow z uslug pomocniczych + cykle i degradacja przez lata
+      </div>
+
+      <!-- Revenue breakdown table -->
+      <div style="margin-bottom:16px;">
+        <table class="bess-monthly-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th style="text-align:left;">Zrodlo przychodu</th>
+              <th style="text-align:right;">PLN/rok</th>
+              <th style="text-align:right;">% calkowitego</th>
+            </tr>
+          </thead>
+          <tbody id="stackedRevenueBody"></tbody>
+          <tfoot>
+            <tr style="font-weight:bold;border-top:2px solid #333;">
+              <td>SUMA ROCZNA</td>
+              <td style="text-align:right;" id="stackedRevenueTotal">0</td>
+              <td style="text-align:right;">100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <!-- Degradation over years -->
+      <h3 style="margin:16px 0 8px 0;font-size:15px;">Cykle, degradacja i przychody przez lata</h3>
+      <div style="overflow-x:auto;">
+        <table class="bess-monthly-table" style="width:100%;">
+          <thead>
+            <tr>
+              <th>Rok</th>
+              <th style="text-align:right;">Pojemnosc [%]</th>
+              <th style="text-align:right;">Cykle/rok</th>
+              <th style="text-align:right;">Przychod BTM [PLN]</th>
+              <th style="text-align:right;">Przychod uslugi [PLN]</th>
+              <th style="text-align:right;">RAZEM [PLN]</th>
+              <th style="text-align:right;">Skumulowany [PLN]</th>
+            </tr>
+          </thead>
+          <tbody id="stackedDegradationBody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Economic KPIs -->
     <div class="stats-section full-width">
       <h2>Ekonomia BESS</h2>
@@ -663,6 +1152,85 @@
       <div class="sizing-variants-grid" id="sizingVariantsGrid">
         <!-- Dynamically filled by JS -->
       </div>
+
+      <!-- Full Grid Search Results -->
+      <div id="gridSearchSection" style="display:none;margin-top:20px;">
+        <h3 style="margin:0 0 8px 0;font-size:15px;cursor:pointer;" onclick="toggleGridSearch()">
+          Wszystkie warianty (grid search) <span id="gridSearchToggle">&#9660;</span>
+        </h3>
+        <div class="chart-info" style="margin-bottom:8px;">
+          Pelna siatka przeszukanych konfiguracji moc x czas magazynowania, posortowana wg NPV/kWh
+        </div>
+        <div id="gridSearchTableWrap" style="overflow-x:auto;max-height:400px;overflow-y:auto;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;border:1px solid #dee2e6;" id="gridSearchTable">
+            <thead style="position:sticky;top:0;z-index:1;">
+              <tr style="background:#1565c0;color:#fff;">
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('power_kw')">Moc [kW]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('energy_kwh')">Energia [kWh]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('duration_h')">Czas [h]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('capex_pln')">CAPEX [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#1b5e20;" onclick="sortGridSearch('energy_savings_pln')" title="Autokonsumpcja PV surplus">Autokon. [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#e65100;" onclick="sortGridSearch('arbitrage_savings_pln')" title="Arbitraz taryfowy OSD / cenowy RDN">Arbitraz [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#4a148c;" onclick="sortGridSearch('peak_shaving_savings_pln')" title="Obnizenie mocy szczytowej (demand charge)">Peak [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;background:#bf360c;" onclick="sortGridSearch('capacity_fee_savings_pln')" title="Oszczednosci na oplacie mocowej">Op.moc. [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('ancillary_revenue_pln')">Usl.siec.* [PLN]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;font-weight:bold;background:#0d47a1;" onclick="sortGridSearch('annual_savings_pln')">RAZEM [PLN/rok]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('npv_pln')">NPV [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;font-weight:bold;background:#0d47a1;" onclick="sortGridSearch('npv_per_kwh')">NPV/kWh</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('payback_years')">Payback [lat]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('lifetime_years')" title="Zywotnosc magazynu do EOL (cykle/rok -> lata)">Żywotność [lat]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('efc_total')">EFC [cykli/rok]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('efc_penalty_pln')">Kara EFC [tys.]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('self_consumption_pct')">Autokons. [%]</th>
+                <th style="cursor:pointer;padding:8px 6px;border:1px solid #1255a0;white-space:nowrap;" onclick="sortGridSearch('peak_reduction_pct')">Peak red. [%]</th>
+              </tr>
+            </thead>
+            <tbody id="gridSearchBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOP PICKS: Best configurations from LP grid search -->
+    <div class="stats-section full-width" id="topPicksSection" style="display:none;">
+      <h2>Najlepsze konfiguracje BESS</h2>
+      <div class="chart-info">
+        Top 3 warianty z pelnej siatki przeszukanych konfiguracji (LP dispatch) wg roznych kryteriow
+      </div>
+
+      <!-- Top picks cards - filled dynamically -->
+      <div class="stats-cards" id="topPicksCards" style="margin-top:12px;">
+      </div>
+
+      <!-- Top 5 comparison table -->
+      <div style="margin-top:16px;">
+        <h3 style="margin:0 0 8px 0;font-size:14px;">Top 5 wg NPV/kWh</h3>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;font-size:12px;border-collapse:collapse;border:1px solid #dee2e6;" id="topPicksTable">
+            <thead>
+              <tr style="background:#1565c0;color:#fff;">
+                <th style="padding:6px 8px;border:1px solid #1255a0;text-align:center;">#</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Moc [kW]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Energia [kWh]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Czas</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">CAPEX [tys.]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#1b5e20;">Autokon.</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#e65100;">Arbitraz</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#4a148c;">Peak</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;background:#bf360c;">Op.moc.</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Usl.siec.*</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;font-weight:bold;background:#0d47a1;">RAZEM/rok</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">NPV [tys.]</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;font-weight:bold;background:#0d47a1;">NPV/kWh</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Payback</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">EFC/rok</th>
+                <th style="padding:6px 8px;border:1px solid #1255a0;">Autokons.</th>
+              </tr>
+            </thead>
+            <tbody id="topPicksBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- NEW v3.3: Degradation Budget Status -->
@@ -713,6 +1281,91 @@
         <strong>Tryb STACKED:</strong> Bateria świadczy dwie usługi - Peak Shaving (priorytet 1) i PV Shifting (priorytet 2).
         <span id="stackedReserveInfo">Rezerwa SOC: 30% dla peak shaving.</span>
         <span id="stackedPeakLimit">Limit importu: - kW.</span>
+      </div>
+    </div>
+
+    <!-- NEW: BESS vs Load Comparison Section -->
+    <div class="stats-section full-width" id="bessLoadComparisonSection" style="display:none;">
+      <h2>⚡ BESS vs Zapotrzebowanie Fabryki</h2>
+      <div class="bess-load-comparison">
+        <!-- Visual comparison bars -->
+        <div class="comparison-visual">
+          <div class="comparison-row">
+            <div class="comparison-label">Moc BESS</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar bess-bar" id="bessPowerBar" style="width: 0%"></div>
+              <span class="comparison-value" id="bessPowerBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row">
+            <div class="comparison-label">Szczyt obciążenia</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar load-bar" id="peakLoadBar" style="width: 100%"></div>
+              <span class="comparison-value" id="peakLoadBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row">
+            <div class="comparison-label">Średnie obciążenie</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar avg-bar" id="avgLoadBar" style="width: 50%"></div>
+              <span class="comparison-value" id="avgLoadBarValue">0 kW</span>
+            </div>
+          </div>
+          <div class="comparison-row" id="pvPowerRow" style="display:none;">
+            <div class="comparison-label">Moc PV</div>
+            <div class="comparison-bar-container">
+              <div class="comparison-bar pv-bar" id="pvPowerBar" style="width: 0%"></div>
+              <span class="comparison-value" id="pvPowerBarValue">0 kW</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Key metrics cards -->
+        <div class="comparison-metrics">
+          <div class="metric-card">
+            <div class="metric-icon">🔋</div>
+            <div class="metric-content">
+              <div class="metric-label">Pokrycie szczytu</div>
+              <div class="metric-value" id="peakCoveragePercent">0%</div>
+              <div class="metric-detail" id="peakCoverageDetail">BESS / Peak Load</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">⏱️</div>
+            <div class="metric-content">
+              <div class="metric-label">Autonomia przy szczycie</div>
+              <div class="metric-value" id="peakAutonomy">0h</div>
+              <div class="metric-detail" id="peakAutonomyDetail">Przy pełnym rozładowaniu</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">📊</div>
+            <div class="metric-content">
+              <div class="metric-label">Energia vs Zużycie</div>
+              <div class="metric-value" id="energyVsConsumption">0%</div>
+              <div class="metric-detail" id="energyVsConsumptionDetail">kWh BESS / kWh/dzień</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">🎯</div>
+            <div class="metric-content">
+              <div class="metric-label">Redukcja szczytu</div>
+              <div class="metric-value" id="peakReductionKw">0 kW</div>
+              <div class="metric-detail" id="peakReductionDetail">Możliwe peak shaving</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sizing fit indicator -->
+        <div class="sizing-fit-indicator" id="sizingFitIndicator">
+          <div class="fit-badge" id="sizingFitBadge">
+            <span class="fit-icon">✓</span>
+            <span class="fit-text" id="sizingFitText">Dobór optymalny</span>
+          </div>
+          <div class="fit-explanation" id="sizingFitExplanation">
+            BESS jest odpowiednio dobrany do profilu obciążenia fabryki.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1084,12 +1737,20 @@
           </div>
           <div class="objective-selector">
             <select id="optimizationObjective" onchange="updateOptimizationObjective(this.value)">
-              <option value="npv" selected>📈 Maksymalizuj NPV</option>
-              <option value="payback">⏱️ Minimalizuj Payback</option>
+              <option value="npv" selected>📈 Maksymalizuj NPV (zwrot z inwestycji)</option>
+              <option value="max_savings">💰 Maksymalizuj Oszczędności (roczny przychód)</option>
+              <option value="payback">⏱️ Minimalizuj Payback (okres zwrotu)</option>
               <option value="self_consumption">🔋 Maksymalizuj Autokonsumpcję</option>
               <option value="peak_reduction">⚡ Maksymalizuj Redukcję Szczytów</option>
               <option value="efc_utilization">🔄 Optymalizuj Wykorzystanie Cykli</option>
             </select>
+            <div style="margin-top:8px">
+              <label style="font-size:11px;color:#999">Maks. payback (opcjonalnie):</label>
+              <input type="number" id="maxPaybackConstraint" placeholder="np. 8" min="1" max="25" step="0.5"
+                     style="width:80px;padding:4px;background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:4px"
+                     onchange="updatePaybackConstraint(this.value)">
+              <span style="font-size:11px;color:#888">lat</span>
+            </div>
           </div>
           <div class="objective-info" id="objectiveInfo">
             <span class="info-icon">ℹ️</span>
@@ -2083,10 +2744,64 @@
   </div>
 </div>
 
+<!-- Ranking Taryf dla Arbitrażu Magazynu -->
+<div class="chart-section full-width" id="arbitrageRankingSection" style="margin:20px;padding:24px;background:linear-gradient(135deg,#fafbfc,#f0f4f8);border-radius:12px;border:1px solid #e0e4e8;">
+  <h2 style="margin-top:0;">🏆 Ranking Taryf — Potencjal Arbitrazu Magazynu</h2>
+  <div style="color:#666;font-size:13px;margin-bottom:16px;">
+    Szacunkowy roczny zarobek z arbitrazu cenowego (ladowanie w strefie taniej, rozladowanie w drozszej) dla kazdej taryfy OSD + RDN
+  </div>
+
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+    <label style="font-size:13px;">Moc [kW]:</label>
+    <input type="number" id="arbRankPowerKw" value="200" min="10" max="5000" step="10" style="width:80px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <label style="font-size:13px;">Pojemnosc [kWh]:</label>
+    <input type="number" id="arbRankEnergyKwh" value="400" min="10" max="20000" step="10" style="width:80px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <label style="font-size:13px;">Sprawnosc RT:</label>
+    <input type="number" id="arbRankEfficiency" value="90" min="50" max="100" step="1" style="width:60px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+    <span style="font-size:12px;color:#999;">%</span>
+    <select id="arbRankYear" style="padding:5px 10px;border:1px solid #ccc;border-radius:4px;">
+      <option value="2025">2025</option>
+      <option value="2026">2026</option>
+    </select>
+    <button onclick="runArbitrageRanking()" id="btnArbRanking" style="padding:8px 18px;background:#1565C0;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;">
+      Przelicz ranking
+    </button>
+    <span id="arbRankStatus" style="font-size:12px;color:#999;"></span>
+  </div>
+
+  <!-- Chart -->
+  <div style="background:white;border-radius:10px;padding:16px;margin-bottom:16px;">
+    <canvas id="arbRankingChart" style="max-height:420px;"></canvas>
+  </div>
+
+  <!-- Table -->
+  <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;" id="arbRankingTable">
+      <thead>
+        <tr style="background:linear-gradient(135deg,#1565C0,#1976D2);color:white;">
+          <th style="padding:8px;">#</th>
+          <th style="padding:8px;text-align:left;">Taryfa</th>
+          <th style="padding:8px;">OSD</th>
+          <th style="padding:8px;">Grupa</th>
+          <th style="padding:8px;text-align:right;">Spread [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">Peak [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">OffPeak [PLN/kWh]</th>
+          <th style="padding:8px;text-align:right;">Cykli/rok</th>
+          <th style="padding:8px;text-align:right;">Zarobek roczny [PLN]</th>
+        </tr>
+      </thead>
+      <tbody id="arbRankingTableBody">
+        <tr><td colspan="9" style="text-align:center;padding:20px;color:#999;">Kliknij "Przelicz ranking" aby porownac taryfy</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 <script src="auth.js?v=3.0.0"></script>
-<script src="bess.js?v=3.16-BESS-V2"></script>
+<script src="bess.js?v=7.0.0-LP-ONLY-20260223"></script>
+<script src="monte-carlo-bess.js?v=1.0.0"></script>
 <script>
   // ============================================
   // v3.7.0 PROJECT SELECTOR MODULE

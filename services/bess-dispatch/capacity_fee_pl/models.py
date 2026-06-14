@@ -18,7 +18,7 @@ class KClass(str, Enum):
 
     Δs = (avg_consumption_in_selected_hours / avg_consumption_outside - 1) × 100%
 
-    Thresholds (from Ustawa o rynku mocy, Art. 70):
+    Thresholds (portal configuration, aligned with frontend):
     - K1: Δs < 5%     → A = 0.17 (83% discount)
     - K2: Δs ∈ [5%, 10%)  → A = 0.50 (50% discount)
     - K3: Δs ∈ [10%, 15%) → A = 0.83 (17% discount)

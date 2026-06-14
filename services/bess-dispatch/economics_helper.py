@@ -118,6 +118,14 @@ class PricingConfig(BaseModel):
         description="'zero_export' (eksport=0, curtailment) or 'export_allowed'"
     )
 
+    # Seller margin (applied to energy rates)
+    seller_margin_pct: float = Field(
+        0.0,
+        ge=0, le=50.0,
+        description="Seller/aggregator margin [%] on energy price. "
+                    "E.g., 5.0 = 5% added to import price. Affects baseline vs project comparison."
+    )
+
     @property
     def other_fees_pln_kwh(self) -> float:
         """Convert OTHER fees to PLN/kWh."""
@@ -391,6 +399,11 @@ def calculate_tou_cost(
         extension = [price_array[-1]] * (n_timesteps - len(price_array))
         price_array = np.concatenate([price_array, extension])
     price_array = price_array[:n_timesteps]
+
+    # Apply seller margin if configured
+    margin = getattr(config, 'seller_margin_pct', 0.0)
+    if margin > 0:
+        price_array = price_array * (1.0 + margin / 100.0)
 
     # Calculate cost
     import_kwh = grid_import_kw * dt_hours

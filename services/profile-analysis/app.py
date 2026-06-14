@@ -2189,6 +2189,1157 @@ async def analyze_profile(request: ProfileAnalysisRequest):
         raise HTTPException(500, f"Analysis failed: {str(e)}")
 
 
+# ============================================================================
+# RDN DYNAMIC PRICING - HOURLY SAVINGS ANALYSIS
+# ============================================================================
+
+class RdnSavingsRequest(BaseModel):
+    """Request for RDN hourly savings calculation"""
+    pv_generation_kwh: List[float] = Field(..., description="Hourly PV generation [kWh]")
+    load_kwh: List[float] = Field(..., description="Hourly consumption [kWh]")
+    rdn_prices_plnmwh: List[float] = Field(..., description="Hourly RDN energy prices [PLN/MWh]")
+
+    # Fixed network charges (PLN/MWh) - don't vary hourly
+    distribution_plnmwh: float = Field(default=200)
+    quality_fee_plnmwh: float = Field(default=10)
+    oze_fee_plnmwh: float = Field(default=7)
+    cogeneration_fee_plnmwh: float = Field(default=10)
+    capacity_fee_plnmwh: float = Field(default=219)
+    excise_tax_plnmwh: float = Field(default=5)
+
+    # Fixed tariff rate for comparison
+    fixed_energy_active_plnmwh: float = Field(default=510, description="Flat energy active rate [PLN/MWh]")
+
+    # Optional timestamps for month mapping
+    timestamps: Optional[List[str]] = None
+
+
+class RdnMonthlyComparison(BaseModel):
+    month: int
+    rdn_savings_pln: float
+    fixed_savings_pln: float
+    rdn_avg_price_plnmwh: float
+    self_consumed_kwh: float
+
+
+class RdnSavingsResult(BaseModel):
+    # Annual aggregates
+    annual_self_consumed_kwh: float
+    annual_surplus_kwh: float
+    annual_deficit_kwh: float
+    annual_production_kwh: float
+    annual_consumption_kwh: float
+
+    # RDN savings
+    rdn_annual_savings_pln: float
+    rdn_avg_effective_price_plnmwh: float  # Weighted avg during self-consumption hours
+
+    # Fixed tariff savings (comparison)
+    fixed_annual_savings_pln: float
+    fixed_total_price_plnmwh: float
+
+    # Comparison
+    rdn_vs_fixed_delta_pln: float
+    rdn_vs_fixed_delta_pct: float
+
+    # Price statistics during self-consumption
+    rdn_price_stats: dict  # avg, min, max, median, std
+
+    # Monthly breakdown
+    monthly_comparison: List[RdnMonthlyComparison]
+
+    # RDN scenario info
+    rdn_prices_count: int
+    rdn_overall_avg_price: float
+
+
+@app.post("/analyze-rdn-savings", response_model=RdnSavingsResult)
+async def analyze_rdn_savings(request: RdnSavingsRequest):
+    """
+    Calculate savings with RDN dynamic prices vs fixed tariff.
+
+    For each hour h:
+      total_rdn_price[h] = rdn_price[h] + distribution + quality + oze + cogeneration + capacity + excise
+      self_consumed[h] = min(pv[h], load[h])
+      rdn_savings[h] = self_consumed[h] * total_rdn_price[h] / 1000  (kWh * PLN/MWh / 1000 = PLN)
+
+    Fixed comparison:
+      total_fixed_price = fixed_energy_active + all_fixed_charges
+      fixed_savings = sum(self_consumed) * total_fixed_price / 1000
+    """
+    pv = np.array(request.pv_generation_kwh, dtype=float)
+    load = np.array(request.load_kwh, dtype=float)
+    rdn = np.array(request.rdn_prices_plnmwh, dtype=float)
+
+    # Ensure same length
+    n = min(len(pv), len(load), len(rdn))
+    if n < 720:
+        raise HTTPException(400, f"Insufficient data: {n} hours (need ≥720)")
+    pv, load, rdn = pv[:n], load[:n], rdn[:n]
+
+    print(f"💰 RDN Analysis: {n} hours, avg RDN price={np.mean(rdn):.1f} PLN/MWh")
+
+    # Hour-by-hour energy balance
+    self_consumed = np.minimum(pv, load)
+    surplus = np.maximum(pv - load, 0)
+    deficit = np.maximum(load - pv, 0)
+
+    # Fixed charges sum
+    fixed_charges = (request.distribution_plnmwh + request.quality_fee_plnmwh +
+                     request.oze_fee_plnmwh + request.cogeneration_fee_plnmwh +
+                     request.capacity_fee_plnmwh + request.excise_tax_plnmwh)
+
+    # RDN: total price per hour = rdn_energy[h] + fixed_charges
+    total_rdn_price = rdn + fixed_charges  # PLN/MWh per hour
+
+    # Hourly savings: self_consumed[h] * total_rdn_price[h] / 1000
+    hourly_rdn_savings = self_consumed * total_rdn_price / 1000  # PLN
+    rdn_annual = float(np.sum(hourly_rdn_savings))
+
+    # Fixed tariff comparison
+    total_fixed_price = request.fixed_energy_active_plnmwh + fixed_charges
+    annual_self_consumed = float(np.sum(self_consumed))
+    fixed_annual = annual_self_consumed * total_fixed_price / 1000  # PLN
+
+    # Weighted average RDN price during self-consumption hours
+    mask = self_consumed > 0.1  # >0.1 kWh to avoid noise
+    if mask.any():
+        rdn_weighted_avg = float(np.average(total_rdn_price[mask], weights=self_consumed[mask]))
+    else:
+        rdn_weighted_avg = float(np.mean(total_rdn_price))
+
+    # Price statistics during self-consumption
+    if mask.any():
+        rdn_during_sc = rdn[mask]
+        price_stats = {
+            "avg": float(np.mean(rdn_during_sc)),
+            "min": float(np.min(rdn_during_sc)),
+            "max": float(np.max(rdn_during_sc)),
+            "median": float(np.median(rdn_during_sc)),
+            "std": float(np.std(rdn_during_sc))
+        }
+    else:
+        price_stats = {"avg": 0, "min": 0, "max": 0, "median": 0, "std": 0}
+
+    # Monthly breakdown
+    # Determine month boundaries from timestamps or assume calendar year
+    month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    # Adjust for data length (might be leap year or partial year)
+    total_days = n // 24
+    if total_days >= 366:
+        month_days[1] = 29  # leap year
+
+    monthly_comparison = []
+    hour_offset = 0
+    for month_idx in range(12):
+        days_in_month = month_days[month_idx]
+        hours_in_month = days_in_month * 24
+        end_h = min(hour_offset + hours_in_month, n)
+
+        if hour_offset >= n:
+            # Pad remaining months with zeros
+            monthly_comparison.append(RdnMonthlyComparison(
+                month=month_idx + 1, rdn_savings_pln=0, fixed_savings_pln=0,
+                rdn_avg_price_plnmwh=0, self_consumed_kwh=0
+            ))
+            continue
+
+        m_self = self_consumed[hour_offset:end_h]
+        m_rdn_savings = hourly_rdn_savings[hour_offset:end_h]
+        m_rdn_prices = rdn[hour_offset:end_h]
+        m_fixed_savings = float(np.sum(m_self)) * total_fixed_price / 1000
+
+        m_mask = m_self > 0.1
+        m_avg_rdn = float(np.average(m_rdn_prices[m_mask], weights=m_self[m_mask])) if m_mask.any() else float(np.mean(m_rdn_prices))
+
+        monthly_comparison.append(RdnMonthlyComparison(
+            month=month_idx + 1,
+            rdn_savings_pln=round(float(np.sum(m_rdn_savings)), 2),
+            fixed_savings_pln=round(m_fixed_savings, 2),
+            rdn_avg_price_plnmwh=round(m_avg_rdn, 1),
+            self_consumed_kwh=round(float(np.sum(m_self)), 1)
+        ))
+
+        hour_offset = end_h
+
+    # Delta
+    delta_pln = rdn_annual - fixed_annual
+    delta_pct = (delta_pln / fixed_annual * 100) if fixed_annual > 0 else 0
+
+    print(f"💰 RDN Result: RDN savings={rdn_annual:.0f} PLN, Fixed savings={fixed_annual:.0f} PLN, Delta={delta_pln:+.0f} PLN ({delta_pct:+.1f}%)")
+
+    return RdnSavingsResult(
+        annual_self_consumed_kwh=round(annual_self_consumed, 1),
+        annual_surplus_kwh=round(float(np.sum(surplus)), 1),
+        annual_deficit_kwh=round(float(np.sum(deficit)), 1),
+        annual_production_kwh=round(float(np.sum(pv)), 1),
+        annual_consumption_kwh=round(float(np.sum(load)), 1),
+        rdn_annual_savings_pln=round(rdn_annual, 2),
+        rdn_avg_effective_price_plnmwh=round(rdn_weighted_avg, 1),
+        fixed_annual_savings_pln=round(fixed_annual, 2),
+        fixed_total_price_plnmwh=round(total_fixed_price, 1),
+        rdn_vs_fixed_delta_pln=round(delta_pln, 2),
+        rdn_vs_fixed_delta_pct=round(delta_pct, 1),
+        rdn_price_stats=price_stats,
+        monthly_comparison=monthly_comparison,
+        rdn_prices_count=n,
+        rdn_overall_avg_price=round(float(np.mean(rdn)), 1)
+    )
+
+
+# ============================================================================
+# TCSL — TOTAL COST TO SERVE LOAD (Unified Cost Engine)
+# ============================================================================
+
+# Polish public holidays by year (used for K-class capacity fee calculation)
+POLISH_HOLIDAYS = {
+    2024: {
+        "2024-01-01", "2024-01-06", "2024-03-31", "2024-04-01",
+        "2024-05-01", "2024-05-03", "2024-05-30", "2024-06-20",
+        "2024-08-15", "2024-11-01", "2024-11-11", "2024-12-25", "2024-12-26"
+    },
+    2025: {
+        "2025-01-01", "2025-01-06", "2025-04-20", "2025-04-21",
+        "2025-05-01", "2025-05-03", "2025-06-08", "2025-06-19",
+        "2025-08-15", "2025-11-01", "2025-11-11", "2025-12-25", "2025-12-26"
+    },
+    2026: {
+        "2026-01-01", "2026-01-06", "2026-04-05", "2026-04-06",
+        "2026-05-01", "2026-05-03", "2026-05-24", "2026-06-04",
+        "2026-08-15", "2026-11-01", "2026-11-11", "2026-12-25", "2026-12-26"
+    },
+    2027: {
+        "2027-01-01", "2027-01-06", "2027-03-28", "2027-03-29",
+        "2027-05-01", "2027-05-03", "2027-05-16", "2027-05-27",
+        "2027-08-15", "2027-11-01", "2027-11-11", "2027-12-25", "2027-12-26"
+    },
+}
+
+
+def is_polish_workday(day_of_year: int, start_year: int) -> bool:
+    """Check if a given day-of-year is a Polish workday (Mon-Fri, not a holiday)."""
+    from datetime import date, timedelta
+    d = date(start_year, 1, 1) + timedelta(days=day_of_year)
+    if d.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    holidays = POLISH_HOLIDAYS.get(d.year, set())
+    return d.isoformat() not in holidays
+
+
+def get_k_class(delta_s: float) -> tuple:
+    """Determine K-class from Δs value. Returns (class_name, coefficient).
+
+    Boundaries per Rozporządzenie Ministra Klimatu i Środowiska (Dz.U. 2023 poz. 503):
+      K1: Δs < -10%  → Kz = 0.17
+      K2: -10% ≤ Δs < 10%  → Kz = 0.50
+      K3: 10% ≤ Δs < 30%  → Kz = 0.83
+      K4: Δs ≥ 30%  → Kz = 1.00
+    """
+    if delta_s < -10:
+        return ("K1", 0.17)
+    elif delta_s < 10:
+        return ("K2", 0.50)
+    elif delta_s < 30:
+        return ("K3", 0.83)
+    else:
+        return ("K4", 1.00)
+
+
+# K-class boundaries and coefficients for stochastic estimation
+_K_BOUNDARIES = [-10.0, 10.0, 30.0]  # Δs thresholds per regulation
+_K_COEFFICIENTS = [0.17, 0.50, 0.83, 1.00]  # K1, K2, K3, K4
+
+
+def _norm_cdf(x: float, mu: float = 0.0, sigma: float = 1.0) -> float:
+    """Normal CDF using Python built-in math.erf (no scipy needed)."""
+    import math
+    if sigma <= 0:
+        return 1.0 if x >= mu else 0.0
+    z = (x - mu) / sigma
+    return 0.5 * (1.0 + math.erf(z / 1.4142135623730951))
+
+
+def _estimate_stochastic_k_class(mean_delta_s: float, avg_R: float) -> dict:
+    """
+    Estimate K-class probability distribution for averaged/synthetic profiles.
+
+    When a consumption profile is averaged (every working day identical),
+    the daily Δs variance is lost, causing all days to get the same K-class.
+    This function estimates the true K-class distribution using:
+
+    1. The mean Δs from the average profile
+    2. An empirical σ_Δs estimated from the selected/outside consumption ratio R
+
+    Formula: σ_Δs = 25 / (R + 0.4)
+    Calibrated against real dairy industry data (MLEKOMA):
+      R=1.02 → σ=17.6% (actual measured: 17.1%)
+
+    Returns dict with probabilities and effective coefficient.
+    """
+    # Estimate σ_Δs from the consumption ratio
+    # Flat profiles (R≈1) → high daily variability → σ≈18%
+    # Peaky profiles (R≈2) → low daily variability → σ≈10%
+    sigma_delta_s = 25.0 / (max(avg_R, 0.5) + 0.4)
+
+    # Compute K-class probabilities using normal distribution
+    # P(K1) = P(Δs < -10), P(K2) = P(-10 ≤ Δs < 10), P(K3) = P(10 ≤ Δs < 30), P(K4) = P(Δs ≥ 30)
+    probs = []
+    prev_cdf = 0.0
+    for boundary in _K_BOUNDARIES:
+        cdf = _norm_cdf(boundary, mean_delta_s, sigma_delta_s)
+        probs.append(cdf - prev_cdf)
+        prev_cdf = cdf
+    probs.append(1.0 - prev_cdf)  # K4: P(Δs ≥ 30)
+
+    # Effective coefficient = weighted average
+    eff_coeff = sum(p * c for p, c in zip(probs, _K_COEFFICIENTS))
+
+    # Determine dominant K-class (highest probability)
+    max_idx = max(range(4), key=lambda i: probs[i])
+    dominant_k = f"K{max_idx + 1}"
+
+    return {
+        "probabilities": {f"K{i+1}": round(probs[i], 4) for i in range(4)},
+        "effective_coefficient": round(eff_coeff, 4),
+        "sigma_delta_s": round(sigma_delta_s, 2),
+        "dominant_k_class": dominant_k,
+        "is_stochastic": True,
+    }
+
+
+def calculate_capacity_fee(
+    grid_draw: np.ndarray,
+    som_rate_pln_kwh: float,
+    selected_start: int,
+    selected_end: int,
+    start_year: int,
+    data_start_date: str = None
+) -> dict:
+    """
+    Calculate capacity fee using K-class algorithm.
+    Port from consumption.js calculateKClassAnalysis().
+
+    Includes stochastic correction for averaged/synthetic profiles:
+    when all working days have identical consumption patterns (std of Δs < 2%),
+    the algorithm estimates the true K-class distribution using a statistical
+    model, preventing systematic underestimation of capacity fees.
+
+    Args:
+        grid_draw: 8760-hour array of grid import [kWh]
+        som_rate_pln_kwh: SOM rate [PLN/kWh]
+        selected_start: Start of selected hours (e.g. 7)
+        selected_end: End of selected hours (e.g. 22)
+        start_year: Calendar year for workday/holiday detection (fallback)
+        data_start_date: Actual start date of data (ISO YYYY-MM-DD), overrides start_year
+
+    Returns:
+        dict with annual_fee_pln, monthly_fees[12], k_class, delta_s, etc.
+    """
+    n_days = len(grid_draw) // 24
+    monthly_fees = np.zeros(12)
+    total_fee = 0.0
+    total_zs = 0.0
+    all_delta_s = []
+    # Track per-day data for potential stochastic recalculation
+    day_data = []  # list of (date, selected_sum, outside_sum, month_idx)
+
+    from datetime import date, timedelta
+    if data_start_date:
+        try:
+            parts = data_start_date.split('-')
+            start_date = date(int(parts[0]), int(parts[1]), int(parts[2]))
+        except (ValueError, IndexError):
+            start_date = date(start_year, 1, 1)
+    else:
+        start_date = date(start_year, 1, 1)
+
+    selected_count_per_day = selected_end - selected_start
+    outside_count_per_day = 24 - selected_count_per_day
+
+    for day in range(n_days):
+        d = start_date + timedelta(days=day)
+        workday = d.weekday() < 5
+        if workday:
+            holidays = POLISH_HOLIDAYS.get(d.year, set())
+            if d.isoformat() in holidays:
+                workday = False
+
+        if not workday:
+            continue
+
+        day_start = day * 24
+        selected_sum = 0.0
+        outside_sum = 0.0
+
+        for hour in range(24):
+            idx = day_start + hour
+            if idx >= len(grid_draw):
+                break
+            val = grid_draw[idx]
+            if selected_start <= hour < selected_end:
+                selected_sum += val
+            else:
+                outside_sum += val
+
+        avg_selected = selected_sum / selected_count_per_day if selected_count_per_day > 0 else 0
+        avg_outside = outside_sum / outside_count_per_day if outside_count_per_day > 0 else 0
+        delta_s = ((avg_selected / avg_outside) - 1) * 100 if avg_outside > 0 else 0
+
+        k_name, k_coeff = get_k_class(delta_s)
+        all_delta_s.append(delta_s)
+        day_data.append((d, selected_sum, outside_sum, d.month - 1))
+
+        # WOM = A × SOM × ZS (ZS = energy in selected hours in kWh)
+        day_fee = k_coeff * som_rate_pln_kwh * selected_sum
+        total_fee += day_fee
+        total_zs += selected_sum / 1000  # kWh→MWh for reporting
+
+        month_idx = d.month - 1
+        monthly_fees[month_idx] += day_fee
+
+    avg_delta_s = float(np.mean(all_delta_s)) if all_delta_s else 0
+    overall_k_name, overall_k_coeff = get_k_class(avg_delta_s)
+    stochastic_info = None
+
+    # --- Stochastic correction for averaged profiles ---
+    # Detection: if std(Δs) < 2%, the profile is averaged/synthetic
+    # (real profiles have std typically 10-25%)
+    if len(all_delta_s) >= 10:
+        delta_s_std = float(np.std(all_delta_s))
+
+        if delta_s_std < 2.0:
+            # Profile is averaged - apply stochastic K-class estimation
+            total_sel = sum(dd[1] for dd in day_data)
+            total_out = sum(dd[2] for dd in day_data)
+            n_workdays = len(day_data)
+
+            avg_sel_per_day = total_sel / n_workdays if n_workdays > 0 else 0
+            avg_out_per_day = total_out / n_workdays if n_workdays > 0 else 0
+            avg_R = (avg_sel_per_day / selected_count_per_day) / \
+                    (avg_out_per_day / outside_count_per_day) \
+                    if avg_out_per_day > 0 and outside_count_per_day > 0 else 1.0
+
+            stochastic_info = _estimate_stochastic_k_class(avg_delta_s, avg_R)
+            eff_coeff = stochastic_info["effective_coefficient"]
+
+            # Recalculate fees using the stochastic effective coefficient
+            monthly_fees = np.zeros(12)
+            total_fee = 0.0
+            for d, sel_sum, out_sum, m_idx in day_data:
+                day_fee = eff_coeff * som_rate_pln_kwh * sel_sum
+                total_fee += day_fee
+                monthly_fees[m_idx] += day_fee
+
+            overall_k_name = stochastic_info["dominant_k_class"]
+            overall_k_coeff = eff_coeff
+
+            import logging
+            logging.info(
+                f"Stochastic K-class correction applied: "
+                f"delta_s_std={delta_s_std:.2f}%, R={avg_R:.3f}, "
+                f"sigma_est={stochastic_info['sigma_delta_s']}%, "
+                f"eff_coeff={eff_coeff:.4f}, "
+                f"K-dist={stochastic_info['probabilities']}"
+            )
+
+    result = {
+        "annual_fee_pln": round(float(total_fee), 2),
+        "monthly_fees": [round(float(m), 2) for m in monthly_fees],
+        "k_class": overall_k_name,
+        "k_coefficient": round(overall_k_coeff, 4),
+        "delta_s": round(avg_delta_s, 2),
+        "total_zs_mwh": round(float(total_zs), 1),
+    }
+
+    if stochastic_info:
+        result["stochastic"] = stochastic_info
+
+    return result
+
+
+# =============================================================================
+# Capacity Fee Scenarios (K-class) — multi-scenario endpoint
+# =============================================================================
+
+class CapacityFeeScenarioResult(BaseModel):
+    """K-class result for a single scenario."""
+    scenario: str
+    annual_fee_pln: float
+    k_class: str
+    k_coefficient: float
+    delta_s: float
+    total_zs_mwh: float
+    monthly_fees: List[float]
+    stochastic: Optional[dict] = None
+
+
+class CapacityFeeScenariosRequest(BaseModel):
+    """Request for multi-scenario capacity fee calculation."""
+    load_kwh: List[float] = Field(..., description="Hourly load profile [kWh], 8760 values")
+    pv_kwh: Optional[List[float]] = Field(None, description="Hourly PV production [kWh], 8760 values")
+    bess_charge_from_grid_kwh: Optional[List[float]] = Field(None, description="Hourly BESS charging from grid [kWh]")
+    bess_discharge_kwh: Optional[List[float]] = Field(None, description="Hourly BESS discharge [kWh]")
+    som_rate_pln_kwh: float = Field(0.2194, description="SOM rate [PLN/kWh]")
+    selected_start: int = Field(7, ge=0, le=23, description="Selected hours start (e.g. 7)")
+    selected_end: int = Field(22, ge=1, le=24, description="Selected hours end (e.g. 22)")
+    start_year: int = Field(2026, description="Calendar year for workday/holiday detection")
+    data_start_date: Optional[str] = Field(None, description="Actual start date ISO YYYY-MM-DD")
+
+
+class CapacityFeeScenariosResult(BaseModel):
+    """Multi-scenario K-class calculation result."""
+    baseline: CapacityFeeScenarioResult
+    with_pv: Optional[CapacityFeeScenarioResult] = None
+    with_pv_bess: Optional[CapacityFeeScenarioResult] = None
+
+    # Savings (deltas)
+    savings_pv_only_pln: float = 0.0
+    savings_pv_bess_pln: float = 0.0
+    savings_bess_incremental_pln: float = 0.0
+
+
+@app.post("/compute-capacity-fee-scenarios", response_model=CapacityFeeScenariosResult)
+async def compute_capacity_fee_scenarios(request: CapacityFeeScenariosRequest):
+    """
+    Oblicz opłatę mocową (K-class) dla max 3 scenariuszy:
+      S0: Baseline (sam load)
+      S1: Z PV (load - pv)
+      S2: Z PV + BESS (load - pv - discharge + charge_from_grid)
+
+    Zwraca K-class, współczynnik, opłatę roczną i oszczędności per scenariusz.
+    """
+    import logging
+    logger = logging.getLogger("profile-analysis")
+
+    load = np.array(request.load_kwh, dtype=np.float64)
+    n = len(load)
+
+    # --- S0: Baseline (no PV, no BESS) ---
+    grid_baseline = load.copy()
+    s0 = calculate_capacity_fee(
+        grid_baseline, request.som_rate_pln_kwh,
+        request.selected_start, request.selected_end,
+        request.start_year, request.data_start_date
+    )
+    baseline = CapacityFeeScenarioResult(
+        scenario="baseline", annual_fee_pln=s0["annual_fee_pln"],
+        k_class=s0["k_class"], k_coefficient=s0["k_coefficient"],
+        delta_s=s0["delta_s"], total_zs_mwh=s0["total_zs_mwh"],
+        monthly_fees=s0["monthly_fees"], stochastic=s0.get("stochastic")
+    )
+    logger.info(f"K-class S0 (baseline): {s0['k_class']} coeff={s0['k_coefficient']:.4f} fee={s0['annual_fee_pln']:.0f} PLN")
+
+    result = CapacityFeeScenariosResult(baseline=baseline)
+
+    # --- S1: With PV (if pv_kwh provided) ---
+    if request.pv_kwh and len(request.pv_kwh) > 0:
+        pv = np.array(request.pv_kwh[:n], dtype=np.float64)
+        if len(pv) < n:
+            pv = np.pad(pv, (0, n - len(pv)), constant_values=0)
+        grid_pv = np.maximum(load - pv, 0.0)
+
+        s1 = calculate_capacity_fee(
+            grid_pv, request.som_rate_pln_kwh,
+            request.selected_start, request.selected_end,
+            request.start_year, request.data_start_date
+        )
+        result.with_pv = CapacityFeeScenarioResult(
+            scenario="with_pv", annual_fee_pln=s1["annual_fee_pln"],
+            k_class=s1["k_class"], k_coefficient=s1["k_coefficient"],
+            delta_s=s1["delta_s"], total_zs_mwh=s1["total_zs_mwh"],
+            monthly_fees=s1["monthly_fees"], stochastic=s1.get("stochastic")
+        )
+        result.savings_pv_only_pln = round(s0["annual_fee_pln"] - s1["annual_fee_pln"], 2)
+        logger.info(f"K-class S1 (PV): {s1['k_class']} coeff={s1['k_coefficient']:.4f} fee={s1['annual_fee_pln']:.0f} PLN, savings={result.savings_pv_only_pln:.0f}")
+
+        # --- S2: With PV + BESS (if bess profiles provided) ---
+        if request.bess_discharge_kwh and len(request.bess_discharge_kwh) > 0:
+            discharge = np.array(request.bess_discharge_kwh[:n], dtype=np.float64)
+            if len(discharge) < n:
+                discharge = np.pad(discharge, (0, n - len(discharge)), constant_values=0)
+
+            charge_from_grid = np.zeros(n, dtype=np.float64)
+            if request.bess_charge_from_grid_kwh and len(request.bess_charge_from_grid_kwh) > 0:
+                cfg = np.array(request.bess_charge_from_grid_kwh[:n], dtype=np.float64)
+                if len(cfg) < n:
+                    cfg = np.pad(cfg, (0, n - len(cfg)), constant_values=0)
+                charge_from_grid = cfg
+
+            # Grid import with PV + BESS:
+            # BESS discharge reduces grid import, BESS charging from grid increases it
+            grid_pv_bess = np.maximum(load - pv - discharge + charge_from_grid, 0.0)
+
+            s2 = calculate_capacity_fee(
+                grid_pv_bess, request.som_rate_pln_kwh,
+                request.selected_start, request.selected_end,
+                request.start_year, request.data_start_date
+            )
+            result.with_pv_bess = CapacityFeeScenarioResult(
+                scenario="with_pv_bess", annual_fee_pln=s2["annual_fee_pln"],
+                k_class=s2["k_class"], k_coefficient=s2["k_coefficient"],
+                delta_s=s2["delta_s"], total_zs_mwh=s2["total_zs_mwh"],
+                monthly_fees=s2["monthly_fees"], stochastic=s2.get("stochastic")
+            )
+            result.savings_pv_bess_pln = round(s0["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+            result.savings_bess_incremental_pln = round(s1["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+            logger.info(f"K-class S2 (PV+BESS): {s2['k_class']} coeff={s2['k_coefficient']:.4f} fee={s2['annual_fee_pln']:.0f} PLN, bess_incremental={result.savings_bess_incremental_pln:.0f}")
+
+    elif request.bess_discharge_kwh and len(request.bess_discharge_kwh) > 0:
+        # BESS without PV (load_only mode)
+        discharge = np.array(request.bess_discharge_kwh[:n], dtype=np.float64)
+        if len(discharge) < n:
+            discharge = np.pad(discharge, (0, n - len(discharge)), constant_values=0)
+
+        charge_from_grid = np.zeros(n, dtype=np.float64)
+        if request.bess_charge_from_grid_kwh and len(request.bess_charge_from_grid_kwh) > 0:
+            cfg = np.array(request.bess_charge_from_grid_kwh[:n], dtype=np.float64)
+            if len(cfg) < n:
+                cfg = np.pad(cfg, (0, n - len(cfg)), constant_values=0)
+            charge_from_grid = cfg
+
+        grid_bess = np.maximum(load - discharge + charge_from_grid, 0.0)
+
+        s2 = calculate_capacity_fee(
+            grid_bess, request.som_rate_pln_kwh,
+            request.selected_start, request.selected_end,
+            request.start_year, request.data_start_date
+        )
+        result.with_pv_bess = CapacityFeeScenarioResult(
+            scenario="bess_only", annual_fee_pln=s2["annual_fee_pln"],
+            k_class=s2["k_class"], k_coefficient=s2["k_coefficient"],
+            delta_s=s2["delta_s"], total_zs_mwh=s2["total_zs_mwh"],
+            monthly_fees=s2["monthly_fees"], stochastic=s2.get("stochastic")
+        )
+        result.savings_pv_bess_pln = round(s0["annual_fee_pln"] - s2["annual_fee_pln"], 2)
+        result.savings_bess_incremental_pln = result.savings_pv_bess_pln
+        logger.info(f"K-class S2 (BESS only): {s2['k_class']} coeff={s2['k_coefficient']:.4f} fee={s2['annual_fee_pln']:.0f} PLN")
+
+    return result
+
+
+def build_hourly_tariff_prices(tariff_config: dict, num_hours: int, start_year: int, data_start_date: str = None) -> np.ndarray:
+    """
+    Generate hourly tariff energy-active prices based on tariff config.
+    Port from economics.js buildHourlyTariffPrices().
+
+    Returns np.ndarray of num_hours PLN/MWh values.
+    """
+    t_type = tariff_config.get("type", "flat")
+    from datetime import date as dt_date
+    if data_start_date:
+        try:
+            parts = data_start_date.split('-')
+            start_dt = dt_date(int(parts[0]), int(parts[1]), int(parts[2]))
+            jan1_dow = start_dt.weekday()  # day-of-week of actual data start
+        except (ValueError, IndexError):
+            jan1_dow = dt_date(start_year, 1, 1).weekday()
+    else:
+        jan1_dow = dt_date(start_year, 1, 1).weekday()  # 0=Mon, 6=Sun
+
+    prices = np.empty(num_hours, dtype=float)
+
+    if t_type == "flat":
+        prices[:] = tariff_config.get("flat_rate", 750)
+        return prices
+
+    if t_type == "two_zone":
+        tz = tariff_config.get("two_zone", {})
+        day_rate = tz.get("day_rate", 850)
+        night_rate = tz.get("night_rate", 450)
+        wd = tz.get("weekday", {})
+        we = tz.get("weekend", {})
+        wd_start = wd.get("start", 6)
+        wd_end = wd.get("end", 22)
+        we_start = we.get("start", 6)
+        we_end = we.get("end", 13)
+
+        for h in range(num_hours):
+            day_of_year = h // 24
+            hour_of_day = h % 24
+            dow = (jan1_dow + day_of_year) % 7  # 0=Mon, 6=Sun
+            is_weekend = dow >= 5
+
+            if is_weekend:
+                prices[h] = day_rate if we_start <= hour_of_day < we_end else night_rate
+            else:
+                prices[h] = day_rate if wd_start <= hour_of_day < wd_end else night_rate
+
+        return prices
+
+    if t_type == "three_zone":
+        tz = tariff_config.get("three_zone", {})
+        peak_rate = tz.get("peak_rate", 950)
+        partial_rate = tz.get("partial_rate", 700)
+        off_peak_rate = tz.get("off_peak_rate", 400)
+        p1 = tz.get("peak1", {})
+        p2 = tz.get("peak2", {})
+        pa = tz.get("partial", {})
+        p1s, p1e = p1.get("start", 7), p1.get("end", 13)
+        p2s, p2e = p2.get("start", 17), p2.get("end", 21)
+        pas, pae = pa.get("start", 13), pa.get("end", 17)
+
+        for h in range(num_hours):
+            day_of_year = h // 24
+            hour_of_day = h % 24
+            dow = (jan1_dow + day_of_year) % 7
+            is_weekend = dow >= 5
+
+            if is_weekend:
+                prices[h] = off_peak_rate
+            elif (p1s <= hour_of_day < p1e) or (p2s <= hour_of_day < p2e):
+                prices[h] = peak_rate
+            elif pas <= hour_of_day < pae:
+                prices[h] = partial_rate
+            else:
+                prices[h] = off_peak_rate
+
+        return prices
+
+    # Fallback
+    prices[:] = 510
+    return prices
+
+
+def compute_tcsl_for_scenario(
+    load: np.ndarray,
+    pv: np.ndarray,
+    active_prices: np.ndarray,
+    fees_var_sum: float,
+    fees_fixed_monthly_pln: float,
+    som_rate: float,
+    sel_start: int,
+    sel_end: int,
+    start_year: int,
+    data_start_date: str = None
+) -> dict:
+    """
+    Core TCSL calculation for one scenario (tariff OR RDN) × one PV config.
+
+    Returns dict with cost breakdown.
+    """
+    n = min(len(load), len(pv), len(active_prices))
+    load_n = load[:n]
+    pv_n = pv[:n]
+    prices_n = active_prices[:n]
+
+    self_consumed = np.minimum(pv_n, load_n)
+    grid_import = np.maximum(load_n - pv_n, 0)
+
+    # Variable costs: E_grid[h] × (active_price[h] + fees_var) / 1000
+    hourly_total_price = prices_n + fees_var_sum
+    hourly_variable_cost = grid_import * hourly_total_price / 1000  # PLN
+    total_variable = float(np.sum(hourly_variable_cost))
+
+    # Separate: energy active vs fees var
+    energy_active_cost = float(np.sum(grid_import * prices_n / 1000))
+    fees_var_cost = float(np.sum(grid_import * fees_var_sum / 1000))
+
+    # Capacity fee (K-class)
+    cap_result = calculate_capacity_fee(grid_import, som_rate, sel_start, sel_end, start_year, data_start_date)
+
+    # Fixed monthly × 12
+    fixed_annual = fees_fixed_monthly_pln * 12
+
+    # TCSL total
+    tcsl = total_variable + cap_result["annual_fee_pln"] + fixed_annual
+
+    # Monthly breakdown — group hours by actual calendar month using data_start_date
+    from datetime import date as dt_date, timedelta as dt_td
+    if data_start_date:
+        try:
+            parts = data_start_date.split('-')
+            sd = dt_date(int(parts[0]), int(parts[1]), int(parts[2]))
+        except (ValueError, IndexError):
+            sd = dt_date(start_year, 1, 1)
+    else:
+        sd = dt_date(start_year, 1, 1)
+
+    # Build hour→calendar_month mapping via day boundaries
+    month_hour_ranges = {}  # calendar_month (1-12) → (h_start, h_end)
+    n_days_data = (n + 23) // 24
+    for day_idx in range(n_days_data):
+        d = sd + dt_td(days=day_idx)
+        cal_month = d.month
+        h_start = day_idx * 24
+        h_end = min((day_idx + 1) * 24, n)
+        if h_start >= n:
+            break
+        if cal_month not in month_hour_ranges:
+            month_hour_ranges[cal_month] = (h_start, h_end)
+        else:
+            month_hour_ranges[cal_month] = (month_hour_ranges[cal_month][0], h_end)
+
+    monthly = []
+    for cal_month in sorted(month_hour_ranges.keys()):
+        h_start, h_end = month_hour_ranges[cal_month]
+        m_grid = grid_import[h_start:h_end]
+        m_prices = prices_n[h_start:h_end]
+        m_load = load_n[h_start:h_end]
+        m_pv = pv_n[h_start:h_end]
+
+        m_energy_active = float(np.sum(m_grid * m_prices / 1000))
+        m_fees_var = float(np.sum(m_grid * fees_var_sum / 1000))
+        m_variable = m_energy_active + m_fees_var
+        m_capacity = cap_result["monthly_fees"][cal_month - 1]  # 0-indexed array
+        m_fixed = fees_fixed_monthly_pln
+        m_tcsl = m_variable + m_capacity + m_fixed
+
+        monthly.append({
+            "month": cal_month,
+            "consumption_kwh": round(float(np.sum(m_load)), 1),
+            "production_kwh": round(float(np.sum(m_pv)), 1),
+            "self_consumed_kwh": round(float(np.sum(np.minimum(m_pv, m_load))), 1),
+            "grid_import_kwh": round(float(np.sum(m_grid)), 1),
+            "energy_active_pln": round(m_energy_active, 2),
+            "fees_var_pln": round(m_fees_var, 2),
+            "variable_total_pln": round(m_variable, 2),
+            "capacity_fee_pln": round(m_capacity, 2),
+            "fixed_monthly_pln": round(m_fixed, 2),
+            "tcsl_pln": round(m_tcsl, 2),
+        })
+
+    return {
+        "tcsl_annual_pln": round(tcsl, 2),
+        "variable_cost_pln": round(total_variable, 2),
+        "energy_active_cost_pln": round(energy_active_cost, 2),
+        "fees_var_cost_pln": round(fees_var_cost, 2),
+        "capacity_fee_total_pln": cap_result["annual_fee_pln"],
+        "fixed_monthly_total_pln": round(fixed_annual, 2),
+        "k_class": cap_result["k_class"],
+        "k_coefficient": cap_result["k_coefficient"],
+        "delta_s": cap_result["delta_s"],
+        "stochastic": cap_result.get("stochastic"),
+        "monthly": monthly,
+        "annual_consumption_kwh": round(float(np.sum(load_n)), 1),
+        "annual_production_kwh": round(float(np.sum(pv_n)), 1),
+        "annual_self_consumed_kwh": round(float(np.sum(self_consumed)), 1),
+        "annual_grid_import_kwh": round(float(np.sum(grid_import)), 1),
+    }
+
+
+class TcslTariffConfig(BaseModel):
+    type: str = "flat"
+    flat_rate: float = 750
+    two_zone: Optional[dict] = None
+    three_zone: Optional[dict] = None
+
+
+class TcslFeesVariable(BaseModel):
+    distribution_plnmwh: float = 200
+    quality_fee_plnmwh: float = 10
+    oze_fee_plnmwh: float = 7
+    cogeneration_fee_plnmwh: float = 10
+    excise_tax_plnmwh: float = 5
+
+
+class TcslFeesFixedMonthly(BaseModel):
+    dist_fixed_rate_zl_per_kw_month: float = 9.14
+    contracted_power_kw: float = 50.0
+    osd_subscription_pln_month: float = 5.54
+    transition_fee_pln_month: float = 0.0
+    supplier_trade_fee_pln_month: float = 0.0
+
+
+class TcslCapacityFeeConfig(BaseModel):
+    som_rate_pln_kwh: float = 0.2194
+    selected_hours_start: int = 7
+    selected_hours_end: int = 22
+    year: int = 2025
+
+
+class TcslRequest(BaseModel):
+    load_kwh: List[float] = Field(..., description="Hourly consumption [kWh], 8760 values")
+    pv_generation_kwh: List[float] = Field(..., description="Hourly PV generation [kWh], 8760 values")
+    tariff_config: TcslTariffConfig = Field(default_factory=TcslTariffConfig)
+    rdn_prices_plnmwh: Optional[List[float]] = Field(None, description="Hourly RDN prices [PLN/MWh]. If None, only tariff scenario computed.")
+    fees_variable: TcslFeesVariable = Field(default_factory=TcslFeesVariable)
+    fees_fixed_monthly: TcslFeesFixedMonthly = Field(default_factory=TcslFeesFixedMonthly)
+    capacity_fee_config: TcslCapacityFeeConfig = Field(default_factory=TcslCapacityFeeConfig)
+    start_year: int = 2025
+    data_start_date: Optional[str] = Field(None, description="Actual start date of load data (ISO YYYY-MM-DD). When provided, overrides start_year for calendar mapping in K-class and tariff zone calculations.")
+
+
+class TcslMonthlyBreakdown(BaseModel):
+    month: int
+    tariff: dict
+    rdn: Optional[dict] = None
+
+
+class TcslResult(BaseModel):
+    # Tariff scenario with PV
+    tariff_tcsl_annual_pln: float
+    tariff_variable_cost_pln: float
+    tariff_fixed_monthly_total_pln: float
+    tariff_capacity_fee_total_pln: float
+    tariff_energy_active_cost_pln: float
+    tariff_fees_var_cost_pln: float
+
+    # RDN scenario with PV (optional)
+    rdn_tcsl_annual_pln: Optional[float] = None
+    rdn_variable_cost_pln: Optional[float] = None
+    rdn_fixed_monthly_total_pln: Optional[float] = None
+    rdn_capacity_fee_total_pln: Optional[float] = None
+    rdn_energy_active_cost_pln: Optional[float] = None
+    rdn_fees_var_cost_pln: Optional[float] = None
+
+    # Baseline (no PV)
+    nopv_tariff_tcsl_pln: float
+    nopv_rdn_tcsl_pln: Optional[float] = None
+
+    # Deltas
+    pv_savings_tariff_pln: float
+    pv_savings_rdn_pln: Optional[float] = None
+    rdn_vs_tariff_delta_pln: Optional[float] = None
+    rdn_vs_tariff_delta_pct: Optional[float] = None
+
+    # Energy balance
+    annual_consumption_kwh: float
+    annual_production_kwh: float
+    annual_self_consumed_kwh: float
+    annual_grid_import_kwh: float
+
+    # K-class
+    kclass_with_pv: str
+    kclass_without_pv: str
+    capacity_fee_with_pv_pln: float
+    capacity_fee_without_pv_pln: float
+    kclass_stochastic_nopv: Optional[dict] = None
+    kclass_stochastic_pv: Optional[dict] = None
+
+    # Monthly
+    monthly_breakdown: List[dict]
+
+    # noPV breakdown (for PV savings reports)
+    nopv_tariff_variable_pln: float = 0
+    nopv_tariff_energy_active_pln: float = 0
+    nopv_tariff_fees_var_pln: float = 0
+    nopv_tariff_capacity_fee_pln: float = 0
+    nopv_rdn_variable_pln: Optional[float] = None
+    nopv_rdn_energy_active_pln: Optional[float] = None
+    nopv_rdn_fees_var_pln: Optional[float] = None
+    nopv_rdn_capacity_fee_pln: Optional[float] = None
+    nopv_monthly_breakdown: Optional[List[dict]] = None
+
+    # Price stats
+    rdn_price_stats: Optional[dict] = None
+    tariff_avg_price_plnmwh: float
+
+
+@app.post("/compute-tcsl", response_model=TcslResult)
+async def compute_tcsl(request: TcslRequest):
+    """
+    Unified Total Cost to Serve Load calculation.
+
+    Computes TCSL for tariff (and optionally RDN) scenario,
+    both with PV and without PV (baseline), with full 3-bucket fee breakdown:
+      - Variable costs (per kWh of grid import)
+      - Fixed monthly costs
+      - Capacity fee (K-class algorithm)
+
+    TCSL = Σ variable + Σ fixed_monthly + Σ capacity_fee
+    Savings = TCSL(noPV) - TCSL(withPV)
+    Delta = TCSL(tariff) - TCSL(rdn)
+    """
+    load = np.array(request.load_kwh, dtype=float)
+    pv = np.array(request.pv_generation_kwh, dtype=float)
+
+    n = min(len(load), len(pv))
+    if n < 720:
+        raise HTTPException(400, f"Insufficient data: {n} hours (need ≥720)")
+
+    load = load[:n]
+    pv = pv[:n]
+
+    print(f"⚡ TCSL: {n} hours, consumption={np.sum(load):.0f} kWh, production={np.sum(pv):.0f} kWh")
+
+    # Sum of variable fees (PLN/MWh)
+    fv = request.fees_variable
+    fees_var_sum = (fv.distribution_plnmwh + fv.quality_fee_plnmwh +
+                    fv.oze_fee_plnmwh + fv.cogeneration_fee_plnmwh +
+                    fv.excise_tax_plnmwh)
+
+    # Fixed monthly total (PLN/month)
+    fm = request.fees_fixed_monthly
+    fixed_monthly_pln = (fm.dist_fixed_rate_zl_per_kw_month * fm.contracted_power_kw +
+                         fm.osd_subscription_pln_month +
+                         fm.transition_fee_pln_month +
+                         fm.supplier_trade_fee_pln_month)
+
+    # Capacity fee params
+    cf = request.capacity_fee_config
+    som = cf.som_rate_pln_kwh
+    sel_start = cf.selected_hours_start
+    sel_end = cf.selected_hours_end
+    year = request.start_year
+    dsd = request.data_start_date  # actual start date of data array
+
+    # Build tariff hourly prices
+    tc_dict = request.tariff_config.model_dump()
+    tariff_prices = build_hourly_tariff_prices(tc_dict, n, year, dsd)
+    tariff_avg = float(np.mean(tariff_prices))
+
+    # Zero PV array for baseline
+    zero_pv = np.zeros(n)
+
+    # ===== 4 scenarios =====
+    # 1. Tariff + PV
+    tariff_pv = compute_tcsl_for_scenario(load, pv, tariff_prices, fees_var_sum, fixed_monthly_pln, som, sel_start, sel_end, year, dsd)
+
+    # 2. Tariff + no PV (baseline)
+    tariff_nopv = compute_tcsl_for_scenario(load, zero_pv, tariff_prices, fees_var_sum, fixed_monthly_pln, som, sel_start, sel_end, year, dsd)
+
+    # 3 & 4. RDN scenarios (optional)
+    rdn_pv_result = None
+    rdn_nopv_result = None
+    rdn_price_stats = None
+
+    if request.rdn_prices_plnmwh and len(request.rdn_prices_plnmwh) >= 720:
+        rdn = np.array(request.rdn_prices_plnmwh[:n], dtype=float)
+
+        rdn_pv_result = compute_tcsl_for_scenario(load, pv, rdn, fees_var_sum, fixed_monthly_pln, som, sel_start, sel_end, year, dsd)
+        rdn_nopv_result = compute_tcsl_for_scenario(load, zero_pv, rdn, fees_var_sum, fixed_monthly_pln, som, sel_start, sel_end, year, dsd)
+
+        # Price stats during grid import hours
+        grid_import = np.maximum(load - pv, 0)
+        mask = grid_import > 0.1
+        if mask.any():
+            rdn_gi = rdn[mask]
+            rdn_price_stats = {
+                "avg": round(float(np.mean(rdn_gi)), 1),
+                "min": round(float(np.min(rdn_gi)), 1),
+                "max": round(float(np.max(rdn_gi)), 1),
+                "median": round(float(np.median(rdn_gi)), 1),
+                "std": round(float(np.std(rdn_gi)), 1),
+            }
+        else:
+            rdn_price_stats = {"avg": 0, "min": 0, "max": 0, "median": 0, "std": 0}
+
+    # ===== Deltas =====
+    pv_savings_tariff = tariff_nopv["tcsl_annual_pln"] - tariff_pv["tcsl_annual_pln"]
+    pv_savings_rdn = None
+    rdn_vs_tariff_delta = None
+    rdn_vs_tariff_pct = None
+
+    if rdn_pv_result:
+        pv_savings_rdn = rdn_nopv_result["tcsl_annual_pln"] - rdn_pv_result["tcsl_annual_pln"]
+        rdn_vs_tariff_delta = tariff_pv["tcsl_annual_pln"] - rdn_pv_result["tcsl_annual_pln"]
+        rdn_vs_tariff_pct = (rdn_vs_tariff_delta / tariff_pv["tcsl_annual_pln"] * 100) if tariff_pv["tcsl_annual_pln"] > 0 else 0
+
+    # ===== Monthly combined =====
+    monthly_combined = []
+    for m in range(12):
+        entry = {"month": m + 1, "tariff": tariff_pv["monthly"][m] if m < len(tariff_pv["monthly"]) else {}}
+        if rdn_pv_result and m < len(rdn_pv_result["monthly"]):
+            entry["rdn"] = rdn_pv_result["monthly"][m]
+        monthly_combined.append(entry)
+
+    rdn_info = ""
+    if rdn_pv_result:
+        rdn_val = rdn_pv_result['tcsl_annual_pln']
+        rdn_info = f", RDN={rdn_val:.0f} PLN, delta={rdn_vs_tariff_delta:.0f} PLN"
+
+    # Detailed debug log
+    print(f"⚡ TCSL DETAILED:")
+    print(f"  Consumption: {np.sum(load):.0f} kWh ({np.sum(load)/1000:.1f} MWh)")
+    print(f"  PV production: {np.sum(pv):.0f} kWh ({np.sum(pv)/1000:.1f} MWh)")
+    sc = np.sum(np.minimum(pv, load))
+    gi = np.sum(np.maximum(load - pv, 0))
+    print(f"  Self-consumed: {sc:.0f} kWh ({sc/1000:.1f} MWh)")
+    print(f"  Grid import (with PV): {gi:.0f} kWh ({gi/1000:.1f} MWh)")
+    print(f"  Grid import (no PV): {np.sum(load):.0f} kWh")
+    print(f"  Tariff avg price: {tariff_avg:.1f} PLN/MWh, fees_var_sum: {fees_var_sum:.1f} PLN/MWh")
+    print(f"  ---- TARIFF + PV ----")
+    print(f"    Energy active: {tariff_pv['energy_active_cost_pln']:.0f} PLN")
+    print(f"    Fees var:      {tariff_pv['fees_var_cost_pln']:.0f} PLN")
+    print(f"    Capacity fee:  {tariff_pv['capacity_fee_total_pln']:.0f} PLN (K={tariff_pv['k_class']}, coeff={tariff_pv['k_coefficient']}, delta_s={tariff_pv['delta_s']:.1f}%)")
+    print(f"    Fixed monthly: {tariff_pv['fixed_monthly_total_pln']:.0f} PLN")
+    print(f"    TCSL TOTAL:    {tariff_pv['tcsl_annual_pln']:.0f} PLN")
+    print(f"  ---- TARIFF + NO PV ----")
+    print(f"    Energy active: {tariff_nopv['energy_active_cost_pln']:.0f} PLN")
+    print(f"    Fees var:      {tariff_nopv['fees_var_cost_pln']:.0f} PLN")
+    print(f"    Capacity fee:  {tariff_nopv['capacity_fee_total_pln']:.0f} PLN (K={tariff_nopv['k_class']}, coeff={tariff_nopv['k_coefficient']}, delta_s={tariff_nopv['delta_s']:.1f}%)")
+    print(f"    Fixed monthly: {tariff_nopv['fixed_monthly_total_pln']:.0f} PLN")
+    print(f"    TCSL TOTAL:    {tariff_nopv['tcsl_annual_pln']:.0f} PLN")
+    print(f"  ---- PV SAVINGS ----")
+    energy_saving = tariff_nopv['energy_active_cost_pln'] - tariff_pv['energy_active_cost_pln']
+    fees_var_saving = tariff_nopv['fees_var_cost_pln'] - tariff_pv['fees_var_cost_pln']
+    cap_saving = tariff_nopv['capacity_fee_total_pln'] - tariff_pv['capacity_fee_total_pln']
+    print(f"    Energy saving: {energy_saving:.0f} PLN")
+    print(f"    Fees var saving: {fees_var_saving:.0f} PLN")
+    print(f"    Capacity saving: {cap_saving:.0f} PLN")
+    print(f"    TOTAL PV savings: {pv_savings_tariff:.0f} PLN")
+    print(f"⚡ TCSL Result: Tariff={tariff_pv['tcsl_annual_pln']:.0f} PLN"
+          f", noPV={tariff_nopv['tcsl_annual_pln']:.0f} PLN"
+          f", PV savings={pv_savings_tariff:.0f} PLN{rdn_info}")
+
+    return TcslResult(
+        # Tariff with PV
+        tariff_tcsl_annual_pln=tariff_pv["tcsl_annual_pln"],
+        tariff_variable_cost_pln=tariff_pv["variable_cost_pln"],
+        tariff_fixed_monthly_total_pln=tariff_pv["fixed_monthly_total_pln"],
+        tariff_capacity_fee_total_pln=tariff_pv["capacity_fee_total_pln"],
+        tariff_energy_active_cost_pln=tariff_pv["energy_active_cost_pln"],
+        tariff_fees_var_cost_pln=tariff_pv["fees_var_cost_pln"],
+
+        # RDN with PV
+        rdn_tcsl_annual_pln=rdn_pv_result["tcsl_annual_pln"] if rdn_pv_result else None,
+        rdn_variable_cost_pln=rdn_pv_result["variable_cost_pln"] if rdn_pv_result else None,
+        rdn_fixed_monthly_total_pln=rdn_pv_result["fixed_monthly_total_pln"] if rdn_pv_result else None,
+        rdn_capacity_fee_total_pln=rdn_pv_result["capacity_fee_total_pln"] if rdn_pv_result else None,
+        rdn_energy_active_cost_pln=rdn_pv_result["energy_active_cost_pln"] if rdn_pv_result else None,
+        rdn_fees_var_cost_pln=rdn_pv_result["fees_var_cost_pln"] if rdn_pv_result else None,
+
+        # Baselines
+        nopv_tariff_tcsl_pln=tariff_nopv["tcsl_annual_pln"],
+        nopv_rdn_tcsl_pln=rdn_nopv_result["tcsl_annual_pln"] if rdn_nopv_result else None,
+
+        # Deltas
+        pv_savings_tariff_pln=round(pv_savings_tariff, 2),
+        pv_savings_rdn_pln=round(pv_savings_rdn, 2) if pv_savings_rdn is not None else None,
+        rdn_vs_tariff_delta_pln=round(rdn_vs_tariff_delta, 2) if rdn_vs_tariff_delta is not None else None,
+        rdn_vs_tariff_delta_pct=round(rdn_vs_tariff_pct, 1) if rdn_vs_tariff_pct is not None else None,
+
+        # Energy balance
+        annual_consumption_kwh=tariff_pv["annual_consumption_kwh"],
+        annual_production_kwh=tariff_pv["annual_production_kwh"],
+        annual_self_consumed_kwh=tariff_pv["annual_self_consumed_kwh"],
+        annual_grid_import_kwh=tariff_pv["annual_grid_import_kwh"],
+
+        # K-class
+        kclass_with_pv=tariff_pv["k_class"],
+        kclass_without_pv=tariff_nopv["k_class"],
+        capacity_fee_with_pv_pln=tariff_pv["capacity_fee_total_pln"],
+        capacity_fee_without_pv_pln=tariff_nopv["capacity_fee_total_pln"],
+        kclass_stochastic_nopv=tariff_nopv.get("stochastic"),
+        kclass_stochastic_pv=tariff_pv.get("stochastic"),
+
+        # Monthly
+        monthly_breakdown=monthly_combined,
+
+        # noPV breakdown
+        nopv_tariff_variable_pln=tariff_nopv["variable_cost_pln"],
+        nopv_tariff_energy_active_pln=tariff_nopv["energy_active_cost_pln"],
+        nopv_tariff_fees_var_pln=tariff_nopv["fees_var_cost_pln"],
+        nopv_tariff_capacity_fee_pln=tariff_nopv["capacity_fee_total_pln"],
+        nopv_rdn_variable_pln=rdn_nopv_result["variable_cost_pln"] if rdn_nopv_result else None,
+        nopv_rdn_energy_active_pln=rdn_nopv_result["energy_active_cost_pln"] if rdn_nopv_result else None,
+        nopv_rdn_fees_var_pln=rdn_nopv_result["fees_var_cost_pln"] if rdn_nopv_result else None,
+        nopv_rdn_capacity_fee_pln=rdn_nopv_result["capacity_fee_total_pln"] if rdn_nopv_result else None,
+        nopv_monthly_breakdown=[
+            {
+                "month": m + 1,
+                "tariff_nopv": tariff_nopv["monthly"][m] if m < len(tariff_nopv["monthly"]) else {},
+                "rdn_nopv": rdn_nopv_result["monthly"][m] if rdn_nopv_result and m < len(rdn_nopv_result["monthly"]) else None,
+            }
+            for m in range(12)
+        ],
+
+        # Price stats
+        rdn_price_stats=rdn_price_stats,
+        tariff_avg_price_plnmwh=round(tariff_avg, 1),
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8040)

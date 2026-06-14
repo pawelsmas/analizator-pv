@@ -104,7 +104,8 @@ const BACKEND = USE_PROXY ? {
 let currentModule = 'config';
 
 // Shared data storage (alternative to localStorage for iframe isolation)
-let sharedData = {
+// Exposed on window so bess_request_builder.js (IIFE) and iframe children can access it
+const sharedData = window.sharedData = {
   analysisResults: null,
   pvConfig: null,
   consumptionData: null,
@@ -147,13 +148,24 @@ let sharedData = {
 
   // Raw data arrays for BESS calculations
   loadData: null,  // Load profile array [kW]
-  pvData: null     // PV generation array [kW]
+  pvData: null,    // PV generation array [kW]
+
+  // Centralized price configuration (built by price_config.js)
+  priceConfig: null,
+  rdnPrices: null  // RDN hourly prices cache (from Settings module)
 };
 
 // Also save settings to shell's localStorage as central storage
 function saveSettingsToShell(settings) {
   sharedData.settings = settings;
   localStorage.setItem('pv_system_settings', JSON.stringify(settings));
+  // Rebuild centralized price config when settings are saved
+  if (window.buildPriceConfig) {
+    sharedData.priceConfig = window.buildPriceConfig(settings, {
+      rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+      rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+    });
+  }
   console.log('Settings saved to shell localStorage');
 }
 
@@ -163,6 +175,22 @@ function loadSettingsFromShell() {
   if (saved) {
     try {
       sharedData.settings = JSON.parse(saved);
+      // Migration: old CAPEX defaults (1500/300 or 900/200) → realistic 2025 LFP values (600/200)
+      if (sharedData.settings.bessCapexPerKwh >= 800) {
+        console.log(`⬆️ Shell CAPEX migration: ${sharedData.settings.bessCapexPerKwh}→600 PLN/kWh`);
+        sharedData.settings.bessCapexPerKwh = 600;
+        sharedData.settings.bessCapexPerKw  = 200;
+        localStorage.setItem('pv_system_settings', JSON.stringify(sharedData.settings));
+      }
+      // Rebuild priceConfig immediately so arbitrageConfig.hourly_prices_pln_mwh
+      // is available for BESS-only analysis (before any settings save).
+      // buildPriceConfig reads rdn_hourly_prices from localStorage internally.
+      if (window.buildPriceConfig) {
+        sharedData.priceConfig = window.buildPriceConfig(sharedData.settings, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+      }
       console.log('Settings loaded from shell localStorage');
       return sharedData.settings;
     } catch (e) {
@@ -1054,7 +1082,7 @@ function buildEconomicsSnapshotPayloadV2() {
   // Discount rate: settings is in % (e.g., 7), economics is in decimal (e.g., 0.07)
   const discountRate = settings.discountRate !== undefined && settings.discountRate !== null
     ? settings.discountRate / 100
-    : (economics.discountRate || 0.07);
+    : economics.discountRate;
 
   // O&M and insurance costs for investor
   const omCostPerKwp = settings.omCostPerKwp || 24; // PLN/kWp/year
@@ -1328,7 +1356,7 @@ function buildEconomicsSnapshotPayloadV2() {
     // Store as percentage (e.g., 7.0 for 7%)
     discount_rate_pct: settings.discountRate !== undefined && settings.discountRate !== null
       ? settings.discountRate
-      : (economics.discountRate ? economics.discountRate * 100 : 7),
+      : economics.discountRate * 100,
     inflation_rate_pct: settings.inflationRate !== undefined && settings.inflationRate !== null
       ? settings.inflationRate
       : 2.5,
@@ -1614,10 +1642,10 @@ function loadModule(moduleName, event) {
   iframe.onload = () => {
     // Send ALL shared data to the module (proactive push)
     // This eliminates the need for module to REQUEST_SHARED_DATA
-    iframe.contentWindow.postMessage({
+    iframe.contentWindow.postMessage(stripFunctions({
       type: 'SHARED_DATA_RESPONSE',
       data: sharedData
-    }, '*');
+    }), '*');
     console.log('📤 Sent all shared data to loaded module:', moduleName, {
       hasSettings: !!sharedData.settings,
       hasAnalysisResults: !!sharedData.analysisResults,
@@ -1718,10 +1746,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // When iframe loads, send it ALL shared data immediately
   iframe.onload = () => {
     // Send ALL shared data to the module (proactive push)
-    iframe.contentWindow.postMessage({
+    iframe.contentWindow.postMessage(stripFunctions({
       type: 'SHARED_DATA_RESPONSE',
       data: sharedData
-    }, '*');
+    }), '*');
     console.log('📤 Sent all shared data to initial module (config)');
 
     // Also send scenario separately
@@ -1892,8 +1920,20 @@ window.addEventListener('message', (event) => {
         sharedData.hourlyData = event.data.data.hourlyData;
         DraftProjectManager.markChanged(); // Mark as having unsaved changes
 
+        // *** Store loadData for BESS module ***
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 ANALYSIS_COMPLETE: loadData stored: ${sharedData.loadData.length} values`);
+        }
+
+        // *** Calculate pvData if masterVariant already selected ***
+        if (sharedData.masterVariant?.capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * sharedData.masterVariant.capacity);
+          console.log(`📊 ANALYSIS_COMPLETE: pvData calculated: ${sharedData.pvData.length} values`);
+        }
+
         // *** AUTO-SAVE PV ANALYSIS TO DB ***
-        if (sharedData.currentProject?.id) {
+        if (sharedData.currentProject?.id && sharedData.analysisResults) {
           // Save PV sizing calculation
           saveCalculationToDb(sharedData.currentProject.id, {
             calc_type: 'pv_sizing',
@@ -1944,6 +1984,22 @@ window.addEventListener('message', (event) => {
           variantKey: event.data.data.variantKey,
           variantData: event.data.data.variantData
         });
+
+        // *** CRITICAL: Calculate and store pvData for BESS module ***
+        // This is the Single Source of Truth for PV generation data
+        const capacity = sharedData.masterVariant?.capacity;
+        if (capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * capacity);
+          console.log(`📊 pvData calculated and stored: ${sharedData.pvData.length} values, capacity: ${capacity} kWp`);
+          const totalMWh = sharedData.pvData.reduce((a, b) => a + b, 0) / 1000;
+          console.log(`📊 Total PV production: ${totalMWh.toFixed(2)} MWh`);
+        }
+
+        // Also store loadData if available
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 loadData stored: ${sharedData.loadData.length} values`);
+        }
       }
       // Broadcast to all modules
       broadcastToModules({
@@ -2071,12 +2127,47 @@ window.addEventListener('message', (event) => {
       saveSettingsToShell(event.data.data);
       // Auto-save to current project
       autoSaveToProject('settings', event.data.data);
-      // Broadcast to all modules
+      // Rebuild centralized price config
+      if (window.buildPriceConfig) {
+        sharedData.priceConfig = window.buildPriceConfig(event.data.data, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+        console.log('[Shell] PriceConfig rebuilt on SETTINGS_CHANGED');
+      }
+      // Broadcast to all modules (includes priceConfig in sharedData)
       broadcastToModules({
         type: 'SETTINGS_UPDATED',
-        data: event.data.data
+        data: event.data.data,
+        priceConfig: sharedData.priceConfig
       });
       console.log('Settings updated and saved:', event.data.data);
+      break;
+    case 'RDN_PRICES_CHANGED':
+      // Settings module broadcasts RDN hourly prices
+      sharedData.rdnPrices = event.data.data || null;
+      // Rebuild price config with new RDN data
+      if (window.buildPriceConfig && sharedData.settings) {
+        sharedData.priceConfig = window.buildPriceConfig(sharedData.settings, {
+          rdnHourlyPrices: sharedData.rdnPrices?.hourlyPricesPlnMwh || null,
+          rdnScenarioInfo: sharedData.rdnPrices?.scenarioInfo || null,
+        });
+      }
+      // Broadcast to active module
+      broadcastToModules({
+        type: 'PRICE_CONFIG_UPDATED',
+        priceConfig: sharedData.priceConfig
+      });
+      console.log('[Shell] RDN prices updated, priceConfig rebuilt');
+      break;
+    case 'REQUEST_PRICE_CONFIG':
+      // Module requests current price config (e.g. on module load)
+      if (sharedData.priceConfig) {
+        broadcastToModules({
+          type: 'PRICE_CONFIG_UPDATED',
+          priceConfig: sharedData.priceConfig
+        });
+      }
       break;
     case 'REQUEST_SETTINGS':
       // Module requests current settings
@@ -2215,6 +2306,20 @@ window.addEventListener('message', (event) => {
             data: sharedData.masterVariant
           });
         }
+
+        // *** CRITICAL: Calculate and store pvData and loadData for BESS module ***
+        // This ensures data is available after project load
+        if (sharedData.hourlyData?.values?.length > 0) {
+          sharedData.loadData = sharedData.hourlyData.values;
+          console.log(`📊 PROJECT_LOAD: loadData stored: ${sharedData.loadData.length} values`);
+        }
+        if (sharedData.masterVariant?.capacity && sharedData.analysisResults?.pv_profile?.length > 0) {
+          sharedData.pvData = sharedData.analysisResults.pv_profile.map(v => v * sharedData.masterVariant.capacity);
+          console.log(`📊 PROJECT_LOAD: pvData calculated: ${sharedData.pvData.length} values`);
+          const totalMWh = sharedData.pvData.reduce((a, b) => a + b, 0) / 1000;
+          console.log(`📊 PROJECT_LOAD: Total PV: ${totalMWh.toFixed(2)} MWh`);
+        }
+
         if (projectData.currentScenario) {
           sharedData.currentScenario = projectData.currentScenario;
           localStorage.setItem('pv_current_scenario', projectData.currentScenario);
@@ -2460,8 +2565,28 @@ function postToActiveModule(message) {
   const iframe = document.getElementById('module-frame');
   if (iframe && iframe.contentWindow) {
     const targetOrigin = getModuleOrigin(currentModule);
-    iframe.contentWindow.postMessage(message, targetOrigin);
+    // Strip functions from message before postMessage (DataCloneError prevention)
+    iframe.contentWindow.postMessage(stripFunctions(message), targetOrigin);
   }
+}
+
+/**
+ * Recursively strip functions from an object so it can be passed via postMessage.
+ * postMessage uses the structured clone algorithm which cannot serialize functions.
+ */
+function stripFunctions(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'function') return undefined;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj;
+  if (Array.isArray(obj)) return obj.map(stripFunctions);
+  const clean = {};
+  for (const key of Object.keys(obj)) {
+    if (typeof obj[key] !== 'function') {
+      clean[key] = stripFunctions(obj[key]);
+    }
+  }
+  return clean;
 }
 
 // Legacy alias for backward compatibility

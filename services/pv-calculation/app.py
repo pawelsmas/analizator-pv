@@ -33,8 +33,10 @@ optimization_progress = {
 }
 
 # BESS Dispatch Service URL (for PRO mode with LP/MIP solver)
-# Note: bess-dispatch exposes API at /api/bess-dispatch/ prefix
-BESS_DISPATCH_URL = "http://bess-dispatch:8031/api/bess-dispatch"  # Docker network name
+# Note: bess-dispatch exposes main endpoints at root level (e.g., /sizing, /dispatch)
+# Only auth/admin/audit/projects routers have /api/bess-dispatch prefix
+BESS_DISPATCH_URL = "http://bess-dispatch:8031"  # Docker network name - endpoints at root level
+PROFILE_ANALYSIS_URL = "http://profile-analysis:8040"  # For K-class capacity fee scenarios
 
 # Legacy - keep for backwards compatibility but prefer BESS_DISPATCH_URL
 BESS_OPTIMIZER_URL = "http://bess-optimizer:8030"  # Docker network name (deprecated)
@@ -329,6 +331,16 @@ class VariantResult(BaseModel):
     savings_breakdown: Optional["SavingsBreakdown"] = None
     # Dispatch metadata from bess-dispatch (PRO mode)
     dispatch_metadata: Optional["DispatchMetadata"] = None
+    # Capacity fee K-class scenarios (v3.0 — multi-scenario K-class)
+    capacity_fee_baseline_pln: Optional[float] = None       # S0: bez PV, bez BESS
+    capacity_fee_with_pv_pln: Optional[float] = None        # S1: z PV
+    capacity_fee_with_pv_bess_pln: Optional[float] = None   # S2: z PV + BESS
+    k_class_baseline: Optional[str] = None
+    k_class_with_pv: Optional[str] = None
+    k_class_with_pv_bess: Optional[str] = None
+    capacity_fee_savings_pv_pln: Optional[float] = None     # S0 - S1
+    capacity_fee_savings_bess_pln: Optional[float] = None   # S1 - S2
+    capacity_fee_savings_total_pln: Optional[float] = None  # S0 - S2
 
 class BESSMonthlyData(BaseModel):
     """Monthly BESS performance data"""
@@ -906,12 +918,20 @@ def generate_pv_profile_pvlib(
     # Apply soiling loss separately (user-configurable parameter)
     system_efficiency = base_efficiency * (1 - soiling_loss)
 
-    power_output = power_per_kwp * system_efficiency
+    # CRITICAL: Clearsky model correction factor for Poland
+    # Clearsky gives ideal conditions (no clouds) which overestimates yield by ~60-70%
+    # Real yield in Poland is 950-1100 kWh/kWp, clearsky gives ~1700 kWh/kWp
+    # Apply cloud/weather correction factor based on latitude (higher lat = more clouds)
+    # For Poland (lat ~52°): typical GHI reduction due to clouds is ~35-40%
+    CLEARSKY_CORRECTION_FACTOR = 0.62  # Reduces clearsky to realistic Poland values
+    print(f"   ⚠️ Using CLEARSKY model (PVGIS unavailable) - applying {CLEARSKY_CORRECTION_FACTOR:.0%} correction factor")
+
+    power_output = power_per_kwp * system_efficiency * CLEARSKY_CORRECTION_FACTOR
     power_output = np.maximum(power_output, 0)  # No negative power
 
     # Calculate annual yield
     annual_yield = power_output.sum()  # kWh/kWp/year for hourly data
-    print(f"   Annual yield: {annual_yield:.0f} kWh/kWp")
+    print(f"   Annual yield (corrected): {annual_yield:.0f} kWh/kWp")
     print(f"   System efficiency: {system_efficiency:.3f} (incl. {soiling_loss*100:.1f}% soiling loss)")
     print(f"   Peak power: {power_output.max():.3f} kW/kWp")
 
@@ -1765,6 +1785,68 @@ def simulate_pv_system(
     )
 
 
+def simulate_pv_system_batch(
+    capacities: np.ndarray,
+    dcac_ratios: np.ndarray,
+    pv_profile: np.ndarray,
+    consumption: np.ndarray,
+) -> list:
+    """
+    Vectorized PV simulation for multiple capacities at once.
+
+    Instead of N separate calls to simulate_pv_system(), this computes
+    all capacities in a single NumPy operation on (8760, N) matrices.
+
+    Args:
+        capacities: Array of PV capacities [kWp], shape (N,)
+        dcac_ratios: Array of DC/AC ratios, shape (N,)
+        pv_profile: Hourly generation per kWp, shape (8760,)
+        consumption: Hourly consumption in kW, shape (8760,)
+
+    Returns:
+        List of SimulationResult objects (same as calling simulate_pv_system N times)
+    """
+    n_cap = len(capacities)
+    n_hours = len(pv_profile)
+
+    # Broadcast: pv_profile (8760,1) * capacities (1,N) -> (8760, N)
+    production = pv_profile[:, None] * capacities[None, :]
+
+    # Clip to AC capacity (inverter limit per capacity)
+    ac_capacities = capacities / dcac_ratios  # (N,)
+    production = np.minimum(production, ac_capacities[None, :])
+
+    # Self-consumed and exported: (8760, N)
+    consumption_2d = consumption[:, None]  # (8760, 1) broadcasts to (8760, N)
+    self_consumed = np.minimum(production, consumption_2d)
+    exported = production - self_consumed
+
+    # Sum along time axis -> (N,) totals
+    total_production = production.sum(axis=0)
+    total_consumed = self_consumed.sum(axis=0)
+    total_exported = exported.sum(axis=0)
+    total_consumption = consumption.sum()  # scalar
+
+    # Percentages
+    auto_pct = np.where(total_production > 0, total_consumed / total_production * 100, 0.0)
+    coverage_pct = np.where(total_consumption > 0, total_consumed / total_consumption * 100, 0.0)
+
+    # Build result list
+    results = []
+    for i in range(n_cap):
+        results.append(SimulationResult(
+            capacity=float(capacities[i]),
+            dcac_ratio=float(dcac_ratios[i]),
+            production=float(total_production[i]),
+            self_consumed=float(total_consumed[i]),
+            exported=float(total_exported[i]),
+            auto_consumption_pct=float(auto_pct[i]),
+            coverage_pct=float(coverage_pct[i])
+        ))
+
+    return results
+
+
 def simulate_pv_system_with_bess(
     capacity: float,
     pv_profile: np.ndarray,
@@ -2001,7 +2083,7 @@ def auto_size_bess_lite(
     capex_per_kwh: float = 1500.0,
     capex_per_kw: float = 300.0,
     energy_price_plnmwh: float = 800.0,
-    discount_rate: float = 0.07,
+    discount_rate: float = 0.10,
     lifetime_years: int = 15,
     roundtrip_efficiency: float = 0.90
 ) -> tuple:
@@ -2172,7 +2254,7 @@ def call_bess_pro_optimizer(
     pv_capacity_kwp: float,
     bess_config: "BESSConfigLite",
     energy_price_plnmwh: float = 800.0,
-    discount_rate: float = 0.07,
+    discount_rate: float = 0.10,
     analysis_period_years: int = 25
 ) -> Optional[dict]:
     """
@@ -2184,7 +2266,7 @@ def call_bess_pro_optimizer(
         pv_capacity_kwp: PV capacity [kWp]
         bess_config: BESS configuration with pro_config
         energy_price_plnmwh: Energy price [PLN/MWh]
-        discount_rate: Discount rate (e.g., 0.07 = 7%)
+        discount_rate: Discount rate (e.g., 0.10 = 10%)
         analysis_period_years: Analysis period [years]
 
     Returns:
@@ -2257,6 +2339,73 @@ def call_bess_pro_optimizer(
         return None
 
 
+def call_capacity_fee_scenarios(
+    load_kwh: List[float],
+    pv_kwh: Optional[List[float]] = None,
+    bess_charge_from_grid_kwh: Optional[List[float]] = None,
+    bess_discharge_kwh: Optional[List[float]] = None,
+    som_rate_pln_kwh: float = 0.2194,
+    data_start_date: Optional[str] = None,
+    start_year: int = 2026,
+) -> Optional[dict]:
+    """
+    Call profile-analysis /compute-capacity-fee-scenarios for K-class calculation.
+
+    Returns dict with baseline, with_pv, with_pv_bess scenarios and savings,
+    or None on failure.
+    """
+    payload = {
+        "load_kwh": load_kwh,
+        "som_rate_pln_kwh": som_rate_pln_kwh,
+        "selected_start": 7,
+        "selected_end": 22,
+        "start_year": start_year,
+    }
+    if pv_kwh:
+        payload["pv_kwh"] = pv_kwh
+    if bess_charge_from_grid_kwh:
+        payload["bess_charge_from_grid_kwh"] = bess_charge_from_grid_kwh
+    if bess_discharge_kwh:
+        payload["bess_discharge_kwh"] = bess_discharge_kwh
+    if data_start_date:
+        payload["data_start_date"] = data_start_date
+
+    try:
+        print(f"📊 Calling profile-analysis /compute-capacity-fee-scenarios")
+        print(f"   load: {len(load_kwh)}h, pv: {len(pv_kwh) if pv_kwh else 0}h, "
+              f"bess_charge: {len(bess_charge_from_grid_kwh) if bess_charge_from_grid_kwh else 0}h, "
+              f"bess_discharge: {len(bess_discharge_kwh) if bess_discharge_kwh else 0}h")
+
+        response = requests.post(
+            f"{PROFILE_ANALYSIS_URL}/compute-capacity-fee-scenarios",
+            json=payload,
+            timeout=30,
+        )
+        if response.status_code == 200:
+            result = response.json()
+            baseline = result.get('baseline', {})
+            with_pv = result.get('with_pv', {})
+            with_pv_bess = result.get('with_pv_bess', {})
+            print(f"   ✅ K-class: baseline={baseline.get('k_class','?')} fee={baseline.get('annual_fee_pln',0):.0f}")
+            if with_pv:
+                print(f"   ✅ K-class with PV: {with_pv.get('k_class','?')} fee={with_pv.get('annual_fee_pln',0):.0f}, savings={result.get('savings_pv_only_pln',0):.0f}")
+            if with_pv_bess:
+                print(f"   ✅ K-class with PV+BESS: {with_pv_bess.get('k_class','?')} fee={with_pv_bess.get('annual_fee_pln',0):.0f}, bess_incremental={result.get('savings_bess_incremental_pln',0):.0f}")
+            return result
+        else:
+            print(f"   ❌ K-class error: {response.status_code} {response.text[:200]}")
+            return None
+    except requests.exceptions.Timeout:
+        print("   ❌ K-class timeout (>30s)")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"   ❌ K-class connection error: {e}")
+        return None
+    except Exception as e:
+        print(f"   ❌ K-class error: {e}")
+        return None
+
+
 def call_bess_dispatch_sizing(
     pv_generation_kw: List[float],
     load_kw: List[float],
@@ -2322,17 +2471,17 @@ def call_bess_dispatch_sizing(
         "soc_min": bess_settings.get('soc_min', 0.10),
         "soc_max": bess_settings.get('soc_max', 0.90),
 
-        # EOL (End-of-Life) degradation sizing
-        # eol_capacity_factor: if set (e.g., 0.70), battery will be oversized so EOL capacity is 70% of BOL
-        "eol_capacity_factor": bess_settings.get('eol_capacity_factor', 0.70),  # Default: size for 70% at EOL
-        "annual_degradation_pct": bess_settings.get('annual_degradation_pct', 2.0),  # 2%/year default
+        # Degradation - supports year 1 and years 2+ separately (from Settings)
+        "bess_degradation_year1_pct": bess_settings.get('bess_degradation_year1_pct', 3.0),  # Year 1 default 3%
+        "annual_degradation_pct": bess_settings.get('annual_degradation_pct', 2.0),  # Years 2+ default 2%/year
 
-        # Economics
-        "capex_per_kwh": bess_settings.get('capex_per_kwh', 750.0),
-        "capex_per_kw": bess_settings.get('capex_per_kw', 150.0),
+        # Economics - defaults match Settings module defaults
+        "capex_per_kwh": bess_settings.get('capex_per_kwh', 1500.0),  # PLN/kWh from Settings
+        "capex_per_kw": bess_settings.get('capex_per_kw', 300.0),     # PLN/kW from Settings
         "opex_pct_per_year": bess_settings.get('opex_pct_per_year', 0.015),
-        "discount_rate": bess_settings.get('discount_rate', 0.07),
-        "analysis_years": bess_settings.get('analysis_years', 15),
+        "discount_rate": bess_settings.get('discount_rate', 0.10),   # 10% from Settings.discountRate
+        # BESS analysis horizon is capped at 10 years (battery lifetime constraint)
+        "analysis_years": min(bess_settings.get('analysis_years', 15), 10),
 
         # Prices
         "import_price_pln_mwh": bess_settings.get('import_price_pln_mwh', 800.0),
@@ -2342,6 +2491,9 @@ def call_bess_dispatch_sizing(
         # Degradation budget (optional)
         "max_efc_per_year": bess_settings.get('max_efc_per_year'),
         "max_throughput_mwh_per_year": bess_settings.get('max_throughput_mwh_per_year'),
+
+        # Include hourly profiles for K-class capacity fee calculation
+        "include_hourly_profiles": True,
     }
 
     # Add ToU pricing if available
@@ -2358,14 +2510,37 @@ def call_bess_dispatch_sizing(
         payload['prices']['capacity_fee_som_pln_kwh'] = cf.get('som_rate_pln_kw', 0.2194)
         print(f"   📊 Capacity fee: SOM={cf.get('som_rate_pln_kw', 0.2194)} PLN/kW/month")
 
+    # Add arbitrage_config if ToU pricing is configured (enables price arbitrage in sizing)
+    # This is CRITICAL for proper sizing with ToU tariffs - without it, sizing ignores price spreads
+    if bess_settings.get('prices') and bess_settings['prices'].get('type') in ['two_zone', 'three_zone']:
+        prices = bess_settings['prices']
+        # Generate tariff_id that matches bess-dispatch presets (e.g., pge_c12a_2026)
+        # Use simple format: operator_group_year
+        tariff_id = f"pge_c12a_{2026}"  # Default to PGE C12a 2026
+
+        day_rate = prices.get('day_rate_pln_mwh', 800) / 1000  # Convert to PLN/kWh
+        night_rate = prices.get('night_rate_pln_mwh', 400) / 1000
+
+        payload['arbitrage_config'] = {
+            'enabled': True,
+            'tariff_id': tariff_id,
+            'strategy': 'zone_based',
+            'charge_below_percentile': 30,
+            'discharge_above_percentile': 70,
+            'degradation_cost_pln_kwh': 0.02,  # Default degradation cost
+        }
+        # start_date is required when arbitrage is enabled (for ToU zone assignment)
+        payload['start_date'] = bess_settings.get('start_date', '2025-01-01')
+        print(f"   📊 Arbitrage enabled: tariff_id={tariff_id}, day={day_rate:.3f}/night={night_rate:.3f} PLN/kWh, start_date={payload['start_date']}")
+
     try:
-        print(f"🚀 Calling bess-dispatch /sizing at {BESS_DISPATCH_URL}/sizing")
+        print(f"🚀 Calling bess-dispatch /sizing at {BESS_DISPATCH_URL}/sizing?compat=clean")
         print(f"   Mode: {mode}, Topology: {topology}, dispatch_mode from settings: {bess_settings.get('dispatch_mode', 'NOT_SET')}")
         print(f"   Load points: {len(load_kw)}, PV points: {len(pv_generation_kw)}")
         print(f"   demand_charge: {bess_settings.get('demand_charge_pln_kw_month', 0)} PLN/kW/month, peak_limit: {peak_limit_kw} kW")
 
         response = requests.post(
-            f"{BESS_DISPATCH_URL}/sizing",
+            f"{BESS_DISPATCH_URL}/sizing?compat=clean",
             json=payload,
             timeout=300  # 5 minutes timeout for optimization
         )
@@ -2571,6 +2746,13 @@ async def generate_profile(config: PVConfiguration, start_date: Optional[str] = 
                 yield_target=config.yield_target
             )
 
+        # Scale profile DOWN to match yield_target (only if target < actual)
+        actual_yield = float(profile.sum())
+        if config.yield_target > 0 and actual_yield > 0 and config.yield_target < actual_yield - 10:
+            scale = config.yield_target / actual_yield
+            profile = profile * scale
+            print(f"   ⚡ Yield scaling DOWN: {actual_yield:.0f} → {config.yield_target:.0f} kWh/kWp (factor: {scale:.3f})")
+
         return {
             "success": True,
             "profile": profile.tolist(),
@@ -2722,6 +2904,18 @@ async def analyze(request: AnalysisRequest):
                 yield_target=config.yield_target
             )
 
+        # Scale profile DOWN to match yield_target (only if target < PVGIS yield)
+        # This allows users to reduce yield to match PV SYST simulations.
+        # Never scales UP — if PVGIS is already below target, soiling/physical losses are preserved.
+        pvgis_yield = float(pv_profile.sum()) if hasattr(pv_profile, 'sum') else float(np.sum(pv_profile))
+        yield_target = config.yield_target
+        if yield_target > 0 and pvgis_yield > 0 and yield_target < pvgis_yield - 10:
+            yield_scale = yield_target / pvgis_yield
+            pv_profile = pv_profile * yield_scale
+            print(f"   ⚡ Yield scaling DOWN: PVGIS {pvgis_yield:.0f} → target {yield_target:.0f} kWh/kWp (factor: {yield_scale:.3f})")
+        else:
+            print(f"   ✓ No downscaling needed: PVGIS {pvgis_yield:.0f} kWh/kWp, target {yield_target:.0f} kWh/kWp")
+
         # Determine DC/AC selection mode
         dcac_mode = getattr(config, 'dcac_mode', 'manual')  # Default to manual if not set
         auto_dcac_ratio = None
@@ -2752,44 +2946,56 @@ async def analyze(request: AnalysisRequest):
 
         # Run simulations for each capacity
         scenarios = []
-        capacity = request.capacity_min
 
-        print(f"\n📊 Running {int((request.capacity_max - request.capacity_min) / request.capacity_step) + 1} scenarios")
+        import time as _time
+        _t_sweep_start = _time.time()
+
+        # Build capacity array
+        capacities_arr = np.arange(
+            request.capacity_min,
+            request.capacity_max + request.capacity_step * 0.5,
+            request.capacity_step
+        )
+        n_scenarios = len(capacities_arr)
+        print(f"\n📊 Running {n_scenarios} scenarios")
         print(f"   Capacity range: {request.capacity_min} - {request.capacity_max} kWp")
+        print(f"   Thresholds: {request.thresholds}")
+        print(f"   Consumption: sum={consumption.sum():.0f} kWh ({consumption.sum()/1000:.1f} MWh), len={len(consumption)}, min={consumption.min():.2f}, max={consumption.max():.2f}")
+        print(f"   PV profile: sum={pv_profile.sum():.0f} kWh/kWp, max={pv_profile.max():.4f} kW/kWp")
 
-        while capacity <= request.capacity_max:
-            # Get DC/AC ratio for this capacity
-            if dcac_mode == 'auto' and auto_dcac_ratio is not None:
-                # Use automatically determined ratio for all capacities
-                dcac_ratio = auto_dcac_ratio
-            else:
-                # Use tier-based ratio
-                dcac_ratio = get_dcac_for_capacity(
-                    capacity,
-                    config.dcac_tiers,
-                    config.dc_ac_ratio
-                )
+        # Pre-compute DC/AC ratios for all capacities
+        if dcac_mode == 'auto' and auto_dcac_ratio is not None:
+            dcac_ratios_arr = np.full(n_scenarios, auto_dcac_ratio)
+        else:
+            dcac_ratios_arr = np.array([
+                get_dcac_for_capacity(cap, config.dcac_tiers, config.dc_ac_ratio)
+                for cap in capacities_arr
+            ])
 
-            if bess_enabled:
+        if bess_enabled:
+            # BESS path: sequential loop (SOC state depends on previous hour)
+            for i, capacity in enumerate(capacities_arr):
+                dcac_ratio = float(dcac_ratios_arr[i])
+
                 # Main loop always uses LIGHT mode for speed
                 # PRO optimization is applied only to key variants (A/B/C/D) after selection
                 bess_power_kw, bess_energy_kwh = auto_size_bess_lite(
                     pv_profile=pv_profile,
                     consumption=consumption,
-                    capacity=capacity,
+                    capacity=float(capacity),
                     dc_ac_ratio=dcac_ratio,
                     duration=str(bess_config.duration),
                     capex_per_kwh=bess_config.capex_per_kwh,
                     capex_per_kw=bess_config.capex_per_kw,
                     energy_price_plnmwh=request.pv_config.energy_price if hasattr(request.pv_config, 'energy_price') else 800.0,
-                    discount_rate=request.pv_config.discount_rate if hasattr(request.pv_config, 'discount_rate') else 0.07,
+                    discount_rate=request.pv_config.discount_rate if hasattr(request.pv_config, 'discount_rate') else 0.10,
                     lifetime_years=bess_config.lifetime_years,
                     roundtrip_efficiency=bess_config.roundtrip_efficiency
                 )
 
                 # Simulate PV+BESS in 0-export mode
                 result = simulate_pv_system_with_bess(
-                    capacity=capacity,
+                    capacity=float(capacity),
                     pv_profile=pv_profile,
                     consumption=consumption,
                     bess_power_kw=bess_power_kw,
@@ -2800,17 +3006,32 @@ async def analyze(request: AnalysisRequest):
                     soc_max=bess_config.soc_max,
                     soc_initial=bess_config.soc_initial
                 )
-            else:
-                # Standard PV simulation (no BESS)
-                result = simulate_pv_system(
-                    capacity=capacity,
-                    pv_profile=pv_profile,
-                    consumption=consumption,
-                    dc_ac_ratio=dcac_ratio
-                )
+                scenarios.append(result)
+        else:
+            # VECTORIZED path: all capacities in single NumPy operation
+            scenarios = simulate_pv_system_batch(
+                capacities=capacities_arr,
+                dcac_ratios=dcac_ratios_arr,
+                pv_profile=pv_profile,
+                consumption=consumption,
+            )
 
-            scenarios.append(result)
-            capacity += request.capacity_step
+        _t_sweep_end = _time.time()
+        print(f"   ⏱️ Capacity sweep: {_t_sweep_end - _t_sweep_start:.2f}s ({n_scenarios} scenarios, {'BESS sequential' if bess_enabled else 'vectorized'})")
+
+        # Debug: print first, middle, and last scenario auto_consumption
+        if scenarios:
+            first = scenarios[0]
+            last = scenarios[-1]
+            mid = scenarios[len(scenarios)//2]
+            print(f"\n🔍 DEBUG Scenario auto_consumption:")
+            print(f"   First ({first.capacity:.0f} kWp): auto={first.auto_consumption_pct:.1f}%, prod={first.production:.0f} kWh, self={first.self_consumed:.0f} kWh, exported={first.exported:.0f} kWh")
+            print(f"   Mid   ({mid.capacity:.0f} kWp): auto={mid.auto_consumption_pct:.1f}%, prod={mid.production:.0f} kWh, self={mid.self_consumed:.0f} kWh")
+            print(f"   Last  ({last.capacity:.0f} kWp): auto={last.auto_consumption_pct:.1f}%, prod={last.production:.0f} kWh, self={last.self_consumed:.0f} kWh")
+            # Count how many meet each threshold
+            for thr_name, thr_val in request.thresholds.items():
+                count = sum(1 for s in scenarios if s.auto_consumption_pct >= thr_val)
+                print(f"   Threshold {thr_name} ({thr_val}%): {count}/{len(scenarios)} scenarios qualify")
 
         # Find key variants
         key_variants = {}
@@ -2859,7 +3080,7 @@ async def analyze(request: AnalysisRequest):
                         'capex_per_kwh': bess_config.capex_per_kwh,
                         'capex_per_kw': bess_config.capex_per_kw,
                         'opex_pct_per_year': opex_fraction,
-                        'discount_rate': getattr(request.pv_config, 'discount_rate', 0.07),
+                        'discount_rate': getattr(request.pv_config, 'discount_rate', 0.10),
                         'analysis_years': bess_config.lifetime_years,
                         'import_price_pln_mwh': getattr(request.pv_config, 'energy_price', 800.0),
                         'durations_h': [1.0, 2.0, 4.0],
@@ -2940,16 +3161,46 @@ async def analyze(request: AnalysisRequest):
                     )
 
                     if bess_dispatch_result and bess_dispatch_result.get('variants'):
-                        # Use recommended variant from bess-dispatch
-                        best_bess_variant = bess_dispatch_result['variants'][0]  # First is recommended
+                        # BUG FIX v7.1: Use recommended_power_kw/recommended_energy_kwh
+                        # from bess-dispatch instead of variants[0] which is just the first
+                        # tested variant, NOT the optimal one.
+                        rec_power = bess_dispatch_result.get('recommended_power_kw', 0)
+                        rec_energy = bess_dispatch_result.get('recommended_energy_kwh', 0)
+                        rec_variant_name = bess_dispatch_result.get('recommended_variant')
+
+                        # Find the recommended variant in the variants list
+                        best_bess_variant = None
+                        if rec_variant_name:
+                            for v in bess_dispatch_result['variants']:
+                                if v.get('variant') == rec_variant_name:
+                                    best_bess_variant = v
+                                    break
+                        # Fallback: find variant closest to recommended sizing
+                        if not best_bess_variant and rec_power > 0:
+                            best_match = None
+                            best_dist = float('inf')
+                            for v in bess_dispatch_result['variants']:
+                                dist = abs(v['power_kw'] - rec_power) + abs(v['energy_kwh'] - rec_energy)
+                                if dist < best_dist:
+                                    best_dist = dist
+                                    best_match = v
+                            best_bess_variant = best_match
+                        # Final fallback: first variant
+                        if not best_bess_variant:
+                            best_bess_variant = bess_dispatch_result['variants'][0]
+
+                        bess_power = best_bess_variant['power_kw']
+                        bess_energy = best_bess_variant['energy_kwh']
+                        print(f"   🎯 Recommended by bess-dispatch: {rec_power:.0f} kW / {rec_energy:.0f} kWh ({rec_variant_name})")
+                        print(f"   ✅ Using variant: {bess_power:.0f} kW / {bess_energy:.0f} kWh")
 
                         # Re-simulate with bess-dispatch optimized sizing
                         variant_scenario = simulate_pv_system_with_bess(
                             capacity=variant_scenario.capacity,
                             pv_profile=pv_profile,
                             consumption=consumption,
-                            bess_power_kw=best_bess_variant['power_kw'],
-                            bess_energy_kwh=best_bess_variant['energy_kwh'],
+                            bess_power_kw=bess_power,
+                            bess_energy_kwh=bess_energy,
                             dc_ac_ratio=variant_scenario.dcac_ratio,
                             roundtrip_efficiency=bess_config.roundtrip_efficiency,
                             soc_min=bess_config.soc_min,
@@ -2959,10 +3210,40 @@ async def analyze(request: AnalysisRequest):
 
                         # Store bess-dispatch result for savings_breakdown
                         variant_scenario._bess_dispatch_result = bess_dispatch_result
-                        print(f"   ✅ bess-dispatch: {best_bess_variant['power_kw']:.0f} kW / {best_bess_variant['energy_kwh']:.0f} kWh")
                         if best_bess_variant.get('savings_breakdown'):
                             sb = best_bess_variant['savings_breakdown']
                             print(f"   💰 Savings: {sb.get('net_savings_pln', 0):.0f} PLN/year")
+
+                        # Override greedy BESS metrics with LP dispatch results
+                        # The greedy simulate_pv_system_with_bess only does pv_surplus mode.
+                        # For stacked/peak_shaving/arbitrage, LP dispatch data is authoritative.
+                        ds = best_bess_variant.get('dispatch_summary', {})
+                        if ds:
+                            lp_charge = ds.get('total_charge_kwh', 0)
+                            lp_discharge = ds.get('total_discharge_kwh', 0)
+                            lp_grid_import = ds.get('total_grid_import_kwh')
+                            lp_curtail = ds.get('total_curtailment_kwh')
+                            lp_direct_pv = ds.get('total_direct_pv_kwh')
+                            lp_self_consumption = ds.get('self_consumption_kwh')
+
+                            if lp_charge > 0 or lp_discharge > 0:
+                                variant_scenario.bess_charged_kwh = lp_charge
+                                variant_scenario.bess_discharged_kwh = lp_discharge
+                                variant_scenario.bess_self_consumed_from_bess_kwh = lp_discharge
+                                if lp_grid_import is not None:
+                                    variant_scenario.bess_grid_import_kwh = lp_grid_import
+                                if lp_curtail is not None:
+                                    variant_scenario.bess_curtailed_kwh = lp_curtail
+                                if lp_direct_pv is not None:
+                                    variant_scenario.bess_self_consumed_direct_kwh = lp_direct_pv
+
+                                # Recalculate cycles
+                                usable = bess_energy * (bess_config.soc_max - bess_config.soc_min)
+                                if usable > 0:
+                                    variant_scenario.bess_cycles_equivalent = (lp_charge + lp_discharge) / (2 * usable)
+
+                                print(f"   📊 LP metrics override: charge={lp_charge:.0f}, discharge={lp_discharge:.0f}, "
+                                      f"grid_import={lp_grid_import:.0f}, curtail={lp_curtail:.0f} kWh")
 
                 # Calculate hourly production for this variant (AC output with clipping)
                 # pv_profile is normalized per 1 kWp
@@ -3046,6 +3327,85 @@ async def analyze(request: AnalysisRequest):
                         auto_consumption_pct=baseline_result.auto_consumption_pct,
                         coverage_pct=baseline_result.coverage_pct
                     )
+
+                # =====================================================================
+                # K-class Capacity Fee Scenarios (v3.0)
+                # Calculate opłata mocowa for: baseline, PV only, PV+BESS
+                # =====================================================================
+                try:
+                    # consumption is the original load profile (hourly kWh)
+                    load_list = consumption.tolist() if hasattr(consumption, 'tolist') else list(consumption)
+                    pv_list = variant_hourly_production.tolist() if variant_hourly_production is not None else None
+
+                    # Extract BESS hourly profiles from bess-dispatch response
+                    bess_charge_from_grid = None
+                    bess_discharge = None
+                    if hasattr(variant_scenario, '_bess_dispatch_result') and variant_scenario._bess_dispatch_result:
+                        bdr = variant_scenario._bess_dispatch_result
+                        if bdr.get('variants'):
+                            # Find recommended variant's dispatch_summary
+                            rec_name = bdr.get('recommended_variant')
+                            best_v = None
+                            for v in bdr['variants']:
+                                if v.get('variant') == rec_name:
+                                    best_v = v
+                                    break
+                            if not best_v:
+                                best_v = bdr['variants'][0]
+
+                            # Get hourly profiles from variant-level (populated by include_hourly_profiles)
+                            bess_charge_from_grid = best_v.get('hourly_charge_from_grid_kw')
+                            bess_discharge = best_v.get('hourly_discharge_kw')
+
+                            # Fallback: try dispatch_summary
+                            if not bess_discharge and best_v.get('dispatch_summary'):
+                                ds = best_v['dispatch_summary']
+                                bess_discharge = ds.get('hourly_discharge_kw')
+                                if not bess_charge_from_grid:
+                                    bess_charge_from_grid = ds.get('hourly_charge_from_grid_kw')
+
+                    # Determine start date from timestamps
+                    data_start_date = None
+                    start_year = 2026
+                    if timestamps is not None and len(timestamps) > 0:
+                        ts0 = pd.to_datetime(timestamps[0])
+                        data_start_date = ts0.strftime('%Y-%m-%d')
+                        start_year = ts0.year
+
+                    kclass_result = call_capacity_fee_scenarios(
+                        load_kwh=load_list,
+                        pv_kwh=pv_list,
+                        bess_charge_from_grid_kwh=bess_charge_from_grid,
+                        bess_discharge_kwh=bess_discharge,
+                        data_start_date=data_start_date,
+                        start_year=start_year,
+                    )
+
+                    if kclass_result:
+                        bl = kclass_result.get('baseline', {})
+                        variant_result.capacity_fee_baseline_pln = bl.get('annual_fee_pln', 0)
+                        variant_result.k_class_baseline = bl.get('k_class', 'K4')
+
+                        pv_sc = kclass_result.get('with_pv')
+                        if pv_sc:
+                            variant_result.capacity_fee_with_pv_pln = pv_sc.get('annual_fee_pln', 0)
+                            variant_result.k_class_with_pv = pv_sc.get('k_class', 'K4')
+
+                        pv_bess_sc = kclass_result.get('with_pv_bess')
+                        if pv_bess_sc:
+                            variant_result.capacity_fee_with_pv_bess_pln = pv_bess_sc.get('annual_fee_pln', 0)
+                            variant_result.k_class_with_pv_bess = pv_bess_sc.get('k_class', 'K4')
+
+                        variant_result.capacity_fee_savings_pv_pln = kclass_result.get('savings_pv_only_pln', 0)
+                        variant_result.capacity_fee_savings_bess_pln = kclass_result.get('savings_bess_incremental_pln', 0)
+                        variant_result.capacity_fee_savings_total_pln = kclass_result.get('savings_pv_bess_pln', 0)
+
+                        print(f"      📊 K-class: {variant_result.k_class_baseline} → {variant_result.k_class_with_pv} → {variant_result.k_class_with_pv_bess}")
+                        print(f"         Savings: PV={variant_result.capacity_fee_savings_pv_pln:.0f}, BESS={variant_result.capacity_fee_savings_bess_pln:.0f}, Total={variant_result.capacity_fee_savings_total_pln:.0f} PLN")
+                except Exception as e:
+                    print(f"      ⚠️ K-class calculation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 key_variants[variant_name] = variant_result
 
@@ -3225,6 +3585,16 @@ async def optimize_seasonality(request: SeasonalityOptimizationRequest):
                 pv_type=config.pv_type,
                 yield_target=config.yield_target
             )
+
+        # Scale profile DOWN to match yield_target (only if target < actual yield)
+        pvgis_yield_band = float(pv_profile.sum()) if hasattr(pv_profile, 'sum') else float(np.sum(pv_profile))
+        yield_target_band = config.yield_target
+        if yield_target_band > 0 and pvgis_yield_band > 0 and yield_target_band < pvgis_yield_band - 10:
+            yield_scale_band = yield_target_band / pvgis_yield_band
+            pv_profile = pv_profile * yield_scale_band
+            print(f"   ⚡ Yield scaling DOWN: {pvgis_yield_band:.0f} → target {yield_target_band:.0f} kWh/kWp (factor: {yield_scale_band:.3f})")
+        else:
+            print(f"   ✓ No downscaling needed: actual {pvgis_yield_band:.0f} kWh/kWp, target {yield_target_band:.0f} kWh/kWp")
 
         # Uruchom optymalizację w osobnym wątku (pozwala SSE działać równolegle)
         target_seasons = request.target_seasons if request.target_seasons else ["High", "Mid"]

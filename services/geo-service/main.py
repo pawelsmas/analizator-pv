@@ -157,7 +157,7 @@ async def geocode_nominatim(country: str, postal_code: str = None, city: str = N
 
     url = "https://nominatim.openstreetmap.org/search"
     headers = {
-        "User-Agent": "PV-Optimizer/1.0 (contact@example.com)"  # Required by Nominatim ToS
+        "User-Agent": "PV-Analyzer/1.0 (https://github.com/pv-analyzer; solar@pv-analyzer.pl)"  # Required by Nominatim ToS
     }
 
     # Use structured query parameters for better accuracy
@@ -219,6 +219,109 @@ async def geocode_nominatim(country: str, postal_code: str = None, city: str = N
             print(f"Nominatim geocoding error: {e}")
 
     return None
+
+
+async def geocode_nominatim_full(query: str, limit: int = 5) -> Optional[List[Dict]]:
+    """
+    Geocode a full address query using Nominatim free-form search.
+    Returns street-level results for addresses like "Wrocław ul. Bierutowska 65".
+    Reformats Polish address patterns to be more Nominatim-friendly.
+    """
+    import re
+
+    url = "https://nominatim.openstreetmap.org/search"
+    headers = {
+        "User-Agent": "PV-Analyzer/1.0 (https://github.com/pv-analyzer; solar@pv-analyzer.pl)",
+        "Accept-Language": "pl,en;q=0.9",
+        "Accept": "application/json",
+        "Referer": "https://pv-analyzer.pl"
+    }
+
+    # Parse Polish address format: "City ul. Street Number" -> "Street, City, Poland"
+    # Common patterns: "Wrocław ul. Bierutowska 65", "Kraków, al. Mickiewicza 10"
+    original_query = query
+
+    # Remove Polish street prefixes and reformat
+    # Pattern: City prefix Street Number -> Street Number, City
+    street_prefixes = r'\b(ul\.?|ulica|al\.?|aleja|pl\.?|plac|os\.?|osiedle)\s*'
+
+    # Try to extract city and street
+    # Format 1: "City ul. Street Number"
+    match1 = re.match(r'^([A-Za-zżźćńółęąśŻŹĆŃÓŁĘĄŚ\-]+)\s+' + street_prefixes + r'(.+)$', query, re.IGNORECASE)
+    # Format 2: "ul. Street Number, City"
+    match2 = re.match(r'^' + street_prefixes + r'([^,]+),?\s*([A-Za-zżźćńółęąśŻŹĆŃÓŁĘĄŚ\-]+)$', query, re.IGNORECASE)
+
+    if match1:
+        city = match1.group(1)
+        street = match1.group(3).strip()
+        # Reformat: "Street, City, Poland"
+        search_query = f"{street}, {city}, Poland"
+        print(f"Geocode: Reformatted '{original_query}' -> '{search_query}'")
+    elif match2:
+        street = match2.group(2).strip()
+        city = match2.group(3).strip()
+        search_query = f"{street}, {city}, Poland"
+        print(f"Geocode: Reformatted '{original_query}' -> '{search_query}'")
+    else:
+        # Just add Poland if not already there
+        search_query = query if "polska" in query.lower() or "poland" in query.lower() else f"{query}, Poland"
+
+    params = {
+        "q": search_query,
+        "format": "json",
+        "limit": limit,
+        "addressdetails": 1,
+        "countrycodes": "pl"  # Restrict to Poland
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, params=params, headers=headers, timeout=10.0)
+            response.raise_for_status()
+            results = response.json()
+
+            if results and len(results) > 0:
+                return [
+                    {
+                        "lat": float(r["lat"]),
+                        "lng": float(r["lon"]),
+                        "display_name": r.get("display_name", ""),
+                        "type": r.get("type", "unknown"),
+                        "class": r.get("class", "unknown"),
+                        "importance": r.get("importance", 0),
+                        "address": r.get("address", {})
+                    }
+                    for r in results
+                ]
+
+            # Fallback: Try without house number if no results
+            street_only = re.sub(r'\s+\d+[a-zA-Z]?(/\d+)?$', '', search_query)
+            if street_only != search_query:
+                params["q"] = street_only
+                print(f"Geocode: Retry without number: '{street_only}'")
+                response = await client.get(url, params=params, headers=headers, timeout=10.0)
+                response.raise_for_status()
+                results = response.json()
+
+                if results and len(results) > 0:
+                    return [
+                        {
+                            "lat": float(r["lat"]),
+                            "lng": float(r["lon"]),
+                            "display_name": r.get("display_name", ""),
+                            "type": r.get("type", "unknown"),
+                            "class": r.get("class", "unknown"),
+                            "importance": r.get("importance", 0),
+                            "address": r.get("address", {})
+                        }
+                        for r in results
+                    ]
+
+        except Exception as e:
+            print(f"Nominatim full geocoding error: {e}")
+
+    return None
+
 
 async def get_elevation(lat: float, lon: float) -> Optional[float]:
     """
@@ -777,6 +880,140 @@ async def search_polish_cities(
         "count": len(results),
         "results": results
     }
+
+
+@app.get("/geo/reverse")
+async def reverse_geocode(
+    lat: float = Query(..., description="Latitude"),
+    lon: float = Query(..., description="Longitude")
+):
+    """
+    Reverse geocode coordinates to address using Nominatim.
+    Proxied through backend to avoid CORS issues.
+    """
+    url = "https://nominatim.openstreetmap.org/reverse"
+    headers = {
+        "User-Agent": "PV-Analyzer/1.0 (https://github.com/pv-analyzer; solar@pv-analyzer.pl)",
+        "Accept-Language": "pl"
+    }
+    params = {
+        "format": "json",
+        "lat": lat,
+        "lon": lon,
+        "addressdetails": 1
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, params=params, headers=headers, timeout=10.0)
+            response.raise_for_status()
+            result = response.json()
+
+            return {
+                "display_name": result.get("display_name", "Nieznany adres"),
+                "address": result.get("address", {}),
+                "lat": lat,
+                "lon": lon
+            }
+        except Exception as e:
+            print(f"Reverse geocoding error: {e}")
+            return {
+                "display_name": "Nieznany adres",
+                "address": {},
+                "lat": lat,
+                "lon": lon,
+                "error": str(e)
+            }
+
+
+@app.get("/geo/geocode")
+async def geocode_address(
+    q: str = Query(..., min_length=3, description="Address to geocode"),
+    limit: int = Query(default=5, ge=1, le=10, description="Max results")
+):
+    """
+    Geocode an address using Nominatim API.
+    First tries full address search, then falls back to city-only search.
+    """
+    import re
+    from polish_localities import normalize_polish
+
+    # First, try Nominatim for full address (street-level)
+    nominatim_results = await geocode_nominatim_full(q, limit)
+    if nominatim_results:
+        return {
+            "query": q,
+            "count": len(nominatim_results),
+            "results": nominatim_results,
+            "source": "nominatim"
+        }
+
+    # Fallback: local database for city-level search
+    # Clean query - remove street prefixes and numbers
+    cleaned = re.sub(r'\b(ul\.?|ulica|al\.?|aleja|pl\.?|plac|os\.?|osiedle)\b', '', q, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\d+[a-zA-Z]?(/\d+)?', '', cleaned)  # Remove house numbers
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+    # Get words in order (city is usually first in Polish addresses)
+    words = [w for w in cleaned.split() if len(w) >= 3]
+
+    local_results = []
+    search_term = None
+
+    # Try multi-word phrases first (e.g., "Nowa Sól" before "Nowa")
+    # Build phrases from longest to shortest: "Nowa Sól Przemysłowa", "Nowa Sól", "Nowa"
+    phrases = []
+    for phrase_len in range(len(words), 0, -1):
+        for start in range(len(words) - phrase_len + 1):
+            phrases.append(' '.join(words[start:start + phrase_len]))
+
+    for phrase in phrases:
+        local_results = search_cities(phrase, limit * 2)
+        if local_results:
+            search_term = phrase
+            break
+
+    # Sort results: exact match first, then starts with, then contains
+    if local_results and search_term:
+        normalized_term = normalize_polish(search_term)
+
+        def sort_key(r):
+            city_normalized = normalize_polish(r["city"])
+            # Exact match = 0, starts with = 1, contains = 2
+            if city_normalized == normalized_term:
+                return (0, r["city"])
+            elif city_normalized.startswith(normalized_term):
+                return (1, r["city"])
+            else:
+                return (2, r["city"])
+
+        local_results = sorted(local_results, key=sort_key)[:limit]
+
+    if local_results:
+        return {
+            "query": q,
+            "count": len(local_results),
+            "results": [
+                {
+                    "lat": r["lat"],
+                    "lng": r["lon"],
+                    "display_name": f"{r['city']}, {r['postal']}, Polska",
+                    "type": "city",
+                    "city": r["city"],
+                    "postcode": r["postal"]
+                }
+                for r in local_results
+            ],
+            "hint": "Dla dokładnej lokalizacji kliknij na mapie"
+        }
+
+    return {
+        "query": q,
+        "count": 0,
+        "results": [],
+        "hint": "Wpisz nazwę miasta lub kliknij na mapie"
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

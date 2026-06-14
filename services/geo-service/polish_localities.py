@@ -542,21 +542,43 @@ def lookup_postal_code(postal_code: str) -> dict | None:
     return None
 
 
+def normalize_polish(text: str) -> str:
+    """
+    Normalize Polish characters to ASCII equivalents.
+    'Wrocław' -> 'wroclaw', 'Łódź' -> 'lodz'
+    """
+    replacements = {
+        'ą': 'a', 'ć': 'c', 'ę': 'e', 'ł': 'l', 'ń': 'n',
+        'ó': 'o', 'ś': 's', 'ź': 'z', 'ż': 'z',
+        'Ą': 'a', 'Ć': 'c', 'Ę': 'e', 'Ł': 'l', 'Ń': 'n',
+        'Ó': 'o', 'Ś': 's', 'Ź': 'z', 'Ż': 'z'
+    }
+    result = text.lower()
+    for pl_char, ascii_char in replacements.items():
+        result = result.replace(pl_char, ascii_char)
+    return result
+
+
 def search_cities(query: str, limit: int = 10) -> list[dict]:
     """
     Search for cities matching query.
-    Returns list of matching cities with their data.
+    Supports both Polish characters and ASCII equivalents.
+    'Wroclaw' and 'Wrocław' both find Wrocław.
     """
     if not query or len(query) < 2:
         return []
 
-    normalized = query.lower().strip()
+    # Normalize query to ASCII for matching
+    normalized_query = normalize_polish(query.strip())
     results = []
 
     for name, data in POLISH_LOCALITIES.items():
-        if normalized in name or name.startswith(normalized):
+        # Normalize city name to ASCII for comparison
+        normalized_name = normalize_polish(name)
+
+        if normalized_query in normalized_name or normalized_name.startswith(normalized_query):
             results.append({
-                "city": name.title(),
+                "city": name.title(),  # Keep original Polish name
                 "lat": data["lat"],
                 "lon": data["lon"],
                 "elev": data["elev"],

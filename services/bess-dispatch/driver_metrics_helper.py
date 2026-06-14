@@ -68,7 +68,7 @@ def compute_lcos_pln_per_mwh(
     capex_pln: float,
     annual_opex_pln: float,
     annual_throughput_mwh: float,
-    discount_rate: float = 0.08,
+    discount_rate: float = 0.10,
     lifetime_years: int = 15,
 ) -> Optional[float]:
     """
@@ -130,7 +130,7 @@ def compute_lcos_from_sizing_result(
     capex_pln: float,
     annual_opex_pln: float,
     total_discharge_kwh: float,
-    discount_rate: float = 0.08,
+    discount_rate: float = 0.10,
     lifetime_years: int = 15,
 ) -> Optional[float]:
     """
@@ -225,7 +225,7 @@ def compute_all_driver_metrics(
     constraint_summary: Optional[Union[Dict[str, Any], Any]] = None,
     capex_pln: float = 0.0,
     annual_opex_pln: float = 0.0,
-    discount_rate: float = 0.08,
+    discount_rate: float = 0.10,
     lifetime_years: int = 15,
 ) -> Dict[str, Optional[float]]:
     """

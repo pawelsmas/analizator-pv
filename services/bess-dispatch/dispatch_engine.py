@@ -50,6 +50,8 @@ from models import (
     DebugEvents,
     # v2.2.0 Battery Trace
     BatteryTraceTimeseries,
+    # v7.0.0 LP Solver
+    LPSolverParams,
 )
 from debug_events_helper import compute_debug_events
 from battery_trace_helper import create_battery_trace_from_dispatch_result
@@ -2004,6 +2006,7 @@ def dispatch_load_only(
 def run_dispatch(
     request: DispatchRequest,
     import_prices: Optional[np.ndarray] = None,
+    export_prices: Optional[np.ndarray] = None,
 ) -> DispatchResult:
     """
     Main dispatch entry point - routes to appropriate algorithm.
@@ -2015,9 +2018,11 @@ def run_dispatch(
     request : DispatchRequest
         Dispatch request with all configuration
     import_prices : np.ndarray, optional
-        Time-varying import prices [PLN/kWh] per timestep.
+        Time-varying import prices [PLN/kWh] per timestep (all-in: RDN + OSD fees).
         Required if request.arbitrage_config.enabled is True.
-        Should be fetched from price_engine before calling this function.
+    export_prices : np.ndarray, optional
+        Time-varying export prices [PLN/kWh] per timestep (raw RDN: prosumer sell price).
+        If provided, used as sell_price in LP. If None, falls back to buy_price * 0.95.
 
     Returns:
     --------
@@ -2027,6 +2032,15 @@ def run_dispatch(
     pv = np.array(request.effective_pv_kw)
     load = np.array(request.load_kw)
     dt_hours = request.dt_hours
+
+    # Cable pooling: aggregate additional PV/load profiles
+    if getattr(request, 'cable_pooling_profiles', None):
+        for profile in request.cable_pooling_profiles:
+            sf = profile.scale_factor
+            if profile.pv_kw and len(profile.pv_kw) == len(pv):
+                pv = pv + np.array(profile.pv_kw) * sf
+            if profile.load_kw and len(profile.load_kw) == len(load):
+                load = load + np.array(profile.load_kw) * sf
 
     # Validate arbitrage requirements
     arb_config = request.arbitrage_config
@@ -2041,61 +2055,103 @@ def run_dispatch(
                 f"import_prices length ({len(import_prices)}) must match load_kw length ({len(load)})"
             )
 
-    if request.mode == DispatchMode.PV_SURPLUS:
-        result = dispatch_pv_surplus(
-            pv, load, request.battery, dt_hours, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
+    # === LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy) ===
+    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_buy_sell_for_dispatch
+    import logging as _logging
+    _lp_logger = _logging.getLogger("lp_dispatch")
+
+    lp_config = getattr(request, 'lp_params', None) or LPSolverParams()
+
+    # Determine peak_limit for LP
+    lp_peak_limit = request.peak_limit_kw
+    if request.mode == DispatchMode.STACKED and request.stacked_params:
+        lp_peak_limit = request.stacked_params.peak_limit_kw
+
+    # Resolve price arrays for LP (unified: dispatch + sizing use same logic)
+    buy_price_arr, sell_price_arr = resolve_buy_sell_for_dispatch(
+        prices=request.prices,
+        n_steps=len(load),
+        import_prices=import_prices,
+        export_prices=export_prices,
+        arbitrage_config=getattr(request, 'arbitrage_config', None),
+        mode=request.mode,
+    )
+
+    # Resolve allow_grid_charging from arbitrage config
+    _arb_cfg_lp = getattr(request, 'arbitrage_config', None)
+    lp_allow_grid_charging = getattr(_arb_cfg_lp, 'allow_grid_charging', True) if _arb_cfg_lp else True
+
+    # Check if capacity fee optimization is enabled
+    use_cap_fee_opt = (
+        getattr(request, 'optimize_capacity_fee', False) or
+        (request.prices and getattr(request.prices, 'capacity_fee_method', '') == 'dynamic')
+    )
+
+    if use_cap_fee_opt:
+        # Build time_index for capacity fee calculation
+        from economics_helper import get_time_index_for_request
+        try:
+            time_index = get_time_index_for_request(request, len(load))
+        except Exception:
+            from economics_helper import build_time_index_cet_fixed
+            from datetime import date
+            raw_start = getattr(request, 'start_date', None)
+            if isinstance(raw_start, str):
+                start = date.fromisoformat(raw_start)
+            elif isinstance(raw_start, date):
+                start = raw_start
+            else:
+                start = date(2025, 1, 1)
+            time_index = build_time_index_cet_fixed(start, len(load), int(dt_hours * 60))
+
+        from capacity_fee_pl.models import CapacityFeeConfig
+        cap_config = CapacityFeeConfig(
+            som_pln_per_kwh=getattr(request.prices, 'capacity_fee_som_pln_kwh', 0.2194) if request.prices else 0.2194,
         )
 
-    elif request.mode == DispatchMode.PEAK_SHAVING:
-        if request.peak_limit_kw is None:
-            raise ValueError("peak_limit_kw required for PEAK_SHAVING mode")
-        result = dispatch_peak_shaving(
-            pv, load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
+        result, cap_fee_info = dispatch_lp_with_capacity_optimization(
+            pv_kw=pv,
+            load_kw=load,
+            battery=request.battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=request.mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_config,
+            return_hourly=True,
+            buy_price_override=buy_price_arr,
+            sell_price_override=sell_price_arr,
+            time_index=time_index,
+            capacity_fee_config=cap_config,
+            allow_grid_charging=lp_allow_grid_charging,
         )
-
-    elif request.mode == DispatchMode.STACKED:
-        if request.stacked_params is None:
-            raise ValueError("stacked_params required for STACKED mode")
-        result = dispatch_stacked(
-            pv, load, request.battery, dt_hours,
-            request.stacked_params, request.prices,
-            import_prices=import_prices,
-            arb_config=arb_config,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
-
-    elif request.mode == DispatchMode.LOAD_ONLY:
-        if request.peak_limit_kw is None:
-            raise ValueError("peak_limit_kw required for LOAD_ONLY mode")
-        result = dispatch_load_only(
-            load, request.battery, dt_hours,
-            request.peak_limit_kw, request.prices,
-            include_energy_flows_timeseries=request.include_energy_flows_timeseries,
-            include_battery_trace=request.include_battery_trace,
-        )
-
     else:
-        raise ValueError(f"Unsupported dispatch mode: {request.mode}")
+        result = dispatch_lp(
+            pv_kw=pv,
+            load_kw=load,
+            battery=request.battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=request.mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_config,
+            return_hourly=True,
+            buy_price_override=buy_price_arr,
+            sell_price_override=sell_price_arr,
+            allow_grid_charging=lp_allow_grid_charging,
+        )
 
-    # Check degradation budget
+    # Post-processing: degradation budget + grid constraints
     if request.degradation_budget:
         result.degradation = check_degradation_budget(
             result.degradation, request.degradation_budget
         )
 
-    # Apply grid constraints (v0.7.0) - handles export cap, import cap
     result, constraint_summary = apply_grid_constraints(
         result, request.grid_constraints, dt_hours
     )
     result.constraint_summary = constraint_summary
 
-    # Compute debug events (v1.8.0) - aggregates constraint/curtail/unserved info
     result.debug_events = compute_debug_events(
         n_timesteps=result.n_timesteps,
         constraint_summary=constraint_summary,

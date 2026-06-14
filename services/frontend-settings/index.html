@@ -14,96 +14,176 @@
   </div>
 
   <div class="settings-content">
-    <!-- Fixed Charges Section (without active energy) -->
-    <div class="settings-section">
-      <div class="section-header">
-        <span class="section-icon">💡</span>
-        <h2>Opłaty Stałe</h2>
-        <span class="section-info">Składniki ceny energii BEZ energii czynnej [PLN/MWh]</span>
+    <!-- ============================================================ -->
+    <!-- UNIFIED: Konfiguracja Kosztów Energii -->
+    <!-- ============================================================ -->
+    <div class="settings-section" style="grid-column:1/-1;border:2px solid #1565c0;border-radius:12px;padding:0;overflow:hidden">
+      <div class="section-header" style="background:linear-gradient(135deg,#1565c0,#0d47a1);color:white;margin:-1px -1px 0;border-radius:10px 10px 0 0;padding:16px 20px">
+        <span class="section-icon" style="background:rgba(255,255,255,0.2)">⚡</span>
+        <h2 style="color:white">Konfiguracja Kosztów Energii</h2>
+        <span class="section-info" style="color:rgba(255,255,255,0.8)">Operator OSD, dystrybucja, energia, opłaty, mocowa</span>
       </div>
 
-      <div class="info-box blue" style="margin-bottom:16px">
-        <p style="margin:0;font-size:13px">
-          <strong>⚡ Energia czynna</strong> jest definiowana osobno w sekcji <strong>Taryfy Dobowe (ToU)</strong> poniżej.<br>
-          Tu konfigurujemy tylko opłaty stałe, które są takie same niezależnie od strefy czasowej<br>
-          <em style="color:#666">(wyjątek: opłata mocowa naliczana tylko w godz. 7-22 w dni robocze)</em>
-        </p>
+      <!-- ===== OSD SELECTOR (always visible) ===== -->
+      <div style="padding:16px 20px;background:linear-gradient(135deg,#e3f2fd,#bbdefb);border-bottom:1px solid #90caf9">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <label style="font-weight:700;color:#1565c0;font-size:13px">Operator OSD</label>
+            <select id="osdOperator" onchange="onOsdOperatorChange()"
+                    style="width:100%;padding:10px;font-size:14px;font-weight:600;border:1px solid #90caf9;border-radius:6px;background:#fff;margin-top:4px">
+              <option value="">-- Wybierz ręcznie --</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-weight:700;color:#1565c0;font-size:13px">Grupa taryfowa</label>
+            <select id="osdTariffGroup" onchange="onOsdTariffGroupChange()"
+                    style="width:100%;padding:10px;font-size:14px;font-weight:600;border:1px solid #90caf9;border-radius:6px;background:#fff;margin-top:4px">
+              <option value="">-- Najpierw wybierz operatora --</option>
+            </select>
+          </div>
+        </div>
       </div>
 
-      <div class="settings-grid">
-        <div class="setting-item">
-          <label>Dystrybucja</label>
-          <input type="number" id="distribution" value="200" step="10">
-          <span class="setting-hint">Opłata dystrybucyjna OSD</span>
+      <!-- ===== SUMMARY CARD (always visible) ===== -->
+      <div id="energyCostSummary" style="padding:20px 24px;background:#f8f9fa;border-bottom:1px solid #e0e0e0">
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
+          <div onclick="navigateToEnergyTab('dist')" style="background:white;border-radius:10px;padding:16px 12px;text-align:center;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.05);cursor:pointer;transition:transform 0.15s,box-shadow 0.15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'" onmouseleave="this.style.transform='';this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'">
+            <div style="font-size:12px;color:#666;margin-bottom:4px">Dystrybucja (śr.)</div>
+            <div style="font-size:28px;font-weight:800;color:#e65100" id="summDistAvg">200</div>
+            <div style="font-size:11px;color:#999">PLN/MWh</div>
+          </div>
+          <div onclick="navigateToEnergyTab('tou')" style="background:white;border-radius:10px;padding:16px 12px;text-align:center;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.05);cursor:pointer;transition:transform 0.15s,box-shadow 0.15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'" onmouseleave="this.style.transform='';this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'">
+            <div style="font-size:12px;color:#666;margin-bottom:4px">Energia czynna (śr.)</div>
+            <div style="font-size:28px;font-weight:800;color:#1565c0" id="summEnergyAvg">480</div>
+            <div style="font-size:11px;color:#999">PLN/MWh</div>
+          </div>
+          <div onclick="navigateToEnergyTab('fees')" style="background:white;border-radius:10px;padding:16px 12px;text-align:center;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.05);cursor:pointer;transition:transform 0.15s,box-shadow 0.15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'" onmouseleave="this.style.transform='';this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'">
+            <div style="font-size:12px;color:#666;margin-bottom:4px">Opłaty ustawowe</div>
+            <div style="font-size:28px;font-weight:800;color:#2e7d32" id="summStatutory">48</div>
+            <div style="font-size:11px;color:#999">PLN/MWh</div>
+          </div>
+          <div onclick="navigateToEnergyTab('capacity')" style="background:white;border-radius:10px;padding:16px 12px;text-align:center;border:1px solid #e0e0e0;box-shadow:0 1px 3px rgba(0,0,0,0.05);cursor:pointer;transition:transform 0.15s,box-shadow 0.15s" onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'" onmouseleave="this.style.transform='';this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'">
+            <div style="font-size:12px;color:#666;margin-bottom:4px">Mocowa</div>
+            <div style="font-size:28px;font-weight:800;color:#ff6f00" id="summCapacityVal">219</div>
+            <div style="font-size:11px;color:#999">PLN/MWh (7-22)</div>
+          </div>
+          <div style="background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border-radius:10px;padding:16px 12px;text-align:center;border:1px solid #a5d6a7;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+            <div style="font-size:12px;color:#2e7d32;margin-bottom:4px;font-weight:600">SUMA koszt/MWh</div>
+            <div style="font-size:28px;font-weight:900;color:#1b5e20" id="summTotal">747</div>
+            <div style="font-size:11px;color:#388e3c">PLN/MWh</div>
+          </div>
         </div>
-        <div class="setting-item">
-          <label>Opłata jakościowa</label>
-          <input type="number" id="qualityFee" value="10" step="1">
-          <span class="setting-hint">Za jakość energii</span>
+        <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:white;border-radius:8px;border:1px solid #e0e0e0">
+          <div style="font-size:12px;color:#666">
+            Dystr. strefowa: <span id="summDistZones" style="font-weight:700;color:#e65100">szczyt 200 | dzień 200 | noc 200 | dolina —</span>
+          </div>
+          <div style="font-size:12px;color:#666">
+            Mocowa: <span id="summCapacity" style="font-weight:700;color:#ff6f00">219 PLN/MWh (7-22 Pn-Pt)</span>
+          </div>
+          <div style="font-size:12px;color:#666">
+            Stałe mies: <span id="summFixedMonthly" style="font-weight:700;color:#6a1b9a">986</span> PLN/mies
+          </div>
         </div>
-        <div class="setting-item">
-          <label>Opłata OZE</label>
-          <input type="number" id="ozeFee" value="7" step="1">
-          <span class="setting-hint">Wsparcie OZE</span>
-        </div>
-        <div class="setting-item">
-          <label>Opłata kogeneracyjna</label>
-          <input type="number" id="cogenerationFee" value="10" step="1">
-          <span class="setting-hint">Wsparcie kogeneracji</span>
-        </div>
-        <div class="setting-item">
-          <label>Opłata mocowa</label>
-          <input type="number" id="capacityFee" value="219" step="1" readonly style="background:#f5f5f5">
-          <span class="setting-hint">Stawka SOM × 1000 (konfig. poniżej) — tylko 7-22 Pn-Pt</span>
-        </div>
-        <div class="setting-item">
-          <label>Akcyza</label>
-          <input type="number" id="exciseTax" value="5" step="1">
-          <span class="setting-hint">Podatek akcyzowy</span>
-        </div>
-        <div class="setting-item highlight">
-          <label>SUMA opłat stałych</label>
-          <input type="number" id="totalFixedCharges" value="451" readonly>
-          <span class="setting-hint">Doliczane do energii czynnej (bez mocowej w nocy)</span>
-        </div>
-        <!-- Hidden field for backwards compatibility -->
-        <input type="hidden" id="energyActive" value="0">
-        <input type="hidden" id="totalEnergyPrice" value="451">
-      </div>
-    </div>
-
-    <!-- Time-of-Use Tariffs Section -->
-    <div class="settings-section">
-      <div class="section-header">
-        <span class="section-icon">🕐</span>
-        <h2>Taryfy Dobowe (ToU)</h2>
-        <span class="section-info">Strefy czasowe i stawki energii</span>
       </div>
 
-      <div class="info-box blue">
-        <h4>📋 Typy taryf</h4>
-        <p>
-          <strong>C11/G11</strong> — jednoskładnikowa (jedna stawka 24h)<br>
-          <strong>C12a/G12</strong> — dwustrefowa (dzień + noc)<br>
-          <strong>C12b/C22</strong> — trzystrefowa (szczyt + dzień + noc)<br>
-          <em style="color:#666">Stawki w PLN/MWh netto (bez VAT)</em>
-        </p>
+      <!-- ===== TAB NAVIGATION ===== -->
+      <div style="padding:0 20px;background:#fff;border-bottom:1px solid #e0e0e0">
+        <div id="energyTabBar" style="display:flex;gap:0;overflow-x:auto">
+          <button class="energy-tab active" onclick="switchEnergyTab('dist',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:700;color:#1565c0;border-bottom:3px solid #1565c0;white-space:nowrap">Dystrybucja</button>
+          <button class="energy-tab" onclick="switchEnergyTab('tou',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#666;border-bottom:3px solid transparent;white-space:nowrap">Energia (ToU)</button>
+          <button class="energy-tab" onclick="switchEnergyTab('pricing',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#666;border-bottom:3px solid transparent;white-space:nowrap">Tryb cenowy</button>
+          <button class="energy-tab" onclick="switchEnergyTab('fees',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#666;border-bottom:3px solid transparent;white-space:nowrap">Opłaty ustawowe</button>
+          <button class="energy-tab" onclick="switchEnergyTab('capacity',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#666;border-bottom:3px solid transparent;white-space:nowrap">Mocowa</button>
+          <button class="energy-tab" onclick="switchEnergyTab('monthly',this)" style="flex:1;padding:12px 8px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#666;border-bottom:3px solid transparent;white-space:nowrap">Stałe mies.</button>
+        </div>
       </div>
 
-      <div class="settings-grid">
-        <div class="setting-item">
-          <label>Typ taryfy</label>
-          <select id="tariffType" onchange="onTariffTypeChange()" style="padding:12px;font-size:14px;font-weight:600">
-            <option value="flat">C11/G11 — Jednoskładnikowa</option>
-            <option value="two_zone" selected>C12a/G12 — Dwustrefowa</option>
-            <option value="three_zone">C12b/C22 — Trzystrefowa</option>
-          </select>
+      <!-- ===== TAB: Dystrybucja ===== -->
+      <div id="energyTab_dist" class="energy-tab-panel" style="padding:16px 20px">
+        <div class="settings-grid" style="margin-bottom:12px">
+          <div class="setting-item">
+            <label>Dystrybucja (śr.)</label>
+            <input type="number" id="distribution" value="200" step="1" readonly style="background:#f5f5f5;font-weight:700">
+            <span class="setting-hint">Średnia ważona [PLN/MWh]</span>
+          </div>
+          <div class="setting-item">
+            <label>Szczyt</label>
+            <input type="number" id="distributionPeak" value="200" step="1" oninput="updateDistributionAverage();updateEnergyCostSummary()">
+          </div>
+          <div class="setting-item">
+            <label>Dzień</label>
+            <input type="number" id="distributionDay" value="200" step="1" oninput="updateDistributionAverage();updateEnergyCostSummary()">
+          </div>
+          <div class="setting-item">
+            <label>Noc</label>
+            <input type="number" id="distributionNight" value="200" step="1" oninput="updateDistributionAverage();updateEnergyCostSummary()">
+          </div>
+          <div class="setting-item" id="distributionValleyItem" style="display:none">
+            <label>Dolina</label>
+            <input type="number" id="distributionValley" value="13.50" step="1" oninput="updateDistributionAverage();updateEnergyCostSummary()">
+            <span class="setting-hint">Głęboka noc + weekendy [PLN/MWh]</span>
+          </div>
         </div>
-        <div class="setting-item">
-          <label>Nazwa taryfy (OSD)</label>
-          <input type="text" id="tariffName" value="C12a" placeholder="np. C12a, G12" style="font-size:16px;font-weight:600">
+        <!-- Distribution Time Windows -->
+        <div style="padding:10px 12px;background:#fff3e0;border-radius:8px;border:1px solid #ffcc80">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <label style="font-weight:700;color:#e65100;font-size:12px">Strefy godzinowe</label>
+            <select id="distTariffType" onchange="onDistTariffTypeChange()" style="padding:4px 8px;font-size:12px;font-weight:600;border:1px solid #ffcc80;border-radius:4px;background:#fff">
+              <option value="flat">Jednoskładnikowa</option>
+              <option value="two_zone">Dwustrefowa</option>
+              <option value="three_zone" selected>Trzystrefowa</option>
+              <option value="four_zone">Czterostrefowa</option>
+            </select>
+          </div>
+          <div id="distTwoZonePanel" style="display:none">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+              <div><label style="font-size:10px">Dzień od (Pn-Pt)</label><input type="number" id="distDayStartWeekday" value="6" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Dzień do (Pn-Pt)</label><input type="number" id="distDayEndWeekday" value="22" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Dzień od (So-Nd)</label><input type="number" id="distDayStartWeekend" value="6" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Dzień do (So-Nd)</label><input type="number" id="distDayEndWeekend" value="22" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+            </div>
+          </div>
+          <div id="distThreeZonePanel">
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;align-items:end">
+              <div><label style="font-size:10px">Szczyt 1 od</label><input type="number" id="distPeak1Start" value="7" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 1 do</label><input type="number" id="distPeak1End" value="13" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 2 od</label><input type="number" id="distPeak2Start" value="16" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 2 do</label><input type="number" id="distPeak2End" value="21" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="distWeekendOffPeak" checked style="width:14px;height:14px" onchange="markUnsaved()"><label for="distWeekendOffPeak" style="font-size:10px;cursor:pointer">Wknd=noc</label></div>
+            </div>
+          </div>
+          <div id="distFourZonePanel" style="display:none">
+            <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;align-items:end">
+              <div><label style="font-size:10px">Szczyt 1 od</label><input type="number" id="distFourPeak1Start" value="7" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 1 do</label><input type="number" id="distFourPeak1End" value="13" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 2 od</label><input type="number" id="distFourPeak2Start" value="16" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Szczyt 2 do</label><input type="number" id="distFourPeak2End" value="21" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Dolina od</label><input type="number" id="distValleyStart" value="1" min="0" max="23" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+              <div><label style="font-size:10px">Dolina do</label><input type="number" id="distValleyEnd" value="5" min="0" max="24" style="width:100%;padding:4px;font-size:12px" oninput="markUnsaved()"></div>
+            </div>
+            <div style="margin-top:4px;font-size:10px;color:#795548">Weekendy = cała dolina obciążenia. Dolina nocna: od <b>Dolina od</b> do <b>Dolina do</b> (głęboka noc, np. 1:00-5:00). Reszta = Strefa 3.</div>
+          </div>
         </div>
       </div>
+
+      <!-- ===== TAB: Energia (ToU) ===== -->
+      <div id="energyTab_tou" class="energy-tab-panel" style="padding:16px 20px;display:none">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div>
+            <label style="font-size:12px;font-weight:600">Typ taryfy energii</label>
+            <select id="tariffType" onchange="onTariffTypeChange()" style="width:100%;padding:10px;font-size:14px;font-weight:600;margin-top:4px">
+              <option value="flat">C11/G11 — Jednoskładnikowa</option>
+              <option value="two_zone" selected>C12a/G12 — Dwustrefowa</option>
+              <option value="three_zone">C12b/C22 — Trzystrefowa</option>
+              <option value="four_zone">C24/B24 — Czterostrefowa</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600">Nazwa taryfy</label>
+            <input type="text" id="tariffName" value="C12a" placeholder="np. C12a, G12" style="width:100%;font-size:16px;font-weight:600;padding:10px;margin-top:4px">
+          </div>
+        </div>
 
       <!-- Prominent 24h Timeline Visualization -->
       <div style="margin-top:20px;padding:20px;background:linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);border-radius:12px">
@@ -215,7 +295,7 @@
           <!-- SZCZYT -->
           <div style="background:linear-gradient(135deg,#ef5350,#c62828);color:white;border-radius:12px;padding:20px;text-align:center">
             <div style="font-size:14px;font-weight:700;margin-bottom:4px">🔴 SZCZYT</div>
-            <div style="font-size:11px;opacity:0.9;margin-bottom:12px">07-13, 17-21</div>
+            <div style="font-size:11px;opacity:0.9;margin-bottom:12px" id="threeZonePeakHoursLabel">07-13, 17-21</div>
             <input type="number" id="tariffPeakRate" value="950" step="10" min="0" onchange="updateTariffVisualization()"
                    style="width:100%;max-width:120px;font-size:32px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:8px;background:rgba(255,255,255,0.95);color:#333">
             <div style="font-size:12px;margin-top:6px;opacity:0.9">PLN/MWh</div>
@@ -274,6 +354,79 @@
         </div>
       </div>
 
+      <!-- Four-zone tariff (peak1/peak2/remaining/valley) -->
+      <div id="tariffFourZone" style="display:none;margin-top:20px">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+          <!-- SZCZYT -->
+          <div style="background:linear-gradient(135deg,#ef5350,#c62828);color:white;border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px">SZCZYT</div>
+            <div style="font-size:10px;opacity:0.9;margin-bottom:10px" id="fourZonePeakHoursLabel">07-13, 16-21</div>
+            <input type="number" id="tariffFourPeakRate" value="950" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:100px;font-size:26px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:6px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:11px;margin-top:4px;opacity:0.9">PLN/MWh</div>
+          </div>
+          <!-- POZOSTALE (Strefa 3) -->
+          <div style="background:linear-gradient(135deg,#ffca28,#f9a825);color:#5d4037;border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px">POZOSTALE</div>
+            <div style="font-size:10px;opacity:0.8;margin-bottom:10px">Strefa 3</div>
+            <input type="number" id="tariffFourDayRate" value="700" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:100px;font-size:26px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:6px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:11px;margin-top:4px;opacity:0.8">PLN/MWh</div>
+          </div>
+          <!-- NOC/POZASZCZYT -->
+          <div style="background:linear-gradient(135deg,#66bb6a,#2e7d32);color:white;border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px">NOC</div>
+            <div style="font-size:10px;opacity:0.9;margin-bottom:10px">Pozaszczyty</div>
+            <input type="number" id="tariffFourOffPeakRate" value="400" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:100px;font-size:26px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:6px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:11px;margin-top:4px;opacity:0.9">PLN/MWh</div>
+          </div>
+          <!-- DOLINA -->
+          <div style="background:linear-gradient(135deg,#42a5f5,#1565c0);color:white;border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px">DOLINA</div>
+            <div style="font-size:10px;opacity:0.9;margin-bottom:10px" id="fourZoneValleyHoursLabel">01-05 + weekendy</div>
+            <input type="number" id="tariffFourValleyRate" value="200" step="10" min="0" onchange="updateTariffVisualization()"
+                   style="width:100%;max-width:100px;font-size:26px;font-weight:800;text-align:center;border:none;border-radius:8px;padding:6px;background:rgba(255,255,255,0.95);color:#333">
+            <div style="font-size:11px;margin-top:4px;opacity:0.9">PLN/MWh</div>
+          </div>
+        </div>
+
+        <!-- Godziny - konfiguracja -->
+        <div style="background:#f5f5f5;border-radius:8px;padding:16px">
+          <div style="font-size:12px;font-weight:600;color:#666;margin-bottom:12px">Konfiguracja godzin stref</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+            <!-- Szczyt godziny -->
+            <div>
+              <div style="font-size:11px;color:#c62828;font-weight:600;margin-bottom:6px">SZCZYT (Pn-Pt)</div>
+              <div style="display:flex;align-items:center;gap:4px;font-size:13px">
+                <input type="number" id="tariffFourPeakStart" value="7" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffFourPeakEnd" value="13" min="1" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span style="color:#999;margin:0 4px">&amp;</span>
+                <input type="number" id="tariffFourPeakStart2" value="16" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffFourPeakEnd2" value="21" min="1" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+              </div>
+            </div>
+            <!-- Dolina godziny -->
+            <div>
+              <div style="font-size:11px;color:#1565c0;font-weight:600;margin-bottom:6px">DOLINA (Pn-Pt)</div>
+              <div style="display:flex;align-items:center;gap:4px;font-size:13px">
+                <input type="number" id="tariffFourValleyStart" value="1" min="0" max="23" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span>-</span>
+                <input type="number" id="tariffFourValleyEnd" value="5" min="0" max="24" onchange="updateTariffVisualization()" style="width:40px;padding:4px;text-align:center;border:1px solid #ddd;border-radius:4px">
+                <span style="font-size:11px;color:#666;margin-left:4px">(+ weekendy = cala dolina)</span>
+              </div>
+            </div>
+            <!-- Pozostale - auto -->
+            <div>
+              <div style="font-size:11px;color:#f9a825;font-weight:600;margin-bottom:6px">POZOSTALE (Strefa 3)</div>
+              <div style="font-size:12px;color:#666;padding:6px 0">Automatycznie (miedzy szczytem a dolina)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Summary stats -->
       <div style="margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
         <div style="padding:16px;background:#f5f5f5;border-radius:8px;text-align:center">
@@ -292,26 +445,61 @@
           <div style="font-size:11px;color:#999">dziennie (Pn-Pt)</div>
         </div>
       </div>
-    </div>
+    </div><!-- /energyTab_tou -->
 
-    <!-- Capacity Fee (Opłata Mocowa) Section -->
-    <div class="settings-section">
-      <div class="section-header">
-        <span class="section-icon">⚡</span>
-        <h2>Opłata Mocowa (Rynek Mocy)</h2>
-        <span class="section-info">Konfiguracja wg Ustawy o rynku mocy i URE</span>
-      </div>
+      <!-- ===== TAB: Tryb cenowy ===== -->
+      <div id="energyTab_pricing" class="energy-tab-panel" style="padding:16px 20px;display:none">
+        <div style="margin-bottom:12px">
+          <select id="pricingMode" onchange="toggleHybridMonthlySection(); markUnsaved();"
+                  style="padding:10px 14px;border-radius:6px;border:1px solid #9fa8da;font-size:14px;width:100%;background:#fff;font-weight:600">
+            <option value="single">Jeden tryb na cały rok (OSD lub RDN)</option>
+            <option value="hybrid_monthly">Miks miesięczny OSD + RDN</option>
+          </select>
+        </div>
+        <div id="hybridMonthlySection" style="display:none">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+            <button onclick="setMonthlyPreset('all_osd')" style="padding:4px 10px;border-radius:4px;border:1px solid #e65100;background:#fff3e0;color:#e65100;cursor:pointer;font-size:11px">Cały OSD</button>
+            <button onclick="setMonthlyPreset('all_rdn')" style="padding:4px 10px;border-radius:4px;border:1px solid #c2185b;background:#fce4ec;color:#c2185b;cursor:pointer;font-size:11px">Cały RDN</button>
+            <button onclick="setMonthlyPreset('q2q3_rdn')" style="padding:4px 10px;border-radius:4px;border:1px solid #283593;background:#e8eaf6;color:#283593;cursor:pointer;font-size:11px;font-weight:600">Q2+Q3 RDN</button>
+            <button onclick="setMonthlyPreset('summer_rdn')" style="padding:4px 10px;border-radius:4px;border:1px solid #283593;background:#e8eaf6;color:#283593;cursor:pointer;font-size:11px">Lato RDN</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Sty</span><select id="monthPriceSource_1" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Lut</span><select id="monthPriceSource_2" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Mar</span><select id="monthPriceSource_3" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Kwi</span><select id="monthPriceSource_4" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Maj</span><select id="monthPriceSource_5" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Cze</span><select id="monthPriceSource_6" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Lip</span><select id="monthPriceSource_7" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Sie</span><select id="monthPriceSource_8" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Wrz</span><select id="monthPriceSource_9" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Paź</span><select id="monthPriceSource_10" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Lis</span><select id="monthPriceSource_11" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+            <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;width:24px;font-weight:700">Gru</span><select id="monthPriceSource_12" onchange="updateHybridMonthlyPreview();markUnsaved();" style="flex:1;padding:4px;font-size:11px;border:1px solid #ccc;border-radius:3px"><option value="osd">OSD</option><option value="rdn">RDN</option></select></div>
+          </div>
+          <div id="hybridMonthlyPreview" style="padding:8px;background:#fff;border-radius:6px;border:1px solid #c5cae9;font-size:12px"></div>
+        </div>
+      </div><!-- /energyTab_pricing -->
 
-      <div class="info-box orange">
-        <h4>📋 Wzór opłaty mocowej</h4>
-        <p>
-          <strong>WOM = A × SOM × ZS</strong><br>
-          <strong>A</strong> — współczynnik K-klasy (0.17 / 0.50 / 0.83 / 1.00)<br>
-          <strong>SOM</strong> — stawka opłaty mocowej [PLN/kWh]<br>
-          <strong>ZS</strong> — energia pobrana w godzinach wybranych [kWh]<br>
-          <em style="color:#666">Opłata naliczana tylko w dni robocze (Pn-Pt, bez świąt polskich)</em>
-        </p>
-      </div>
+      <!-- ===== TAB: Opłaty ustawowe ===== -->
+      <div id="energyTab_fees" class="energy-tab-panel" style="padding:16px 20px;display:none">
+        <div class="settings-grid">
+          <div class="setting-item"><label>Jakościowa</label><input type="number" id="qualityFee" value="33.10" step="0.01" oninput="updateEnergyCostSummary()"><span class="setting-hint">PLN/MWh</span></div>
+          <div class="setting-item"><label>OZE</label><input type="number" id="ozeFee" value="7.30" step="0.01" oninput="updateEnergyCostSummary()"><span class="setting-hint">PLN/MWh</span></div>
+          <div class="setting-item"><label>Kogeneracyjna</label><input type="number" id="cogenerationFee" value="3.00" step="0.01" oninput="updateEnergyCostSummary()"><span class="setting-hint">PLN/MWh</span></div>
+          <div class="setting-item"><label>Akcyza</label><input type="number" id="exciseTax" value="5.00" step="0.01" oninput="updateEnergyCostSummary()"><span class="setting-hint">PLN/MWh</span></div>
+          <div class="setting-item"><label>Mocowa</label><input type="number" id="capacityFee" value="219.40" step="0.01" readonly style="background:#f5f5f5"><span class="setting-hint">SOM×1000, 7-22 Pn-Pt</span></div>
+          <div class="setting-item highlight"><label>SUMA</label><input type="number" id="totalFixedCharges" value="467.80" readonly><span class="setting-hint">Dystr.śr. + opłaty [PLN/MWh]</span></div>
+        </div>
+        <input type="hidden" id="energyActive" value="0">
+        <input type="hidden" id="totalEnergyPrice" value="467.80">
+      </div><!-- /energyTab_fees -->
+
+      <!-- ===== TAB: Mocowa ===== -->
+      <div id="energyTab_capacity" class="energy-tab-panel" style="padding:16px 20px;display:none">
+        <div style="padding:10px 12px;background:#fff3e0;border-radius:8px;margin-bottom:12px;font-size:12px;border:1px solid #ffcc80">
+          <strong>WOM = A × SOM × ZS</strong> — A: współczynnik K, SOM: stawka, ZS: energia w godz. wybranych. Tylko Pn-Pt bez świąt.
+        </div>
 
       <div class="settings-grid">
         <div class="setting-item">
@@ -456,12 +644,24 @@
         </p>
       </div>
 
-      <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end">
-        <button onclick="loadCapacityFeePreset()" style="padding:10px 20px;background:#2196f3;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px">
-          <span>🔄</span> Pobierz preset z API
-        </button>
-      </div>
-    </div>
+        <div style="margin-top:12px;text-align:right">
+          <button onclick="loadCapacityFeePreset()" style="padding:8px 16px;background:#2196f3;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px">Pobierz preset z API</button>
+        </div>
+      </div><!-- /energyTab_capacity -->
+
+      <!-- ===== TAB: Stałe miesięczne ===== -->
+      <div id="energyTab_monthly" class="energy-tab-panel" style="padding:16px 20px;display:none">
+        <div class="settings-grid">
+          <div class="setting-item"><label>Moc umowna [kW]</label><input type="number" id="contractedPowerKw" value="50" step="1" min="1" oninput="updateFixedMonthlyTotal();updateEnergyCostSummary()"></div>
+          <div class="setting-item"><label>Stawka stała dystr. [zł/kW/m]</label><input type="number" id="distFixedRatePerKw" value="9.14" step="0.01" min="0" oninput="updateFixedMonthlyTotal();updateEnergyCostSummary()"></div>
+          <div class="setting-item"><label>Abonament OSD [PLN/m]</label><input type="number" id="osdSubscriptionFee" value="5.54" step="0.01" min="0" oninput="updateFixedMonthlyTotal();updateEnergyCostSummary()"></div>
+          <div class="setting-item"><label>Opł. przejściowa [PLN/m]</label><input type="number" id="transitionFee" value="0" step="0.01" min="0" oninput="updateFixedMonthlyTotal();updateEnergyCostSummary()"></div>
+          <div class="setting-item"><label>Opł. handlowa [PLN/m]</label><input type="number" id="supplierTradeFee" value="0" step="0.01" min="0" oninput="updateFixedMonthlyTotal();updateEnergyCostSummary()"></div>
+          <div class="setting-item highlight"><label>SUMA miesięczna</label><input type="number" id="totalFixedMonthly" value="462.54" readonly><span class="setting-hint">= (stawka×moc) + abonament + przejściowa + handlowa</span></div>
+        </div>
+      </div><!-- /energyTab_monthly -->
+
+    </div><!-- /unified energy cost panel -->
 
     <!-- CAPEX Tiers Section - Per Installation Type -->
     <div class="settings-section" style="grid-column: span 2;">
@@ -546,13 +746,13 @@
       <div class="settings-grid">
         <div class="setting-item">
           <label>Stopa dyskontowa [%]</label>
-          <input type="number" id="discountRate" value="7" step="0.5" min="0" max="20">
+          <input type="number" id="discountRate" value="10" step="0.5" min="0" max="20">
           <span class="setting-hint">Do obliczenia NPV</span>
         </div>
         <div class="setting-item">
           <label>Degradacja PV rok 1 [%]</label>
-          <input type="number" id="pvDegradationYear1" value="2.0" step="0.1" min="0" max="5">
-          <span class="setting-hint">Pierwszy rok (wyższa)</span>
+          <input type="number" id="pvDegradationYear1" value="1.0" step="0.1" min="0" max="5">
+          <span class="setting-hint">LID rok 1 (TOPCon ~1%, PERC ~2%)</span>
         </div>
         <div class="setting-item">
           <label>Degradacja PV lata 2+ [%/rok]</label>
@@ -1230,8 +1430,8 @@
         </div>
         <div class="setting-item">
           <label>Straty przez zabrudzenie [%]</label>
-          <input type="number" id="soilingLoss" value="2" step="0.5" min="0" max="10">
-          <span class="setting-hint">Typowo 2-3% dla Europy</span>
+          <input type="number" id="soilingLoss" value="2" step="0.5" min="0" max="25">
+          <span class="setting-hint">Typowo 2-3% dla Europy, do 15-20% w trudnych warunkach</span>
         </div>
       </div>
 
@@ -1377,7 +1577,7 @@
           🎯 Scenariusz pracy magazynu
         </div>
         <div style="font-size:12px;color:#666;margin-bottom:16px">
-          Wybierz główny cel optymalizacji BESS. Scenariusz ustawi domyślne parametry.
+          Wybierz bazowy scenariusz pracy magazynu. Arbitraż i inne opcje możesz <strong>łączyć</strong> z dowolnym scenariuszem poniżej.
         </div>
 
         <!-- Scenario Tiles Container -->
@@ -1388,16 +1588,107 @@
         <!-- Hidden input for scenario ID -->
         <input type="hidden" id="bessScenarioId" value="">
 
-        <!-- Capacity Fee Overlay Checkbox (Scenario 6 equivalent) -->
-        <div style="margin-top:16px;padding:12px;background:#f5f5f5;border-radius:6px;display:flex;align-items:center;gap:12px">
-          <input type="checkbox" id="bessCapacityFeeOverlay" style="width:18px;height:18px;cursor:pointer">
-          <label for="bessCapacityFeeOverlay" style="cursor:pointer;font-size:13px;color:#333">
-            <strong>📊 Pokaż oszczędności opłaty mocowej</strong>
-            <span style="display:block;font-size:11px;color:#666;margin-top:2px">
-              Po symulacji wyświetli overlay z analizą opłaty mocowej (przed/po BESS)
-            </span>
-          </label>
+        <!-- Optimization Objective + Payback Constraint -->
+        <div style="margin-top:16px;padding:16px;background:#fff8e1;border-radius:8px;border:1px solid #ffe082">
+          <div style="font-weight:600;color:#e65100;font-size:13px;margin-bottom:12px">
+            🎯 Cel optymalizacji doboru magazynu
+          </div>
+          <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+            <div style="flex:1;min-width:220px">
+              <label for="bessOptimizationObjective" style="font-size:11px;color:#666;display:block;margin-bottom:4px">Solver optymalizuje pod:</label>
+              <select id="bessOptimizationObjective" onchange="markUnsaved()" style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:6px;font-size:13px;background:#fff">
+                <option value="npv">📈 Maksymalizuj NPV (zwrot z inwestycji)</option>
+                <option value="max_savings">💰 Maksymalizuj Oszczędności (roczny przychód)</option>
+                <option value="payback">⏱️ Minimalizuj Payback (okres zwrotu)</option>
+                <option value="self_consumption">🔋 Maksymalizuj Autokonsumpcję</option>
+                <option value="peak_reduction">⚡ Maksymalizuj Redukcję Szczytów</option>
+              </select>
+            </div>
+            <div style="min-width:140px">
+              <label for="bessMaxPaybackYears" style="font-size:11px;color:#666;display:block;margin-bottom:4px">Maks. payback (opcja):</label>
+              <div style="display:flex;align-items:center;gap:4px">
+                <input type="number" id="bessMaxPaybackYears" placeholder="—" min="1" max="25" step="0.5"
+                       onchange="markUnsaved()"
+                       style="width:80px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+                <span style="font-size:12px;color:#888">lat</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#888;margin-top:8px">
+            NPV preferuje mniejsze, efektywne magazyny. Oszczędności preferują duże magazyny z max przychodem. Payback ogranicza wybór do wariantów z szybkim zwrotem.
+          </div>
         </div>
+
+        <!-- Combinable overlays (can be added to any base scenario) -->
+        <div style="margin-top:16px;padding:16px;background:#f0f7ff;border-radius:8px;border:1px solid #bbdefb">
+          <div style="font-weight:600;color:#1565c0;font-size:13px;margin-bottom:12px">
+            ➕ Dodatkowe opcje (łączone z wybranym scenariuszem)
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <!-- OSD Tariff Arbitrage overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessOsdArbitrageOverlay" style="width:18px;height:18px;cursor:pointer"
+                     onchange="document.getElementById('bessOsdArbitrageEnabled').checked=this.checked; markUnsaved();">
+              <label for="bessOsdArbitrageOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>💹 Arbitraż taryfowy OSD (ToU)</strong>
+                <span style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Ładuj w taniej strefie, rozładuj w drogiej (C12a/C12b). Konfiguracja stawek poniżej.
+                </span>
+              </label>
+            </div>
+
+            <!-- RDN Spot Arbitrage overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessPriceArbitrageOverlay" style="width:18px;height:18px;cursor:pointer"
+                     onchange="document.getElementById('bessPriceArbitrageEnabled').checked=this.checked; if(typeof checkRdnDataForArbitrage==='function') checkRdnDataForArbitrage(); markUnsaved();">
+              <label for="bessPriceArbitrageOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>📈 Arbitraż cenowy RDN (Spot)</strong>
+                <span id="rdnOverlayStatus" style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Kupuj tanio / sprzedaj drogo. Ceny z widgetu "Ceny RDN" poniżej.
+                </span>
+              </label>
+            </div>
+
+            <!-- Capacity Fee overlay -->
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+              <input type="checkbox" id="bessCapacityFeeOverlay" style="width:18px;height:18px;cursor:pointer">
+              <label for="bessCapacityFeeOverlay" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+                <strong>📊 Oszczędności opłaty mocowej</strong>
+                <span style="display:block;font-size:11px;color:#666;margin-top:2px">
+                  Pokaż analizę opłaty mocowej przed/po BESS (godz. 7-22 Pn-Pt)
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- PRICING ROUTING SUMMARY - shows WHERE prices go              -->
+        <!-- ============================================================ -->
+        <div id="pricingRoutingSummary" style="margin-top:16px;padding:16px;background:linear-gradient(135deg,#fff3e0,#ffe0b2);border-radius:8px;border:2px solid #ff9800">
+          <div style="font-weight:700;color:#e65100;font-size:14px;margin-bottom:10px">
+            📊 Routing cen → Moduły
+          </div>
+          <div id="pricingRoutingContent" style="font-size:12px;line-height:1.8;color:#333">
+            <!-- Dynamically updated by updatePricingRoutingSummary() -->
+            <em style="color:#999">Ładowanie...</em>
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- OSD vs RDN PROFITABILITY COMPARISON                          -->
+        <!-- ============================================================ -->
+        <div id="osdVsRdnComparison" style="margin-top:16px;padding:16px;background:linear-gradient(135deg,#e8eaf6,#c5cae9);border-radius:8px;border:2px solid #5c6bc0;display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <div style="font-weight:700;color:#283593;font-size:14px">⚖️ OSD vs RDN — Porównanie opłacalności</div>
+            <button onclick="updateOsdVsRdnComparison()" style="padding:4px 10px;font-size:11px;border:1px solid #5c6bc0;border-radius:4px;background:#fff;color:#283593;cursor:pointer;font-weight:600" title="Przelicz porównanie">🔄 Przelicz</button>
+          </div>
+          <div id="osdVsRdnContent" style="font-size:12px;color:#333">
+            <em style="color:#999">Kliknij 🔄 Przelicz lub załaduj dane RDN...</em>
+          </div>
+        </div>
+
       </div>
 
       <!-- BESS Duration Selector (shown only when BESS enabled) -->
@@ -1460,9 +1751,9 @@
           <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
             <div class="settings-grid">
               <div class="setting-item">
-                <label>Sprawność roundtrip</label>
-                <input type="number" id="bessRoundtripEfficiency" value="90" min="80" max="98" step="1">
-                <span class="setting-hint">% (typowo 88-92% dla Li-ion)</span>
+                <label>Sprawność roundtrip AC-AC</label>
+                <input type="number" id="bessRoundtripEfficiency" value="85" min="75" max="95" step="1">
+                <span class="setting-hint">% AC-DC-AC (ogniwa + falownik + transformator)</span>
               </div>
               <div class="setting-item">
                 <label>SOC min</label>
@@ -1507,9 +1798,24 @@
                 <span class="setting-hint">% (pozostałe lata)</span>
               </div>
               <div class="setting-item">
-                <label>Straty pomocnicze</label>
-                <input type="number" id="bessAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('light')">
-                <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
+                <label>Pobór pomocniczy (house load)</label>
+                <input type="number" id="bessHouseLoadKwPerMwh" value="2.75" min="0" max="10" step="0.25" onchange="syncDegradationParams('light')">
+                <span class="setting-hint">kW / MWh pojemności (HVAC, BMS, PCS standby). Typowo: LFP 2.5-3.0</span>
+              </div>
+              <div class="setting-item" style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0">
+                <label style="font-weight:600;color:#e65100">Koszt marginalny cyklu (dispatch friction)</label>
+                <select id="bessMarginalCycleCostMode" onchange="updateMarginalCycleCostUI(); markUnsaved();"
+                        style="padding:6px;border:1px solid #ccc;border-radius:4px">
+                  <option value="off">Wyłączony (0 — LP robi każdy cykl)</option>
+                  <option value="auto" selected>Auto (wyliczony z CAPEX/cykli)</option>
+                  <option value="manual">Ręczny</option>
+                </select>
+                <span class="setting-hint">Odcina śmieciowe cykle w LP — nie wpływa na savings/cashflow</span>
+              </div>
+              <div class="setting-item" id="marginalCycleCostManualRow" style="display:none">
+                <label>Wartość ręczna</label>
+                <input type="number" id="bessMarginalCycleCostManual" value="0.125" min="0" max="1" step="0.01" onchange="markUnsaved()">
+                <span class="setting-hint">PLN/kWh throughput (typowo: 0.10-0.15 dla LFP)</span>
               </div>
             </div>
           </div>
@@ -1658,10 +1964,32 @@
               <span class="setting-hint">% (pozostałe lata)</span>
             </div>
             <div class="setting-item">
-              <label>Straty pomocnicze</label>
-              <input type="number" id="bessProAuxiliaryLossPctPerDay" value="0.1" min="0" max="2" step="0.01" onchange="syncDegradationParams('pro')">
-              <span class="setting-hint">% pojemności/dzień (BMS, chłodzenie)</span>
+              <label>Pobór pomocniczy (house load)</label>
+              <input type="number" id="bessProHouseLoadKwPerMwh" value="2.75" min="0" max="10" step="0.25" onchange="syncDegradationParams('pro')">
+              <span class="setting-hint">kW / MWh pojemności (HVAC, BMS, PCS standby). Typowo: LFP 2.5-3.0</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BESS Constraints - Grid Connection & Cycle Limits -->
+      <div id="bessConstraintsSection" style="display:none; margin-bottom:16px; padding:16px; background:linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius:8px; border:1px solid #ffb74d">
+        <div style="font-weight:600;color:#e65100;margin-bottom:12px;font-size:14px">
+          ⚡ Ograniczenia fizyczne
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:16px">
+          Parametry ograniczające pracę magazynu wynikające z warunków przyłączenia i gwarancji producenta.
+        </div>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label>Moc przyłączeniowa [kW]</label>
+            <input type="number" id="bessGridConnectionKw" value="" min="0" step="1" placeholder="np. 500">
+            <span class="setting-hint">Limit poboru z sieci (z umowy przyłączeniowej). Puste = bez limitu.</span>
+          </div>
+          <div class="setting-item">
+            <label>Max cykli EFC / rok</label>
+            <input type="number" id="bessMaxEfcPerYear" value="" min="0" max="5000" step="10" placeholder="np. 600">
+            <span class="setting-hint">Limit cykli z gwarancji producenta (np. BYD: 750, CATL: 1000). Puste = bez limitu.</span>
           </div>
         </div>
       </div>
@@ -1727,7 +2055,8 @@
           <div class="settings-grid">
             <div class="setting-item">
               <label style="display:flex;align-items:center;gap:8px">
-                <input type="checkbox" id="bessOsdArbitrageEnabled" style="width:18px;height:18px">
+                <input type="checkbox" id="bessOsdArbitrageEnabled" style="width:18px;height:18px"
+                       onchange="var o=document.getElementById('bessOsdArbitrageOverlay'); if(o) o.checked=this.checked;">
                 Włącz Arbitraż Taryfowy
               </label>
               <span class="setting-hint">Optymalizacja pod strefy czasowe OSD</span>
@@ -1772,61 +2101,184 @@
           </div>
         </div>
 
-        <!-- Price Arbitrage Section (RDN - spot market) -->
+        <!-- Price Arbitrage Section (RDN - spot market) - simplified, uses Ceny RDN widget -->
         <div style="margin-bottom:24px;padding:16px;background:linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%);border-radius:8px;border:1px solid #f48fb1">
-          <div style="font-weight:600;color:#c2185b;margin-bottom:12px;font-size:14px">
+          <div style="font-weight:600;color:#c2185b;margin-bottom:8px;font-size:14px">
             💹 Arbitraż Cenowy RDN (Spot)
           </div>
-          <div style="font-size:11px;color:#666;margin-bottom:16px">
-            Kupuj energię tanio (ładuj BESS), sprzedawaj drogo (rozładuj BESS) na rynku spot.
-            Wymaga dostępu do cen godzinowych z TGE (Rynek Dnia Następnego).
-            Zysk = Σ(cena_sprzedaży - cena_kupna) × energia × sprawność.
+          <div style="font-size:12px;color:#555;margin-bottom:12px">
+            Kupuj tanio / sprzedaj drogo na rynku dnia następnego.<br>
+            Ceny godzinowe pobierane z widgetu <strong>Ceny RDN</strong> poniżej.
           </div>
 
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border-radius:6px;border:1px solid #e0e0e0">
+            <input type="checkbox" id="bessPriceArbitrageEnabled" style="width:18px;height:18px"
+                   onchange="var o=document.getElementById('bessPriceArbitrageOverlay'); if(o) o.checked=this.checked; checkRdnDataForArbitrage();">
+            <label for="bessPriceArbitrageEnabled" style="cursor:pointer;font-size:13px;color:#333;flex:1">
+              <strong>Włącz Arbitraż RDN</strong>
+              <span id="rdnArbitrageStatus" style="display:block;font-size:11px;color:#666;margin-top:2px">
+                Wymaga wgranych cen w sekcji "Ceny RDN" poniżej
+              </span>
+            </label>
+          </div>
+          <!-- Hidden fields for backward compatibility -->
+          <input type="hidden" id="bessPriceArbitrageSource" value="rdn_widget">
+          <input type="hidden" id="bessPriceArbitrageBuyThreshold" value="300">
+          <input type="hidden" id="bessPriceArbitrageSellThreshold" value="600">
+          <input type="hidden" id="bessPriceArbitrageSpread" value="100">
+          <input type="hidden" id="bessRdnPriceFlat" value="500">
+          <input type="hidden" id="bessRdnPriceMultiplier" value="1.0">
+        </div>
+      </div>
+    </div>
+
+    <!-- Ancillary Services (Revenue Stacking) -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">⚡</span>
+        <h2>Uslugi Pomocnicze (Revenue Stacking)</h2>
+        <span class="section-info">Konfiguracja uslug bilansujacych i rynku mocy dla BESS</span>
+      </div>
+
+      <div style="margin-bottom:20px;padding:14px;background:linear-gradient(135deg, #e8eaf6 0%, #c5cae9 100%);border-radius:10px;border-left:4px solid #3f51b5">
+        <div style="font-size:12px;color:#283593;line-height:1.6">
+          <strong>Uslugi pomocnicze</strong> pozwalaja na dodatkowe przychody z baterii poprzez udzial w rynkach bilansujacych PSE.<br>
+          Bateria jest wirtualnie dzielona na segmenty: BTM (peak shaving, arbitraz) + ancillary (aFRR, mFRR, FCR, Rynek Mocy).<br>
+          Przychody sa optymalizowane godzinowo przez solver LP (HiGHS).
+        </div>
+      </div>
+
+      <!-- Master toggle -->
+      <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <input type="checkbox" id="ancillaryServicesEnabled" style="width:20px;height:20px;cursor:pointer" onchange="toggleAncillaryDetail()">
+          <label for="ancillaryServicesEnabled" style="cursor:pointer;font-weight:600;font-size:15px;color:#1a237e">
+            Wlacz uslugi pomocnicze (Revenue Stacking)
+          </label>
+        </div>
+        <div style="font-size:11px;color:#666;margin-bottom:8px">
+          Po wlaczeniu, sizing BESS uwzgledni dodatkowe przychody z uslug bilansujacych w NPV/payback/IRR.
+        </div>
+      </div>
+
+      <!-- Services selection -->
+      <div id="ancillarySettingsDetail" style="display:none">
+        <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+          <div style="font-weight:600;color:#1a237e;font-size:14px;margin-bottom:12px">Wybor uslug</div>
           <div class="settings-grid">
             <div class="setting-item">
               <label style="display:flex;align-items:center;gap:8px">
-                <input type="checkbox" id="bessPriceArbitrageEnabled" style="width:18px;height:18px">
-                Włącz Arbitraż Cenowy
+                <input type="checkbox" id="ancSvcAfrrUp" checked style="width:18px;height:18px">
+                aFRR Up (rezerwa wtorna w gore)
               </label>
-              <span class="setting-hint">Optymalizacja pod różnice cen RDN</span>
+              <span class="setting-hint">Rozladowanie baterii na zadanie PSE</span>
             </div>
             <div class="setting-item">
-              <label>Źródło cen RDN</label>
-              <select id="bessPriceArbitrageSource" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
-                <option value="manual">Ręczne progi (buy/sell)</option>
-                <option value="tge_api">TGE API (auto)</option>
-                <option value="csv_upload">Upload CSV (8760 cen)</option>
-              </select>
-              <span class="setting-hint">TGE = Towarowa Giełda Energii</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcAfrrDown" checked style="width:18px;height:18px">
+                aFRR Down (rezerwa wtorna w dol)
+              </label>
+              <span class="setting-hint">Ladowanie baterii na zadanie PSE</span>
             </div>
             <div class="setting-item">
-              <label>Próg kupna [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageBuyThreshold" value="300" min="0" max="1000" step="10">
-              <span class="setting-hint">Ładuj gdy cena &lt; próg</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcMfrrUp" checked style="width:18px;height:18px">
+                mFRR Up (rezerwa trojciowa w gore)
+              </label>
+              <span class="setting-hint">Szybka rezerwa mocy</span>
             </div>
             <div class="setting-item">
-              <label>Próg sprzedaży [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageSellThreshold" value="600" min="100" max="2000" step="10">
-              <span class="setting-hint">Rozładuj gdy cena &gt; próg</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcFcr" style="width:18px;height:18px">
+                FCR (regulacja czestotliwosci)
+              </label>
+              <span class="setting-hint">Symetryczna rezerwa mocy</span>
             </div>
             <div class="setting-item">
-              <label>Min. spread [PLN/MWh]</label>
-              <input type="number" id="bessPriceArbitrageSpread" value="100" min="0" max="500" step="10">
-              <span class="setting-hint">Min. różnica cen do arbitrażu</span>
-            </div>
-            <div class="setting-item">
-              <label>Cena bazowa RDN [PLN/MWh]</label>
-              <input type="number" id="bessRdnPriceFlat" value="500" min="100" max="1500" step="10">
-              <span class="setting-hint">Dla trybu ręcznego</span>
-            </div>
-            <div class="setting-item">
-              <label>Mnożnik cen RDN</label>
-              <input type="number" id="bessRdnPriceMultiplier" value="1.0" min="0.5" max="2.0" step="0.1">
-              <span class="setting-hint">Scenariusze: 1.2 = +20% cen</span>
+              <label style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="ancSvcCapMarket" style="width:18px;height:18px">
+                Rynek Mocy (Capacity Market)
+              </label>
+              <span class="setting-hint">Obowiazek mocowy — KWD=0.133</span>
             </div>
           </div>
         </div>
+
+        <!-- Market parameters -->
+        <div style="margin-bottom:20px;padding:16px;background:#fff;border-radius:8px;border:1px solid #e0e0e0">
+          <div style="font-weight:600;color:#1a237e;font-size:14px;margin-bottom:12px">Parametry rynkowe</div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Rok rynkowy</label>
+              <select id="ancillaryMarketYear" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                <option value="2025">2025</option>
+                <option value="2026" selected>2026</option>
+                <option value="2027">2027</option>
+                <option value="2028">2028</option>
+              </select>
+              <span class="setting-hint">Rok dla cen referencyjnych PSE</span>
+            </div>
+            <div class="setting-item">
+              <label>Marza agregatora [%]</label>
+              <input type="number" id="ancillaryAggregatorMarginPct" value="20" min="0" max="50" step="1">
+              <span class="setting-hint">Prowizja agregatora (typowo 15-25%)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena aFRR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryAfrrPrice" value="200" min="50" max="500" step="10">
+              <span class="setting-hint">Srednia cena zdolnosci aFRR (2026: ~200)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena mFRR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryMfrrPrice" value="95" min="20" max="300" step="5">
+              <span class="setting-hint">Srednia cena zdolnosci mFRR (2026: ~95)</span>
+            </div>
+            <div class="setting-item">
+              <label>Cena FCR [PLN/MW/h]</label>
+              <input type="number" id="ancillaryFcrPrice" value="150" min="50" max="400" step="10">
+              <span class="setting-hint">Srednia cena zdolnosci FCR</span>
+            </div>
+            <div class="setting-item">
+              <label>Rynek Mocy [PLN/MW/rok]</label>
+              <input type="number" id="ancillaryCapMarketPrice" value="280000" min="100000" max="500000" step="10000">
+              <span class="setting-hint">Stawka capacity market (2026: ~280k)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced -->
+        <details style="margin-bottom:20px">
+          <summary style="cursor:pointer;padding:12px;background:#f5f5f5;border-radius:6px;font-weight:600;color:#555">
+            Parametry zaawansowane
+          </summary>
+          <div style="padding:16px;background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px">
+            <div class="settings-grid">
+              <div class="setting-item">
+                <label>KWD (wsp. dyspozycyjnosci mocy)</label>
+                <input type="number" id="ancillaryKwd" value="0.133" min="0.05" max="0.5" step="0.001">
+                <span class="setting-hint">Dla BESS domyslnie 0.133</span>
+              </div>
+              <div class="setting-item">
+                <label>Min. dostepnosc uslug [%]</label>
+                <input type="number" id="ancillaryMinAvailability" value="95" min="80" max="100" step="1">
+                <span class="setting-hint">Wymagana dostepnosc techniczna</span>
+              </div>
+              <div class="setting-item">
+                <label>Max udzial ancillary w mocy [%]</label>
+                <input type="number" id="ancillaryMaxCapacityShare" value="80" min="30" max="100" step="5">
+                <span class="setting-hint">Ile % mocy baterii na uslugi (reszta BTM)</span>
+              </div>
+              <div class="setting-item">
+                <label>Tryb optymalizacji</label>
+                <select id="ancillaryOptimizeMode" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px">
+                  <option value="year">Roczny (8760h LP)</option>
+                  <option value="sample_days" selected>16 dni probkowych (szybki)</option>
+                </select>
+                <span class="setting-hint">sample_days = 4 dni/sezon, skalowane x365</span>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -2070,6 +2522,88 @@
         </div>
         <div style="margin-top:12px;font-size:11px;color:#666">
           <strong>Uwaga:</strong> Zgodnie z URE, godziny szczytu to 7:00-21:00 w dni robocze (bez świąt).
+        </div>
+      </div>
+    </div>
+
+    <!-- RDN Dynamic Pricing (Day-Ahead Market) -->
+    <div class="settings-section">
+      <div class="section-header">
+        <span class="section-icon">📊</span>
+        <h2>Ceny RDN (Rynek Dnia Następnego)</h2>
+        <span class="section-info">Dynamiczne ceny godzinowe z rynku spot</span>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-item" style="grid-column: 1 / -1;">
+          <label>Włącz porównanie z cenami RDN</label>
+          <div style="display:flex;align-items:center;gap:12px">
+            <input type="checkbox" id="rdnPricingEnabled" style="width:auto;transform:scale(1.3)">
+            <span class="setting-hint">Aktywuj analizę ekonomiczną z dynamicznymi cenami godzinowymi RDN (obok taryfy stałej/ToU)</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="rdnPricingPanel" style="display:none">
+        <!-- Upload CSV/Excel -->
+        <div style="margin-top:16px;padding:16px;background:#f0f7ff;border-radius:8px;border:1px solid #c8ddf5">
+          <h3 style="margin:0 0 12px 0;font-size:14px;color:#1565c0">Wgraj plik z cenami RDN</h3>
+          <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:end;margin-bottom:12px">
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Nazwa scenariusza</label>
+              <input type="text" id="rdnScenarioName" placeholder="np. RDN 2025 historyczne" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px" value="">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Rok danych</label>
+              <input type="number" id="rdnScenarioYear" value="2025" min="2020" max="2030" style="width:90px;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#555;display:block;margin-bottom:4px">Typ</label>
+              <select id="rdnScenarioType" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+                <option value="historical">Historyczne</option>
+                <option value="forecast">Prognoza</option>
+                <option value="custom">Własne</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <input type="file" id="rdnFileInput" accept=".csv,.xlsx,.xls" style="display:none">
+            <button type="button" onclick="document.getElementById('rdnFileInput').click()" class="btn-action" style="background:#1565c0;color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px">
+              Wybierz plik CSV/Excel
+            </button>
+            <button type="button" onclick="downloadRdnTemplate()" style="background:transparent;color:#1565c0;padding:8px 12px;border:1px solid #1565c0;border-radius:6px;cursor:pointer;font-size:12px">
+              Pobierz szablon CSV
+            </button>
+            <span id="rdnUploadStatus" style="font-size:12px;color:#666"></span>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:#888">
+            Format: kolumna z datą/godziną + kolumna z ceną [PLN/MWh]. Obsługiwane: CSV TGE (Data;Godzina;Cena), CSV prosty (datetime,price), Excel.
+          </div>
+        </div>
+
+        <!-- Saved Scenarios -->
+        <div style="margin-top:16px;padding:16px;background:#f5f5f5;border-radius:8px;border:1px solid #e0e0e0">
+          <h3 style="margin:0 0 12px 0;font-size:14px;color:#333">Zapisane scenariusze cenowe</h3>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <select id="rdnScenarioSelect" style="flex:1;min-width:250px;padding:8px;border-radius:6px;border:1px solid #ccc;font-size:13px">
+              <option value="">-- Wybierz scenariusz --</option>
+            </select>
+            <button type="button" onclick="loadSavedRdnScenarios()" class="btn-action" style="background:#666;color:white;padding:8px 12px;border:none;border-radius:6px;cursor:pointer;font-size:12px">
+              Odśwież
+            </button>
+          </div>
+        </div>
+
+        <!-- Selected Scenario Info -->
+        <div id="rdnScenarioInfo" style="display:none;margin-top:16px;padding:16px;background:#e8f5e9;border-radius:8px;border:1px solid #a5d6a7">
+          <h3 style="margin:0 0 8px 0;font-size:14px;color:#2e7d32">Wybrany scenariusz RDN</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:13px">
+            <div><strong>Nazwa:</strong> <span id="rdnInfoName">-</span></div>
+            <div><strong>Rok:</strong> <span id="rdnInfoYear">-</span></div>
+            <div><strong>Punkty danych:</strong> <span id="rdnInfoPoints">-</span></div>
+            <div><strong>Śr. cena:</strong> <span id="rdnInfoAvg">-</span> PLN/MWh</div>
+            <div><strong>Min cena:</strong> <span id="rdnInfoMin">-</span> PLN/MWh</div>
+            <div><strong>Max cena:</strong> <span id="rdnInfoMax">-</span> PLN/MWh</div>
+          </div>
         </div>
       </div>
     </div>

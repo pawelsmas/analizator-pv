@@ -486,6 +486,226 @@ class FlatPriceProvider:
 
 
 # =============================================================================
+# RDN Price Provider (Day-Ahead Market)
+# =============================================================================
+
+class RDNPriceConfig(BaseModel):
+    """Configuration for RDN (day-ahead market) price provider."""
+    add_other_fees_pln_kwh: float = Field(
+        0.0,
+        description="Other fees to add on top of RDN price [PLN/kWh]"
+    )
+    add_osd_variable_pln_kwh: float = Field(
+        0.0,
+        description="OSD variable fee to add on top of RDN price [PLN/kWh]"
+    )
+    export_price_pln_kwh: float = Field(
+        0.0,
+        description="Export price [PLN/kWh]. 0 = zero-export."
+    )
+    seller_margin_pct: float = Field(
+        0.0,
+        description="Seller margin [%] on RDN price."
+    )
+
+
+class RDNPriceProvider:
+    """
+    RDN (Rynek Dnia Następnego) price provider.
+
+    Fetches day-ahead market prices from PSE API or uses cached data.
+    Falls back to synthetic prices if API is unavailable.
+    """
+
+    def __init__(self, config: Optional[RDNPriceConfig] = None):
+        self.config = config or RDNPriceConfig()
+
+    def get_series(
+        self,
+        start_date: date,
+        end_date: date,
+        resolution_minutes: int = 60
+    ) -> PriceBundle:
+        """
+        Get RDN price series for date range.
+
+        Tries to fetch from PSE API, falls back to synthetic prices.
+        """
+        try:
+            from rdn_prices import fetch_rdn_prices, rdn_to_price_array
+            rdn_data = fetch_rdn_prices(start_date, end_date)
+
+            n_days = (end_date - start_date).days + 1
+            n_timesteps = n_days * 24 * (4 if resolution_minutes == 15 else 1)
+
+            # Build time_index for conversion
+            from economics_helper import build_time_index_cet_fixed
+            time_index = build_time_index_cet_fixed(start_date, n_timesteps, resolution_minutes)
+
+            rdn_prices_kwh = rdn_to_price_array(rdn_data, time_index, resolution_minutes)
+
+            # Apply margin
+            if self.config.seller_margin_pct > 0:
+                rdn_prices_kwh *= (1 + self.config.seller_margin_pct / 100.0)
+
+            # Add fees
+            import_total = (
+                rdn_prices_kwh +
+                self.config.add_other_fees_pln_kwh +
+                self.config.add_osd_variable_pln_kwh
+            )
+            export_total = np.full(n_timesteps, self.config.export_price_pln_kwh)
+
+            return PriceBundle(
+                import_total=import_total.tolist(),
+                export_total=export_total.tolist(),
+                breakdown=[],
+                source="rdn_pse",
+                steps=n_timesteps,
+                start_date=str(start_date),
+                resolution_minutes=resolution_minutes,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"RDN fetch failed: {e}, using synthetic prices")
+            return self._synthetic_fallback(start_date, end_date, resolution_minutes)
+
+    def _synthetic_fallback(self, start_date: date, end_date: date, resolution_minutes: int) -> PriceBundle:
+        """Generate synthetic RDN-like prices as fallback."""
+        n_days = (end_date - start_date).days + 1
+        steps_per_day = 24 * (4 if resolution_minutes == 15 else 1)
+        n_timesteps = n_days * steps_per_day
+
+        # Typical Polish RDN profile (PLN/MWh → PLN/kWh)
+        hourly_profile_pln_mwh = [
+            280, 265, 255, 250, 252, 275,  # 0-5h (night)
+            310, 360, 400, 420, 415, 390,  # 6-11h (morning ramp)
+            370, 350, 340, 355, 380, 430,  # 12-17h (afternoon)
+            470, 450, 410, 370, 330, 300,  # 18-23h (evening peak)
+        ]
+
+        prices = []
+        for day in range(n_days):
+            for h in range(24):
+                base = hourly_profile_pln_mwh[h] / 1000.0  # PLN/kWh
+                if resolution_minutes == 15:
+                    prices.extend([base] * 4)
+                else:
+                    prices.append(base)
+
+        import_arr = np.array(prices[:n_timesteps])
+        if self.config.seller_margin_pct > 0:
+            import_arr *= (1 + self.config.seller_margin_pct / 100.0)
+
+        import_arr += self.config.add_other_fees_pln_kwh + self.config.add_osd_variable_pln_kwh
+        export_arr = np.full(n_timesteps, self.config.export_price_pln_kwh)
+
+        return PriceBundle(
+            import_total=import_arr.tolist(),
+            export_total=export_arr.tolist(),
+            breakdown=[],
+            source="rdn_synthetic",
+            steps=n_timesteps,
+            start_date=str(start_date),
+            resolution_minutes=resolution_minutes,
+        )
+
+
+# =============================================================================
+# Hybrid Monthly Price Provider (OSD + RDN per month)
+# =============================================================================
+
+class HybridMonthlyPriceProvider:
+    """
+    Hybrid price provider that stitches OSD tariff and RDN spot prices
+    on a per-month basis.
+
+    Example: Q1+Q4 use fixed OSD tariff, Q2+Q3 use RDN spot prices.
+
+    Args:
+        tou_provider: ToUPriceProvider for OSD months
+        rdn_prices_pln_kwh: numpy array of RDN hourly prices [PLN/kWh]
+        monthly_sources: dict mapping month number (1-12) to 'osd' or 'rdn'
+        start_date: first date of the analysis period
+    """
+
+    def __init__(
+        self,
+        tou_provider: ToUPriceProvider,
+        rdn_prices_pln_kwh: np.ndarray,
+        monthly_sources: Dict[int, str],
+        start_date: date,
+    ):
+        self.tou_provider = tou_provider
+        self.rdn_prices = rdn_prices_pln_kwh
+        self.monthly_sources = monthly_sources
+        self.start_date = start_date
+
+    def get_series(
+        self,
+        start_date: date,
+        end_date: date,
+        resolution_minutes: int = 60
+    ) -> PriceBundle:
+        """
+        Build stitched price series: OSD for OSD-months, RDN for RDN-months.
+        """
+        # Get full OSD price series as baseline
+        tou_bundle = self.tou_provider.get_series(start_date, end_date, resolution_minutes)
+        tou_prices = np.array(tou_bundle.import_total)
+
+        n_days = (end_date - start_date).days + 1
+        steps_per_day = 24 * (4 if resolution_minutes == 15 else 1)
+        n_timesteps = n_days * steps_per_day
+
+        # Ensure arrays match
+        if len(tou_prices) < n_timesteps:
+            tou_prices = np.pad(tou_prices, (0, n_timesteps - len(tou_prices)),
+                                'edge')
+
+        rdn = self.rdn_prices
+        if len(rdn) < n_timesteps:
+            repeats = (n_timesteps + len(rdn) - 1) // len(rdn)
+            rdn = np.tile(rdn, repeats)[:n_timesteps]
+        else:
+            rdn = rdn[:n_timesteps]
+
+        # Build result: pick source per timestep based on month
+        result = np.copy(tou_prices)
+        step = 0
+        current_date = start_date
+        delta_day = timedelta(days=1)
+
+        for _ in range(n_days):
+            month = current_date.month
+            source = self.monthly_sources.get(month, 'osd')
+            if source == 'rdn':
+                end_step = min(step + steps_per_day, n_timesteps)
+                result[step:end_step] = rdn[step:end_step]
+            step += steps_per_day
+            current_date += delta_day
+
+        # Build source label
+        rdn_months = [m for m, s in self.monthly_sources.items() if s == 'rdn']
+        osd_months = [m for m, s in self.monthly_sources.items() if s != 'rdn']
+        source_label = f"hybrid_monthly(RDN:{rdn_months},OSD:{osd_months})"
+
+        export_total = tou_bundle.export_total
+        if len(export_total) < n_timesteps:
+            export_total = export_total + [0.0] * (n_timesteps - len(export_total))
+
+        return PriceBundle(
+            import_total=result[:n_timesteps].tolist(),
+            export_total=export_total[:n_timesteps],
+            breakdown=[],
+            source=source_label,
+            start_date=start_date,
+            end_date=end_date,
+            resolution_minutes=resolution_minutes,
+        )
+
+
+# =============================================================================
 # Economic Dispatch Config (for dispatch_economic)
 # =============================================================================
 
@@ -704,4 +924,153 @@ def estimate_arbitrage_potential(
                 np.min(import_array[day*24:(day+1)*24])) * battery_kwh * roundtrip_efficiency
                 > 2 * battery_kwh * degradation_cost_pln_kwh
         ),
+    }
+
+
+# =============================================================================
+# JG_M2 Balancing Market Formulation
+# =============================================================================
+
+class BalancingMarketModel(str, Enum):
+    """Balancing market price models."""
+    SIMPLE_SPREAD = "simple_spread"   # Fixed % spread on RDN
+    JG_M2 = "jg_m2"                  # pagra-galileo JG_M2 formulation
+
+
+class JGM2Config(BaseModel):
+    """
+    Configuration for JG_M2 balancing market model.
+
+    Based on pagra-galileo formulation:
+    - OPMB (buy from balancing) = RDN * (1 + spread_buy_pct/100) + volume_correction
+    - OEB (sell to balancing) = RDN * (1 - spread_sell_pct/100) - volume_correction
+
+    The spread is asymmetric (buying from balancing costs more than selling).
+    Volume correction accounts for the fact that larger deviations get penalized.
+    """
+    spread_buy_pct: float = Field(15.0, ge=0, le=100,
+        description="Buy spread on balancing market as % above RDN")
+    spread_sell_pct: float = Field(20.0, ge=0, le=100,
+        description="Sell spread on balancing market as % below RDN")
+    volume_correction_pln_mwh: float = Field(10.0, ge=0, le=200,
+        description="Volume-dependent correction [PLN/MWh]")
+    min_price_pln_mwh: float = Field(-50.0,
+        description="Minimum balancing price floor [PLN/MWh]")
+    max_price_pln_mwh: float = Field(3000.0,
+        description="Maximum balancing price cap [PLN/MWh]")
+    imbalance_penalty_multiplier: float = Field(1.5, ge=1.0, le=5.0,
+        description="Penalty multiplier for net imbalance position")
+
+
+def compute_jg_m2_prices(
+    rdn_prices_pln_mwh: np.ndarray,
+    config: Optional[JGM2Config] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Compute JG_M2 balancing market prices from RDN (day-ahead) prices.
+
+    The JG_M2 model from pagra-galileo calculates:
+    - OPMB (buy): price for purchasing energy on balancing market
+    - OEB (sell): price for selling energy on balancing market
+    - Spread: difference between buy and sell prices
+
+    This is more realistic than simple fixed-markup models because:
+    1. Asymmetric spreads (buying costs more than selling earns)
+    2. Volume correction penalizes larger deviations
+    3. Spread varies with RDN price level (wider at extremes)
+
+    Returns:
+        Dict with 'opmb_pln_mwh', 'oeb_pln_mwh', 'spread_pln_mwh',
+        'effective_buy_pln_kwh', 'effective_sell_pln_kwh'
+    """
+    if config is None:
+        config = JGM2Config()
+
+    rdn = np.asarray(rdn_prices_pln_mwh, dtype=np.float64)
+
+    # OPMB: Ofertowa Praca Musi Być (buy from balancing market)
+    # Higher than RDN — you pay premium for balancing energy
+    opmb = rdn * (1.0 + config.spread_buy_pct / 100.0) + config.volume_correction_pln_mwh
+
+    # OEB: Ofertowa Energia Bilansująca (sell to balancing market)
+    # Lower than RDN — you receive less when selling to balancing
+    oeb = rdn * (1.0 - config.spread_sell_pct / 100.0) - config.volume_correction_pln_mwh
+
+    # Apply floor/cap
+    opmb = np.clip(opmb, config.min_price_pln_mwh, config.max_price_pln_mwh)
+    oeb = np.clip(oeb, config.min_price_pln_mwh, config.max_price_pln_mwh)
+
+    # Ensure OPMB >= OEB (no arbitrage from balancing market structure)
+    oeb = np.minimum(oeb, opmb)
+
+    # Spread
+    spread = opmb - oeb
+
+    # Convert to PLN/kWh for dispatch integration
+    effective_buy = opmb / 1000.0   # PLN/MWh → PLN/kWh
+    effective_sell = oeb / 1000.0
+
+    return {
+        "opmb_pln_mwh": opmb,
+        "oeb_pln_mwh": oeb,
+        "spread_pln_mwh": spread,
+        "effective_buy_pln_kwh": effective_buy,
+        "effective_sell_pln_kwh": effective_sell,
+        "avg_spread_pln_mwh": float(spread.mean()),
+        "avg_opmb_pln_mwh": float(opmb.mean()),
+        "avg_oeb_pln_mwh": float(oeb.mean()),
+    }
+
+
+def compute_balancing_revenue(
+    discharge_kwh: np.ndarray,
+    charge_kwh: np.ndarray,
+    rdn_prices_pln_mwh: np.ndarray,
+    jg_m2_config: Optional[JGM2Config] = None,
+) -> Dict[str, float]:
+    """
+    Calculate actual balancing market revenue using JG_M2 model.
+
+    For BESS participating in balancing market:
+    - Discharge (sell energy) → earn at OEB price
+    - Charge (buy energy) → pay at OPMB price
+    - Net position determines imbalance penalty
+
+    Returns dict with revenue breakdown.
+    """
+    if jg_m2_config is None:
+        jg_m2_config = JGM2Config()
+
+    prices = compute_jg_m2_prices(rdn_prices_pln_mwh, jg_m2_config)
+
+    # Revenue from selling (discharge)
+    sell_revenue = np.sum(discharge_kwh * prices["effective_sell_pln_kwh"])
+
+    # Cost of buying (charge)
+    buy_cost = np.sum(charge_kwh * prices["effective_buy_pln_kwh"])
+
+    # Net imbalance penalty
+    net_position = np.abs(discharge_kwh - charge_kwh)
+    imbalance_cost = np.sum(
+        net_position * prices["spread_pln_mwh"] / 1000.0 *
+        (jg_m2_config.imbalance_penalty_multiplier - 1.0)
+    )
+
+    # Comparison with RDN-only model
+    rdn_kwh = rdn_prices_pln_mwh / 1000.0
+    rdn_sell_revenue = np.sum(discharge_kwh * rdn_kwh)
+    rdn_buy_cost = np.sum(charge_kwh * rdn_kwh)
+
+    gross_profit = sell_revenue - buy_cost
+    net_profit = gross_profit - imbalance_cost
+
+    return {
+        "sell_revenue_pln": float(sell_revenue),
+        "buy_cost_pln": float(buy_cost),
+        "gross_profit_pln": float(gross_profit),
+        "imbalance_cost_pln": float(imbalance_cost),
+        "net_profit_pln": float(net_profit),
+        "rdn_only_profit_pln": float(rdn_sell_revenue - rdn_buy_cost),
+        "jg_m2_vs_rdn_delta_pln": float(net_profit - (rdn_sell_revenue - rdn_buy_cost)),
+        "avg_spread_pln_mwh": prices["avg_spread_pln_mwh"],
     }

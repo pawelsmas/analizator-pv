@@ -250,11 +250,20 @@ def add_warnings_to_response(response: dict) -> dict:
     Returns:
         Modified response dict with warnings added if applicable
     """
-    warnings = get_warnings_block()
-    if warnings:
+    deprecation_warnings = get_warnings_block()
+    if deprecation_warnings:
         if "warnings" not in response:
             response["warnings"] = {}
-        response["warnings"].update(warnings)
+        # Handle case where warnings is a list (from model's List[str])
+        existing_warnings = response["warnings"]
+        if isinstance(existing_warnings, list):
+            # Convert list to dict, preserving original warnings
+            response["warnings"] = {
+                "messages": existing_warnings,
+                **deprecation_warnings
+            }
+        else:
+            existing_warnings.update(deprecation_warnings)
     return response
 
 

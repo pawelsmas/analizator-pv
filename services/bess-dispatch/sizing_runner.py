@@ -1,7 +1,10 @@
 """
-BESS Sizing Runner
-==================
-Optimization of BESS size (P, E) for different duration variants.
+PLIK: sizing_runner.py
+ROLA: Sizing orchestrator — grid search po mocach/pojemnościach + SavingsBreakdown + NPV.
+WEJŚCIE: SizingRequest (z app.py), numpy arrays load_kw/pv_kw, import/export prices
+WYJŚCIE: SizingResponse z wariantami S/M/L, każdy z DispatchResult + SavingsBreakdown + NPV
+NIE ROBI: Nie rozwiązuje LP (deleguje do lp_dispatch), nie liczy NPV (deleguje do economics_engine),
+          nie buduje requestu (to robi frontend bess_request_builder.js)
 
 Implements:
 - Grid search over power levels for each duration (1h, 2h, 4h)
@@ -59,6 +62,11 @@ from models import (
     Feasibility,
     ConstraintsReport,
     ParetoPoint,
+    # v3.1.0 Stacked Decomposition
+    StackedComponentModel,
+    StackedDecompositionModel,
+    # v7.0.0 LP Solver
+    LPSolverParams,
 )
 from dispatch_engine import (
     dispatch_pv_surplus,
@@ -124,6 +132,22 @@ from ledger_timeseries_helper import (
     generate_ledger_timeseries,
 )
 from determinism_helper import select_best_variant_deterministic
+from advisor_response import (
+    generate_advisor_response,
+    advisor_response_to_dict,
+)
+from economics_engine import (
+    NpvConfig as _NpvConfig,
+    NpvResult as _NpvResult,
+    calculate_npv as _unified_calculate_npv,
+    calculate_simple_payback as _unified_simple_payback,
+    calculate_irr_from_cashflows as _unified_irr_from_cashflows,
+    combined_soh as _unified_combined_soh,
+    battery_lifetime_years as _unified_battery_lifetime_years,
+    calculate_scenario_npv as _unified_calculate_scenario_npv,
+    ScenarioNpvResult as _ScenarioNpvResult,
+)
+from price_resolver import PriceResolver as _PriceResolver, ResolvedPrices as _ResolvedPrices
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +172,134 @@ def calculate_npv(
         npv += net_cash_flow / ((1 + discount_rate) ** t)
 
     return npv
+
+
+def _combined_soh(
+    year: int,
+    efc_per_year: float,
+    energy_kwh: float,
+    cycles_to_eol: float,
+    eol_soh_pct: float,
+    calendar_deg_year1_pct: float,
+    calendar_deg_annual_pct: float,
+    degradation_curve: str = "linear",
+) -> float:
+    """
+    Calculate combined SoH from calendar aging + cycle aging.
+
+    Calendar aging: year1 has higher loss (formation), then linear.
+    Cycle aging: throughput-based SoH curve.
+    Combined: SoH = 1 - calendar_loss - cycle_loss, floored at 10%.
+    """
+    eol_factor = eol_soh_pct / 100.0
+
+    # Calendar aging: cumulative capacity loss from time
+    if year <= 0:
+        return 1.0
+    cal_year1_loss = calendar_deg_year1_pct / 100.0
+    cal_annual_loss = calendar_deg_annual_pct / 100.0
+    if year == 1:
+        calendar_loss = cal_year1_loss
+    else:
+        calendar_loss = cal_year1_loss + cal_annual_loss * (year - 1)
+
+    # Cycle aging: capacity loss from throughput
+    cycle_loss = 0.0
+    if efc_per_year > 0 and energy_kwh > 0 and cycles_to_eol > 0:
+        cumulative_fec = efc_per_year * year
+        progress = min(cumulative_fec / cycles_to_eol, 2.0)
+        degradation_range = 1.0 - eol_factor
+        if degradation_curve == "sqrt":
+            cycle_loss = degradation_range * (progress ** 0.5)
+        else:
+            cycle_loss = degradation_range * progress
+
+    soh = 1.0 - calendar_loss - cycle_loss
+    return max(soh, 0.1)  # floor at 10%
+
+
+def calculate_battery_lifetime_years(
+    efc_per_year: float,
+    cycles_to_eol: float = 6000.0,
+    eol_soh_pct: float = 70.0,
+    energy_kwh: float = 0.0,
+    calendar_deg_year1_pct: float = 2.0,
+    calendar_deg_annual_pct: float = 1.0,
+    degradation_curve: str = "linear",
+    max_years: int = 30,
+) -> int:
+    """
+    Calculate battery lifetime in years based on combined calendar + cycle aging.
+
+    Simulates year by year until SoH drops below eol_soh_pct, capped at max_years.
+    """
+    eol_factor = eol_soh_pct / 100.0
+    for year in range(1, max_years + 1):
+        soh = _combined_soh(
+            year, efc_per_year, energy_kwh, cycles_to_eol, eol_soh_pct,
+            calendar_deg_year1_pct, calendar_deg_annual_pct, degradation_curve,
+        )
+        if soh <= eol_factor:
+            return year
+    return max_years
+
+
+def calculate_npv_lifecycle(
+    annual_savings: float,
+    capex: float,
+    opex_pct: float,
+    discount_rate: float,
+    years: int,
+    efc_per_year: float = 0.0,
+    energy_kwh: float = 0.0,
+    cycles_to_eol: float = 6000.0,
+    eol_soh_pct: float = 70.0,
+    savings_escalation_rate: float = 0.0,
+    opex_escalation_rate: float = 0.0,
+    degradation_curve: str = "linear",
+    calendar_deg_year1_pct: float = 2.0,
+    calendar_deg_annual_pct: float = 1.0,
+    annual_auxiliary_cost_pln: float = 0.0,
+) -> tuple:
+    """
+    Calculate NPV with full lifecycle model.
+
+    Combines:
+    - Calendar aging (year 1 higher + linear annual)
+    - Cycle aging (throughput-based SoH curve)
+    - Energy price escalation (inflation on savings)
+    - OPEX escalation (inflation)
+    - Auxiliary/house load cost (HVAC, BMS, PCS standby)
+
+    Horizon = year when SoH reaches EOL, not fixed period.
+    No replacement cost speculation.
+
+    Returns:
+        tuple: (npv, effective_years) - NPV in PLN and actual analysis horizon used
+    """
+    effective_years = calculate_battery_lifetime_years(
+        efc_per_year, cycles_to_eol, eol_soh_pct, energy_kwh,
+        calendar_deg_year1_pct, calendar_deg_annual_pct, degradation_curve, years,
+    )
+
+    annual_opex_base = capex * opex_pct
+    npv = -capex
+
+    for t in range(1, effective_years + 1):
+        soh = _combined_soh(
+            t, efc_per_year, energy_kwh, cycles_to_eol, eol_soh_pct,
+            calendar_deg_year1_pct, calendar_deg_annual_pct, degradation_curve,
+        )
+
+        escalated_savings = annual_savings * ((1 + savings_escalation_rate) ** t) * soh
+        escalated_opex = annual_opex_base * ((1 + opex_escalation_rate) ** t)
+        # Auxiliary cost escalates with energy prices (same as savings)
+        escalated_aux = annual_auxiliary_cost_pln * ((1 + savings_escalation_rate) ** t)
+
+        net_cf = escalated_savings - escalated_opex - escalated_aux
+        npv += net_cf / ((1 + discount_rate) ** t)
+
+    return npv, effective_years
 
 
 def calculate_simple_payback(
@@ -277,6 +429,56 @@ def calculate_irr_from_cashflow(
     return ((lo + hi) / 2.0) * 100.0
 
 
+def _throughput_soh_factor(
+    year: int,
+    annual_throughput_mwh: float,
+    energy_kwh: float,
+    cycles_to_eol: float,
+    eol_soh_pct: float,
+    curve: str = "linear",
+    replacement_year: Optional[int] = None,
+) -> float:
+    """
+    Calculate SoH-based degradation factor for a given year.
+
+    Uses throughput-based SoH curve (pagra-galileo model):
+    - Track cumulative full equivalent cycles (FEC)
+    - Map FEC to SoH using linear or sqrt curve
+    - Return capacity factor (1.0 at start, eol_soh_pct/100 at cycles_to_eol)
+
+    After replacement_year, cycles reset to 0.
+    """
+    if energy_kwh <= 0:
+        return 1.0
+
+    # Annual FEC (full equivalent cycles)
+    annual_fec = (annual_throughput_mwh * 1000) / (2 * energy_kwh)  # charge+discharge = 2×capacity per cycle
+
+    # Cumulative cycles up to this year (reset after replacement)
+    if replacement_year and year > replacement_year:
+        effective_year = year - replacement_year
+    else:
+        effective_year = year
+
+    cumulative_fec = annual_fec * effective_year
+
+    # Normalized cycle progress (0 to 1+)
+    progress = min(cumulative_fec / cycles_to_eol, 2.0)  # cap at 2x EOL
+
+    # SoH factor
+    eol_factor = eol_soh_pct / 100.0
+    degradation_range = 1.0 - eol_factor
+
+    if curve == "sqrt":
+        # Fast degradation early, slow late (√x curve)
+        soh = 1.0 - degradation_range * (progress ** 0.5)
+    else:
+        # Linear: straight line from 1.0 to eol_factor
+        soh = 1.0 - degradation_range * progress
+
+    return max(soh, 0.1)  # Floor at 10% to avoid negative
+
+
 def build_cashflow_timeseries(
     capex: float,
     annual_savings: float,
@@ -287,35 +489,32 @@ def build_cashflow_timeseries(
     replacement_capex_pln: Optional[float] = None,
     bess_degradation_pct_per_year: float = 0.0,
     pv_degradation_pct_per_year: float = 0.0,
+    # Throughput-based degradation parameters
+    bess_degradation_model: str = "linear",
+    annual_throughput_mwh: float = 0.0,
+    energy_kwh: float = 0.0,
+    cycles_to_eol: float = 6000.0,
+    eol_soh_pct: float = 70.0,
+    degradation_curve: str = "linear",
+    # Seller margin
+    seller_margin_pct: float = 0.0,
 ) -> List[CashflowYear]:
     """
     Build year-by-year cashflow timeseries.
 
-    Args:
-        capex: Initial investment (positive value)
-        annual_savings: Annual savings (positive = revenue)
-        annual_opex: Annual operating expenses (positive value)
-        discount_rate: Discount rate (0.08 = 8%)
-        horizon_years: Analysis horizon in years
-        replacement_year: Year for battery replacement (1-30). If None, no replacement.
-        replacement_capex_pln: Replacement cost in PLN. If None, uses original capex.
-        bess_degradation_pct_per_year: BESS capacity degradation [%/year]. E.g., 2.0 = 2%.
-        pv_degradation_pct_per_year: PV output degradation [%/year]. E.g., 0.5 = 0.5%.
-
-    Returns:
-        List of CashflowYear from year 0 (investment) through horizon_years
-
-    Degradation model:
-        Combined degradation factor = (1 - bess_rate)^year * (1 - pv_rate)^year
-        Degraded savings = base_savings * combined_factor
+    Supports two degradation models:
+    - 'linear': (1 - bess_rate)^year × (1 - pv_rate)^year
+    - 'throughput': SoH curve based on cumulative FEC (pagra-galileo model)
     """
     cashflow_list = []
     cumulative = 0.0
 
-    # Determine replacement cost (use original capex if not specified)
+    # Apply seller margin to capex
+    if seller_margin_pct > 0:
+        capex = capex * (1 + seller_margin_pct / 100.0)
+
     actual_replacement_cost = replacement_capex_pln if replacement_capex_pln is not None else capex
 
-    # Convert degradation percentages to decimal rates
     bess_rate = bess_degradation_pct_per_year / 100.0
     pv_rate = pv_degradation_pct_per_year / 100.0
 
@@ -328,42 +527,173 @@ def build_cashflow_timeseries(
         opex_pln=0.0,
         net_cashflow_pln=net_cf_0,
         cumulative_cashflow_pln=cumulative,
-        discounted_cashflow_pln=net_cf_0,  # No discounting for year 0
-        nominal_cashflow_pln=net_cf_0,  # Undiscounted = net for IRR
+        discounted_cashflow_pln=net_cf_0,
+        nominal_cashflow_pln=net_cf_0,
     ))
 
-    # Years 1 to horizon_years: Operating cashflows
+    # Pre-calculate EFC/year for combined SoH model
+    efc_per_year = 0.0
+    if annual_throughput_mwh > 0 and energy_kwh > 0:
+        efc_per_year = (annual_throughput_mwh * 1000) / (2 * energy_kwh)
+
+    # Calendar degradation defaults (align with _combined_soh)
+    cal_year1_pct = bess_degradation_pct_per_year * 1.5 if bess_degradation_pct_per_year > 0 else 3.0
+    cal_annual_pct = bess_degradation_pct_per_year if bess_degradation_pct_per_year > 0 else 2.0
+
     for year in range(1, horizon_years + 1):
-        # Calculate degradation factor for this year
-        # Combined: (1 - bess_rate)^year * (1 - pv_rate)^year
-        bess_factor = (1.0 - bess_rate) ** year
+        # Use combined SoH model: calendar aging + cycle aging (SSoT)
+        if efc_per_year > 0 and energy_kwh > 0:
+            # Full combined model: calendar + cycles
+            effective_year = year
+            if replacement_year and year > replacement_year:
+                effective_year = year - replacement_year
+            bess_factor = _combined_soh(
+                year=effective_year,
+                efc_per_year=efc_per_year,
+                energy_kwh=energy_kwh,
+                cycles_to_eol=cycles_to_eol,
+                eol_soh_pct=eol_soh_pct,
+                calendar_deg_year1_pct=cal_year1_pct,
+                calendar_deg_annual_pct=cal_annual_pct,
+                degradation_curve=degradation_curve,
+            )
+        else:
+            # Fallback: simple exponential (calendar-only approximation)
+            effective_year = year
+            if replacement_year and year > replacement_year:
+                effective_year = year - replacement_year
+            bess_factor = (1.0 - bess_rate) ** effective_year
+
+        # PV degradation (always linear, 0 for BESS-only)
         pv_factor = (1.0 - pv_rate) ** year
         combined_factor = bess_factor * pv_factor
 
-        # Apply degradation to savings (savings decrease over time)
         degraded_savings = annual_savings * combined_factor
-
-        # Base operating cashflow with degraded savings
         net_cf = degraded_savings - annual_opex
 
-        # Apply replacement cost in replacement year (if specified and within horizon)
         if replacement_year is not None and year == replacement_year:
             net_cf -= actual_replacement_cost
 
         cumulative += net_cf
         discounted_cf = net_cf / ((1 + discount_rate) ** year)
 
+        soh_pct_val = round(bess_factor * 100, 1)
+        eol_threshold = eol_soh_pct if eol_soh_pct > 0 else 70.0
+        is_eol_year = soh_pct_val <= eol_threshold and year > 0
+
         cashflow_list.append(CashflowYear(
             year=year,
-            savings_pln=degraded_savings,  # Degraded savings shown in cashflow
+            savings_pln=degraded_savings,
             opex_pln=annual_opex,
             net_cashflow_pln=net_cf,
             cumulative_cashflow_pln=cumulative,
             discounted_cashflow_pln=discounted_cf,
-            nominal_cashflow_pln=net_cf,  # Undiscounted = net for IRR
+            nominal_cashflow_pln=net_cf,
+            soh_pct=soh_pct_val,
+            is_eol=is_eol_year,
         ))
 
     return cashflow_list
+
+
+def compute_efc_optimization_sweep(
+    base_annual_savings: float,
+    base_efc_per_year: float,
+    capex: float,
+    annual_opex: float,
+    discount_rate: float,
+    energy_kwh: float,
+    cycles_to_eol: float = 6000.0,
+    eol_soh_pct: float = 70.0,
+    calendar_deg_year1_pct: float = 3.0,
+    calendar_deg_annual_pct: float = 2.0,
+    degradation_curve: str = "linear",
+    max_horizon: int = 25,
+) -> List[dict]:
+    """
+    Compute optimal EFC limit by sweeping values and finding max lifecycle NPV.
+
+    For each candidate EFC limit, we:
+    1. Scale annual savings linearly if the limit throttles dispatch below base_efc_per_year.
+    2. Determine EOL year via _combined_soh (calendar + cycle aging).
+    3. Calculate lifecycle NPV = sum of discounted cashflows over min(EOL year, max_horizon).
+    4. Compute PLN-per-EFC efficiency metric.
+
+    Args:
+        base_annual_savings: Annual savings at current (unlimited) EFC [PLN].
+        base_efc_per_year: Current EFC/year from dispatch (unthrottled).
+        capex: Initial CAPEX [PLN].
+        annual_opex: Annual OPEX [PLN].
+        discount_rate: Discount rate (e.g. 0.10 for 10%).
+        energy_kwh: Battery usable capacity [kWh].
+        cycles_to_eol: Full equivalent cycles to reach EOL SoH.
+        eol_soh_pct: End-of-life SoH threshold [%].
+        calendar_deg_year1_pct: Calendar degradation in year 1 [%].
+        calendar_deg_annual_pct: Calendar degradation per year after year 1 [%].
+        degradation_curve: 'linear' or 'sqrt' — passed to _combined_soh.
+        max_horizon: Maximum years to simulate.
+
+    Returns:
+        List of dicts sorted by efc_limit, each containing:
+        - efc_limit, annual_savings_pln, eol_year, lifecycle_npv_pln,
+          pln_per_efc, is_optimal (True for the entry with highest NPV).
+    """
+    sweep_points = [50, 100, 150, 200, 250, 300, 350, 400, 500, 600, 800]
+    eol_threshold = eol_soh_pct / 100.0
+
+    results: List[dict] = []
+
+    for efc_limit in sweep_points:
+        # --- Annual savings (throttled or full) ---
+        if base_efc_per_year <= 0:
+            annual_savings = 0.0
+        elif efc_limit >= base_efc_per_year:
+            annual_savings = base_annual_savings
+        else:
+            annual_savings = base_annual_savings * (efc_limit / base_efc_per_year)
+
+        # --- Determine EOL year using _combined_soh ---
+        eol_year = max_horizon
+        for yr in range(1, max_horizon + 1):
+            soh = _combined_soh(
+                year=yr,
+                efc_per_year=efc_limit,
+                energy_kwh=energy_kwh,
+                cycles_to_eol=cycles_to_eol,
+                eol_soh_pct=eol_soh_pct,
+                calendar_deg_year1_pct=calendar_deg_year1_pct,
+                calendar_deg_annual_pct=calendar_deg_annual_pct,
+                degradation_curve=degradation_curve,
+            )
+            if soh <= eol_threshold:
+                eol_year = yr
+                break
+
+        # --- Lifecycle NPV ---
+        effective_horizon = min(eol_year, max_horizon)
+        lifecycle_npv = -capex  # Year 0
+        for yr in range(1, effective_horizon + 1):
+            net_cf = annual_savings - annual_opex
+            lifecycle_npv += net_cf / ((1 + discount_rate) ** yr)
+
+        # --- PLN per EFC ---
+        pln_per_efc = annual_savings / efc_limit if efc_limit > 0 else 0.0
+
+        results.append({
+            "efc_limit": efc_limit,
+            "annual_savings_pln": round(annual_savings, 2),
+            "eol_year": eol_year,
+            "lifecycle_npv_pln": round(lifecycle_npv, 2),
+            "pln_per_efc": round(pln_per_efc, 4),
+            "is_optimal": False,
+        })
+
+    # Mark the entry with highest NPV as optimal
+    if results:
+        best_idx = max(range(len(results)), key=lambda i: results[i]["lifecycle_npv_pln"])
+        results[best_idx]["is_optimal"] = True
+
+    return results
 
 
 def build_discount_rate_sensitivity(
@@ -388,11 +718,12 @@ def build_discount_rate_sensitivity(
     """
     points = []
     for rate in sorted(discount_rates):
-        npv = calculate_npv(annual_savings, capex, opex_pct, rate, horizon_years)
+        cfg = _NpvConfig(discount_rate=rate, analysis_years=horizon_years, opex_pct=opex_pct)
+        result = _unified_calculate_npv(annual_savings, capex, cfg)
         points.append(DiscountRateSensitivityPoint(
             discount_rate=rate,
             discount_rate_pct=rate * 100,
-            npv_pln=npv,
+            npv_pln=result.npv_pln,
         ))
     return points
 
@@ -425,11 +756,12 @@ def build_energy_price_sensitivity(
     for m in sorted(multipliers):
         # Energy price multiplier affects savings proportionally
         adjusted_savings = base_annual_savings * m
-        npv = calculate_npv(adjusted_savings, capex, opex_pct, discount_rate, horizon_years)
+        cfg = _NpvConfig(discount_rate=discount_rate, analysis_years=horizon_years, opex_pct=opex_pct)
+        result = _unified_calculate_npv(adjusted_savings, capex, cfg)
         points.append(MultiplierSensitivityPoint(
             multiplier=m,
             multiplier_pct=m * 100,
-            npv_pln=npv,
+            npv_pln=result.npv_pln,
         ))
     return points
 
@@ -462,11 +794,12 @@ def build_capex_sensitivity(
     for m in sorted(multipliers):
         # CAPEX multiplier affects both capex and opex (which is % of capex)
         adjusted_capex = base_capex * m
-        npv = calculate_npv(annual_savings, adjusted_capex, opex_pct, discount_rate, horizon_years)
+        cfg = _NpvConfig(discount_rate=discount_rate, analysis_years=horizon_years, opex_pct=opex_pct)
+        result = _unified_calculate_npv(annual_savings, adjusted_capex, cfg)
         points.append(MultiplierSensitivityPoint(
             multiplier=m,
             multiplier_pct=m * 100,
-            npv_pln=npv,
+            npv_pln=result.npv_pln,
         ))
     return points
 
@@ -484,32 +817,136 @@ def get_price_bundle_for_sizing(
 
     Returns:
     --------
-    Tuple of (import_prices_array, price_bundle) or None if arbitrage not enabled
+    Tuple of (import_prices_array, price_bundle) or None if arbitrage not enabled.
+    Note: export_prices (raw RDN) are resolved separately via
+    arb_config.hourly_export_prices_pln_mwh in run_sizing().
     """
     arb_config = request.arbitrage_config
     if not arb_config or not arb_config.enabled:
+        logger.warning("PRICE_FLOW: arbitrage not enabled, skipping price resolution")
         return None
 
+    logger.warning(
+        f"PRICE_FLOW: resolving prices for n_hours={n_hours}, "
+        f"tariff_id={arb_config.tariff_id}, "
+        f"hourly_prices_len={len(arb_config.hourly_prices_pln_mwh) if arb_config.hourly_prices_pln_mwh else 0}, "
+        f"monthly_sources={arb_config.monthly_price_sources}, "
+        f"start_date={request.start_date}"
+    )
+
+    # =========================================================================
+    # Path 0: Hybrid monthly (OSD + RDN per month)
+    # =========================================================================
+    if arb_config.monthly_price_sources and arb_config.hourly_prices_pln_mwh and len(arb_config.hourly_prices_pln_mwh) > 100:
+        try:
+            from price_engine import ToUPriceProvider, ToUPriceConfig, HybridMonthlyPriceProvider
+            from osd_tariffs.presets.templates import ALL_PRESETS, TARIFF_ALIASES
+
+            # RDN prices: PLN/MWh → PLN/kWh
+            rdn_raw = np.array(arb_config.hourly_prices_pln_mwh, dtype=float) / 1000.0
+            if len(rdn_raw) >= n_hours:
+                rdn_prices = rdn_raw[:n_hours]
+            else:
+                repeats = (n_hours + len(rdn_raw) - 1) // len(rdn_raw)
+                rdn_prices = np.tile(rdn_raw, repeats)[:n_hours]
+
+            # OSD tariff lookup
+            tariff_id = arb_config.tariff_id
+            resolved_id = TARIFF_ALIASES.get(tariff_id, tariff_id)
+            tariff = ALL_PRESETS.get(resolved_id) or ALL_PRESETS.get(tariff_id)
+            if tariff is None:
+                for t in ALL_PRESETS.values():
+                    if t.id == tariff_id or t.id == resolved_id:
+                        tariff = t
+                        break
+
+            if tariff is None:
+                logger.warning(f"Hybrid monthly: tariff not found: {tariff_id}, falling back to RDN-only")
+            else:
+                start_date = datetime.strptime(request.start_date, "%Y-%m-%d").date()
+                n_days = (n_hours + 23) // 24
+                end_date = start_date + timedelta(days=n_days - 1)
+
+                price_config = ToUPriceConfig(
+                    osd_tariff=tariff,
+                    capacity_fee_pln_kwh=0.0,
+                    other_components_pln_kwh=arb_config.other_components_pln_kwh,
+                )
+                tou_provider = ToUPriceProvider(price_config)
+
+                # Normalize monthly_price_sources keys to int
+                monthly_sources = {int(k): v for k, v in arb_config.monthly_price_sources.items()}
+
+                hybrid = HybridMonthlyPriceProvider(
+                    tou_provider=tou_provider,
+                    rdn_prices_pln_kwh=rdn_prices,
+                    monthly_sources=monthly_sources,
+                    start_date=start_date,
+                )
+                bundle = hybrid.get_series(start_date, end_date, request.interval_minutes)
+                import_prices = np.array(bundle.import_total[:n_hours])
+
+                rdn_months = [m for m, s in monthly_sources.items() if s == 'rdn']
+                osd_months = [m for m, s in monthly_sources.items() if s != 'rdn']
+                logger.warning(
+                    f"PRICE_FLOW: PATH 0 (Hybrid) OK: RDN months={rdn_months}, OSD months={osd_months}, "
+                    f"avg={np.mean(import_prices)*1000:.0f} PLN/MWh, len={len(import_prices)}"
+                )
+                return import_prices, bundle
+
+        except Exception as e:
+            logger.error(f"PRICE_FLOW: PATH 0 (Hybrid) FAILED: {e}, falling back to standard path")
+
+    # =========================================================================
+    # Path 1: RDN hourly prices passed directly from frontend
+    # =========================================================================
+    if arb_config.hourly_prices_pln_mwh and len(arb_config.hourly_prices_pln_mwh) > 100:
+        try:
+            # Convert PLN/MWh → PLN/kWh (dispatch uses PLN/kWh internally)
+            raw = np.array(arb_config.hourly_prices_pln_mwh, dtype=float) / 1000.0
+            # Truncate or tile to match load length
+            if len(raw) >= n_hours:
+                import_prices = raw[:n_hours]
+            else:
+                # Tile to cover full period
+                repeats = (n_hours + len(raw) - 1) // len(raw)
+                import_prices = np.tile(raw, repeats)[:n_hours]
+
+            logger.warning(
+                f"PRICE_FLOW: PATH 1 (RDN direct) OK: {len(import_prices)} hours, "
+                f"avg={np.mean(import_prices)*1000:.0f} PLN/MWh, "
+                f"min={np.min(import_prices)*1000:.0f}, max={np.max(import_prices)*1000:.0f}"
+            )
+            return import_prices, None
+        except Exception as e:
+            logger.error(f"PRICE_FLOW: PATH 1 (RDN direct) FAILED: {e}")
+            return None
+
+    # =========================================================================
+    # Path 2: OSD tariff preset lookup (for ToU arbitrage)
+    # =========================================================================
     if not request.start_date:
-        logger.warning("Arbitrage enabled but start_date not provided")
+        logger.warning("PRICE_FLOW: PATH 2 skipped - no start_date provided")
         return None
 
     try:
         # Import price engine components
         from price_engine import ToUPriceProvider, ToUPriceConfig, PriceBundle
-        from osd_tariffs.presets.templates import ALL_PRESETS
+        from osd_tariffs.presets.templates import ALL_PRESETS, TARIFF_ALIASES
 
-        # Get tariff
-        tariff = ALL_PRESETS.get(arb_config.tariff_id)
+        # Get tariff — resolve alias first, then direct lookup
+        tariff_id = arb_config.tariff_id
+        resolved_id = TARIFF_ALIASES.get(tariff_id, tariff_id)
+        tariff = ALL_PRESETS.get(resolved_id) or ALL_PRESETS.get(tariff_id)
         if tariff is None:
-            # Try searching by tariff.id
+            # Try searching by tariff.id attribute
             for t in ALL_PRESETS.values():
-                if t.id == arb_config.tariff_id:
+                if t.id == tariff_id or t.id == resolved_id:
                     tariff = t
                     break
 
         if tariff is None:
-            logger.warning(f"Tariff not found: {arb_config.tariff_id}")
+            logger.warning(f"PRICE_FLOW: PATH 2 FAILED - tariff not found: {arb_config.tariff_id} (resolved={resolved_id})")
             return None
 
         # Parse start date
@@ -541,10 +978,15 @@ def get_price_bundle_for_sizing(
                 constant_values=pad_value
             )
 
+        logger.warning(
+            f"PRICE_FLOW: PATH 2 (OSD tariff) OK: tariff={arb_config.tariff_id}, "
+            f"resolved={resolved_id}, {len(import_prices)} hours, "
+            f"avg={np.mean(import_prices)*1000:.0f} PLN/MWh"
+        )
         return import_prices, price_bundle
 
     except Exception as e:
-        logger.error(f"Failed to get price bundle: {e}")
+        logger.error(f"PRICE_FLOW: PATH 2 (OSD tariff) FAILED: {e}")
         return None
 
 
@@ -694,6 +1136,10 @@ def calculate_objective_score(
             utilization = min(result.degradation.efc_total / max_efc_budget, 1.0)
             return utilization * 100  # 0-100 scale
         return result.degradation.efc_total
+
+    elif objective == OptimizationObjective.MAX_SAVINGS:
+        # Maximize absolute annual savings [PLN] — largest revenue, regardless of CAPEX efficiency
+        return result.annual_savings_pln
 
     return npv  # Default to NPV
 
@@ -1104,6 +1550,352 @@ def compute_pareto_frontier(
     return points
 
 
+def build_savings_breakdown(
+    result: DispatchResult,
+    request: SizingRequest,
+    mode: DispatchMode,
+    load_kw: np.ndarray,
+    pv_kw: np.ndarray,
+    n_timesteps: int,
+    dt_hours: float,
+    arb_enabled: bool,
+    import_prices: Optional[np.ndarray],
+    export_prices: Optional[np.ndarray],
+    power_kw: float,
+    energy_kwh: float,
+) -> SavingsBreakdown:
+    """
+    Build transparent SavingsBreakdown from dispatch result.
+
+    Separates financial accounting (PLN) from physics (dispatch).
+    All savings components are calculated here — dispatch only provides energy flows.
+    """
+    savings_breakdown = SavingsBreakdown()
+
+    # Baseline grid import/export (no BESS)
+    if mode == DispatchMode.LOAD_ONLY:
+        baseline_grid_import_kw = load_kw.copy()
+        baseline_grid_export_kw = np.zeros_like(load_kw)
+    else:
+        baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
+        baseline_grid_export_kw = np.maximum(pv_kw - load_kw, 0)
+
+    # Get actual grid import from dispatch result
+    if result.hourly_grid_import_kw is not None:
+        actual_grid_import_kw = np.array(result.hourly_grid_import_kw)
+    else:
+        actual_grid_import_kw = np.full(n_timesteps, result.total_grid_import_kwh / (n_timesteps * dt_hours))
+
+    # 2a. Base energy savings (ToU tariff, hourly RDN, or flat pricing)
+    _hourly_energy_computed = False  # flag: True when PATH 1 (hourly) used — blocks arbitrage double-count
+    if request.prices.is_tou_enabled:
+        pricing_config = PricingConfig(
+            tariff_id=request.prices.tariff_id,
+            flat_import_pln_mwh=request.prices.import_price_pln_mwh,
+            flat_export_pln_mwh=request.prices.export_price_pln_mwh,
+            other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
+            capacity_fee_method=request.prices.capacity_fee_method,
+            capacity_fee_som_pln_kwh=request.prices.capacity_fee_som_pln_kwh,
+            capacity_fee_fixed_pln_mwh=request.prices.capacity_fee_fixed_pln_mwh,
+            analysis_year=request.prices.analysis_year,
+            export_policy="zero_export",
+        )
+
+        interval_minutes = int(dt_hours * 60)
+        savings_result = calculate_savings(
+            baseline_grid_import_kw,
+            actual_grid_import_kw,
+            pricing_config,
+            interval_minutes,
+            analytical_period=request.analytical_period,
+        )
+
+        savings_breakdown.energy_savings_pln = (
+            savings_result['savings']['tou_savings_pln'] +
+            savings_result['savings']['other_savings_pln']
+        )
+        if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
+            savings_breakdown.capacity_fee_savings_pln = savings_result['savings']['capacity_fee_savings_pln']
+        else:
+            savings_breakdown.capacity_fee_savings_pln = 0.0
+
+        result.prices_summary = {
+            'baseline': savings_result['baseline'],
+            'project': savings_result['project'],
+            'savings': savings_result['savings'],
+            'config': savings_result['config'],
+        }
+
+        logger.info(
+            f"ToU pricing: baseline={savings_result['baseline']['total_cost_pln']:.0f} PLN, "
+            f"project={savings_result['project']['total_cost_pln']:.0f} PLN, "
+            f"savings={savings_result['savings']['total_savings_pln']:.0f} PLN"
+        )
+    elif import_prices is not None and len(import_prices) == n_timesteps:
+        # PATH 1 (RDN hourly prices, tariff_id=None): compute exact bill difference
+        # savings = Σ(baseline_import[t] - actual_import[t]) × buy_price[t]
+        baseline_cost_hourly = float(np.sum(np.maximum(baseline_grid_import_kw, 0.0) * import_prices * dt_hours))
+        actual_cost_hourly   = float(np.sum(np.maximum(actual_grid_import_kw,  0.0) * import_prices * dt_hours))
+        savings_breakdown.energy_savings_pln = baseline_cost_hourly - actual_cost_hourly
+        logger.info(
+            f"Hourly RDN pricing: baseline_cost={baseline_cost_hourly:.0f} PLN, "
+            f"actual_cost={actual_cost_hourly:.0f} PLN, "
+            f"energy_savings={savings_breakdown.energy_savings_pln:.0f} PLN"
+        )
+        _hourly_energy_computed = True
+    else:
+        flat_price = request.prices.import_price_pln_mwh / 1000.0
+        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
+        savings_breakdown.energy_savings_pln = import_reduction_kwh * flat_price
+        _hourly_energy_computed = False
+
+    # 2b. Arbitrage savings
+    # When ToU pricing is enabled (step 2a), or hourly energy savings already computed (PATH 1),
+    # energy_savings captures the FULL bill difference — arbitrage_savings would double-count.
+    # Only add standalone arbitrage_savings for flat pricing path.
+    if arb_enabled and import_prices is not None:
+        charge_kw = np.array(result.hourly_charge_kw) if result.hourly_charge_kw else np.zeros(n_timesteps)
+        discharge_kw = np.array(result.hourly_discharge_kw) if result.hourly_discharge_kw else np.zeros(n_timesteps)
+
+        if mode == DispatchMode.LOAD_ONLY:
+            pv_surplus_kw = np.zeros(n_timesteps)
+        else:
+            pv_surplus_kw = np.maximum(pv_kw - load_kw, 0.0)
+        charge_from_pv_kw = np.minimum(charge_kw, pv_surplus_kw)
+        charge_from_grid_kw = np.maximum(charge_kw - charge_from_pv_kw, 0.0)
+
+        grid_charge_cost = float(np.sum(charge_from_grid_kw * dt_hours * import_prices))
+        grid_charge_energy_kwh = float(np.sum(charge_from_grid_kw * dt_hours))
+
+        discharge_kwh = discharge_kw * dt_hours
+        discharge_value = float(np.sum(discharge_kwh * import_prices))
+
+        pv_charge_energy_kwh = float(np.sum(charge_from_pv_kw * dt_hours))
+        total_charge_energy_kwh = grid_charge_energy_kwh + pv_charge_energy_kwh
+
+        if request.prices.is_tou_enabled or _hourly_energy_computed:
+            # ToU path (step 2a) or hourly RDN path already captured full bill difference.
+            # arbitrage_savings would double-count — set to 0.
+            rdn_spread_only = discharge_value - grid_charge_cost if grid_charge_energy_kwh > 0 else 0.0
+            savings_breakdown.arbitrage_savings_pln = 0.0  # Avoid double-counting
+            logger.info(
+                f"Arbitrage (informational only, NOT added - already in ToU energy_savings): "
+                f"RDN spread={rdn_spread_only:.0f} PLN, "
+                f"grid_charge_cost={grid_charge_cost:.0f} PLN, "
+                f"discharge_value={discharge_value:.0f} PLN"
+            )
+        else:
+            # Flat pricing: energy_savings only counts volume reduction × flat_price.
+            # Arbitrage spread is NOT captured there, so we add it here.
+            # PV timing arbitrage
+            if pv_charge_energy_kwh > 0 and export_prices is not None:
+                lost_export_revenue = float(np.sum(charge_from_pv_kw * dt_hours * export_prices))
+                pv_fraction = pv_charge_energy_kwh / total_charge_energy_kwh if total_charge_energy_kwh > 0 else 1.0
+                pv_discharge_value = discharge_value * pv_fraction
+                pv_timing_value = pv_discharge_value - lost_export_revenue
+                savings_breakdown.arbitrage_savings_pln = max(0.0, pv_timing_value)
+            else:
+                savings_breakdown.arbitrage_savings_pln = 0.0
+
+            # Grid charging arbitrage
+            if grid_charge_energy_kwh > 0:
+                grid_fraction = grid_charge_energy_kwh / total_charge_energy_kwh
+                grid_discharge_value = discharge_value * grid_fraction
+                grid_arbitrage_profit = grid_discharge_value - grid_charge_cost
+                savings_breakdown.arbitrage_savings_pln += max(0.0, grid_arbitrage_profit)
+
+            if total_charge_energy_kwh == 0:
+                savings_breakdown.arbitrage_savings_pln = 0.0
+
+            logger.info(
+                f"Arbitrage (flat pricing path): {savings_breakdown.arbitrage_savings_pln:.0f} PLN, "
+                f"grid_charge={grid_charge_energy_kwh:.0f} kWh, "
+                f"discharge_value={discharge_value:.0f} PLN"
+            )
+
+    # 2c. Capacity fee savings (if not already set by ToU path)
+    cap_fee_method = getattr(request.prices, 'capacity_fee_method', None) if request.prices else None
+    cap_fee_enabled = cap_fee_method == 'dynamic'
+    if savings_breakdown.capacity_fee_savings_pln == 0.0 and cap_fee_enabled and mode in [
+        DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY
+    ]:
+        savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
+            baseline_grid_import_kw,
+            actual_grid_import_kw,
+            dt_hours,
+            start_date=request.start_date,
+            analytical_period=request.analytical_period,
+        )
+
+    # 3. Demand charge savings (from peak reduction)
+    if mode in (DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY):
+        if result.peak_reduction_kw > 0 and request.prices.annual_demand_charge_pln_kw > 0:
+            savings_breakdown.demand_charge_savings_pln = (
+                result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
+            )
+        elif result.peak_reduction_kw > 0:
+            default_demand_charge_monthly = 30.0
+            savings_breakdown.demand_charge_savings_pln = (
+                result.peak_reduction_kw * default_demand_charge_monthly * 12
+            )
+
+    # 4. Export revenue breakdown
+    export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0 if request.prices.export_price_pln_mwh > 0 else 0.0
+    baseline_export_kwh = np.sum(baseline_grid_export_kw) * dt_hours
+    savings_breakdown.baseline_export_revenue_pln = baseline_export_kwh * export_price_pln_kwh
+    project_export_kwh = result.total_grid_export_kwh
+    savings_breakdown.project_export_revenue_pln = project_export_kwh * export_price_pln_kwh
+    savings_breakdown.export_revenue_savings_pln = (
+        savings_breakdown.project_export_revenue_pln - savings_breakdown.baseline_export_revenue_pln
+    )
+    savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
+
+    # 5. Battery throughput (informational only — NO degradation cost deduction)
+    #
+    # Degradation is modeled ONCE via _combined_soh() in lifecycle cashflow:
+    #   - Calendar aging: capacity loss from time
+    #   - Cycle aging: capacity loss from throughput (EFC-based)
+    #   - Combined SoH reduces future savings year by year
+    #   - Replacement CAPEX when SoH < EOL threshold
+    #
+    # Adding a separate degradation_cost here would be DOUBLE COUNTING:
+    #   1. SoH curve already reduces savings in build_cashflow_timeseries
+    #   2. Replacement CAPEX already covers the cost of worn-out battery
+    #   3. Post-hoc cost doesn't influence dispatch decisions (LP doesn't see it)
+    #
+    # If marginal cycle cost is needed, it belongs in LP objective function
+    # (as dispatch constraint), not in financial savings calculation.
+    #
+    # Consensus: ChatGPT, Claude, DeepSeek, Gemini — all agree this is double counting.
+    # See: PV analogy — we don't deduct "panel wear cost" from PV savings.
+    throughput_mwh = result.degradation.throughput_total_mwh if result.degradation else 0.0
+    savings_breakdown.battery_throughput_mwh = throughput_mwh
+    savings_breakdown.degradation_cost_pln = 0.0  # Intentionally zero — SoH curve handles this
+
+    # 6. Unserved load penalty
+    if result.constraint_summary is not None:
+        unserved_kwh = result.constraint_summary.unserved_load_kwh
+        if unserved_kwh > 0 and request.grid_constraints is not None:
+            penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
+            if penalty_rate > 0:
+                savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
+
+    # 7. Grid constraint metrics
+    if request.grid_constraints is not None:
+        mode_str = mode.value if hasattr(mode, "value") else str(mode)
+        record_grid_constraint_request(mode=mode_str)
+
+        cs = result.constraint_summary
+        if cs is not None:
+            record_export_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.export_cap_hit_steps,
+                curtailed_kwh=cs.export_cap_curtailed_kwh,
+            )
+            penalty_pln = savings_breakdown.unserved_load_penalty_pln
+            record_import_cap_metrics(
+                mode=mode_str,
+                hit_steps=cs.import_cap_hit_steps,
+                unserved_kwh=cs.unserved_load_kwh,
+                penalty_pln=penalty_pln,
+            )
+
+    # Ancillary services revenue (v2.0)
+    if getattr(request, 'ancillary_services_enabled', False) and power_kw > 0:
+        try:
+            from ancillary_services import (
+                AncillaryServiceType,
+                BatteryVirtualizer,
+                StackedServiceOptimizer,
+            )
+            from ancillary_services.models import POLISH_MARKET_PRESETS, PolishMarketPreset
+
+            svc_list = request.ancillary_services_list or [
+                "aFRR_up", "aFRR_down", "mFRR_up", "peak_shaving", "energy_arbitrage",
+            ]
+            service_types = []
+            for svc_name in svc_list:
+                try:
+                    service_types.append(AncillaryServiceType(svc_name))
+                except ValueError:
+                    pass
+
+            if service_types:
+                market_year = getattr(request, 'ancillary_market_year', 2026)
+                market = POLISH_MARKET_PRESETS.get(market_year, PolishMarketPreset(year=market_year))
+                margin = getattr(request, 'ancillary_aggregator_margin_pct', 20.0)
+                market.aggregator_margin_pct = margin
+
+                virt_config = BatteryVirtualizer.create_default_allocation(
+                    total_power_kw=power_kw,
+                    total_energy_kwh=energy_kwh,
+                    services=service_types,
+                    roundtrip_efficiency=request.roundtrip_efficiency,
+                )
+                optimizer = StackedServiceOptimizer(virt_config, market, market_year)
+
+                if import_prices is not None and len(import_prices) == n_timesteps:
+                    buy_p = import_prices / 1000.0
+                else:
+                    buy_p = np.full(n_timesteps, request.prices.import_price_pln_mwh / 1000.0)
+                sell_p = buy_p * 0.8
+
+                peak_lim = power_kw
+                if request.mode == DispatchMode.STACKED and request.stacked_params:
+                    peak_lim = request.stacked_params.peak_limit_kw
+                elif request.peak_limit_kw:
+                    peak_lim = request.peak_limit_kw
+
+                steps_per_day = int(24 / dt_hours)
+                n_days = n_timesteps // steps_per_day
+                sample_days = min(n_days, 16)
+                if sample_days > 0:
+                    day_indices = np.linspace(0, n_days - 1, sample_days, dtype=int)
+                    total_rev = 0.0
+                    afrr_rev = 0.0
+                    mfrr_rev = 0.0
+                    for di in day_indices:
+                        s = di * steps_per_day
+                        e = s + steps_per_day
+                        if e > n_timesteps:
+                            break
+                        day_result = optimizer.optimize_day(
+                            buy_prices=buy_p[s:e],
+                            sell_prices=sell_p[s:e],
+                            load_kw=load_kw[s:e],
+                            pv_kw=pv_kw[s:e],
+                            peak_limit_kw=peak_lim,
+                            dt_hours=dt_hours,
+                        )
+                        if day_result.get("status") == "optimal":
+                            rev = day_result["revenue"]
+                            total_rev += rev.get("net_total_pln", 0)
+                            afrr_rev += rev.get("afrr_up_capacity_pln", 0) + rev.get("afrr_down_capacity_pln", 0)
+                            mfrr_rev += rev.get("mfrr_up_capacity_pln", 0)
+
+                    scale = 365 / sample_days if sample_days > 0 else 0
+                    annual_total = total_rev * scale
+                    annual_afrr = afrr_rev * scale
+                    annual_mfrr = mfrr_rev * scale
+                    agg_margin = margin / 100.0
+
+                    savings_breakdown.ancillary_afrr_revenue_pln = annual_afrr * (1 - agg_margin)
+                    savings_breakdown.ancillary_mfrr_revenue_pln = annual_mfrr * (1 - agg_margin)
+                    savings_breakdown.ancillary_aggregator_fee_pln = (annual_afrr + annual_mfrr) * agg_margin
+                    savings_breakdown.ancillary_total_net_pln = annual_total * (1 - agg_margin)
+
+        except ImportError:
+            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Ancillary revenue calc failed: {e}")
+
+    # Calculate net savings
+    savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
+
+    return savings_breakdown
+
+
 def run_sizing_for_variant(
     pv_kw: np.ndarray,
     load_kw: np.ndarray,
@@ -1113,6 +1905,7 @@ def run_sizing_for_variant(
     power_kw: float,
     request: SizingRequest,
     import_prices: Optional[np.ndarray] = None,
+    export_prices: Optional[np.ndarray] = None,
 ) -> Tuple[DispatchResult, float, float, Optional[SavingsBreakdown]]:
     """
     Run dispatch simulation for a single sizing configuration.
@@ -1148,35 +1941,109 @@ def run_sizing_for_variant(
     # Pass include_energy_flows_timeseries from request to dispatch functions
     include_timeseries = request.include_energy_flows_timeseries
 
-    if mode == DispatchMode.PV_SURPLUS:
-        result = dispatch_pv_surplus(
-            pv_kw, load_kw, battery, dt_hours, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
+    # LP Dispatch (v7.0.0: LP only, self-sufficient, no greedy)
+    from lp_dispatch import dispatch_lp, dispatch_lp_with_capacity_optimization, resolve_buy_sell_for_dispatch
+
+    lp_params = getattr(request, 'lp_params', None) or LPSolverParams()
+
+    lp_peak_limit = request.peak_limit_kw
+    if mode == DispatchMode.STACKED and request.stacked_params:
+        lp_peak_limit = request.stacked_params.peak_limit_kw
+
+    # Unified price resolution (same logic as dispatch_engine.py)
+    buy_arr, sell_arr = resolve_buy_sell_for_dispatch(
+        prices=request.prices,
+        n_steps=len(load_kw),
+        import_prices=import_prices,
+        export_prices=export_prices,
+        arbitrage_config=request.arbitrage_config,
+        mode=mode,
+    )
+
+    # Resolve allow_grid_charging from arbitrage config
+    _arb_cfg_sr = request.arbitrage_config
+    sr_allow_grid_charging = getattr(_arb_cfg_sr, 'allow_grid_charging', True) if _arb_cfg_sr else True
+
+    # Marginal cycling cost — dispatch friction to filter junk cycles (Wariant B)
+    # Not a financial cost (not in savings) — purely operational decision parameter in LP.
+    sr_marginal_cycle_cost = getattr(request, 'marginal_cycle_cost_per_kwh', 0.0)
+    print(f"🔋 MCC raw from request: {sr_marginal_cycle_cost}, capex_per_kwh={request.capex_per_kwh}", flush=True)
+    if sr_marginal_cycle_cost < 0:
+        # Auto-calculate: CAPEX_per_kWh / (2 × cycles_to_eol)
+        _capex_kwh = request.capex_per_kwh or 1500
+        _cycles_eol = 6000.0
+        fc = getattr(request, 'finance_config', None)
+        if fc and getattr(fc, 'cycles_to_eol', 0) > 0:
+            _cycles_eol = fc.cycles_to_eol
+        sr_marginal_cycle_cost = _capex_kwh / (2 * _cycles_eol)
+        print(f"🔋 Marginal cycle cost AUTO: {sr_marginal_cycle_cost:.4f} PLN/kWh "
+              f"({sr_marginal_cycle_cost * 1000:.0f} PLN/MWh) "
+              f"[CAPEX={_capex_kwh}/kWh, cycles_to_eol={_cycles_eol}]", flush=True)
+    elif sr_marginal_cycle_cost > 0:
+        print(f"🔋 Marginal cycle cost MANUAL: {sr_marginal_cycle_cost:.4f} PLN/kWh "
+              f"({sr_marginal_cycle_cost * 1000:.0f} PLN/MWh)", flush=True)
+
+    # Check if capacity fee optimization is enabled
+    use_cap_fee_opt = (
+        getattr(request, 'optimize_capacity_fee', False) or
+        (request.prices and getattr(request.prices, 'capacity_fee_method', '') == 'dynamic')
+    )
+
+    if use_cap_fee_opt:
+        try:
+            time_index = get_time_index_for_request(request, len(load_kw))
+        except Exception:
+            from datetime import date as _date, datetime as _dt
+            start = getattr(request, 'start_date', None)
+            if isinstance(start, str):
+                start = _dt.strptime(start, "%Y-%m-%d").date()
+            elif start is None:
+                start = _date(2025, 1, 1)
+            time_index = build_time_index_cet_fixed(start, len(load_kw), int(dt_hours * 60))
+
+        from capacity_fee_pl.models import CapacityFeeConfig
+        cap_config = CapacityFeeConfig(
+            som_pln_per_kwh=getattr(request.prices, 'capacity_fee_som_pln_kwh', 0.2194) if request.prices else 0.2194,
         )
-    elif mode == DispatchMode.PEAK_SHAVING:
-        result = dispatch_peak_shaving(
-            pv_kw, load_kw, battery, dt_hours,
-            request.peak_limit_kw, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
-        )
-    elif mode == DispatchMode.STACKED:
-        # Pass arbitrage parameters to dispatch_stacked
-        result = dispatch_stacked(
-            pv_kw, load_kw, battery, dt_hours,
-            request.stacked_params, request.prices, return_hourly=True,
-            import_prices=import_prices if arb_enabled else None,
-            arb_config=request.arbitrage_config if arb_enabled else None,
-            include_energy_flows_timeseries=include_timeseries,
-        )
-    elif mode == DispatchMode.LOAD_ONLY:
-        # LOAD_ONLY mode: peak shaving without PV
-        peak_limit = request.peak_limit_kw or (np.max(load_kw) * 0.7)
-        result = dispatch_load_only(
-            load_kw, battery, dt_hours, peak_limit, request.prices, return_hourly=True,
-            include_energy_flows_timeseries=include_timeseries,
+
+        # Use fewer premiums for sizing (performance)
+        sizing_premiums = [0.0, cap_config.som_pln_per_kwh * 0.5, cap_config.som_pln_per_kwh * 1.0]
+
+        result, _ = dispatch_lp_with_capacity_optimization(
+            pv_kw=pv_kw, load_kw=load_kw, battery=battery,
+            dt_hours=dt_hours, prices=request.prices, mode=mode,
+            peak_limit_kw=lp_peak_limit, lp_config=lp_params,
+            return_hourly=True,
+            buy_price_override=buy_arr, sell_price_override=sell_arr,
+            time_index=time_index, capacity_fee_config=cap_config,
+            premium_levels=sizing_premiums,
+            grid_connection_kw=request.grid_connection_kw,
+            allow_grid_charging=sr_allow_grid_charging,
+            marginal_cycle_cost_per_kwh=sr_marginal_cycle_cost,
         )
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
+        _sr_max_efc = (
+            request.degradation_budget.max_efc_per_year
+            if request.degradation_budget and request.degradation_budget.max_efc_per_year
+            else None
+        )
+        result = dispatch_lp(
+            pv_kw=pv_kw,
+            load_kw=load_kw,
+            battery=battery,
+            dt_hours=dt_hours,
+            prices=request.prices,
+            mode=mode,
+            peak_limit_kw=lp_peak_limit,
+            lp_config=lp_params,
+            return_hourly=True,
+            buy_price_override=buy_arr,
+            sell_price_override=sell_arr,
+            grid_connection_kw=request.grid_connection_kw,
+            allow_grid_charging=sr_allow_grid_charging,
+            marginal_cycle_cost_per_kwh=sr_marginal_cycle_cost,
+            max_efc_per_year=_sr_max_efc,
+        )
 
     # Check degradation budget
     if request.degradation_budget:
@@ -1196,207 +2063,25 @@ def run_sizing_for_variant(
         record_debug_events(result.debug_events)
 
     # ==========================================================================
-    # Calculate Savings Breakdown (transparent NPV components)
+    # Calculate Savings Breakdown (delegated to build_savings_breakdown)
     # ==========================================================================
-
-    savings_breakdown = SavingsBreakdown()
-
-    # Baseline grid import/export (no BESS)
-    # For modes with PV: net_load = load - pv, clipped to >= 0
-    # For LOAD_ONLY: net_load = load, no export
-    if mode == DispatchMode.LOAD_ONLY:
-        baseline_grid_import_kw = load_kw.copy()
-        baseline_grid_export_kw = np.zeros_like(load_kw)
-    else:
-        baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
-        baseline_grid_export_kw = np.maximum(pv_kw - load_kw, 0)  # PV surplus
-
-    # Get actual grid import from dispatch result
-    if result.hourly_grid_import_kw is not None:
-        actual_grid_import_kw = np.array(result.hourly_grid_import_kw)
-    else:
-        # Fallback: estimate from totals (less accurate)
-        actual_grid_import_kw = np.full(n_timesteps, result.total_grid_import_kwh / (n_timesteps * dt_hours))
-
-    # =========================================================================
-    # NEW: Use economics_helper for ToU pricing (Opcja B)
-    # =========================================================================
-    if request.prices.is_tou_enabled:
-        # Convert PriceConfig -> PricingConfig for economics_helper
-        pricing_config = PricingConfig(
-            tariff_id=request.prices.tariff_id,
-            flat_import_pln_mwh=request.prices.import_price_pln_mwh,
-            flat_export_pln_mwh=request.prices.export_price_pln_mwh,
-            other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
-            capacity_fee_method=request.prices.capacity_fee_method,
-            capacity_fee_som_pln_kwh=request.prices.capacity_fee_som_pln_kwh,
-            capacity_fee_fixed_pln_mwh=request.prices.capacity_fee_fixed_pln_mwh,
-            analysis_year=request.prices.analysis_year,
-            export_policy="zero_export",  # Same policy for baseline and project
-        )
-
-        # Calculate full cost breakdown for baseline and project
-        interval_minutes = int(dt_hours * 60)
-        savings_result = calculate_savings(
-            baseline_grid_import_kw,
-            actual_grid_import_kw,
-            pricing_config,
-            interval_minutes,
-            analytical_period=request.analytical_period,  # Use period from request
-        )
-
-        # Extract savings breakdown
-        savings_breakdown.energy_savings_pln = (
-            savings_result['savings']['tou_savings_pln'] +
-            savings_result['savings']['other_savings_pln']
-        )
-        savings_breakdown.capacity_fee_savings_pln = savings_result['savings']['capacity_fee_savings_pln']
-
-        # Store detailed cost breakdown in result for UI
-        result.prices_summary = {
-            'baseline': savings_result['baseline'],
-            'project': savings_result['project'],
-            'savings': savings_result['savings'],
-            'config': savings_result['config'],
-        }
-
-        logger.info(
-            f"ToU pricing: baseline={savings_result['baseline']['total_cost_pln']:.0f} PLN, "
-            f"project={savings_result['project']['total_cost_pln']:.0f} PLN, "
-            f"savings={savings_result['savings']['total_savings_pln']:.0f} PLN"
-        )
-
-    # =========================================================================
-    # Legacy path: Flat pricing or arbitrage-specific calculations
-    # =========================================================================
-    elif arb_enabled and import_prices is not None:
-        # Calculate total ToU savings (price-weighted)
-        tou_total_savings = calculate_arbitrage_energy_savings(
-            baseline_grid_import_kw,
-            actual_grid_import_kw,
-            import_prices,
-            dt_hours
-        )
-
-        # Calculate flat-price savings (volume-based, no ToU benefit)
-        flat_price = request.prices.import_price_pln_mwh / 1000.0  # PLN/kWh
-        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
-        flat_savings = import_reduction_kwh * flat_price
-
-        # Split into components to avoid double counting in calculate_net():
-        # - energy_savings_pln: base savings at flat price (from reduced consumption)
-        # - arbitrage_savings_pln: ADDITIONAL savings from ToU price spread
-        # Total = energy_savings + arbitrage_savings = tou_total_savings
-        savings_breakdown.energy_savings_pln = flat_savings
-        savings_breakdown.arbitrage_savings_pln = max(0.0, tou_total_savings - flat_savings)
-
-        # Capacity fee savings for arbitrage mode
-        savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
-            baseline_grid_import_kw,
-            actual_grid_import_kw,
-            dt_hours,
-            start_date=request.start_date,
-            analytical_period=request.analytical_period,  # Use period from request
-        )
-    else:
-        # Flat pricing - simple calculation
-        flat_price = request.prices.import_price_pln_mwh / 1000.0  # PLN/kWh
-        import_reduction_kwh = (np.sum(baseline_grid_import_kw) - np.sum(actual_grid_import_kw)) * dt_hours
-        savings_breakdown.energy_savings_pln = import_reduction_kwh * flat_price
-
-        # Capacity fee savings for non-arbitrage modes with peak shaving
-        if mode in [DispatchMode.STACKED, DispatchMode.PEAK_SHAVING, DispatchMode.LOAD_ONLY]:
-            savings_breakdown.capacity_fee_savings_pln = calculate_capacity_fee_savings(
-                baseline_grid_import_kw,
-                actual_grid_import_kw,
-                dt_hours,
-                start_date=request.start_date,
-                analytical_period=request.analytical_period,  # Use period from request
-            )
-
-    # 3. Demand charge savings (from peak reduction) - applies to all modes
-    if result.peak_reduction_kw > 0 and request.prices.annual_demand_charge_pln_kw > 0:
-        savings_breakdown.demand_charge_savings_pln = (
-            result.peak_reduction_kw * request.prices.annual_demand_charge_pln_kw
-        )
-
-    # 4. Export revenue breakdown (baseline vs project)
-    # Baseline: PV surplus without battery (all excess goes to grid)
-    # Project: With battery (some PV is stored, so less export)
-    export_price_pln_kwh = request.prices.export_price_pln_mwh / 1000.0 if request.prices.export_price_pln_mwh > 0 else 0.0
-
-    # Calculate baseline export (no battery) - in kWh
-    baseline_export_kwh = np.sum(baseline_grid_export_kw) * dt_hours
-    savings_breakdown.baseline_export_revenue_pln = baseline_export_kwh * export_price_pln_kwh
-
-    # Calculate project export (with battery) - in kWh
-    project_export_kwh = result.total_grid_export_kwh
-    savings_breakdown.project_export_revenue_pln = project_export_kwh * export_price_pln_kwh
-
-    # Export revenue change = project - baseline (typically NEGATIVE because battery uses PV)
-    savings_breakdown.export_revenue_savings_pln = (
-        savings_breakdown.project_export_revenue_pln - savings_breakdown.baseline_export_revenue_pln
+    savings_breakdown = build_savings_breakdown(
+        result=result,
+        request=request,
+        mode=mode,
+        load_kw=load_kw,
+        pv_kw=pv_kw,
+        n_timesteps=n_timesteps,
+        dt_hours=dt_hours,
+        arb_enabled=arb_enabled,
+        import_prices=import_prices,
+        export_prices=export_prices,
+        power_kw=power_kw,
+        energy_kwh=energy_kwh,
     )
 
-    # Legacy field for backward compatibility
-    savings_breakdown.export_revenue_pln = savings_breakdown.project_export_revenue_pln
-
-    # 5. Battery throughput and degradation cost
-    # Always set battery_throughput_mwh (SSoT for throughput)
-    throughput_mwh = result.degradation.throughput_total_mwh if result.degradation else 0.0
-    savings_breakdown.battery_throughput_mwh = throughput_mwh
-
-    # Calculate degradation cost using general degradation_cost_pln_mwh parameter
-    # (applies to all modes, not just arbitrage)
-    if throughput_mwh > 0 and request.degradation_cost_pln_mwh > 0:
-        savings_breakdown.degradation_cost_pln = throughput_mwh * request.degradation_cost_pln_mwh
-    # Legacy: also check arbitrage config for backward compatibility
-    elif arb_enabled and request.arbitrage_config.degradation_cost_pln_kwh > 0:
-        total_throughput_kwh = throughput_mwh * 1000
-        savings_breakdown.degradation_cost_pln = (
-            total_throughput_kwh * request.arbitrage_config.degradation_cost_pln_kwh
-        )
-
-    # 6. Unserved load penalty (v0.7.0 PR4)
-    # If import cap caused unserved load and penalty rate is set, calculate cost
-    if result.constraint_summary is not None:
-        unserved_kwh = result.constraint_summary.unserved_load_kwh
-        if unserved_kwh > 0 and request.grid_constraints is not None:
-            penalty_rate = request.grid_constraints.unserved_load_penalty_pln_kwh
-            if penalty_rate > 0:
-                savings_breakdown.unserved_load_penalty_pln = unserved_kwh * penalty_rate
-
-    # 7. Record grid constraint metrics (v0.7.0 PR6)
-    if request.grid_constraints is not None:
-        mode_str = mode.value if hasattr(mode, "value") else str(mode)
-        record_grid_constraint_request(mode=mode_str)
-
-        cs = result.constraint_summary
-        if cs is not None:
-            # Export cap metrics
-            record_export_cap_metrics(
-                mode=mode_str,
-                hit_steps=cs.export_cap_hit_steps,
-                curtailed_kwh=cs.export_cap_curtailed_kwh,
-            )
-            # Import cap and unserved load metrics
-            penalty_pln = savings_breakdown.unserved_load_penalty_pln
-            record_import_cap_metrics(
-                mode=mode_str,
-                hit_steps=cs.import_cap_hit_steps,
-                unserved_kwh=cs.unserved_load_kwh,
-                penalty_pln=penalty_pln,
-            )
-
-    # Calculate net savings
-    savings_breakdown.net_savings_pln = savings_breakdown.calculate_net()
-
-    # Always attach savings_breakdown to result for transparency
+    # Attach to result
     result.savings_breakdown = savings_breakdown
-
-    # SSoT: annual_savings_pln ALWAYS equals savings_breakdown.net_savings_pln
-    # This ensures consistency between frontend display (uses annual_savings_pln)
-    # and economics calculations (uses savings_breakdown components)
     result.annual_savings_pln = savings_breakdown.net_savings_pln
 
     # ==========================================================================
@@ -1404,13 +2089,67 @@ def run_sizing_for_variant(
     # ==========================================================================
 
     capex = energy_kwh * request.capex_per_kwh + power_kw * request.capex_per_kw
-    npv = calculate_npv(
-        result.annual_savings_pln,
-        capex,
-        request.opex_pct_per_year,
-        request.discount_rate,
-        request.analysis_years,
+
+    # ==========================================================================
+    # Calculate auxiliary (house load) annual cost with PV offset
+    # ==========================================================================
+    house_load_kw = request.house_load_kw_per_mwh * (energy_kwh / 1000.0)
+    n_timesteps = len(load_kw)
+
+    if house_load_kw > 0 and n_timesteps > 0:
+        # Pre-processing: check each hour if PV covers house load
+        pv_surplus_for_aux = np.maximum(pv_kw - load_kw, 0.0)  # PV surplus after load
+        aux_from_pv_kw = np.minimum(house_load_kw, pv_surplus_for_aux)
+        aux_from_grid_kw = house_load_kw - aux_from_pv_kw  # must buy from grid
+
+        # Cost: grid portion × price per hour
+        if import_prices is not None and len(import_prices) == n_timesteps:
+            aux_prices = import_prices  # PLN/kWh hourly RDN prices
+        else:
+            aux_prices = np.full(n_timesteps, request.prices.import_price_pln_mwh / 1000.0)
+
+        annual_auxiliary_cost_pln = float(np.sum(aux_from_grid_kw * dt_hours * aux_prices))
+
+        # Track for savings breakdown
+        aux_pv_coverage_pct = float(np.sum(aux_from_pv_kw)) / (house_load_kw * n_timesteps) * 100 if house_load_kw > 0 else 0
+        logger.info(
+            f"Auxiliary: house_load={house_load_kw:.1f}kW, "
+            f"annual_cost={annual_auxiliary_cost_pln:.0f} PLN, "
+            f"PV_covers={aux_pv_coverage_pct:.0f}%"
+        )
+    else:
+        annual_auxiliary_cost_pln = 0.0
+
+    # Calculate NPV using unified economics engine
+    # Single NpvConfig drives both lifecycle analysis and ranking
+    fc = request.finance_config
+    _lifecycle_config = _NpvConfig(
+        discount_rate=fc.discount_rate if fc else request.discount_rate,
+        analysis_years=fc.horizon_years if fc else request.analysis_years,
+        opex_pct=request.opex_pct_per_year,
+        include_degradation=True,
+        efc_per_year=result.degradation.efc_total if result.degradation else 0.0,
+        energy_kwh=energy_kwh,
+        cycles_to_eol=fc.cycles_to_eol if fc else 6000.0,
+        eol_soh_pct=fc.eol_soh_pct if fc else 70.0,
+        savings_escalation_rate=fc.savings_escalation_rate if fc else 0.0,
+        opex_escalation_rate=fc.opex_escalation_rate if fc else 0.0,
+        degradation_curve=getattr(fc, 'degradation_curve', 'linear') if fc else 'linear',
+        calendar_deg_year1_pct=getattr(fc, 'bess_degradation_year1_pct', 5.0) if fc else 5.0,
+        calendar_deg_annual_pct=fc.bess_degradation_pct_per_year if fc else 2.0,
+        annual_auxiliary_cost_pln=annual_auxiliary_cost_pln,
     )
+    _lifecycle_result = _unified_calculate_npv(result.annual_savings_pln, capex, _lifecycle_config)
+    _lifecycle_npv = _lifecycle_result.npv_pln
+    effective_years = _lifecycle_result.effective_years
+
+    # Simple NPV for ranking/scoring (no degradation truncation)
+    _ranking_config = _NpvConfig(
+        discount_rate=request.discount_rate,
+        analysis_years=request.analysis_years,
+        opex_pct=request.opex_pct_per_year,
+    )
+    npv = _unified_calculate_npv(result.annual_savings_pln, capex, _ranking_config).npv_pln
 
     # ==========================================================================
     # Economics Breakdown SSoT (v1.5.0)
@@ -1426,6 +2165,18 @@ def run_sizing_for_variant(
         other_fees_pln_mwh=request.prices.other_fees_pln_mwh,
         analysis_year=request.prices.analysis_year,
     )
+
+    # Baseline grid import/export for economics breakdown (mirrors build_savings_breakdown logic)
+    if mode == DispatchMode.LOAD_ONLY:
+        baseline_grid_import_kw = load_kw.copy()
+    else:
+        baseline_grid_import_kw = np.maximum(load_kw - pv_kw, 0)
+
+    # Actual grid import from dispatch result
+    if result.hourly_grid_import_kw is not None:
+        actual_grid_import_kw = np.array(result.hourly_grid_import_kw)
+    else:
+        actual_grid_import_kw = np.full(n_timesteps, result.total_grid_import_kwh / (n_timesteps * dt_hours))
 
     # Get actual grid export from result
     if result.hourly_grid_export_kw is not None:
@@ -1455,7 +2206,296 @@ def run_sizing_for_variant(
     result.hourly_grid_import_kw = None
     result.hourly_grid_export_kw = None
 
-    return result, capex, npv, savings_breakdown
+    # Store auxiliary cost in result for grid_points transparency
+    result.info['annual_auxiliary_cost_pln'] = round(annual_auxiliary_cost_pln, 0)
+    result.info['house_load_kw'] = round(house_load_kw, 2)
+
+    return result, capex, npv, savings_breakdown, effective_years
+
+
+# =============================================================================
+# STACKED MODE DECOMPOSITION - Separate Peak Shaving & Arbitrage Sizing
+# =============================================================================
+
+@dataclass
+class StackedComponent:
+    """Single component of Stacked BESS sizing."""
+    name: str  # "peak_shaving" or "arbitrage"
+    power_kw: float
+    energy_kwh: float
+    duration_h: float
+    capex_pln: float
+    annual_savings_pln: float
+    npv_pln: float
+    description: str
+
+
+@dataclass
+class StackedDecomposition:
+    """
+    Full decomposition of Stacked BESS into Peak Shaving and Arbitrage components.
+
+    Total BESS = Peak Shaving component + Arbitrage component
+    """
+    peak_shaving: StackedComponent
+    arbitrage: StackedComponent
+
+    # Combined totals
+    total_power_kw: float
+    total_energy_kwh: float
+    total_capex_pln: float
+    total_annual_savings_pln: float
+    total_npv_pln: float
+
+    # Sizing rationale
+    sizing_rationale: str
+
+
+def calculate_stacked_decomposition(
+    pv_kw: np.ndarray,
+    load_kw: np.ndarray,
+    dt_hours: float,
+    request: SizingRequest,
+    duration_h: float = 4.0,
+    import_prices: Optional[np.ndarray] = None,
+) -> StackedDecomposition:
+    """
+    Calculate separate Peak Shaving and Arbitrage BESS components for Stacked mode.
+
+    The key insight is that Stacked mode should size BESS as SUM of:
+    1. Peak Shaving component - sized to shave peaks above threshold
+    2. Arbitrage component - sized to exploit ToU spread with PV surplus
+
+    NOT as MAX (which loses potential savings from one of the services).
+
+    Returns:
+    --------
+    StackedDecomposition with separate components and combined totals.
+    """
+    logger.info("=" * 60)
+    logger.info("🔋 STACKED DECOMPOSITION: Calculating separate components")
+    logger.info("=" * 60)
+
+    n_timesteps = len(pv_kw)
+    timesteps_per_day = int(24 * 60 / request.interval_minutes)
+    period_days = int(np.ceil(n_timesteps / timesteps_per_day))
+
+    # Get pricing parameters
+    capex_per_kwh = request.capex_per_kwh or 1500
+    capex_per_kw = request.capex_per_kw or 300
+
+    # =========================================================================
+    # COMPONENT 1: PEAK SHAVING
+    # =========================================================================
+    # Size based on excess over peak_limit_kw
+
+    peak_limit_kw = (
+        request.stacked_params.peak_limit_kw if request.stacked_params
+        else request.peak_limit_kw or np.percentile(load_kw, 90)
+    )
+
+    net_load = load_kw - pv_kw
+    peak_excess = np.maximum(net_load - peak_limit_kw, 0)
+
+    if np.any(peak_excess > 0):
+        # Power: P95 of excess determines discharge power needed
+        peak_power_kw = np.percentile(peak_excess[peak_excess > 0], 95)
+
+        # Energy: Analyze peak events to determine required capacity
+        max_peak_event_energy = 0.0
+        current_event_energy = 0.0
+        for i in range(len(peak_excess)):
+            if peak_excess[i] > 0:
+                current_event_energy += peak_excess[i] * dt_hours
+            else:
+                if current_event_energy > max_peak_event_energy:
+                    max_peak_event_energy = current_event_energy
+                current_event_energy = 0
+        if current_event_energy > max_peak_event_energy:
+            max_peak_event_energy = current_event_energy
+
+        # Energy should cover the largest peak event
+        peak_energy_kwh = max(max_peak_event_energy * 1.2, peak_power_kw * 1.0)  # At least 1h duration
+
+        # Calculate savings from demand charge reduction
+        demand_charge_rate = request.prices.annual_demand_charge_pln_kw if request.prices else 600
+        peak_reduction_kw = min(peak_power_kw, np.max(peak_excess))
+        peak_annual_savings = peak_reduction_kw * demand_charge_rate
+
+    else:
+        # No peak shaving needed
+        peak_power_kw = 0
+        peak_energy_kwh = 0
+        peak_annual_savings = 0
+        peak_reduction_kw = 0
+
+    peak_capex = peak_energy_kwh * capex_per_kwh + peak_power_kw * capex_per_kw
+    _peak_cfg = _NpvConfig(
+        discount_rate=request.discount_rate or 0.10,
+        analysis_years=request.analysis_years or 15,
+        opex_pct=request.opex_pct_per_year or 0.015,
+    )
+    peak_npv = _unified_calculate_npv(peak_annual_savings, peak_capex, _peak_cfg).npv_pln
+
+    logger.info(f"📊 PEAK SHAVING component:")
+    logger.info(f"   Peak limit: {peak_limit_kw:.0f} kW")
+    logger.info(f"   Peak reduction needed: {peak_reduction_kw:.0f} kW")
+    logger.info(f"   → Power: {peak_power_kw:.0f} kW")
+    logger.info(f"   → Energy: {peak_energy_kwh:.0f} kWh")
+    logger.info(f"   → CAPEX: {peak_capex:,.0f} PLN")
+    logger.info(f"   → Annual savings: {peak_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → NPV: {peak_npv:,.0f} PLN")
+
+    peak_component = StackedComponent(
+        name="peak_shaving",
+        power_kw=peak_power_kw,
+        energy_kwh=peak_energy_kwh,
+        duration_h=peak_energy_kwh / peak_power_kw if peak_power_kw > 0 else 0,
+        capex_pln=peak_capex,
+        annual_savings_pln=peak_annual_savings,
+        npv_pln=peak_npv,
+        description=f"Redukcja szczytów ponad {peak_limit_kw:.0f} kW"
+    )
+
+    # =========================================================================
+    # COMPONENT 2: ARBITRAGE (ToU spread + PV surplus)
+    # =========================================================================
+    # Size based on:
+    # - Daily PV surplus that can be stored and shifted
+    # - ToU price spread for grid charging arbitrage
+
+    pv_surplus = np.maximum(pv_kw - load_kw, 0)
+
+    # Calculate daily PV surplus
+    daily_surplus_kwh = np.zeros(period_days)
+    for day in range(period_days):
+        start_idx = day * timesteps_per_day
+        end_idx = min(start_idx + timesteps_per_day, n_timesteps)
+        if start_idx < n_timesteps:
+            daily_surplus_kwh[day] = np.sum(pv_surplus[start_idx:end_idx]) * dt_hours
+
+    if np.any(daily_surplus_kwh > 0):
+        # P75 of daily surplus - don't oversize for occasional high days
+        p75_daily_surplus = np.percentile(daily_surplus_kwh[daily_surplus_kwh > 0], 75)
+
+        # Power based on peak surplus rate
+        arb_power_kw = np.percentile(pv_surplus[pv_surplus > 0], 90) if np.any(pv_surplus > 0) else 0
+
+        # Energy: sized for target duration (typically 4h for arbitrage)
+        arb_energy_kwh = arb_power_kw * duration_h
+
+        # Also consider: energy should be able to store daily surplus
+        arb_energy_kwh = max(arb_energy_kwh, p75_daily_surplus)
+
+        # Recalculate power if energy was increased
+        if arb_energy_kwh > arb_power_kw * duration_h:
+            arb_power_kw = arb_energy_kwh / duration_h
+
+        # Calculate arbitrage savings
+        # Estimate ToU spread savings
+        if import_prices is not None and len(import_prices) > 0:
+            price_spread = np.percentile(import_prices, 75) - np.percentile(import_prices, 25)
+        else:
+            # Default spread estimate for C12a tariff (~400 PLN/MWh)
+            price_spread = 400  # PLN/MWh
+
+        # Annual throughput estimate: ~300 cycles at 80% DoD
+        annual_cycles = 300
+        usable_capacity = arb_energy_kwh * 0.8  # 80% DoD
+        annual_throughput_mwh = (usable_capacity * annual_cycles) / 1000
+
+        # Arbitrage savings = throughput × spread × efficiency
+        efficiency = request.roundtrip_efficiency or 0.90
+        arb_annual_savings = annual_throughput_mwh * price_spread * efficiency * 1000 / 1000  # Back to PLN
+
+        # Also add PV surplus self-consumption value
+        # Avoided export = import price (assuming net metering disadvantage)
+        import_price = request.prices.import_price_pln_mwh if request.prices else 900
+        export_price = request.prices.export_price_pln_mwh if request.prices else 400
+        pv_surplus_value_per_kwh = (import_price - export_price) / 1000  # PLN/kWh
+
+        # Estimate how much surplus we can actually shift (limited by battery)
+        shiftable_surplus_kwh_day = min(p75_daily_surplus, arb_energy_kwh * 0.8)
+        annual_shifted_kwh = shiftable_surplus_kwh_day * 365 * 0.7  # 70% utilization
+        pv_shifting_savings = annual_shifted_kwh * pv_surplus_value_per_kwh
+
+        arb_annual_savings += pv_shifting_savings
+
+    else:
+        arb_power_kw = 0
+        arb_energy_kwh = 0
+        arb_annual_savings = 0
+        p75_daily_surplus = 0
+
+    arb_capex = arb_energy_kwh * capex_per_kwh + arb_power_kw * capex_per_kw
+    _arb_cfg = _NpvConfig(
+        discount_rate=request.discount_rate or 0.10,
+        analysis_years=request.analysis_years or 15,
+        opex_pct=request.opex_pct_per_year or 0.015,
+    )
+    arb_npv = _unified_calculate_npv(arb_annual_savings, arb_capex, _arb_cfg).npv_pln
+
+    logger.info(f"📊 ARBITRAGE component:")
+    logger.info(f"   P75 daily surplus: {p75_daily_surplus:.0f} kWh")
+    logger.info(f"   → Power: {arb_power_kw:.0f} kW")
+    logger.info(f"   → Energy: {arb_energy_kwh:.0f} kWh ({duration_h}h duration)")
+    logger.info(f"   → CAPEX: {arb_capex:,.0f} PLN")
+    logger.info(f"   → Annual savings: {arb_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → NPV: {arb_npv:,.0f} PLN")
+
+    arb_component = StackedComponent(
+        name="arbitrage",
+        power_kw=arb_power_kw,
+        energy_kwh=arb_energy_kwh,
+        duration_h=duration_h,
+        capex_pln=arb_capex,
+        annual_savings_pln=arb_annual_savings,
+        npv_pln=arb_npv,
+        description=f"Arbitraż ToU + PV surplus shifting"
+    )
+
+    # =========================================================================
+    # COMBINED TOTALS
+    # =========================================================================
+    total_power_kw = peak_power_kw + arb_power_kw
+    total_energy_kwh = peak_energy_kwh + arb_energy_kwh
+    total_capex = peak_capex + arb_capex
+    total_annual_savings = peak_annual_savings + arb_annual_savings
+
+    # Recalculate combined NPV (not just sum due to shared OPEX base)
+    _total_cfg = _NpvConfig(
+        discount_rate=request.discount_rate or 0.10,
+        analysis_years=request.analysis_years or 15,
+        opex_pct=request.opex_pct_per_year or 0.015,
+    )
+    total_npv = _unified_calculate_npv(total_annual_savings, total_capex, _total_cfg).npv_pln
+
+    logger.info("=" * 60)
+    logger.info(f"🔋 STACKED TOTAL (Peak + Arbitrage):")
+    logger.info(f"   → Total Power: {total_power_kw:.0f} kW = {peak_power_kw:.0f} + {arb_power_kw:.0f}")
+    logger.info(f"   → Total Energy: {total_energy_kwh:.0f} kWh = {peak_energy_kwh:.0f} + {arb_energy_kwh:.0f}")
+    logger.info(f"   → Total CAPEX: {total_capex:,.0f} PLN")
+    logger.info(f"   → Total Savings: {total_annual_savings:,.0f} PLN/rok")
+    logger.info(f"   → Total NPV: {total_npv:,.0f} PLN")
+    logger.info("=" * 60)
+
+    sizing_rationale = (
+        f"BESS Stacked = Peak Shaving ({peak_power_kw:.0f}kW/{peak_energy_kwh:.0f}kWh) "
+        f"+ Arbitrage ({arb_power_kw:.0f}kW/{arb_energy_kwh:.0f}kWh). "
+        f"Peak shaving redukuje szczyt o {peak_reduction_kw:.0f}kW (oszcz. {peak_annual_savings:,.0f} PLN/rok). "
+        f"Arbitrage wykorzystuje spread ToU + PV surplus (oszcz. {arb_annual_savings:,.0f} PLN/rok)."
+    )
+
+    return StackedDecomposition(
+        peak_shaving=peak_component,
+        arbitrage=arb_component,
+        total_power_kw=total_power_kw,
+        total_energy_kwh=total_energy_kwh,
+        total_capex_pln=total_capex,
+        total_annual_savings_pln=total_annual_savings,
+        total_npv_pln=total_npv,
+        sizing_rationale=sizing_rationale,
+    )
 
 
 def find_optimal_power_for_duration(
@@ -1466,6 +2506,7 @@ def find_optimal_power_for_duration(
     duration_h: float,
     request: SizingRequest,
     import_prices: Optional[np.ndarray] = None,
+    export_prices: Optional[np.ndarray] = None,
 ) -> Tuple[float, float, DispatchResult, float, List[str]]:
     """
     Find optimal power for a given duration using grid search.
@@ -1572,52 +2613,78 @@ def find_optimal_power_for_duration(
         logger.info(f"   FINAL p_max_candidate={p_max_candidate:.0f}kW for duration={duration_h}h -> energy={p_max_candidate*duration_h:.0f}kWh")
 
     elif mode == DispatchMode.LOAD_ONLY:
-        # LOAD_ONLY: peak shaving without PV - analyze actual load peaks
-        # Use peak_limit_kw if provided, otherwise calculate threshold from load
-        # NOTE: Must match the threshold used in run_sizing_for_variant() dispatch
-        if request.peak_limit_kw:
-            peak_threshold = request.peak_limit_kw
+        # LOAD_ONLY: Two distinct sizing strategies depending on use case
+        arb_enabled = (request.arbitrage_config and request.arbitrage_config.enabled)
+        load_peak = np.max(load_kw)
+
+        if arb_enabled:
+            # ============================================================
+            # ARBITRAGE sizing: scale with daily shiftable energy
+            #
+            # Key insight: arbitrage battery should be sized to shift
+            # a significant fraction of daily consumption between cheap
+            # and expensive hours. The constraint is energy (kWh),
+            # power follows from energy / duration.
+            #
+            # For a 14.7 GWh/year site (~40 MWh/day):
+            #   - 4h battery shifting 25% daily = 10 MWh → 2.5 MW
+            #   - 2h battery shifting 25% daily = 10 MWh → 5.0 MW
+            #   - 1h battery shifting 10% daily = 4 MWh  → 4.0 MW
+            #
+            # We search from 5% to 50% of avg daily load.
+            # ============================================================
+            n_days = max(1, len(load_kw) * dt_hours / 24)
+            total_load_kwh = np.sum(load_kw) * dt_hours
+            avg_daily_load_kwh = total_load_kwh / n_days
+
+            # Energy search range: 5% to 50% of daily load
+            min_energy_kwh = avg_daily_load_kwh * 0.05
+            max_energy_kwh = avg_daily_load_kwh * 0.50
+
+            # Convert to power via duration
+            p_min_arb = min_energy_kwh / duration_h
+            p_max_arb = max_energy_kwh / duration_h
+
+            # Clamp to physical limits
+            p_max_candidate = min(p_max_arb, load_peak)  # Can't be bigger than peak load
+            p_max_candidate = max(p_max_candidate, load_peak * 0.05)  # At least 5% of peak
+
+            print(f"🔋 LOAD_ONLY ARBITRAGE sizing: load_peak={load_peak:.0f}kW, "
+                  f"avg_daily={avg_daily_load_kwh:.0f}kWh, duration={duration_h}h, "
+                  f"energy_range=[{min_energy_kwh:.0f}-{max_energy_kwh:.0f}]kWh, "
+                  f"power_range=[{p_min_arb:.0f}-{p_max_arb:.0f}]kW, "
+                  f"p_max_candidate={p_max_candidate:.0f}kW", flush=True)
         else:
-            # Default: use 70% of max load (consistent with dispatch_load_only default)
-            peak_threshold = np.max(load_kw) * 0.7
+            # ============================================================
+            # PEAK SHAVING sizing: size to shave peaks above threshold
+            # ============================================================
+            if request.peak_limit_kw:
+                peak_threshold = request.peak_limit_kw
+            else:
+                peak_threshold = load_peak * 0.7
 
-        # Calculate excess over threshold (this is what BESS needs to shave)
-        excess = np.maximum(load_kw - peak_threshold, 0)
+            excess = np.maximum(load_kw - peak_threshold, 0)
 
-        if np.any(excess > 0):
-            # Power: P95 of excess determines required discharge power
-            p_max_candidate = np.percentile(excess[excess > 0], 95)
-
-            # Also analyze peak events for proper sizing:
-            # Find peak events (consecutive hours above threshold)
-            max_single_peak_power = np.max(excess)
-            max_peak_event_energy = 0.0
-            current_event_energy = 0.0
-
-            for i in range(len(excess)):
-                if excess[i] > 0:
-                    current_event_energy += excess[i] * dt_hours
-                else:
-                    if current_event_energy > max_peak_event_energy:
-                        max_peak_event_energy = current_event_energy
-                    current_event_energy = 0
-
-            # Don't forget last event if it ends at array end
-            if current_event_energy > max_peak_event_energy:
-                max_peak_event_energy = current_event_energy
-
-            # Ensure power is sufficient for the largest peak
-            p_max_candidate = max(p_max_candidate, max_single_peak_power * 0.9)
-
-            # Log for debugging
-            import logging
-            logging.info(f"LOAD_ONLY sizing: threshold={peak_threshold:.0f}kW, "
-                        f"max_excess={max_single_peak_power:.0f}kW, "
-                        f"max_event_energy={max_peak_event_energy:.1f}kWh, "
-                        f"p_max_candidate={p_max_candidate:.0f}kW")
-        else:
-            # No peaks above threshold - use a percentage of max load
-            p_max_candidate = np.max(load_kw) * 0.2
+            if np.any(excess > 0):
+                p_max_candidate = np.percentile(excess[excess > 0], 95)
+                max_single_peak_power = np.max(excess)
+                max_peak_event_energy = 0.0
+                current_event_energy = 0.0
+                for i in range(len(excess)):
+                    if excess[i] > 0:
+                        current_event_energy += excess[i] * dt_hours
+                    else:
+                        if current_event_energy > max_peak_event_energy:
+                            max_peak_event_energy = current_event_energy
+                        current_event_energy = 0
+                if current_event_energy > max_peak_event_energy:
+                    max_peak_event_energy = current_event_energy
+                p_max_candidate = max(p_max_candidate, max_single_peak_power * 0.9)
+                logger.info(f"LOAD_ONLY PEAK SHAVING sizing: threshold={peak_threshold:.0f}kW, "
+                           f"max_excess={max_single_peak_power:.0f}kW, "
+                           f"p_max_candidate={p_max_candidate:.0f}kW")
+            else:
+                p_max_candidate = load_peak * 0.2
 
         # Ensure minimum sensible power for LOAD_ONLY based on load profile
         load_peak = np.max(load_kw)
@@ -1639,9 +2706,25 @@ def find_optimal_power_for_duration(
         min_sensible_power = pv_peak * 0.05  # At least 5% of PV peak
     p_max_candidate = max(p_max_candidate, min_sensible_power)
 
-    # Clamp to request limits with wider search range
-    p_min = max(request.min_power_kw, p_max_candidate * 0.2)
-    p_max = min(request.max_power_kw, p_max_candidate * 2.0)
+    # Clamp to request limits
+    # For LOAD_ONLY arbitrage, use energy-derived range directly (not 0.2× / 2.0× heuristic)
+    arb_load_only = (mode == DispatchMode.LOAD_ONLY and
+                     request.arbitrage_config and request.arbitrage_config.enabled)
+    if arb_load_only:
+        # Search from p_min_arb (5% daily energy / duration_h) to 150% of p_max_candidate.
+        # Cap p_min at 20% of load_peak to prevent it from being too small (which would
+        # include tiny batteries unrepresentative of the customer's scale) or too large.
+        # p_min_arb already encodes the minimum sensible storage for this duration.
+        _p_min_energy = min(p_min_arb, load_peak_for_sizing * 0.20)
+        p_min = max(request.min_power_kw, _p_min_energy)
+        heuristic_max = p_max_candidate * 1.5
+        # For LOAD_ONLY, cap p_max at 1.5× load_peak to get fine grid resolution
+        # over the economically relevant range (avoid coarse 500 kW steps when
+        # request.max_power_kw=10000 kW but load_peak is only 2000 kW).
+        p_max = min(request.max_power_kw, heuristic_max)
+    else:
+        p_min = max(request.min_power_kw, p_max_candidate * 0.2)
+        p_max = min(request.max_power_kw, p_max_candidate * 2.0)
 
     # Ensure we have a valid range
     reference_peak = pv_peak if pv_peak > 0 else load_peak_for_sizing
@@ -1651,6 +2734,9 @@ def find_optimal_power_for_duration(
 
     # Generate power steps
     power_steps = np.linspace(p_min, p_max, request.power_steps)
+    print(f"🔍 POWER SEARCH: p_min={p_min:.0f}kW, p_max={p_max:.0f}kW, "
+          f"steps={request.power_steps}, arb_load_only={arb_load_only}, "
+          f"p_max_candidate={p_max_candidate:.0f}kW, mode={mode}", flush=True)
 
     # DEBUG: Log final search range
     logger.info(f"🔍 POWER SEARCH RANGE: p_min={p_min:.0f}kW, p_max={p_max:.0f}kW, steps={request.power_steps}")
@@ -1669,14 +2755,73 @@ def find_optimal_power_for_duration(
     best_power = power_steps[0]
     best_result = None
     best_violations = []
+    grid_points = []  # All evaluated (power, energy, result, score, capex, npv, payback)
 
-    for power in power_steps:
-        result, capex, npv, _ = run_sizing_for_variant(
+    # --- Parallel grid search over power steps ---
+    def _eval_power(power):
+        """Evaluate a single power level (thread-safe)."""
+        res, capex, npv, _, eff_years = run_sizing_for_variant(
             pv_kw, load_kw, dt_hours, mode, duration_h, power, request,
-            import_prices=import_prices
+            import_prices=import_prices, export_prices=export_prices
         )
+        return power, res, capex, npv, eff_years
 
-        payback = calculate_simple_payback(result.annual_savings_pln, capex)
+    from concurrent.futures import ThreadPoolExecutor
+    max_workers = min(len(power_steps), 16)  # Up to 16 parallel LP solves per duration
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = list(executor.map(_eval_power, power_steps))
+
+    for power, result, capex, npv, eff_years in futures:
+        energy = power * duration_h
+
+        # EFC constraint: shorten NPV horizon to min(analysis_years, battery_lifetime)
+        # This prevents inflated NPV for fast-cycling batteries that die before analysis horizon.
+        _fc_inner = request.finance_config
+        _efc_per_year = result.degradation.efc_total if result.degradation else 0.0
+        _cycles_eol_inner = (_fc_inner.cycles_to_eol if _fc_inner else 6000.0)
+        # When EFC budget is active (Option A+), use constrained EFC for horizon.
+        # The LP ran free (e.g. 517 EFC) but we limit savings to max_efc (300).
+        # Horizon must reflect the constrained rate: 3000 cycles / 300 EFC/yr = 10yr,
+        # not 3000/517=6yr which unfairly penalises the battery for exceeding budget.
+        _efc_for_horizon = (min(_efc_per_year, max_efc)
+                            if max_efc and max_efc > 0 and _efc_per_year > max_efc
+                            else _efc_per_year)
+        if _efc_for_horizon > 0 and _cycles_eol_inner > 0:
+            _efc_horizon = max(1, int(min(request.analysis_years, _cycles_eol_inner / _efc_for_horizon)))
+        else:
+            _efc_horizon = request.analysis_years
+
+        # Option A+ — EFC budget scaling (top-cycles correction):
+        # LP dispatches without EFC limit → actual cycles may exceed max_efc_per_year.
+        # Top-f cycle assumption: cycles ranked by spread; top-f fraction earns 1-(1-f)^2 of total.
+        # More accurate than linear (f) scaling — linear underestimates savings by ~30-40%.
+        # Derivation: uniform spread distribution, integral of top-f quantile = 1 - (1-f)^2.
+        _efc_scale = 1.0
+        if max_efc is not None and max_efc > 0 and _efc_per_year > max_efc:
+            f = max_efc / _efc_per_year
+            _efc_scale = 1.0 - (1.0 - f) ** 2  # ~79% savings at f=300/555, vs 54% linear
+        _effective_savings = result.annual_savings_pln * _efc_scale
+
+        _efc_cfg = _NpvConfig(
+            discount_rate=request.discount_rate,
+            analysis_years=_efc_horizon,
+            opex_pct=request.opex_pct_per_year,
+        )
+        _efc_result = _unified_calculate_npv(_effective_savings, capex, _efc_cfg)
+        # Override simple ranking NPV with EFC-constrained lifecycle NPV
+        npv = _efc_result.npv_pln
+        irr_pct = _efc_result.irr_pct
+        profitability_index = _efc_result.profitability_index
+
+        payback = _unified_simple_payback(_effective_savings, capex)
+        _thr = result.degradation.throughput_total_mwh if result.degradation else 0
+        _scale_info = f" [EFC scaled {_efc_scale:.2f}x]" if _efc_scale < 1.0 else ""
+        _irr_str = f"{irr_pct:.1f}" if irr_pct is not None else "N/A"
+        _pi_str = f"{profitability_index:.2f}" if profitability_index is not None else "N/A"
+        print(f"  📊 P={power:.0f}kW E={energy:.0f}kWh → savings={_effective_savings:.0f} PLN{_scale_info}, "
+              f"throughput={_thr:.0f} MWh, EFC={result.degradation.efc_total:.0f}, "
+              f"NPV={npv:.0f} (horizon={_efc_horizon}y), IRR={_irr_str}% PI={_pi_str}, "
+              f"payback={payback:.1f}", flush=True)
 
         # Check constraints
         passes_hard, penalty, violations = check_constraints(
@@ -1704,9 +2849,49 @@ def find_optimal_power_for_duration(
         if hard_constraint_penalty > 0:
             score -= abs(score) * hard_constraint_penalty
 
-        # Apply degradation penalty if budget exceeded (legacy behavior)
-        if result.degradation.budget_status == DegradationStatus.EXCEEDED:
-            score -= abs(score) * 0.3  # 30% penalty
+        # Legacy degradation penalties REMOVED (2026-03-17):
+        # - SoH curve in lifecycle handles degradation (calendar + cycle)
+        # - Marginal cycling cost in LP objective filters junk cycles
+        # - Post-hoc score penalties were double-counting and distorting NPV
+        efc_penalty_pln = 0.0
+
+        # Collect grid point for full transparency
+        npv_per_kwh = npv / energy if energy > 0 else 0
+        sb = result.savings_breakdown
+        ancillary_net = sb.ancillary_total_net_pln if sb else 0.0
+        btm_savings = result.annual_savings_pln - ancillary_net
+        grid_points.append({
+            "power_kw": round(power, 0),
+            "energy_kwh": round(energy, 0),
+            "duration_h": duration_h,
+            "capex_pln": round(capex, 0),
+            "annual_savings_pln": round(_effective_savings, 0),
+            "btm_savings_pln": round(btm_savings, 0),
+            "ancillary_revenue_pln": round(ancillary_net, 0),
+            # Per-source savings breakdown
+            "energy_savings_pln": round(sb.energy_savings_pln, 0) if sb else 0,
+            "arbitrage_savings_pln": round(sb.arbitrage_savings_pln, 0) if sb else 0,
+            "peak_shaving_savings_pln": round(sb.demand_charge_savings_pln, 0) if sb else 0,
+            "capacity_fee_savings_pln": round(sb.capacity_fee_savings_pln, 0) if sb else 0,
+            "export_delta_pln": round(sb.export_revenue_savings_pln, 0) if sb else 0,
+            "degradation_cost_pln": round(sb.degradation_cost_pln, 0) if sb else 0,
+            "npv_pln": round(npv, 0),
+            "npv_per_kwh": round(npv_per_kwh, 2),
+            "simple_payback_years": round(payback, 1),
+            "payback_years": round(payback, 1),  # alias for backward compat
+            "score": round(score, 2),
+            "efc_total": round(result.degradation.efc_total, 1),
+            "efc_limit": max_efc if max_efc is not None and max_efc > 0 else None,
+            "efc_penalty_pln": round(efc_penalty_pln, 0),
+            "lifetime_years": eff_years,
+            "efc_horizon_years": _efc_horizon,
+            "irr_pct": round(irr_pct, 1) if irr_pct is not None else None,
+            "profitability_index": round(profitability_index, 3),
+            "auxiliary_cost_pln": result.info.get('annual_auxiliary_cost_pln', 0),
+            "house_load_kw": result.info.get('house_load_kw', 0),
+            "self_consumption_pct": round(result.self_consumption_pct, 1),
+            "peak_reduction_pct": round(result.peak_reduction_pct, 1),
+        })
 
         if score > best_score:
             best_score = score
@@ -1717,15 +2902,34 @@ def find_optimal_power_for_duration(
     # If no valid configuration found, return first with constraint violations noted
     if best_result is None:
         power = power_steps[0]
-        result, capex, npv, _ = run_sizing_for_variant(
+        result, capex, npv, _, eff_years = run_sizing_for_variant(
             pv_kw, load_kw, dt_hours, mode, duration_h, power, request,
-            import_prices=import_prices
+            import_prices=import_prices, export_prices=export_prices
         )
-        payback = calculate_simple_payback(result.annual_savings_pln, capex)
+        payback = _unified_simple_payback(result.annual_savings_pln, capex)
         _, _, violations = check_constraints(opt_config, capex, npv, payback, result)
-        return power, power * duration_h, result, float('-inf'), violations
+        return power, power * duration_h, result, float('-inf'), violations, grid_points, False, None
 
-    return best_power, best_power * duration_h, best_result, best_score, best_violations
+    # Monotonicity detection: if best point is at upper boundary → search is incomplete
+    # (true optimum may be at a larger size — user should widen max_power_kw)
+    upper_bound = power_steps[-1]
+    grid_search_incomplete = bool(abs(best_power - upper_bound) < 1e-3)
+    grid_search_next_range_kw = None
+    if grid_search_incomplete:
+        next_min = upper_bound * 0.8   # slight overlap for continuity
+        next_max = upper_bound * 3.0
+        grid_search_next_range_kw = [round(next_min, 0), round(next_max, 0)]
+        print(f"  ⚠️  GRID SEARCH INCOMPLETE for {duration_h}h: best={best_power:.0f}kW = upper boundary. "
+              f"Suggest re-run with range [{next_min:.0f}, {next_max:.0f}] kW", flush=True)
+
+    # Lower-boundary detection: if best point is at lower boundary → NPV decreasing with size
+    # (CAPEX grows faster than savings for this duration — duration economically unfavorable)
+    lower_bound = power_steps[0]
+    if not grid_search_incomplete and abs(best_power - lower_bound) < 1e-3:
+        print(f"  ⚠️  GRID DEGENERATE for {duration_h}h: best={best_power:.0f}kW = lower boundary. "
+              f"NPV decreasing with battery size — this duration uneconomical at current CAPEX.", flush=True)
+
+    return best_power, best_power * duration_h, best_result, best_score, best_violations, grid_points, grid_search_incomplete, grid_search_next_range_kw
 
 
 def run_sizing(request: SizingRequest) -> SizingResult:
@@ -1750,6 +2954,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     # Use effective_pv_kw which returns zeros for LOAD_ONLY topology
     pv_kw = np.array(request.effective_pv_kw)
     load_kw = np.array(request.load_kw)
+
+    # Cable pooling: aggregate additional PV/load profiles
+    if getattr(request, 'cable_pooling_profiles', None):
+        for profile in request.cable_pooling_profiles:
+            sf = profile.scale_factor
+            if profile.pv_kw and len(profile.pv_kw) == len(pv_kw):
+                pv_kw = pv_kw + np.array(profile.pv_kw) * sf
+            if profile.load_kw and len(profile.load_kw) == len(load_kw):
+                load_kw = load_kw + np.array(profile.load_kw) * sf
+        logger.info(f"Cable pooling: aggregated {len(request.cable_pooling_profiles)} additional profiles")
+
     dt_hours = request.interval_minutes / 60.0
     n = len(load_kw)  # Use load length as reference (more reliable)
 
@@ -1774,16 +2989,32 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     )
 
     # =========================================================================
-    # Fetch price bundle if arbitrage enabled
+    # Unified price resolution via PriceResolver (Faza 2 SSoT)
     # =========================================================================
     import_prices = None
-    if request.arbitrage_config and request.arbitrage_config.enabled:
-        price_result = get_price_bundle_for_sizing(request, n)
-        if price_result is not None:
-            import_prices, _ = price_result
-            logger.info(f"Arbitrage sizing enabled with tariff: {request.arbitrage_config.tariff_id}")
-        else:
-            logger.warning("Failed to get price bundle, proceeding without arbitrage")
+    export_prices = None
+    _resolved_prices = _PriceResolver().resolve(
+        n_hours=n,
+        prices=request.prices,
+        arbitrage_config=request.arbitrage_config,
+        start_date=request.start_date,
+        interval_minutes=request.interval_minutes,
+    )
+    if _resolved_prices.path != "flat":
+        import_prices = _resolved_prices.import_kwh
+        export_prices = _resolved_prices.export_kwh
+        logger.warning(
+            f"PRICE_RESOLVE: sizing path={_resolved_prices.path}, "
+            f"avg_import={_resolved_prices.avg_import_mwh:.0f}, "
+            f"avg_export={_resolved_prices.avg_export_mwh:.0f}, "
+            f"spread={_resolved_prices.spread_mwh:.0f} PLN/MWh"
+        )
+    else:
+        logger.warning(
+            f"PRICE_RESOLVE: sizing path=flat, "
+            f"buy={_resolved_prices.avg_import_mwh:.0f}, "
+            f"sell={_resolved_prices.avg_export_mwh:.0f} PLN/MWh"
+        )
 
     # Annual totals
     total_pv_mwh = float(np.sum(pv_kw) * dt_hours / 1000)
@@ -1793,17 +3024,42 @@ def run_sizing(request: SizingRequest) -> SizingResult:
 
     variants = []
     variant_labels = {
-        1.0: (SizingVariant.SMALL, "Small (1h)"),
-        2.0: (SizingVariant.MEDIUM, "Medium (2h)"),
-        4.0: (SizingVariant.LARGE, "Large (4h)"),
+        1.0: (SizingVariant.SMALL, "Wariant 1h"),
+        2.0: (SizingVariant.MEDIUM, "Wariant 2h"),
+        4.0: (SizingVariant.LARGE, "Wariant 4h"),
     }
 
-    for duration_h in request.durations_h:
-        # Find optimal power for this duration
-        power_kw, energy_kwh, dispatch_result, score, constraint_violations = find_optimal_power_for_duration(
-            pv_kw, load_kw, dt_hours, request.mode, duration_h, request,
-            import_prices=import_prices
+    # =========================================================================
+    # Full Grid Search: power x duration
+    # =========================================================================
+    # For each duration, independently find optimal power.
+    # Also collect ALL evaluated grid points for transparency (top_variants_details).
+    all_grid_points = []  # Collect all power x duration combinations
+    duration_incomplete: dict = {}       # {dur_h: bool} — monotonicity flag per duration
+    duration_next_range: dict = {}       # {dur_h: [min_kw, max_kw]} when incomplete
+
+    # --- Parallel grid search across durations (1h, 2h, 4h) ---
+    from concurrent.futures import ThreadPoolExecutor as _DurTPE
+    duration_results = {}
+
+    def _run_duration(dur_h):
+        return dur_h, find_optimal_power_for_duration(
+            pv_kw, load_kw, dt_hours, request.mode, dur_h, request,
+            import_prices=import_prices, export_prices=export_prices
         )
+
+    with _DurTPE(max_workers=len(request.durations_h)) as dur_executor:
+        for dur_h, result_tuple in dur_executor.map(_run_duration, request.durations_h):
+            duration_results[dur_h] = result_tuple[:5]
+            if len(result_tuple) > 5:
+                all_grid_points.extend(result_tuple[5])
+            if len(result_tuple) > 6:
+                duration_incomplete[dur_h] = result_tuple[6]
+            if len(result_tuple) > 7:
+                duration_next_range[dur_h] = result_tuple[7]
+
+    for duration_h in request.durations_h:
+        power_kw, energy_kwh, dispatch_result, score, constraint_violations = duration_results[duration_h]
 
         # =========================================================================
         # EOL (End-of-Life) Degradation Adjustment
@@ -1850,15 +3106,28 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # Calculate economics (use EOL-adjusted values for CAPEX)
         capex = eol_adjusted_energy_kwh * request.capex_per_kwh + eol_adjusted_power_kw * request.capex_per_kw
         annual_opex = capex * request.opex_pct_per_year
-        payback = calculate_simple_payback(dispatch_result.annual_savings_pln, capex)
-        npv = calculate_npv(
-            dispatch_result.annual_savings_pln, capex,
-            request.opex_pct_per_year, request.discount_rate, request.analysis_years
+        payback = _unified_simple_payback(dispatch_result.annual_savings_pln, capex)
+        _variant_cfg = _NpvConfig(
+            discount_rate=request.discount_rate,
+            analysis_years=request.analysis_years,
+            opex_pct=request.opex_pct_per_year,
         )
-        irr = calculate_irr(
-            dispatch_result.annual_savings_pln, capex,
-            request.opex_pct_per_year, request.analysis_years
-        )
+        _variant_result = _unified_calculate_npv(dispatch_result.annual_savings_pln, capex, _variant_cfg)
+        npv = _variant_result.npv_pln
+        irr = _variant_result.irr_pct
+        variant_pi = _variant_result.profitability_index
+
+        # Scenario NPV: pessimistic (×0.65), base (×1.00), optimistic (×1.40) weighted average
+        _scen = _unified_calculate_scenario_npv(dispatch_result.annual_savings_pln, capex, _variant_cfg)
+        variant_scenario_npv = {
+            "weighted_npv": round(_scen.weighted_npv, 0),
+            "irr_base_pct": round(_scen.irr_base_pct, 1) if _scen.irr_base_pct is not None else None,
+            "probability_positive_npv": round(_scen.probability_positive_npv, 2),
+            "npv_p5": round(_scen.npv_p5, 0),
+            "npv_pessimistic": round(_scen.npv_pessimistic, 0),
+            "npv_base": round(_scen.npv_base, 0),
+            "npv_optimistic": round(_scen.npv_optimistic, 0),
+        }
 
         # Recalculate objective score using final NPV (after EOL adjustment)
         # This ensures score reflects the actual economics of the sized variant
@@ -1882,15 +3151,17 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         # Calculate finance_summary NPV using finance_config parameters
         # This ensures consistency with cashflow_timeseries (NPV = sum of discounted cashflows)
         fs_opex_pct = fs_opex / capex if capex > 0 else 0.0
-        fs_npv = calculate_npv(
-            dispatch_result.annual_savings_pln, capex,
-            fs_opex_pct, fs_discount_rate, fs_horizon
-        )
+        _fs_cfg = _NpvConfig(discount_rate=fs_discount_rate, analysis_years=fs_horizon, opex_pct=fs_opex_pct)
+        fs_npv = _unified_calculate_npv(dispatch_result.annual_savings_pln, capex, _fs_cfg).npv_pln
 
         # Build cashflow timeseries if requested (v0.5.0 PR2, v0.6.0: replacement + degradation)
         cashflow_ts = None
         fs_irr = irr  # Default to simple IRR calculation
         if fc and fc.include_cashflow_timeseries:
+            # Get throughput for throughput-based degradation model
+            _annual_throughput = dispatch_result.degradation.throughput_total_mwh if dispatch_result.degradation else 0.0
+            _energy_kwh = dispatch_result.battery_energy_kwh
+
             cashflow_ts = build_cashflow_timeseries(
                 capex=capex,
                 annual_savings=dispatch_result.annual_savings_pln,
@@ -1901,18 +3172,27 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 replacement_capex_pln=fc.replacement_capex_pln,
                 bess_degradation_pct_per_year=fc.bess_degradation_pct_per_year,
                 pv_degradation_pct_per_year=fc.pv_degradation_pct_per_year,
+                bess_degradation_model=getattr(fc, 'bess_degradation_model', 'linear'),
+                annual_throughput_mwh=_annual_throughput,
+                energy_kwh=_energy_kwh,
+                cycles_to_eol=getattr(fc, 'cycles_to_eol', 6000.0),
+                eol_soh_pct=getattr(fc, 'eol_soh_pct', 70.0),
+                degradation_curve=getattr(fc, 'degradation_curve', 'linear'),
+                seller_margin_pct=getattr(fc, 'seller_margin_pct', 0.0),
             )
             # When cashflow is available, calculate IRR from cashflow using bisection
             # This ensures consistency: irr_pct is the rate where NPV of cashflow = 0
             nominal_cfs = [cf.nominal_cashflow_pln for cf in cashflow_ts]
-            fs_irr = calculate_irr_from_cashflow(nominal_cfs)
+            fs_irr = _unified_irr_from_cashflows(nominal_cfs)
 
             # v0.6.0: Recalculate NPV from cashflow when replacement or degradation is present
             # This ensures NPV accounts for the replacement cost and degraded savings
             has_lifecycle_effects = (
                 fc.replacement_year is not None or
                 fc.bess_degradation_pct_per_year > 0 or
-                fc.pv_degradation_pct_per_year > 0
+                fc.pv_degradation_pct_per_year > 0 or
+                getattr(fc, 'bess_degradation_model', 'linear') == 'throughput' or
+                getattr(fc, 'seller_margin_pct', 0) > 0
             )
             if has_lifecycle_effects:
                 fs_npv = sum(cf.discounted_cashflow_pln for cf in cashflow_ts)
@@ -1952,18 +3232,50 @@ def run_sizing(request: SizingRequest) -> SizingResult:
                 multipliers=fc.capex_multiplier_sweep,
             )
 
+        # EFC optimization sweep (v1.6.0)
+        efc_sweep = None
+        pln_per_efc_val = None
+        optimal_efc_val = None
+        _efc_per_year = dispatch_result.degradation.efc_total if dispatch_result.degradation else 0.0
+        if _efc_per_year > 0 and energy_kwh > 0:
+            pln_per_efc_val = round(dispatch_result.annual_savings_pln / _efc_per_year, 2)
+            _cal_y1 = getattr(fc, 'calendar_deg_year1_pct', None) or (fc.bess_degradation_pct_per_year * 1.5 if fc and fc.bess_degradation_pct_per_year > 0 else 3.0)
+            _cal_ann = getattr(fc, 'calendar_deg_annual_pct', None) or (fc.bess_degradation_pct_per_year if fc and fc.bess_degradation_pct_per_year > 0 else 2.0)
+            efc_sweep = compute_efc_optimization_sweep(
+                base_annual_savings=dispatch_result.annual_savings_pln,
+                base_efc_per_year=_efc_per_year,
+                capex=capex,
+                annual_opex=fs_opex,
+                discount_rate=fs_discount_rate,
+                energy_kwh=energy_kwh,
+                cycles_to_eol=getattr(fc, 'cycles_to_eol', 6000.0) if fc else 6000.0,
+                eol_soh_pct=getattr(fc, 'eol_soh_pct', 70.0) if fc else 70.0,
+                calendar_deg_year1_pct=_cal_y1,
+                calendar_deg_annual_pct=_cal_ann,
+                degradation_curve=getattr(fc, 'degradation_curve', 'linear') if fc else 'linear',
+                max_horizon=fs_horizon,
+            )
+            # Find optimal
+            for pt in (efc_sweep or []):
+                if pt.get('is_optimal'):
+                    optimal_efc_val = pt['efc_limit']
+                    break
+
         finance_summary = FinanceSummary(
             capex_pln=capex,
             opex_pln_per_year=fs_opex,
             horizon_years=fs_horizon,
             discount_rate=fs_discount_rate,
-            npv_pln=fs_npv,  # Use finance_config-based NPV for consistency with cashflow
+            npv_pln=fs_npv,
             payback_years=payback,
-            irr_pct=fs_irr,  # Use cashflow-based IRR when available
+            irr_pct=fs_irr,
             cashflow_timeseries=cashflow_ts,
             discount_rate_sensitivity=dr_sensitivity,
-            energy_price_sensitivity=ep_sensitivity,  # v0.6.0 PR4
-            capex_sensitivity=capex_sens,  # v0.6.0 PR4
+            energy_price_sensitivity=ep_sensitivity,
+            capex_sensitivity=capex_sens,
+            efc_optimization_sweep=efc_sweep,
+            pln_per_efc=pln_per_efc_val,
+            optimal_efc_limit=optimal_efc_val,
         )
 
         # Record finance metrics (v0.5.0 PR6)
@@ -2017,6 +3329,24 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             is_recommended=False,
             finance_summary=finance_summary,  # v0.5.0
         )
+
+        # Copy battery_trace from dispatch_result to variant_result (for SOC histogram)
+        if dispatch_result.battery_trace is not None:
+            object.__setattr__(variant_result, 'battery_trace', dispatch_result.battery_trace)
+
+        # Copy hourly BESS profiles for K-class capacity fee calculation (v3.0)
+        if request.include_hourly_profiles:
+            if dispatch_result.hourly_charge_from_grid_kw is not None:
+                object.__setattr__(variant_result, 'hourly_charge_from_grid_kw', dispatch_result.hourly_charge_from_grid_kw)
+            if dispatch_result.hourly_discharge_kw is not None:
+                object.__setattr__(variant_result, 'hourly_discharge_kw', dispatch_result.hourly_discharge_kw)
+            elif dispatch_result.hourly_charge_kw is not None:
+                # Fallback: use total discharge from dispatch (always available from LP)
+                object.__setattr__(variant_result, 'hourly_discharge_kw', dispatch_result.hourly_discharge_kw)
+
+        # Profitability Index and Scenario NPV (v3.2.0)
+        object.__setattr__(variant_result, 'profitability_index', variant_pi)
+        object.__setattr__(variant_result, 'scenario_npv', variant_scenario_npv)
 
         # Evaluate feasibility against user constraints (v0.8.0)
         feasibility = evaluate_feasibility(variant_result, request.constraints_config)
@@ -2156,6 +3486,40 @@ def run_sizing(request: SizingRequest) -> SizingResult:
     # Build constraints_report (v0.8.0)
     constraints_report = build_constraints_report(variants, request.constraints_config)
     none_feasible = constraints_report.none_feasible
+
+    # PATH-aware scoring override (v3.2.0)
+    # Detect pricing path to choose appropriate selection criterion:
+    #   PATH 1 (hourly RDN prices): argmax(NPV) with IRR ≥ 15% hurdle
+    #   PATH 2 (ToU tariff, is_tou_enabled): argmax(PI) — better for CAPEX-efficiency comparison
+    #   PATH 0 (flat/hybrid): argmax(IRR) — maximize return on invested capital
+    _has_hourly_prices = import_prices is not None
+    _is_tou = bool(getattr(request.prices, 'is_tou_enabled', False))
+    _is_path1 = _has_hourly_prices and not _is_tou
+    _is_path2 = _is_tou
+    IRR_HURDLE_PCT = 15.0  # Polish industrial hurdle rate (INSTRUKCJA)
+
+    print(f"🔍 PATH DEBUG: has_hourly={_has_hourly_prices}, is_tou={_is_tou}, path1={_is_path1}, path2={_is_path2}, objective={objective}", flush=True)
+    for v in variants:
+        _v_irr = f"{v.irr_pct:.1f}" if v.irr_pct is not None else "N/A"
+        _v_pi = f"{v.profitability_index:.2f}" if v.profitability_index is not None else "N/A"
+        print(f"  📋 Variant {v.variant.value} dur={v.duration_h}h pwr={v.power_kw:.0f}kW: score={v.score:.0f}, npv={v.npv_pln:.0f}, irr={_v_irr}%, pi={_v_pi}", flush=True)
+
+    if variants and objective == OptimizationObjective.NPV:
+        if _has_hourly_prices:
+            # PATH 1 (hourly RDN prices present): NPV is the score — highest priority.
+            # Hourly prices dominate over ToU bands — use NPV regardless of is_tou flag.
+            # IRR hurdle removed: user explicitly selected NPV objective, trust the NPV.
+            pass  # scores already set to npv in calculate_objective_score()
+        elif _is_path2:
+            # PATH 2: ToU tariff only (no hourly prices) — score by Profitability Index
+            for v in variants:
+                pi = v.profitability_index if v.profitability_index is not None else 0.0
+                object.__setattr__(v, 'score', pi)
+        else:
+            # PATH 0: flat/hybrid — score by IRR
+            for v in variants:
+                irr_v = v.irr_pct if v.irr_pct is not None else -999.0
+                object.__setattr__(v, 'score', irr_v)
 
     # Find recommended variant (highest score, with deterministic tie-breaking)
     # v1.6.0: Use deterministic selection for reproducibility
@@ -2439,6 +3803,134 @@ def run_sizing(request: SizingRequest) -> SizingResult:
             dominated_count=dominated_count,
         )
 
+    # =========================================================================
+    # Generate BESS Advisor Response (v3.0.0)
+    # =========================================================================
+    # Build intermediate result dict for advisor (before SizingResult construction)
+    advisor_input = {
+        "variants": [
+            {
+                "variant": v.variant.value if v.variant else "unknown",
+                "variant_label": v.variant_label,
+                "duration_h": v.duration_h,
+                "power_kw": v.power_kw,
+                "energy_kwh": v.energy_kwh,
+                "c_rate": v.c_rate,
+                "capex_pln": v.capex_pln,
+                "annual_opex_pln": v.annual_opex_pln,
+                "annual_savings_pln": v.annual_savings_pln,
+                "npv_pln": v.npv_pln,
+                "simple_payback_years": v.simple_payback_years,
+                "irr_pct": v.irr_pct,
+                "is_recommended": v.is_recommended,
+                "savings_breakdown": {
+                    "energy_savings_pln": v.savings_breakdown.energy_savings_pln if v.savings_breakdown else 0,
+                    "arbitrage_savings_pln": v.savings_breakdown.arbitrage_savings_pln if v.savings_breakdown else 0,
+                    "capacity_fee_savings_pln": v.savings_breakdown.capacity_fee_savings_pln if v.savings_breakdown else 0,
+                    "demand_charge_savings_pln": v.savings_breakdown.demand_charge_savings_pln if v.savings_breakdown else 0,
+                    "degradation_cost_pln": v.savings_breakdown.degradation_cost_pln if v.savings_breakdown else 0,
+                    "net_savings_pln": v.savings_breakdown.net_savings_pln if v.savings_breakdown else 0,
+                } if v.savings_breakdown else {},
+            }
+            for v in variants
+        ],
+        "total_pv_mwh": total_pv_mwh,
+        "total_load_mwh": total_load_mwh,
+        "annual_surplus_mwh": annual_surplus_mwh,
+        "applied_parameters": {
+            "discount_rate": request.discount_rate,
+            "analysis_years": request.analysis_years,
+            "roundtrip_efficiency": request.roundtrip_efficiency,
+            "annual_degradation_pct": request.annual_degradation_pct,
+            "soc_min": request.soc_min,
+            "soc_max": request.soc_max,
+            "eol_capacity_factor": request.eol_capacity_factor,
+        },
+        "warnings": warnings,
+    }
+
+    try:
+        # Get prices from request.prices (PriceConfig)
+        import_price_kwh = 0.80  # default
+        export_price_kwh = 0.30  # default
+        if request.prices:
+            if request.prices.import_price_pln_mwh:
+                import_price_kwh = request.prices.import_price_pln_mwh / 1000
+            if request.prices.export_price_pln_mwh:
+                export_price_kwh = request.prices.export_price_pln_mwh / 1000
+
+        # Generate BESS Advisor response with all v2.0.0 features
+        # Detect if arbitrage is enabled from request
+        arbitrage_is_enabled = bool(
+            request.arbitrage_config and request.arbitrage_config.enabled
+        )
+
+        advisor_resp = generate_advisor_response(
+            sizing_result=advisor_input,
+            capex_per_kwh=request.capex_per_kwh,
+            capex_per_kw=request.capex_per_kw,
+            include_tariff_recommendation=False,  # OUTPUT CONTRACT: only when arbitrage/user asks
+            current_tariff='C11',  # Default tariff
+            include_savings_comparison=True,
+            include_re_evaluation=True,
+            energy_price_pln_kwh=import_price_kwh,
+            export_price_pln_kwh=export_price_kwh,
+            arbitrage_enabled=arbitrage_is_enabled,  # OUTPUT CONTRACT: triggers tariff recommendation
+        )
+        advisor_response_dict = advisor_response_to_dict(advisor_resp)
+        logger.info(f"✅ BESS Advisor v2.0.0 response generated successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to generate BESS Advisor response: {e}", exc_info=True)
+        advisor_response_dict = None
+
+    # =========================================================================
+    # Calculate Stacked Decomposition for STACKED mode (v3.1.0)
+    # =========================================================================
+    stacked_decomposition_model = None
+    if request.mode == DispatchMode.STACKED:
+        try:
+            decomposition = calculate_stacked_decomposition(
+                pv_kw=pv_kw,
+                load_kw=load_kw,
+                dt_hours=dt_hours,
+                request=request,
+                duration_h=4.0,  # Default to 4h for arbitrage component
+                import_prices=import_prices,
+            )
+            # Convert dataclass to Pydantic model
+            stacked_decomposition_model = StackedDecompositionModel(
+                peak_shaving=StackedComponentModel(
+                    name=decomposition.peak_shaving.name,
+                    power_kw=decomposition.peak_shaving.power_kw,
+                    energy_kwh=decomposition.peak_shaving.energy_kwh,
+                    duration_h=decomposition.peak_shaving.duration_h,
+                    capex_pln=decomposition.peak_shaving.capex_pln,
+                    annual_savings_pln=decomposition.peak_shaving.annual_savings_pln,
+                    npv_pln=decomposition.peak_shaving.npv_pln,
+                    description=decomposition.peak_shaving.description,
+                ),
+                arbitrage=StackedComponentModel(
+                    name=decomposition.arbitrage.name,
+                    power_kw=decomposition.arbitrage.power_kw,
+                    energy_kwh=decomposition.arbitrage.energy_kwh,
+                    duration_h=decomposition.arbitrage.duration_h,
+                    capex_pln=decomposition.arbitrage.capex_pln,
+                    annual_savings_pln=decomposition.arbitrage.annual_savings_pln,
+                    npv_pln=decomposition.arbitrage.npv_pln,
+                    description=decomposition.arbitrage.description,
+                ),
+                total_power_kw=decomposition.total_power_kw,
+                total_energy_kwh=decomposition.total_energy_kwh,
+                total_capex_pln=decomposition.total_capex_pln,
+                total_annual_savings_pln=decomposition.total_annual_savings_pln,
+                total_npv_pln=decomposition.total_npv_pln,
+                sizing_rationale=decomposition.sizing_rationale,
+            )
+            logger.info(f"✅ Stacked Decomposition calculated: Peak={decomposition.peak_shaving.power_kw:.0f}kW + Arb={decomposition.arbitrage.power_kw:.0f}kW = {decomposition.total_power_kw:.0f}kW")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to calculate Stacked Decomposition: {e}", exc_info=True)
+            stacked_decomposition_model = None
+
     return SizingResult(
         schema_version=version_info["schema_version"],
         assumptions_version=version_info["assumptions_version"],
@@ -2464,7 +3956,14 @@ def run_sizing(request: SizingRequest) -> SizingResult:
         grid_constraints_applied=grid_constraints_applied,  # v0.7.0
         constraints_report=constraints_report,  # v0.8.0
         pareto_frontier=pareto_frontier,  # v0.8.0
+        stacked_decomposition=stacked_decomposition_model,  # v3.1.0 Stacked decomposition
+        grid_search_results=sorted(all_grid_points, key=lambda x: x.get('npv_per_kwh', 0), reverse=True) if all_grid_points else None,
+        grid_search_incomplete=any(duration_incomplete.values()) if duration_incomplete else None,
+        grid_search_next_range_kw=next(
+            (v for v in duration_next_range.values() if v is not None), None
+        ) if duration_next_range else None,
         warnings=warnings,
+        advisor_response=advisor_response_dict,  # v3.0.0 BESS Advisor
     )
 
 

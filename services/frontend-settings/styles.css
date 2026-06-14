@@ -351,6 +351,10 @@ body::-webkit-scrollbar {
   background: linear-gradient(180deg, #66bb6a 0%, #2e7d32 100%);
 }
 
+.timeline-segment.zone-valley {
+  background: linear-gradient(180deg, #42a5f5 0%, #1565c0 100%);
+}
+
 .timeline-segment.zone-flat {
   background: linear-gradient(180deg, #78909c 0%, #455a64 100%);
 }

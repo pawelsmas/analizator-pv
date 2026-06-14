@@ -43,7 +43,7 @@ class EconomicParameters(BaseModel):
     feed_in_tariff: float = 0.0  # PLN/MWh
     investment_cost: float = 3500.0  # PLN/kWp
     export_mode: str = "zero"  # zero, limited, full
-    discount_rate: float = 0.07
+    discount_rate: float = 0.10
     degradation_rate: float = 0.005
     opex_per_kwp: float = 15.0  # PLN/kWp/year
     analysis_period: int = 25  # years
@@ -430,6 +430,43 @@ def solve_eaas_subscription(params: EaasParameters) -> EaasResult:
     Solve for monthly subscription that achieves target IRR using monthly cash flows.
     Uses bisection search to find subscription where NPV at target IRR is ~0.
     """
+    # Validate duration_years to prevent division by zero
+    if params.duration_years <= 0:
+        return EaasResult(
+            subscription_monthly=0.0,
+            subscription_annual_year1=0.0,
+            achieved_irr_annual=None,
+            irr_status="invalid_input",
+            message="Czas trwania umowy (duration_years) musi być większy od 0",
+            log=[],
+            log_csv=""
+        )
+
+    # Validate target_irr to prevent division by zero in discounting
+    # target_irr = -1 would make (1 + target_irr) = 0, causing 0^(1/12) issues
+    if params.target_irr <= -1:
+        return EaasResult(
+            subscription_monthly=0.0,
+            subscription_annual_year1=0.0,
+            achieved_irr_annual=None,
+            irr_status="invalid_input",
+            message="Target IRR musi być większe niż -100%",
+            log=[],
+            log_csv=""
+        )
+
+    # Validate capacity_kw - must be positive for meaningful calculation
+    if params.capacity_kw <= 0 or params.capex_per_kwp <= 0:
+        return EaasResult(
+            subscription_monthly=0.0,
+            subscription_annual_year1=0.0,
+            achieved_irr_annual=None,
+            irr_status="invalid_input",
+            message="Moc instalacji (capacity_kw) i CAPEX muszą być większe od 0",
+            log=[],
+            log_csv=""
+        )
+
     capex = params.capacity_kw * params.capex_per_kwp
     # Initial bounds
     low = 0.0
@@ -1196,7 +1233,7 @@ async def run_monte_carlo(request: MonteCarloRequest):
         ],
         "base_economics": {
             "variant": {"capacity": 100, "production": 100000, "self_consumed": 70000},
-            "parameters": {"energy_price": 450, "investment_cost": 3500, "discount_rate": 0.07}
+            "parameters": {"energy_price": 450, "investment_cost": 3500, "discount_rate": 0.10}
         }
     }
     ```

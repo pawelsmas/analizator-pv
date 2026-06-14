@@ -58,7 +58,7 @@ class BessOptimizationRequest(BaseModel):
     energy_price_plnmwh: float = Field(default=800, gt=0, description="Energy price [PLN/MWh]")
 
     # Financial parameters
-    discount_rate: float = Field(default=0.07, ge=0, le=0.3, description="Discount rate (e.g., 0.07 = 7%)")
+    discount_rate: float = Field(default=0.10, ge=0, le=0.3, description="Discount rate (e.g., 0.10 = 10%)")
     analysis_period_years: int = Field(default=25, ge=10, le=35, description="Analysis period [years]")
 
     # Optimization settings

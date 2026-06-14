@@ -16,16 +16,42 @@ const API_URLS = USE_PROXY ? {
 
 // Default configuration values
 const DEFAULT_CONFIG = {
+  // OSD Operator + Tariff Group ('' = manual mode)
+  osdOperator: '',
+  osdTariffGroup: '',
   // Fixed Charges (PLN/MWh) - WITHOUT active energy (defined in ToU section)
   // These charges are the same for all hours, except capacityFee (7-22 workdays only)
   energyActive: 0,  // DEPRECATED: Now defined per zone in ToU tariff section
-  distribution: 200,
-  qualityFee: 10,
-  ozeFee: 7,
-  cogenerationFee: 10,
-  capacityFee: 219,  // Auto-calculated from SOM rate × 1000 (only 7-22 Pn-Pt)
+  distribution: 200,        // weighted average (computed, readonly)
+  distributionPeak: 200,     // PLN/MWh - szczyt
+  distributionDay: 200,      // PLN/MWh - dzień/pośrednia
+  distributionNight: 200,    // PLN/MWh - noc/pozaszczyt
+  distributionValley: 13.50, // PLN/MWh - dolina obciążenia (głęboka noc + weekendy, only four_zone)
+
+  // Distribution Time Windows (separate from energy ToU — OSD tariff zones)
+  distributionConfig: {
+    type: 'three_zone',       // 'flat', 'two_zone', 'three_zone', 'four_zone'
+    twoZone: {
+      weekday: { start: 6, end: 22 },
+      weekend: { start: 6, end: 22 }
+    },
+    threeZone: {
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      weekendOffPeak: true       // weekends = off-peak (night rate)
+    },
+    fourZone: {
+      peak1: { start: 7, end: 13 },
+      peak2: { start: 16, end: 21 },
+      valley: { start: 1, end: 5 } // deep night only: 1:00-4:59 weekdays; weekends = full valley
+    }
+  },
+  qualityFee: 33.10,
+  ozeFee: 7.30,
+  cogenerationFee: 3,
+  capacityFee: 219.40,  // Auto-calculated from SOM rate × 1000 (only 7-22 Pn-Pt)
   exciseTax: 5,
-  totalFixedCharges: 451,  // Sum of fixed charges (200+10+7+10+219+5)
+  totalFixedCharges: 467.80,  // Sum of fixed charges (200+33.10+7.30+3+219.40+5)
 
   // Capacity Fee (Opłata Mocowa) - Polish Capacity Market
   capacityFeeConfig: {
@@ -41,11 +67,20 @@ const DEFAULT_CONFIG = {
     },
     // K-class coefficients (read-only, based on law)
     kCoefficients: {
-      K1: 0.17,  // Δs < 5%
-      K2: 0.50,  // Δs 5-10%
-      K3: 0.83,  // Δs 10-15%
-      K4: 1.00,  // Δs ≥ 15%
+      K1: 0.17,  // Δs < -10% (Dz.U. 2023 poz. 503)
+      K2: 0.50,  // -10% ≤ Δs < 10%
+      K3: 0.83,  // 10% ≤ Δs < 30%
+      K4: 1.00,  // Δs ≥ 30%
     }
+  },
+
+  // Fixed Monthly Fees (not dependent on energy volume)
+  fixedMonthlyFees: {
+    contractedPowerKw: 50,          // kW — contracted power from OSD agreement
+    distFixedRatePerKwMonth: 9.14,  // zł/kW/month — C11: 8.04, C12: 9.14, C21: 32.02
+    osdSubscriptionFeeMonth: 5.54,  // PLN/month — OSD subscription fee
+    transitionFeeMonth: 0,          // PLN/month — transition fee (0 in 2026)
+    supplierTradeFeeMonth: 0        // PLN/month — supplier trade fee (optional)
   },
 
   // Time-of-Use Tariffs Configuration
@@ -135,11 +170,16 @@ const DEFAULT_CONFIG = {
   landLeasePerKwp: 0,    // Land lease cost [PLN/kWp/year]
 
   // Financial Parameters
-  discountRate: 7,
-  pvDegradationYear1: 2.0,        // First year PV degradation [%] (higher due to initial settling)
+  discountRate: 10,
+  pvDegradationYear1: 1.0,        // First year PV degradation [%] - LID (TOPCon ~1%, PERC ~2%)
   degradationRate: 0.5,           // Annual PV degradation for years 2+ [%/year]
   analysisPeriod: 25,
   inflationRate: 2.5,
+
+  // Production scenario factors (P-values)
+  productionFactorP50: 1.00,    // P50 = baseline
+  productionFactorP75: 0.97,    // P75 = conservative
+  productionFactorP90: 0.94,    // P90 = very conservative
 
   // IRR Calculation Mode
   useInflation: false,   // false = real IRR (constant prices), true = nominal IRR (inflation-indexed)
@@ -313,20 +353,20 @@ const DEFAULT_CONFIG = {
                                        // 'auto' = system tests 1h/2h/4h and picks best NPV
 
   // BESS Technical Defaults (used by LIGHT and PRO modes)
-  bessRoundtripEfficiency: 0.90,       // Round-trip efficiency (88-92% typical for Li-ion)
+  bessRoundtripEfficiency: 0.85,       // Round-trip efficiency AC-DC-AC (cells + inverter + transformer)
   bessSocMin: 0.10,                    // Minimum SOC (10% = protect battery health)
   bessSocMax: 0.90,                    // Maximum SOC (90% = protect battery health)
   bessSocInitial: 0.50,                // Initial SOC at start of simulation
 
   // BESS Economic Defaults
-  bessCapexPerKwh: 1500,               // CAPEX per kWh capacity [PLN/kWh] (battery cells + BMS)
-  bessCapexPerKw: 300,                 // CAPEX per kW power [PLN/kW] (inverter/PCS)
+  bessCapexPerKwh: 900,                // CAPEX per kWh capacity [PLN/kWh] (battery cells + BMS, LFP 2025)
+  bessCapexPerKw: 200,                 // CAPEX per kW power [PLN/kW] (inverter/PCS)
   bessOpexPctPerYear: 1.5,             // Annual OPEX as % of CAPEX
   bessLifetimeYears: 15,               // Expected battery lifetime [years]
   bessCycleLifetime: 6000,             // Cycle lifetime (number of full cycles before replacement)
   bessDegradationYear1: 3.0,           // First year degradation [%] (higher due to initial settling)
   bessDegradationPctPerYear: 2.0,      // Annual capacity degradation for years 2+ [%/year]
-  bessAuxiliaryLossPctPerDay: 0.1,     // Standby losses [% of capacity/day] (BMS, cooling, etc.)
+  bessHouseLoadKwPerMwh: 2.75,         // House load [kW per MWh capacity] (HVAC, BMS, PCS standby)
 
   // ============================================================================
   // BESS PRO - Advanced LP/MIP Optimization (PyPSA + HiGHS)
@@ -369,6 +409,13 @@ const DEFAULT_CONFIG = {
   bessOsdOffPeakRate: 0.45,            // Off-peak zone rate [PLN/kWh]
   bessOsdMinSpread: 0.15,              // Minimum spread to trigger arbitrage [PLN/kWh]
 
+  // Hybrid Monthly Pricing (miks OSD + RDN per miesiąc)
+  pricingMode: 'single',               // 'single' = one source all year, 'hybrid_monthly' = per-month mix
+  monthlyPriceSources: {               // Per-month: 'osd' or 'rdn' (only used when pricingMode='hybrid_monthly')
+    1: 'osd', 2: 'osd', 3: 'osd', 4: 'osd', 5: 'osd', 6: 'osd',
+    7: 'osd', 8: 'osd', 9: 'osd', 10: 'osd', 11: 'osd', 12: 'osd'
+  },
+
   // RDN Price Arbitrage (arbitraż cenowy RDN/spot - kupuj tanio, sprzedawaj drogo)
   bessPriceArbitrageEnabled: false,    // Enable RDN price arbitrage optimization
   bessPriceArbitrageSource: 'manual',  // 'manual' | 'tge_api' | 'csv_upload'
@@ -379,10 +426,44 @@ const DEFAULT_CONFIG = {
   bessRdnPriceMultiplier: 1.0,         // RDN price multiplier (for scenario analysis)
 
   // ============================================================================
+  // Ancillary Services (Revenue Stacking)
+  // ============================================================================
+  ancillaryServicesEnabled: false,       // Master toggle for ancillary revenue
+  ancSvcAfrrUp: true,                    // aFRR Up (secondary reserve up)
+  ancSvcAfrrDown: true,                  // aFRR Down (secondary reserve down)
+  ancSvcMfrrUp: true,                    // mFRR Up (tertiary reserve up)
+  ancSvcFcr: false,                      // FCR (frequency containment reserve)
+  ancSvcCapMarket: false,                // Capacity Market (Rynek Mocy)
+  ancillaryMarketYear: 2026,             // Reference year for PSE prices
+  ancillaryAggregatorMarginPct: 20,      // Aggregator margin [%]
+  ancillaryAfrrPrice: 200,              // aFRR capacity price [PLN/MW/h]
+  ancillaryMfrrPrice: 95,               // mFRR capacity price [PLN/MW/h]
+  ancillaryFcrPrice: 150,               // FCR capacity price [PLN/MW/h]
+  ancillaryCapMarketPrice: 280000,       // Capacity market [PLN/MW/year]
+  ancillaryKwd: 0.133,                  // KWD (power availability factor for BESS)
+  ancillaryMinAvailability: 95,          // Min technical availability [%]
+  ancillaryMaxCapacityShare: 80,         // Max % of battery power for ancillary
+  ancillaryOptimizeMode: 'sample_days',  // 'year' or 'sample_days'
+
+  // ============================================================================
   // BESS Scenarios - Work mode selection (MVP v3.17)
   // ============================================================================
   bessScenarioId: null,                 // Selected scenario ID (null = auto-select based on topology)
-  bessCapacityFeeOverlay: false         // Show capacity fee savings overlay after dispatch
+  bessCapacityFeeOverlay: false,        // Show capacity fee savings overlay after dispatch
+
+  // ============================================================================
+  // RDN Dynamic Pricing - Rynek Dnia Następnego (Day-Ahead Market)
+  // ============================================================================
+  rdnPricingConfig: {
+    enabled: false,
+    scenarioId: null,
+    scenarioName: '',
+    year: null,
+    avgPrice: null,
+    minPrice: null,
+    maxPrice: null,
+    dataPoints: 0
+  }
 };
 
 // ============================================================================
@@ -446,37 +527,8 @@ const BESS_SCENARIOS = {
     kpiLabels: ['Peak reduction', 'Monthly savings'],
     icon: '📉'
   },
-  4: {
-    id: 4,
-    name: 'ToU + Analiza kosztów',
-    shortName: 'ToU Analiza',
-    description: 'Raport kosztów wg stref taryfowych OSD (analiza po stronie FE)',
-    topologies: ['pv_bess'],
-    modes: ['light', 'pro'],
-    baseMode: 'stacked',
-    presets: {
-      bessOsdArbitrageEnabled: true,
-      bessOsdTariffGroup: 'C12a'
-    },
-    requiredFields: ['bessOsdTariffGroup'],
-    feAnalysis: true,  // Analiza kosztów po stronie frontend
-    kpiLabels: ['Cost by zone', 'Savings vs flat'],
-    icon: '🕐'
-  },
-  5: {
-    id: 5,
-    name: 'ToU Arbitrage',
-    shortName: 'Arbitraż',
-    description: 'Arbitraż cenowy na strefach taryfowych - osobny endpoint API',
-    topologies: ['pv_bess', 'bess_only'],
-    modes: ['pro'],
-    baseMode: null,  // Osobny flow /arbitrage/dispatch
-    presets: {},
-    requiredFields: [],
-    beta: true,
-    betaTooltip: 'BETA – wymaga osobnego flow /arbitrage/dispatch (nie zintegrowane z /dispatch)',
-    icon: '💹'
-  },
+  // Scenarios 4 and 5 removed from tiles - arbitrage is now an overlay checkbox
+  // (combinable with any base scenario, like capacity fee overlay)
   // Scenariusz 6 NIE jest kafelkiem - to checkbox overlay
   // Definicja tylko dla dokumentacji
   7: {
@@ -513,6 +565,66 @@ const BESS_SCENARIOS = {
     interval15minSupport: true,  // 15-min tylko jeśli dane mają 35040 punktów
     kpiLabels: ['Peak kW cut', 'Duration coverage'],
     icon: '🚗'
+  },
+  9: {
+    id: 9,
+    name: 'PV + Arbitraż RDN (Spot)',
+    shortName: 'PV + RDN',
+    description: 'Ładuj BESS gdy ceny RDN niskie, rozładuj gdy wysokie. Wymaga cen RDN.',
+    topologies: ['pv_bess'],
+    modes: ['pro'],
+    baseMode: 'pv_surplus',
+    gridCharging: false,  // battery charges ONLY from PV surplus
+    presets: {
+      bessPeakShavingEnabled: false,
+      bessPriceArbitrageEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: true,
+    kpiLabels: ['RDN Spread', 'Arbitrage Savings'],
+    icon: '📈'
+  },
+  10: {
+    id: 10,
+    name: 'Magazyn — Arbitraż ToU/RDN',
+    shortName: 'Arbitraż BESS',
+    description: 'BESS bez PV. Zarobek na spreadzie cenowym: ładuj tanio (noc/off-peak/niski RDN), rozładuj drogo (dzień/peak/wysoki RDN).',
+    topologies: ['bess_only'],
+    modes: ['light', 'pro'],
+    baseMode: 'load_only',
+    gridCharging: true,  // bateria ładuje wyłącznie z sieci
+    presets: {
+      bessPeakShavingEnabled: false,
+      bessPriceArbitrageEnabled: true,
+      bessOsdArbitrageEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: false,  // działa z ToU, RDN opcjonalnie
+    recommended: false,
+    kpiLabels: ['ToU/RDN Spread', 'Arbitrage Revenue', 'Cycles/year'],
+    icon: '💹'
+  },
+  11: {
+    id: 11,
+    name: 'Magazyn — Pełny Stack',
+    shortName: 'BESS Full Stack',
+    description: 'BESS bez PV: arbitraż (ToU + RDN) + peak shaving + usługi sieciowe (aFRR, mFRR, FCR, rynek mocy).',
+    topologies: ['bess_only'],
+    modes: ['pro'],
+    baseMode: 'load_only',
+    gridCharging: true,  // bateria ładuje z sieci
+    presets: {
+      bessPeakShavingEnabled: true,
+      bessPeakShavingMode: 'auto',
+      bessPriceArbitrageEnabled: true,
+      bessOsdArbitrageEnabled: true,
+      ancillaryServicesEnabled: true,
+    },
+    requiredFields: [],
+    requiresRdn: false,
+    recommended: true,  // domyślny dla bess_only z pełnym stackiem
+    kpiLabels: ['Total Revenue', 'Arbitrage', 'Peak Shaving', 'Ancillary'],
+    icon: '🏦'
   }
 }
 
@@ -528,6 +640,8 @@ document.addEventListener('DOMContentLoaded', () => {
   renderAllCapexTables();
   // Initialize BESS section visibility
   toggleBessSection();
+  // Initialize pricing routing summary
+  setTimeout(updatePricingRoutingSummary, 500);
 });
 
 // ============================================================================
@@ -591,6 +705,13 @@ function setBessMode(mode) {
  * Toggle BESS configuration sections based on bessMode
  * Shows/hides duration, economics, technical, and PRO parameters
  */
+// Toggle ancillary services detail section based on master checkbox
+function toggleAncillaryDetail() {
+  const enabled = document.getElementById('ancillaryServicesEnabled')?.checked ?? false;
+  const detail = document.getElementById('ancillarySettingsDetail');
+  if (detail) detail.style.display = enabled ? 'block' : 'none';
+}
+
 function toggleBessSection() {
   const bessMode = document.getElementById('bessMode')?.value || 'off';
   const durationSection = document.getElementById('bessDurationSection');
@@ -628,6 +749,10 @@ function toggleBessSection() {
   // Advanced features section (Peak Shaving & Arbitrage - shown for both LIGHT and PRO)
   const advancedSection = document.getElementById('bessAdvancedFeaturesSection');
   if (advancedSection) advancedSection.style.display = isEnabled ? 'block' : 'none';
+
+  // Constraints section (Grid connection & EFC limit)
+  const constraintsSection = document.getElementById('bessConstraintsSection');
+  if (constraintsSection) constraintsSection.style.display = isEnabled ? 'block' : 'none';
 
   console.log(`🔋 BESS mode: ${bessMode} (enabled: ${isEnabled}, pro: ${isPro})`);
 }
@@ -835,7 +960,7 @@ function syncDegradationParams(source) {
   const fieldMappings = {
     'bessDegradationYear1': 'bessProDegradationYear1',
     'bessDegradationPctPerYear': 'bessProDegradationPctPerYear',
-    'bessAuxiliaryLossPctPerDay': 'bessProAuxiliaryLossPctPerDay'
+    'bessHouseLoadKwPerMwh': 'bessProHouseLoadKwPerMwh'
   };
 
   if (source === 'light') {
@@ -892,8 +1017,8 @@ function getAvailableScenarios(topology, bessMode) {
  * @returns {number|null} - Default scenario ID
  */
 function getDefaultScenarioId(topology) {
-  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 3 (LOAD_ONLY)
-  return topology === 'pv_bess' ? 2 : 3;
+  // pv_bess -> scenario 2 (STACKED), bess_only -> scenario 10 (Arbitraż BESS)
+  return topology === 'pv_bess' ? 2 : 10;
 }
 
 /**
@@ -939,6 +1064,20 @@ function setBessScenario(scenarioId) {
     Object.entries(scenario.presets).forEach(([key, value]) => {
       applyScenarioPreset(key, value);
     });
+  }
+
+  // Auto-enable RDN overlay for scenarios that require it
+  if (scenario.requiresRdn) {
+    const rdnHidden = document.getElementById('bessPriceArbitrageEnabled');
+    const rdnOverlay = document.getElementById('bessPriceArbitrageOverlay');
+    if (rdnHidden && !rdnHidden.checked) {
+      rdnHidden.checked = true;
+      rdnHidden.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (rdnOverlay && !rdnOverlay.checked) {
+      rdnOverlay.checked = true;
+      rdnOverlay.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
 
   // Update scenario tiles UI
@@ -1012,14 +1151,22 @@ function renderScenarioTiles() {
     const isBeta = scenario.beta;
     const isRecommended = scenario.recommended;
 
+    // Check if RDN data is actually loaded (not just checkbox enabled)
+    const rdnDataLoaded = window._cachedPriceConfig?.rdnPrices?.available ||
+                          (window.parent?.sharedData?.priceConfig?.rdnPrices?.available) ||
+                          (() => { try { const c = localStorage.getItem('rdn_hourly_prices'); return c && JSON.parse(c).length > 100; } catch { return false; } })();
+    const rdnMissing = scenario.requiresRdn && !rdnDataLoaded;
+
     const tileClass = [
       'scenario-tile',
       isSelected ? 'selected' : '',
       isBeta ? 'beta disabled' : '',
+      rdnMissing ? 'rdn-missing' : '',
       isRecommended ? 'recommended' : ''
     ].filter(Boolean).join(' ');
 
     const tooltip = isBeta ? scenario.betaTooltip :
+                   rdnMissing ? 'Wymaga załadowanych cen RDN (Spot) w sekcji Ceny' :
                    (scenario.infoTooltip || '');
 
     tilesHTML += `
@@ -1032,6 +1179,7 @@ function renderScenarioTiles() {
             ${scenario.shortName || scenario.name}
             ${isRecommended ? '<span class="badge recommended">ZALECANY</span>' : ''}
             ${isBeta ? '<span class="badge beta">BETA</span>' : ''}
+            ${rdnMissing ? '<span class="badge" style="background:#ff9800;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:4px">BRAK RDN</span>' : ''}
           </div>
           <div class="scenario-description">${scenario.description}</div>
         </div>
@@ -1145,6 +1293,16 @@ window.getAvailableScenarios = getAvailableScenarios;
 window.getCurrentScenarioConfig = getCurrentScenarioConfig;
 window.BESS_SCENARIOS = BESS_SCENARIOS;
 
+// Marginal Cycle Cost UI toggle
+function updateMarginalCycleCostUI() {
+  const mode = document.getElementById('bessMarginalCycleCostMode')?.value || 'auto';
+  const manualRow = document.getElementById('marginalCycleCostManualRow');
+  if (manualRow) {
+    manualRow.style.display = mode === 'manual' ? 'block' : 'none';
+  }
+}
+window.updateMarginalCycleCostUI = updateMarginalCycleCostUI;
+
 // Setup event listeners for auto-save and calculations
 function setupEventListeners() {
   // Fixed charges inputs (without energyActive - now in ToU section)
@@ -1226,6 +1384,16 @@ function loadSettings() {
       });
 
       console.log('Loaded saved settings, merged with defaults');
+
+      // Migration: old CAPEX defaults (1500/300) → realistic 2025 LFP values (900/200)
+      if (config.bessCapexPerKwh >= 1400) {
+        console.log(`⬆️ CAPEX migration: ${config.bessCapexPerKwh}→${DEFAULT_CONFIG.bessCapexPerKwh} PLN/kWh`);
+        config.bessCapexPerKwh = DEFAULT_CONFIG.bessCapexPerKwh;
+      }
+      if (config.bessCapexPerKw >= 280) {
+        console.log(`⬆️ CAPEX migration: ${config.bessCapexPerKw}→${DEFAULT_CONFIG.bessCapexPerKw} PLN/kW`);
+        config.bessCapexPerKw = DEFAULT_CONFIG.bessCapexPerKw;
+      }
     } catch (e) {
       console.error('Failed to parse saved settings:', e);
     }
@@ -1240,10 +1408,19 @@ function loadSettings() {
 
 // Apply configuration to UI inputs
 function applySettingsToUI(config) {
+  // Backward compat: if no zonal distribution, use flat distribution for all zones
+  if (config.distribution && !config.distributionPeak) {
+    config.distributionPeak = config.distribution;
+    config.distributionDay = config.distribution;
+    config.distributionNight = config.distribution;
+    config.distributionValley = config.distribution;
+  }
+
   // Simple fields (inputs with numeric or text values)
   // Note: energyActive removed - now defined per zone in ToU section
   const simpleFields = [
-    'distribution', 'qualityFee', 'ozeFee', 'cogenerationFee',
+    'distribution', 'distributionPeak', 'distributionDay', 'distributionNight', 'distributionValley',
+    'qualityFee', 'ozeFee', 'cogenerationFee',
     'capacityFee', 'exciseTax', 'opexPerKwp', 'eaasOM', 'insuranceRate', 'landLeasePerKwp',
     'discountRate', 'pvDegradationYear1', 'degradationRate', 'analysisPeriod', 'inflationRate',
     // EaaS basic
@@ -1275,7 +1452,7 @@ function applySettingsToUI(config) {
     // BESS economic parameters
     'bessCapexPerKwh', 'bessCapexPerKw', 'bessOpexPctPerYear', 'bessLifetimeYears',
     // BESS technical parameters
-    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear', 'bessAuxiliaryLossPctPerDay',
+    'bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax', 'bessDegradationYear1', 'bessDegradationPctPerYear', 'bessHouseLoadKwPerMwh',
     // BESS PRO parameters
     'bessProMinPowerKw', 'bessProMaxPowerKw', 'bessProMinEnergyKwh', 'bessProMaxEnergyKwh',
     'bessProDurationMin', 'bessProDurationMax', 'bessProTypicalDays', 'bessProExportPenalty'
@@ -1327,6 +1504,38 @@ function applySettingsToUI(config) {
     bessProZeroExportEl.checked = config.bessProZeroExport !== false;  // Default true
   }
 
+  // BESS Physical Constraints (grid connection & EFC limit)
+  const bessGridConnectionKwEl = document.getElementById('bessGridConnectionKw');
+  if (bessGridConnectionKwEl && config.bessGridConnectionKw) {
+    bessGridConnectionKwEl.value = config.bessGridConnectionKw;
+  }
+  const bessMaxEfcPerYearEl = document.getElementById('bessMaxEfcPerYear');
+  if (bessMaxEfcPerYearEl && config.bessMaxEfcPerYear) {
+    bessMaxEfcPerYearEl.value = config.bessMaxEfcPerYear;
+  }
+
+  // BESS Optimization Objective (new visible select)
+  const bessOptObjEl = document.getElementById('bessOptimizationObjective');
+  if (bessOptObjEl) {
+    bessOptObjEl.value = config.bessProObjective || 'npv';
+  }
+  // Max payback constraint
+  const bessMaxPaybackEl = document.getElementById('bessMaxPaybackYears');
+  if (bessMaxPaybackEl && config.bessMaxPaybackYears) {
+    bessMaxPaybackEl.value = config.bessMaxPaybackYears;
+  }
+
+  // Marginal cycle cost mode
+  const mccModeEl = document.getElementById('bessMarginalCycleCostMode');
+  if (mccModeEl && config.bessMarginalCycleCostMode) {
+    mccModeEl.value = config.bessMarginalCycleCostMode;
+  }
+  const mccManualEl = document.getElementById('bessMarginalCycleCostManual');
+  if (mccManualEl && config.bessMarginalCycleCostManual) {
+    mccManualEl.value = config.bessMarginalCycleCostManual;
+  }
+  if (typeof updateMarginalCycleCostUI === 'function') updateMarginalCycleCostUI();
+
   // BESS Peak Shaving checkbox and fields
   const bessPeakShavingEnabledEl = document.getElementById('bessPeakShavingEnabled');
   if (bessPeakShavingEnabledEl) {
@@ -1353,6 +1562,9 @@ function applySettingsToUI(config) {
   const bessOsdArbitrageEnabledEl = document.getElementById('bessOsdArbitrageEnabled');
   if (bessOsdArbitrageEnabledEl) {
     bessOsdArbitrageEnabledEl.checked = config.bessOsdArbitrageEnabled ?? false;
+    // Sync overlay checkbox in scenario section
+    const osdOverlay = document.getElementById('bessOsdArbitrageOverlay');
+    if (osdOverlay) osdOverlay.checked = bessOsdArbitrageEnabledEl.checked;
   }
   const bessOsdOperatorEl = document.getElementById('bessOsdOperator');
   if (bessOsdOperatorEl) {
@@ -1375,10 +1587,43 @@ function applySettingsToUI(config) {
     bessOsdMinSpreadEl.value = config.bessOsdMinSpread ?? 0.15;
   }
 
+  // OSD Operator + Tariff Group selector restore
+  // Must populate dropdown options BEFORE setting value, otherwise value is silently ignored
+  const savedOsdOperator = config.osdOperator || '';
+  const savedOsdTariffGroup = config.osdTariffGroup || '';
+  if (savedOsdOperator) {
+    populateOsdOperatorDropdown().then(() => {
+      const opSelect = document.getElementById('osdOperator');
+      if (opSelect) {
+        opSelect.value = savedOsdOperator;
+        onOsdOperatorChange().then(() => {
+          const tgSelect = document.getElementById('osdTariffGroup');
+          if (tgSelect && savedOsdTariffGroup) {
+            tgSelect.value = savedOsdTariffGroup;
+            // Don't trigger onOsdTariffGroupChange — values already loaded from saved config
+          }
+        });
+      }
+    });
+  }
+
+  // Hybrid Monthly Pricing
+  const pricingModeEl = document.getElementById('pricingMode');
+  if (pricingModeEl) {
+    pricingModeEl.value = config.pricingMode || 'single';
+    toggleHybridMonthlySection();
+  }
+  if (config.monthlyPriceSources) {
+    applyMonthlyPriceSources(config.monthlyPriceSources);
+  }
+
   // BESS RDN Price Arbitrage (Spot) checkbox and fields
   const bessPriceArbitrageEnabledEl = document.getElementById('bessPriceArbitrageEnabled');
   if (bessPriceArbitrageEnabledEl) {
     bessPriceArbitrageEnabledEl.checked = config.bessPriceArbitrageEnabled ?? false;
+    // Sync overlay checkbox in scenario section
+    const rdnOverlay = document.getElementById('bessPriceArbitrageOverlay');
+    if (rdnOverlay) rdnOverlay.checked = bessPriceArbitrageEnabledEl.checked;
   }
   const bessPriceArbitrageSourceEl = document.getElementById('bessPriceArbitrageSource');
   if (bessPriceArbitrageSourceEl) {
@@ -1410,6 +1655,31 @@ function applySettingsToUI(config) {
   if (bessEnabledEl) {
     bessEnabledEl.value = config.bessMode !== 'off' ? 'true' : 'false';
   }
+
+  // Ancillary Services
+  const ancillaryEnabledEl = document.getElementById('ancillaryServicesEnabled');
+  if (ancillaryEnabledEl) {
+    ancillaryEnabledEl.checked = config.ancillaryServicesEnabled ?? false;
+  }
+  const ancCheckboxes = ['ancSvcAfrrUp', 'ancSvcAfrrDown', 'ancSvcMfrrUp', 'ancSvcFcr', 'ancSvcCapMarket'];
+  ancCheckboxes.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  const ancSimple = ['ancillaryAggregatorMarginPct', 'ancillaryAfrrPrice', 'ancillaryMfrrPrice',
+    'ancillaryFcrPrice', 'ancillaryCapMarketPrice', 'ancillaryKwd', 'ancillaryMinAvailability',
+    'ancillaryMaxCapacityShare'];
+  ancSimple.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  const ancSelects = ['ancillaryMarketYear', 'ancillaryOptimizeMode'];
+  ancSelects.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = config[id] ?? DEFAULT_CONFIG[id];
+  });
+  // Toggle ancillary detail section visibility
+  toggleAncillaryDetail();
 
   // Fields that are stored as decimals but displayed as percentages in UI
   const percentageFields = ['bessRoundtripEfficiency', 'bessSocMin', 'bessSocMax'];
@@ -1543,11 +1813,88 @@ function applySettingsToUI(config) {
         if (partialEndEl) partialEndEl.value = tc.threeZone.partial.end || 17;
       }
     }
+    // Four-zone rates
+    if (tc.fourZone) {
+      setValueById('tariffFourPeakRate', tc.fourZone.peakRate || 950);
+      setValueById('tariffFourDayRate', tc.fourZone.dayRate || 700);
+      setValueById('tariffFourOffPeakRate', tc.fourZone.offPeakRate || 400);
+      setValueById('tariffFourValleyRate', tc.fourZone.valleyRate || 200);
+      if (tc.fourZone.peak1) {
+        setValueById('tariffFourPeakStart', tc.fourZone.peak1.start || 7);
+        setValueById('tariffFourPeakEnd', tc.fourZone.peak1.end || 13);
+      }
+      if (tc.fourZone.peak2) {
+        setValueById('tariffFourPeakStart2', tc.fourZone.peak2.start || 16);
+        setValueById('tariffFourPeakEnd2', tc.fourZone.peak2.end || 21);
+      }
+      if (tc.fourZone.valley) {
+        setValueById('tariffFourValleyStart', tc.fourZone.valley.start || 1);
+        setValueById('tariffFourValleyEnd', tc.fourZone.valley.end || 5);
+      }
+    }
     // Update tariff UI visibility
     if (typeof onTariffTypeChange === 'function') {
       onTariffTypeChange();
     }
     console.log('✅ Tariff config applied from import:', tc);
+  }
+
+  // Apply Distribution Config (OSD time windows — separate from energy ToU)
+  if (config.distributionConfig) {
+    const dc = config.distributionConfig;
+    const distTypeEl = document.getElementById('distTariffType');
+    if (distTypeEl) distTypeEl.value = dc.type || 'three_zone';
+    if (dc.twoZone) {
+      if (dc.twoZone.weekday) {
+        setValueById('distDayStartWeekday', dc.twoZone.weekday.start);
+        setValueById('distDayEndWeekday', dc.twoZone.weekday.end);
+      }
+      if (dc.twoZone.weekend) {
+        setValueById('distDayStartWeekend', dc.twoZone.weekend.start);
+        setValueById('distDayEndWeekend', dc.twoZone.weekend.end);
+      }
+    }
+    if (dc.threeZone) {
+      if (dc.threeZone.peak1) {
+        setValueById('distPeak1Start', dc.threeZone.peak1.start);
+        setValueById('distPeak1End', dc.threeZone.peak1.end);
+      }
+      if (dc.threeZone.peak2) {
+        setValueById('distPeak2Start', dc.threeZone.peak2.start);
+        setValueById('distPeak2End', dc.threeZone.peak2.end);
+      }
+      const woeEl = document.getElementById('distWeekendOffPeak');
+      if (woeEl) woeEl.checked = dc.threeZone.weekendOffPeak !== false;
+    }
+    if (dc.fourZone) {
+      if (dc.fourZone.peak1) {
+        setValueById('distFourPeak1Start', dc.fourZone.peak1.start);
+        setValueById('distFourPeak1End', dc.fourZone.peak1.end);
+      }
+      if (dc.fourZone.peak2) {
+        setValueById('distFourPeak2Start', dc.fourZone.peak2.start);
+        setValueById('distFourPeak2End', dc.fourZone.peak2.end);
+      }
+      if (dc.fourZone.valley) {
+        setValueById('distValleyStart', dc.fourZone.valley.start);
+        setValueById('distValleyEnd', dc.fourZone.valley.end);
+      }
+    }
+    onDistTariffTypeChange();
+    console.log('✅ Distribution config applied:', dc);
+  }
+
+  // Apply Fixed Monthly Fees Configuration
+  if (config.fixedMonthlyFees) {
+    const fmf = config.fixedMonthlyFees;
+    const setVal = (id, key) => { const el = document.getElementById(id); if (el && fmf[key] !== undefined) el.value = fmf[key]; };
+    setVal('contractedPowerKw', 'contractedPowerKw');
+    setVal('distFixedRatePerKw', 'distFixedRatePerKwMonth');
+    setVal('osdSubscriptionFee', 'osdSubscriptionFeeMonth');
+    setVal('transitionFee', 'transitionFeeMonth');
+    setVal('supplierTradeFee', 'supplierTradeFeeMonth');
+    updateFixedMonthlyTotal();
+    console.log('✅ Fixed monthly fees applied from import:', fmf);
   }
 
   // Apply Capacity Fee Configuration (opłata mocowa)
@@ -1566,17 +1913,41 @@ function applySettingsToUI(config) {
   }
 
   // Apply ESG parameters
-  if (config.esgGridEmissionProvider) {
-    const el = document.getElementById('esgGridEmissionProvider');
-    if (el) el.value = config.esgGridEmissionProvider;
+  const esgFields = [
+    'esgGridEmissionProvider', 'esgGridEmissionFactor', 'esgGridEmissionYear', 'esgGridEmissionSource',
+    'esgEmbodiedCarbonCrystalline', 'esgEmbodiedCarbonCIS', 'esgEmbodiedCarbonCdTe', 'esgEmbodiedCarbonSource',
+    'esgPvTechnology', 'esgTaxonomyActivityCode', 'esgReportingMethod', 'esgComponentCompliance',
+    'electricitymapsApiKey', 'electricitymapsZone'
+  ];
+  esgFields.forEach(field => {
+    if (config[field] !== undefined) {
+      const el = document.getElementById(field);
+      if (el) el.value = config[field];
+    }
+  });
+  // ESG checkbox
+  const esgTaxonomyEl = document.getElementById('esgTaxonomyAligned');
+  if (esgTaxonomyEl && config.esgTaxonomyAligned !== undefined) {
+    esgTaxonomyEl.checked = config.esgTaxonomyAligned;
   }
-  if (config.esgGridEmissionFactor !== undefined) {
-    const el = document.getElementById('esgGridEmissionFactor');
-    if (el) el.value = config.esgGridEmissionFactor;
-  }
-  if (config.esgPvTechnology) {
-    const el = document.getElementById('esgPvTechnology');
-    if (el) el.value = config.esgPvTechnology;
+
+  // Apply RDN Dynamic Pricing Configuration
+  if (config.rdnPricingConfig) {
+    const rdn = config.rdnPricingConfig;
+    const rdnCheckbox = document.getElementById('rdnPricingEnabled');
+    const rdnPanel = document.getElementById('rdnPricingPanel');
+    if (rdnCheckbox) rdnCheckbox.checked = rdn.enabled || false;
+    if (rdnPanel) rdnPanel.style.display = rdn.enabled ? 'block' : 'none';
+    if (rdn.enabled && rdn.scenarioId) {
+      loadSavedRdnScenarios().then(() => {
+        const selectEl = document.getElementById('rdnScenarioSelect');
+        if (selectEl) {
+          selectEl.value = rdn.scenarioId;
+          selectRdnScenario(rdn.scenarioId);
+        }
+      });
+    }
+    console.log('RDN pricing config applied:', rdn);
   }
 }
 
@@ -1585,7 +1956,13 @@ function getCurrentSettings() {
   const settings = {
     // Energy Tariff
     energyActive: parseFloat(document.getElementById('energyActive')?.value || DEFAULT_CONFIG.energyActive),
+    osdOperator: document.getElementById('osdOperator')?.value || '',
+    osdTariffGroup: document.getElementById('osdTariffGroup')?.value || '',
     distribution: parseFloat(document.getElementById('distribution')?.value || DEFAULT_CONFIG.distribution),
+    distributionPeak: parseFloat(document.getElementById('distributionPeak')?.value || DEFAULT_CONFIG.distributionPeak),
+    distributionDay: parseFloat(document.getElementById('distributionDay')?.value || DEFAULT_CONFIG.distributionDay),
+    distributionNight: parseFloat(document.getElementById('distributionNight')?.value || DEFAULT_CONFIG.distributionNight),
+    distributionValley: parseFloat(document.getElementById('distributionValley')?.value || DEFAULT_CONFIG.distributionValley),
     qualityFee: parseFloat(document.getElementById('qualityFee')?.value || DEFAULT_CONFIG.qualityFee),
     ozeFee: parseFloat(document.getElementById('ozeFee')?.value || DEFAULT_CONFIG.ozeFee),
     cogenerationFee: parseFloat(document.getElementById('cogenerationFee')?.value || DEFAULT_CONFIG.cogenerationFee),
@@ -1746,7 +2123,7 @@ function getCurrentSettings() {
     bessCycleLifetime: DEFAULT_CONFIG.bessCycleLifetime,
     bessDegradationYear1: parseFloat(document.getElementById('bessDegradationYear1')?.value || DEFAULT_CONFIG.bessDegradationYear1),
     bessDegradationPctPerYear: parseFloat(document.getElementById('bessDegradationPctPerYear')?.value || DEFAULT_CONFIG.bessDegradationPctPerYear),
-    bessAuxiliaryLossPctPerDay: parseFloat(document.getElementById('bessAuxiliaryLossPctPerDay')?.value || DEFAULT_CONFIG.bessAuxiliaryLossPctPerDay),
+    bessHouseLoadKwPerMwh: parseFloat(document.getElementById('bessHouseLoadKwPerMwh')?.value || DEFAULT_CONFIG.bessHouseLoadKwPerMwh),
 
     // BESS PRO - Advanced LP/MIP Optimization
     bessProMinPowerKw: parseFloat(document.getElementById('bessProMinPowerKw')?.value || DEFAULT_CONFIG.bessProMinPowerKw),
@@ -1756,7 +2133,10 @@ function getCurrentSettings() {
     bessProDurationMin: parseFloat(document.getElementById('bessProDurationMin')?.value || DEFAULT_CONFIG.bessProDurationMin),
     bessProDurationMax: parseFloat(document.getElementById('bessProDurationMax')?.value || DEFAULT_CONFIG.bessProDurationMax),
     bessProSolver: document.getElementById('bessProSolver')?.value || DEFAULT_CONFIG.bessProSolver,
-    bessProObjective: document.getElementById('bessProObjective')?.value || DEFAULT_CONFIG.bessProObjective,
+    bessProObjective: document.getElementById('bessOptimizationObjective')?.value || document.getElementById('bessProObjective')?.value || DEFAULT_CONFIG.bessProObjective,
+    bessMaxPaybackYears: parseFloat(document.getElementById('bessMaxPaybackYears')?.value) || null,
+    bessMarginalCycleCostMode: document.getElementById('bessMarginalCycleCostMode')?.value || 'auto',
+    bessMarginalCycleCostManual: parseFloat(document.getElementById('bessMarginalCycleCostManual')?.value) || 0.125,
     bessProTimeResolution: document.getElementById('bessProTimeResolution')?.value || DEFAULT_CONFIG.bessProTimeResolution,
     bessProTypicalDays: parseInt(document.getElementById('bessProTypicalDays')?.value || DEFAULT_CONFIG.bessProTypicalDays),
     bessProZeroExport: document.getElementById('bessProZeroExport')?.checked ?? DEFAULT_CONFIG.bessProZeroExport,
@@ -1777,6 +2157,14 @@ function getCurrentSettings() {
     bessOsdOffPeakRate: parseFloat(document.getElementById('bessOsdOffPeakRate')?.value || DEFAULT_CONFIG.bessOsdOffPeakRate),
     bessOsdMinSpread: parseFloat(document.getElementById('bessOsdMinSpread')?.value || DEFAULT_CONFIG.bessOsdMinSpread),
 
+    // BESS Physical Constraints (grid connection & cycle limits)
+    bessGridConnectionKw: parseFloat(document.getElementById('bessGridConnectionKw')?.value) || null,
+    bessMaxEfcPerYear: parseFloat(document.getElementById('bessMaxEfcPerYear')?.value) || null,
+
+    // Hybrid Monthly Pricing
+    pricingMode: document.getElementById('pricingMode')?.value || DEFAULT_CONFIG.pricingMode,
+    monthlyPriceSources: collectMonthlyPriceSources(),
+
     // BESS RDN Price Arbitrage (Spot)
     bessPriceArbitrageEnabled: document.getElementById('bessPriceArbitrageEnabled')?.checked ?? DEFAULT_CONFIG.bessPriceArbitrageEnabled,
     bessPriceArbitrageSource: document.getElementById('bessPriceArbitrageSource')?.value || DEFAULT_CONFIG.bessPriceArbitrageSource,
@@ -1789,6 +2177,24 @@ function getCurrentSettings() {
     // BESS Scenarios (MVP v3.17)
     bessScenarioId: parseInt(document.getElementById('bessScenarioId')?.value) || currentBessScenarioId || null,
     bessCapacityFeeOverlay: document.getElementById('bessCapacityFeeOverlay')?.checked ?? DEFAULT_CONFIG.bessCapacityFeeOverlay,
+
+    // Ancillary Services (Revenue Stacking)
+    ancillaryServicesEnabled: document.getElementById('ancillaryServicesEnabled')?.checked ?? DEFAULT_CONFIG.ancillaryServicesEnabled,
+    ancSvcAfrrUp: document.getElementById('ancSvcAfrrUp')?.checked ?? DEFAULT_CONFIG.ancSvcAfrrUp,
+    ancSvcAfrrDown: document.getElementById('ancSvcAfrrDown')?.checked ?? DEFAULT_CONFIG.ancSvcAfrrDown,
+    ancSvcMfrrUp: document.getElementById('ancSvcMfrrUp')?.checked ?? DEFAULT_CONFIG.ancSvcMfrrUp,
+    ancSvcFcr: document.getElementById('ancSvcFcr')?.checked ?? DEFAULT_CONFIG.ancSvcFcr,
+    ancSvcCapMarket: document.getElementById('ancSvcCapMarket')?.checked ?? DEFAULT_CONFIG.ancSvcCapMarket,
+    ancillaryMarketYear: parseInt(document.getElementById('ancillaryMarketYear')?.value || DEFAULT_CONFIG.ancillaryMarketYear),
+    ancillaryAggregatorMarginPct: parseFloat(document.getElementById('ancillaryAggregatorMarginPct')?.value || DEFAULT_CONFIG.ancillaryAggregatorMarginPct),
+    ancillaryAfrrPrice: parseFloat(document.getElementById('ancillaryAfrrPrice')?.value || DEFAULT_CONFIG.ancillaryAfrrPrice),
+    ancillaryMfrrPrice: parseFloat(document.getElementById('ancillaryMfrrPrice')?.value || DEFAULT_CONFIG.ancillaryMfrrPrice),
+    ancillaryFcrPrice: parseFloat(document.getElementById('ancillaryFcrPrice')?.value || DEFAULT_CONFIG.ancillaryFcrPrice),
+    ancillaryCapMarketPrice: parseFloat(document.getElementById('ancillaryCapMarketPrice')?.value || DEFAULT_CONFIG.ancillaryCapMarketPrice),
+    ancillaryKwd: parseFloat(document.getElementById('ancillaryKwd')?.value || DEFAULT_CONFIG.ancillaryKwd),
+    ancillaryMinAvailability: parseFloat(document.getElementById('ancillaryMinAvailability')?.value || DEFAULT_CONFIG.ancillaryMinAvailability),
+    ancillaryMaxCapacityShare: parseFloat(document.getElementById('ancillaryMaxCapacityShare')?.value || DEFAULT_CONFIG.ancillaryMaxCapacityShare),
+    ancillaryOptimizeMode: document.getElementById('ancillaryOptimizeMode')?.value || DEFAULT_CONFIG.ancillaryOptimizeMode,
 
     // ESG Parameters
     esgGridEmissionProvider: document.getElementById('esgGridEmissionProvider')?.value || DEFAULT_CONFIG.esgGridEmissionProvider,
@@ -1810,8 +2216,17 @@ function getCurrentSettings() {
     // Capacity Fee (Opłata Mocowa) Configuration
     capacityFeeConfig: getCapacityFeeConfig(),
 
+    // Fixed Monthly Fees Configuration
+    fixedMonthlyFees: getFixedMonthlyFeesConfig(),
+
+    // Distribution Time Windows (OSD tariff zones — separate from energy ToU)
+    distributionConfig: getDistributionConfig(),
+
     // Time-of-Use Tariff Configuration
-    tariffConfig: getTariffConfig()
+    tariffConfig: getTariffConfig(),
+
+    // RDN Dynamic Pricing Configuration
+    rdnPricingConfig: getRdnPricingConfig()
   };
 
   // Calculate total fixed charges (without energia czynna - now in ToU section)
@@ -1949,9 +2364,386 @@ function notifySettingsChanged(settings) {
   }
 }
 
+// Collect monthly price sources from UI dropdowns
+function collectMonthlyPriceSources() {
+  const sources = {};
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    sources[m] = el ? el.value : (DEFAULT_CONFIG.monthlyPriceSources?.[m] || 'osd');
+  }
+  return sources;
+}
+
+// Apply monthly price sources to UI dropdowns
+function applyMonthlyPriceSources(sources) {
+  if (!sources) return;
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    if (el) el.value = sources[m] || 'osd';
+  }
+  updateHybridMonthlyPreview();
+}
+
+// Quick-set all months to a preset pattern
+function setMonthlyPreset(preset) {
+  const sources = {};
+  for (let m = 1; m <= 12; m++) {
+    if (preset === 'all_osd') {
+      sources[m] = 'osd';
+    } else if (preset === 'all_rdn') {
+      sources[m] = 'rdn';
+    } else if (preset === 'q2q3_rdn') {
+      sources[m] = (m >= 4 && m <= 9) ? 'rdn' : 'osd';
+    } else if (preset === 'q1q4_rdn') {
+      sources[m] = (m <= 3 || m >= 10) ? 'rdn' : 'osd';
+    } else if (preset === 'summer_rdn') {
+      sources[m] = (m >= 5 && m <= 8) ? 'rdn' : 'osd';
+    }
+  }
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    if (el) el.value = sources[m];
+  }
+  updateHybridMonthlyPreview();
+  markUnsaved();
+}
+
+// Update visual preview of monthly pricing
+function updateHybridMonthlyPreview() {
+  const preview = document.getElementById('hybridMonthlyPreview');
+  if (!preview) return;
+  const monthNames = ['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+  let rdnCount = 0, osdCount = 0;
+  let html = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">';
+  for (let m = 1; m <= 12; m++) {
+    const el = document.getElementById(`monthPriceSource_${m}`);
+    const src = el ? el.value : 'osd';
+    const isRdn = src === 'rdn';
+    if (isRdn) rdnCount++; else osdCount++;
+    const color = isRdn ? '#c2185b' : '#e65100';
+    const bg = isRdn ? '#fce4ec' : '#fff3e0';
+    html += `<span style="padding:2px 6px;border-radius:4px;font-size:11px;background:${bg};color:${color};font-weight:600">${monthNames[m-1]}: ${src.toUpperCase()}</span>`;
+  }
+  html += '</div>';
+  html += `<div style="font-size:11px;color:#666;margin-top:4px">OSD: ${osdCount} mies. | RDN: ${rdnCount} mies.</div>`;
+  preview.innerHTML = html;
+}
+
+// Toggle hybrid monthly pricing section visibility
+function toggleHybridMonthlySection() {
+  const mode = document.getElementById('pricingMode')?.value || 'single';
+  const section = document.getElementById('hybridMonthlySection');
+  if (section) {
+    section.style.display = mode === 'hybrid_monthly' ? 'block' : 'none';
+  }
+  // In hybrid mode, ensure both OSD and RDN are enabled
+  if (mode === 'hybrid_monthly') {
+    const osdEl = document.getElementById('bessOsdArbitrageEnabled');
+    const rdnEl = document.getElementById('bessPriceArbitrageEnabled');
+    if (osdEl && !osdEl.checked) { osdEl.checked = true; const o = document.getElementById('bessOsdArbitrageOverlay'); if (o) o.checked = true; }
+    if (rdnEl && !rdnEl.checked) { rdnEl.checked = true; const o = document.getElementById('bessPriceArbitrageOverlay'); if (o) o.checked = true; }
+  }
+  markUnsaved();
+}
+
 // Mark settings as unsaved
 function markUnsaved() {
-  // Could add visual indicator that settings need saving
+  // Update pricing routing summary on any settings change
+  updatePricingRoutingSummary();
+}
+
+/**
+ * Update the "Routing cen → Moduły" panel.
+ * Shows clearly which price data goes to which module (PV Economics, BESS).
+ */
+function updatePricingRoutingSummary() {
+  const el = document.getElementById('pricingRoutingContent');
+  if (!el) return;
+
+  // Read current UI state
+  const osdOperator = document.getElementById('osdOperator')?.value || '(brak)';
+  const osdGroup = document.getElementById('osdTariffGroup')?.value || '(brak)';
+  const tariffType = document.getElementById('tariffType')?.value || 'two_zone';
+  const pricingMode = document.getElementById('pricingMode')?.value || 'single';
+
+  // Energy rates
+  const summTotal = document.getElementById('summTotal')?.textContent || '?';
+  const summEnergyAvg = document.getElementById('summEnergyAvg')?.textContent || '?';
+  const summDistAvg = document.getElementById('summDistAvg')?.textContent || '?';
+  const summCapacityVal = document.getElementById('summCapacityVal')?.textContent || '?';
+
+  // BESS flags
+  const osdArb = document.getElementById('bessOsdArbitrageOverlay')?.checked ||
+                  document.getElementById('bessOsdArbitrageEnabled')?.checked;
+  const rdnArb = document.getElementById('bessPriceArbitrageOverlay')?.checked ||
+                  document.getElementById('bessPriceArbitrageEnabled')?.checked;
+  const capFee = document.getElementById('bessCapacityFeeOverlay')?.checked;
+
+  // RDN data
+  let rdnStatus = '<span style="color:#c62828;font-weight:700">BRAK DANYCH</span>';
+  try {
+    const info = localStorage.getItem('rdn_scenario_info');
+    if (info) {
+      const rdnInfo = JSON.parse(info);
+      rdnStatus = `<span style="color:#2e7d32;font-weight:700">${rdnInfo.dataPoints || '?'} h, avg ${rdnInfo.avgPrice?.toFixed(0) || '?'} PLN/MWh (${rdnInfo.scenarioName || rdnInfo.year || '?'})</span>`;
+    }
+  } catch (e) { /* ignore */ }
+
+  // Hybrid monthly info
+  let hybridInfo = '';
+  if (pricingMode === 'hybrid_monthly') {
+    const months = [];
+    for (let m = 1; m <= 12; m++) {
+      const sel = document.getElementById('monthPriceSource_' + m);
+      if (sel) months.push({ m, src: sel.value || 'osd' });
+    }
+    const rdnMonths = months.filter(x => x.src === 'rdn').map(x => x.m);
+    const osdMonths = months.filter(x => x.src !== 'rdn').map(x => x.m);
+    hybridInfo = `<br>&nbsp;&nbsp;OSD miesiące: <strong>${osdMonths.join(', ') || 'brak'}</strong> | RDN miesiące: <strong style="color:#1565c0">${rdnMonths.join(', ') || 'brak'}</strong>`;
+  }
+
+  // Tariff type name
+  const tariffNames = { flat: 'Stała', two_zone: '2-strefowa (C12a)', three_zone: '3-strefowa (C12b)', four_zone: '4-strefowa' };
+  const tariffLabel = tariffNames[tariffType] || tariffType;
+
+  // Build routing table
+  const rows = [];
+
+  // === PV ECONOMICS ===
+  rows.push(`<tr style="background:#e8f5e9">
+    <td style="padding:6px 10px;font-weight:700;color:#2e7d32;border-bottom:1px solid #c8e6c9">☀️ PV Ekonomia</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #c8e6c9">
+      Taryfa <strong>${tariffLabel}</strong> (${osdOperator || 'ręcznie'} / ${osdGroup || '?'})<br>
+      Stawka łączna: <strong>${summTotal} PLN/MWh</strong> (energia ${summEnergyAvg} + dystr. ${summDistAvg} + mocowa ${summCapacityVal})
+      ${pricingMode === 'hybrid_monthly' ? '<br>Tryb: <strong style="color:#ff6f00">HYBRYDOWY</strong>' + hybridInfo : ''}
+    </td>
+  </tr>`);
+
+  // === BESS AUTOKONSUMPCJA ===
+  rows.push(`<tr style="background:#e3f2fd">
+    <td style="padding:6px 10px;font-weight:700;color:#1565c0;border-bottom:1px solid #bbdefb">🔋 BESS Autokonsumpcja</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #bbdefb">
+      Stawka łączna: <strong>${summTotal} PLN/MWh</strong> (ta sama co PV — oszczędność = uniknięty import)
+    </td>
+  </tr>`);
+
+  // === BESS ARBITRAGE ===
+  let arbDesc = '<span style="color:#999">wyłączony</span>';
+  if (osdArb || rdnArb) {
+    const parts = [];
+    if (osdArb) parts.push(`<strong style="color:#4CAF50">OSD ToU</strong> (strefy ${tariffLabel})`);
+    if (rdnArb) parts.push(`<strong style="color:#1565c0">RDN Spot</strong> — ${rdnStatus}`);
+    arbDesc = parts.join(' + ');
+    if (pricingMode === 'hybrid_monthly' && osdArb && rdnArb) {
+      arbDesc += '<br><span style="color:#ff6f00;font-weight:600">HYBRID</span>: per-miesiąc OSD/RDN' + hybridInfo;
+    }
+  }
+  rows.push(`<tr style="background:#fff8e1">
+    <td style="padding:6px 10px;font-weight:700;color:#f57f17;border-bottom:1px solid #fff9c4">⚡ BESS Arbitraż</td>
+    <td style="padding:6px 10px;border-bottom:1px solid #fff9c4">${arbDesc}</td>
+  </tr>`);
+
+  // === BESS CAPACITY FEE ===
+  rows.push(`<tr style="background:#fce4ec">
+    <td style="padding:6px 10px;font-weight:700;color:#c62828">📊 Opłata mocowa</td>
+    <td style="padding:6px 10px">
+      ${capFee ? '<strong style="color:#2e7d32">WŁĄCZONA</strong>' : '<span style="color:#999">wyłączona</span>'}
+      — SOM: <strong>${(parseFloat(document.getElementById('capacitySomRate')?.value) || 0.2194).toFixed(4)} PLN/kWh</strong>
+    </td>
+  </tr>`);
+
+  // === RDN DATA STATUS ===
+  rows.push(`<tr style="background:#f3e5f5">
+    <td style="padding:6px 10px;font-weight:700;color:#6a1b9a">💹 Dane RDN</td>
+    <td style="padding:6px 10px">${rdnStatus}${rdnArb ? '' : ' <span style="color:#999">(nieużywane — arbitraż RDN wyłączony)</span>'}</td>
+  </tr>`);
+
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;border-radius:6px;overflow:hidden;border:1px solid #e0e0e0">${rows.join('')}</table>`;
+
+  // Show/hide and auto-update OSD vs RDN comparison panel
+  updateOsdVsRdnVisibility();
+}
+
+/**
+ * Show/hide the OSD vs RDN comparison panel based on data availability.
+ * Auto-update when both OSD tariff and RDN data are present.
+ */
+function updateOsdVsRdnVisibility() {
+  const panel = document.getElementById('osdVsRdnComparison');
+  if (!panel) return;
+
+  // Check if RDN data exists
+  let hasRdn = false;
+  try {
+    const raw = localStorage.getItem('rdn_hourly_prices');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      hasRdn = Array.isArray(arr) && arr.length >= 8760;
+    }
+  } catch (e) { /* ignore */ }
+
+  // Always show panel if RDN data loaded (user can compare)
+  if (hasRdn) {
+    panel.style.display = 'block';
+    updateOsdVsRdnComparison();
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+/**
+ * OSD vs RDN Profitability Comparison.
+ *
+ * Computes estimated annual BESS arbitrage revenue for:
+ * 1) OSD ToU mode: buy at offpeak rate, sell at peak rate (tariff spread)
+ * 2) RDN Spot mode: buy at P25 price, sell at P75 price (hourly volatility)
+ *
+ * Assumes a reference 1 MWh/1 MW BESS doing 1 cycle/day, 90% roundtrip efficiency.
+ */
+function updateOsdVsRdnComparison() {
+  const el = document.getElementById('osdVsRdnContent');
+  if (!el) return;
+
+  // --- Reference BESS params ---
+  const refCapacityMwh = 1.0;  // 1 MWh reference
+  const eta = parseFloat(document.getElementById('bessRoundtripEfficiency')?.value || 90) / 100;
+
+  // --- OSD Tariff rates ---
+  const tariffConfig = getTariffConfig();
+  const weekdayRates = getTariffHourlyRates('weekday');
+  const weekendRates = getTariffHourlyRates('weekend');
+
+  // --- RDN hourly prices ---
+  let rdnPrices = null;
+  try {
+    const raw = localStorage.getItem('rdn_hourly_prices');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length >= 8760) rdnPrices = arr.slice(0, 8760);
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!rdnPrices) {
+    el.innerHTML = '<em style="color:#c62828">Brak danych RDN — załaduj scenariusz RDN w zakładce "Ceny energii" by porównać.</em>';
+    return;
+  }
+
+  // --- Compute OSD annual arbitrage ---
+  // For each day of year: find max/min energy rate, compute spread * capacity * eta
+  const startDate = new Date(2025, 0, 1); // reference year
+  let osdTotalRevenue = 0;
+  let osdDaysTraded = 0;
+
+  for (let d = 0; d < 365; d++) {
+    const date = new Date(startDate.getTime() + d * 86400000);
+    const isWeekend = (date.getDay() === 0 || date.getDay() === 6);
+    const rates = isWeekend ? weekendRates : weekdayRates;
+
+    const maxRate = Math.max(...rates);
+    const minRate = Math.min(...rates);
+    const spread = maxRate - minRate;
+
+    if (spread > 0) {
+      // Buy 1/eta MWh at minRate, sell 1 MWh at maxRate
+      const dailyProfitPln = (maxRate - minRate / eta) * refCapacityMwh;
+      osdTotalRevenue += dailyProfitPln;
+      if (dailyProfitPln > 0) osdDaysTraded++;
+    }
+  }
+
+  // --- Compute RDN annual arbitrage ---
+  // For each day: find best buy hour and best sell hour
+  let rdnTotalRevenue = 0;
+  let rdnDaysTraded = 0;
+
+  for (let d = 0; d < 365; d++) {
+    const dayPrices = rdnPrices.slice(d * 24, (d + 1) * 24);
+    if (dayPrices.length < 24) continue;
+
+    const maxPrice = Math.max(...dayPrices);
+    const minPrice = Math.min(...dayPrices);
+
+    // Buy 1/eta MWh at min, sell 1 MWh at max
+    const dailyProfitPln = (maxPrice - minPrice / eta) * refCapacityMwh;
+    if (dailyProfitPln > 0) {
+      rdnTotalRevenue += dailyProfitPln;
+      rdnDaysTraded++;
+    }
+  }
+
+  // --- RDN statistics ---
+  const rdnSorted = [...rdnPrices].sort((a, b) => a - b);
+  const rdnAvg = rdnPrices.reduce((s, v) => s + v, 0) / rdnPrices.length;
+  const rdnP25 = rdnSorted[Math.floor(rdnPrices.length * 0.25)];
+  const rdnP50 = rdnSorted[Math.floor(rdnPrices.length * 0.50)];
+  const rdnP75 = rdnSorted[Math.floor(rdnPrices.length * 0.75)];
+  const rdnMin = rdnSorted[0];
+  const rdnMax = rdnSorted[rdnSorted.length - 1];
+
+  // --- OSD statistics ---
+  const osdAvgWeekday = weekdayRates.reduce((s, v) => s + v, 0) / 24;
+  const osdMax = Math.max(...weekdayRates);
+  const osdMin = Math.min(...weekdayRates);
+  const osdSpread = osdMax - osdMin;
+
+  // --- Winner ---
+  const osdWins = osdTotalRevenue >= rdnTotalRevenue;
+  const diff = Math.abs(osdTotalRevenue - rdnTotalRevenue);
+  const diffPct = rdnTotalRevenue > 0 ? (diff / Math.max(osdTotalRevenue, rdnTotalRevenue) * 100) : 0;
+
+  // --- Build HTML ---
+  const fmt = (v) => v.toFixed(0);
+  const fmtK = (v) => (v / 1000).toFixed(1);
+
+  const winnerColor = osdWins ? '#e65100' : '#1565c0';
+  const winnerLabel = osdWins ? 'OSD Taryfa' : 'RDN Spot';
+  const winnerIcon = osdWins ? '📋' : '💹';
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <!-- OSD Column -->
+      <div style="background:${osdWins ? 'linear-gradient(135deg,#fff3e0,#ffe0b2)' : '#fff'};border-radius:8px;padding:12px;border:2px solid ${osdWins ? '#ff9800' : '#e0e0e0'}">
+        <div style="font-weight:700;color:#e65100;font-size:13px;margin-bottom:8px">📋 OSD Taryfa (${tariffConfig.type === 'flat' ? 'stała' : tariffConfig.type === 'two_zone' ? '2-stref.' : tariffConfig.type === 'three_zone' ? '3-stref.' : '4-stref.'})</div>
+        <div style="font-size:11px;line-height:1.7">
+          Szczyt: <strong>${fmt(osdMax)} PLN/MWh</strong><br>
+          Pozaszczy: <strong>${fmt(osdMin)} PLN/MWh</strong><br>
+          Spread: <strong>${fmt(osdSpread)} PLN/MWh</strong><br>
+          Średnia: <strong>${fmt(osdAvgWeekday)} PLN/MWh</strong>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:rgba(255,152,0,0.1);border-radius:6px;text-align:center">
+          <div style="font-size:11px;color:#e65100;font-weight:600">Roczny przychód arbitraż</div>
+          <div style="font-size:22px;font-weight:900;color:#e65100">${fmtK(osdTotalRevenue)} tys. PLN</div>
+          <div style="font-size:10px;color:#999">na 1 MWh BESS, ${osdDaysTraded} dni handlowych</div>
+        </div>
+      </div>
+
+      <!-- RDN Column -->
+      <div style="background:${!osdWins ? 'linear-gradient(135deg,#e3f2fd,#bbdefb)' : '#fff'};border-radius:8px;padding:12px;border:2px solid ${!osdWins ? '#1976d2' : '#e0e0e0'}">
+        <div style="font-weight:700;color:#1565c0;font-size:13px;margin-bottom:8px">💹 RDN Spot (godzinowe)</div>
+        <div style="font-size:11px;line-height:1.7">
+          Min: <strong>${fmt(rdnMin)} PLN/MWh</strong> | Max: <strong>${fmt(rdnMax)} PLN/MWh</strong><br>
+          P25: <strong>${fmt(rdnP25)}</strong> | P50: <strong>${fmt(rdnP50)}</strong> | P75: <strong>${fmt(rdnP75)}</strong><br>
+          Spread P25-P75: <strong>${fmt(rdnP75 - rdnP25)} PLN/MWh</strong><br>
+          Średnia: <strong>${fmt(rdnAvg)} PLN/MWh</strong>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:rgba(25,118,210,0.1);border-radius:6px;text-align:center">
+          <div style="font-size:11px;color:#1565c0;font-weight:600">Roczny przychód arbitraż</div>
+          <div style="font-size:22px;font-weight:900;color:#1565c0">${fmtK(rdnTotalRevenue)} tys. PLN</div>
+          <div style="font-size:10px;color:#999">na 1 MWh BESS, ${rdnDaysTraded} dni handlowych</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Verdict -->
+    <div style="padding:10px 14px;background:${winnerColor};border-radius:8px;text-align:center">
+      <span style="font-size:14px;font-weight:800;color:white">
+        ${winnerIcon} ${winnerLabel} jest korzystniejszy o ${fmtK(diff)} tys. PLN/rok (+${diffPct.toFixed(0)}%)
+      </span>
+      <div style="font-size:10px;color:rgba(255,255,255,0.8);margin-top:4px">
+        Ref: 1 MWh BESS, η=${(eta*100).toFixed(0)}%, 1 cykl/dzień, ceny bez opłat dystr. Rzeczywisty wynik zależy od profilu obciążenia i strategii LP.
+      </div>
+    </div>
+  `;
 }
 
 // Show status message
@@ -2019,17 +2811,13 @@ window.addEventListener('message', (event) => {
   }
 });
 
-// Utility function to get CAPEX for capacity (can be called from other modules)
-function getCapexForCapacity(capacityKwp) {
-  const settings = getCurrentSettings();
-  for (const tier of settings.capexTiers) {
-    if (capacityKwp >= tier.min && capacityKwp <= tier.max) {
-      return tier.capex;
-    }
-  }
-  // Fallback
-  if (capacityKwp > 50000) return settings.capexTiers[6].capex;
-  return settings.capexTiers[0].capex;
+// Utility function to get CAPEX sale price [PLN/kWp] for capacity and optional pvType.
+// Delegates to getCapexForCapacityAndType (NEW format with capexPerType + capexRanges).
+// This is the SSoT — other modules should call window.PVSettings.getCapexForCapacity().
+function getCapexForCapacity(capacityKwp, pvType) {
+  const type = pvType || 'ground_s';
+  const result = getCapexForCapacityAndType(capacityKwp, type);
+  return result.sale;
 }
 
 // Utility function to get DC/AC ratio for capacity and installation type
@@ -2309,7 +3097,10 @@ function getPolishHolidays(year) {
   holidays.push(new Date(year, 10, 11)); // Święto Niepodległości
   holidays.push(new Date(year, 11, 25)); // Boże Narodzenie (1 dzień)
   holidays.push(new Date(year, 11, 26)); // Boże Narodzenie (2 dzień)
-  holidays.push(new Date(year, 11, 24)); // Wigilia (treated as holiday for capacity fee)
+  // Wigilia — only from 2025 (Dz.U. 2024 poz. 1911)
+  if (year >= 2025) {
+    holidays.push(new Date(year, 11, 24));
+  }
 
   // Movable holidays (Easter-based)
   const easter = getEasterDate(year);
@@ -2381,7 +3172,7 @@ function isPeakHour(date) {
 // ============================================================================
 
 // Calculate consumption profile (ratio of peak vs off-peak consumption)
-function calculateConsumptionProfile(hourlyData, startDate = '2024-01-01') {
+function calculateConsumptionProfile(hourlyData, startDate = '2025-01-01') {
   let peakConsumption = 0;
   let offPeakConsumption = 0;
 
@@ -2449,7 +3240,7 @@ function classifyCapacityFeeGroup(peakRatio) {
 }
 
 // Calculate capacity fee using new K1-K4 system
-function calculateCapacityFee(hourlyData, startDate = '2024-01-01') {
+function calculateCapacityFee(hourlyData, startDate = '2025-01-01') {
   const settings = getCurrentSettings();
 
   // Calculate profile
@@ -4080,10 +4871,12 @@ function onTariffTypeChange() {
   const flatZone = document.getElementById('tariffFlatZone');
   const twoZone = document.getElementById('tariffTwoZone');
   const threeZone = document.getElementById('tariffThreeZone');
+  const fourZone = document.getElementById('tariffFourZone');
 
   if (flatZone) flatZone.style.display = type === 'flat' ? 'block' : 'none';
   if (twoZone) twoZone.style.display = type === 'two_zone' ? 'block' : 'none';
   if (threeZone) threeZone.style.display = type === 'three_zone' ? 'block' : 'none';
+  if (fourZone) fourZone.style.display = type === 'four_zone' ? 'block' : 'none';
 
   // Update tariff name suggestion
   const nameEl = document.getElementById('tariffName');
@@ -4091,6 +4884,7 @@ function onTariffTypeChange() {
     if (type === 'flat') nameEl.value = 'C11';
     else if (type === 'two_zone') nameEl.value = 'C12a';
     else if (type === 'three_zone') nameEl.value = 'C12b';
+    else if (type === 'four_zone') nameEl.value = 'C24';
   }
 
   updateTariffVisualization();
@@ -4191,6 +4985,59 @@ function updateTariffVisualization() {
         segmentStart = h;
       }
     }
+
+    // Update dynamic peak hours label
+    const threeZonePeakLabel = document.getElementById('threeZonePeakHoursLabel');
+    if (threeZonePeakLabel) threeZonePeakLabel.textContent = `${String(peak1Start).padStart(2,'0')}-${String(peak1End).padStart(2,'0')}, ${String(peak2Start).padStart(2,'0')}-${String(peak2End).padStart(2,'0')}`;
+  } else if (type === 'four_zone') {
+    const peak1Start = parseInt(document.getElementById('tariffFourPeakStart')?.value || 7);
+    const peak1End = parseInt(document.getElementById('tariffFourPeakEnd')?.value || 13);
+    const peak2Start = parseInt(document.getElementById('tariffFourPeakStart2')?.value || 16);
+    const peak2End = parseInt(document.getElementById('tariffFourPeakEnd2')?.value || 21);
+    const valleyStart = parseInt(document.getElementById('tariffFourValleyStart')?.value || 1);
+    const valleyEnd = parseInt(document.getElementById('tariffFourValleyEnd')?.value || 5);
+
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+
+    // Build hour-by-hour zone array
+    const zones = [];
+    for (let h = 0; h < 24; h++) {
+      if (h >= valleyStart && h < valleyEnd) {
+        zones.push({ zone: 'valley', rate: valleyRate });
+      } else if ((h >= peak1Start && h < peak1End) || (h >= peak2Start && h < peak2End)) {
+        zones.push({ zone: 'peak', rate: peakRate });
+      } else {
+        zones.push({ zone: 'day', rate: dayRate });
+      }
+    }
+
+    // Render segments
+    let currentZone = zones[0].zone;
+    let segmentStart = 0;
+    for (let h = 1; h <= 24; h++) {
+      const nextZone = h < 24 ? zones[h].zone : null;
+      if (nextZone !== currentZone) {
+        const width = ((h - segmentStart) / 24) * 100;
+        const left = (segmentStart / 24) * 100;
+        const rate = zones[segmentStart].rate;
+        const label = currentZone === 'peak' ? 'Szczyt' : currentZone === 'valley' ? 'Dolina' : 'Pozost.';
+        const zoneClass = currentZone === 'valley' ? 'zone-valley' : `zone-${currentZone}`;
+        html += `<div class="timeline-segment ${zoneClass}" style="left:${left}%;width:${width}%">
+          <span>${label} ${rate}</span>
+        </div>`;
+        currentZone = nextZone;
+        segmentStart = h;
+      }
+    }
+
+    // Update dynamic labels
+    const peakLabel = document.getElementById('fourZonePeakHoursLabel');
+    if (peakLabel) peakLabel.textContent = `${String(peak1Start).padStart(2,'0')}-${String(peak1End).padStart(2,'0')}, ${String(peak2Start).padStart(2,'0')}-${String(peak2End).padStart(2,'0')}`;
+    const valleyLabel = document.getElementById('fourZoneValleyHoursLabel');
+    if (valleyLabel) valleyLabel.textContent = `${String(valleyStart).padStart(2,'0')}-${String(valleyEnd).padStart(2,'0')} + weekendy`;
   }
 
   container.innerHTML = html;
@@ -4228,6 +5075,15 @@ function updateTariffStats() {
     avgRate = peakRate * 0.35 + partialRate * 0.25 + offPeakRate * 0.40;
     nightSavings = Math.round((1 - offPeakRate / peakRate) * 100);
     peakHours = 10; // Typical 3-zone peak hours
+  } else if (type === 'four_zone') {
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+
+    avgRate = peakRate * 0.18 + dayRate * 0.15 + offPeakRate * 0.10 + valleyRate * 0.57;
+    nightSavings = Math.round((1 - valleyRate / peakRate) * 100);
+    peakHours = 11;
   }
 
   // Update display
@@ -4264,6 +5120,12 @@ function updateTariffAverageRate() {
     const offPeakRate = parseFloat(document.getElementById('tariffOffPeakRate')?.value || 400);
     // Assuming 40% peak / 25% partial / 35% off-peak
     avgRate = peakRate * 0.4 + partialRate * 0.25 + offPeakRate * 0.35;
+  } else if (type === 'four_zone') {
+    const peakRate = parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950);
+    const dayRate = parseFloat(document.getElementById('tariffFourDayRate')?.value || 700);
+    const offPeakRate = parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400);
+    const valleyRate = parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200);
+    avgRate = peakRate * 0.18 + dayRate * 0.15 + offPeakRate * 0.10 + valleyRate * 0.57;
   }
 
   const avgEl = document.getElementById('tariffAverageRate');
@@ -4273,6 +5135,70 @@ function updateTariffAverageRate() {
 /**
  * Get current tariff configuration
  */
+/**
+ * Build distributionConfig from UI fields (distribution time windows).
+ * Separate from energy tariffConfig — these define OSD distribution zones.
+ */
+function getDistributionConfig() {
+  const type = document.getElementById('distTariffType')?.value || 'three_zone';
+  return {
+    type: type,
+    twoZone: {
+      weekday: {
+        start: parseInt(document.getElementById('distDayStartWeekday')?.value || 6),
+        end: parseInt(document.getElementById('distDayEndWeekday')?.value || 22)
+      },
+      weekend: {
+        start: parseInt(document.getElementById('distDayStartWeekend')?.value || 6),
+        end: parseInt(document.getElementById('distDayEndWeekend')?.value || 22)
+      }
+    },
+    threeZone: {
+      peak1: {
+        start: parseInt(document.getElementById('distPeak1Start')?.value || 7),
+        end: parseInt(document.getElementById('distPeak1End')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('distPeak2Start')?.value || 16),
+        end: parseInt(document.getElementById('distPeak2End')?.value || 21)
+      },
+      weekendOffPeak: document.getElementById('distWeekendOffPeak')?.checked !== false
+    },
+    fourZone: {
+      peak1: {
+        start: parseInt(document.getElementById('distFourPeak1Start')?.value || 7),
+        end: parseInt(document.getElementById('distFourPeak1End')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('distFourPeak2Start')?.value || 16),
+        end: parseInt(document.getElementById('distFourPeak2End')?.value || 21)
+      },
+      valley: {
+        start: parseInt(document.getElementById('distValleyStart')?.value || 1),
+        end: parseInt(document.getElementById('distValleyEnd')?.value || 5)
+      }
+    }
+  };
+}
+
+/**
+ * Toggle visibility of distribution zone panels based on distTariffType.
+ */
+function onDistTariffTypeChange() {
+  const type = document.getElementById('distTariffType')?.value || 'three_zone';
+  const twoZoneEl = document.getElementById('distTwoZonePanel');
+  const threeZoneEl = document.getElementById('distThreeZonePanel');
+  const fourZoneEl = document.getElementById('distFourZonePanel');
+  const valleyItemEl = document.getElementById('distributionValleyItem');
+  if (twoZoneEl) twoZoneEl.style.display = type === 'two_zone' ? '' : 'none';
+  if (threeZoneEl) threeZoneEl.style.display = type === 'three_zone' ? '' : 'none';
+  if (fourZoneEl) fourZoneEl.style.display = type === 'four_zone' ? '' : 'none';
+  if (valleyItemEl) valleyItemEl.style.display = type === 'four_zone' ? '' : 'none';
+  // Update distribution average weights
+  updateDistributionAverage();
+  markUnsaved();
+}
+
 function getTariffConfig() {
   const type = document.getElementById('tariffType')?.value || 'two_zone';
 
@@ -4307,6 +5233,24 @@ function getTariffConfig() {
       partial: {
         start: parseInt(document.getElementById('tariffPartialStart')?.value || 13),
         end: parseInt(document.getElementById('tariffPartialEnd')?.value || 17)
+      }
+    },
+    fourZone: {
+      peakRate: parseFloat(document.getElementById('tariffFourPeakRate')?.value || 950),
+      dayRate: parseFloat(document.getElementById('tariffFourDayRate')?.value || 700),
+      offPeakRate: parseFloat(document.getElementById('tariffFourOffPeakRate')?.value || 400),
+      valleyRate: parseFloat(document.getElementById('tariffFourValleyRate')?.value || 200),
+      peak1: {
+        start: parseInt(document.getElementById('tariffFourPeakStart')?.value || 7),
+        end: parseInt(document.getElementById('tariffFourPeakEnd')?.value || 13)
+      },
+      peak2: {
+        start: parseInt(document.getElementById('tariffFourPeakStart2')?.value || 16),
+        end: parseInt(document.getElementById('tariffFourPeakEnd2')?.value || 21)
+      },
+      valley: {
+        start: parseInt(document.getElementById('tariffFourValleyStart')?.value || 1),
+        end: parseInt(document.getElementById('tariffFourValleyEnd')?.value || 5)
       }
     }
   };
@@ -4346,9 +5290,277 @@ function getTariffHourlyRates(dayType = 'weekday') {
         rates[h] = config.threeZone.offPeakRate;
       }
     }
+  } else if (config.type === 'four_zone') {
+    const { peak1, peak2, valley } = config.fourZone;
+    for (let h = 0; h < 24; h++) {
+      if (h >= valley.start && h < valley.end) {
+        rates[h] = config.fourZone.valleyRate;
+      } else if ((h >= peak1.start && h < peak1.end) || (h >= peak2.start && h < peak2.end)) {
+        rates[h] = config.fourZone.peakRate;
+      } else {
+        rates[h] = config.fourZone.dayRate;
+      }
+    }
   }
 
   return rates;
+}
+
+// ======== Fixed Monthly Fees Functions ========
+
+/**
+ * Read fixed monthly fees config from DOM inputs.
+ */
+function getFixedMonthlyFeesConfig() {
+  return {
+    contractedPowerKw: parseFloat(document.getElementById('contractedPowerKw')?.value) || 50,
+    distFixedRatePerKwMonth: parseFloat(document.getElementById('distFixedRatePerKw')?.value) || 9.14,
+    osdSubscriptionFeeMonth: parseFloat(document.getElementById('osdSubscriptionFee')?.value) || 5.54,
+    transitionFeeMonth: parseFloat(document.getElementById('transitionFee')?.value) || 0,
+    supplierTradeFeeMonth: parseFloat(document.getElementById('supplierTradeFee')?.value) || 0
+  };
+}
+
+/**
+ * Recalculate and display the total fixed monthly fee.
+ * Called from oninput handlers on each fixed monthly fee field.
+ */
+function updateFixedMonthlyTotal() {
+  const cfg = getFixedMonthlyFeesConfig();
+  const total = (cfg.distFixedRatePerKwMonth * cfg.contractedPowerKw) +
+                cfg.osdSubscriptionFeeMonth +
+                cfg.transitionFeeMonth +
+                cfg.supplierTradeFeeMonth;
+  const el = document.getElementById('totalFixedMonthly');
+  if (el) el.value = total.toFixed(2);
+}
+
+// ============================================================================
+// OSD Operator + Tariff Group Selector (auto-fill from tariff_presets.json)
+// ============================================================================
+
+let tariffPresetsData = null;
+
+async function loadTariffPresets() {
+  if (tariffPresetsData) return tariffPresetsData;
+  try {
+    const response = await fetch('tariff_presets.json');
+    tariffPresetsData = await response.json();
+    console.log('📋 Tariff presets loaded:', Object.keys(tariffPresetsData.operators));
+    return tariffPresetsData;
+  } catch (e) {
+    console.error('Failed to load tariff presets:', e);
+    return null;
+  }
+}
+
+async function populateOsdOperatorDropdown() {
+  const data = await loadTariffPresets();
+  if (!data) return;
+
+  const select = document.getElementById('osdOperator');
+  if (!select) return;
+
+  // Keep the "manual" option, clear the rest
+  select.innerHTML = '<option value="">-- Wybierz ręcznie --</option>';
+
+  for (const [key, op] of Object.entries(data.operators)) {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = op.label;
+    select.appendChild(option);
+  }
+}
+
+async function onOsdOperatorChange() {
+  const operatorKey = document.getElementById('osdOperator')?.value;
+  const tariffSelect = document.getElementById('osdTariffGroup');
+  if (!tariffSelect) return;
+
+  // Clear tariff dropdown
+  tariffSelect.innerHTML = '';
+
+  if (!operatorKey) {
+    tariffSelect.innerHTML = '<option value="">-- Najpierw wybierz operatora --</option>';
+    return;
+  }
+
+  const data = await loadTariffPresets();
+  if (!data || !data.operators[operatorKey]) return;
+
+  const tariffs = data.operators[operatorKey].tariffs;
+  tariffSelect.innerHTML = '<option value="">-- Wybierz taryfę --</option>';
+
+  for (const [tariffKey, tariff] of Object.entries(tariffs)) {
+    const option = document.createElement('option');
+    option.value = tariffKey;
+    option.textContent = `${tariffKey} — ${tariff.label.split('—')[1]?.trim() || tariff.voltage}`;
+    tariffSelect.appendChild(option);
+  }
+
+  markUnsaved();
+}
+
+async function onOsdTariffGroupChange() {
+  const operatorKey = document.getElementById('osdOperator')?.value;
+  const tariffKey = document.getElementById('osdTariffGroup')?.value;
+
+  if (!operatorKey || !tariffKey) return;
+
+  const data = await loadTariffPresets();
+  if (!data) return;
+
+  const tariff = data.operators[operatorKey]?.tariffs[tariffKey];
+  if (!tariff) return;
+
+  console.log(`📋 Auto-filling from preset: ${operatorKey} / ${tariffKey}`, tariff);
+
+  // 1. Distribution zone rates from touRates
+  if (tariff.touRates) {
+    setValueById('distributionPeak', tariff.touRates.peakRate || tariff.touRates.flatRate);
+    setValueById('distributionDay', tariff.touRates.partialRate || tariff.touRates.dayRate || tariff.touRates.flatRate);
+    setValueById('distributionNight', tariff.touRates.offPeakRate || tariff.touRates.nightRate || tariff.touRates.flatRate);
+    if (tariff.touRates.valleyRate !== undefined) {
+      setValueById('distributionValley', tariff.touRates.valleyRate);
+    }
+  }
+  // Weighted average (from preset)
+  setValueById('distribution', tariff.variableFees.distribution);
+  setValueById('qualityFee', tariff.variableFees.qualityFee);
+
+  // 2. Common fees from presets (OZE, kogeneracja, akcyza) - statutory 2026
+  if (data.commonFees) {
+    setValueById('ozeFee', data.commonFees.ozeFee);
+    setValueById('cogenerationFee', data.commonFees.cogenerationFee);
+    setValueById('exciseTax', data.commonFees.exciseTax);
+  }
+
+  // 3. Fixed monthly fees (section "Opłaty Stałe Miesięczne")
+  if (tariff.fixedFees) {
+    setValueById('distFixedRatePerKw', tariff.fixedFees.distFixedRatePerKwMonth);
+    setValueById('osdSubscriptionFee', tariff.fixedFees.osdSubscriptionFeeMonth);
+    setValueById('transitionFee', tariff.fixedFees.transitionFeeMonth);
+  }
+
+  // 4. Distribution time windows (OSD tariff zones — separate from energy ToU)
+  if (tariff.touRates) {
+    const mappedType = tariff.tariffType || 'flat';
+
+    // Fill DISTRIBUTION time windows from OSD preset
+    setValueById('distTariffType', mappedType);
+    if (mappedType === 'two_zone') {
+      if (tariff.touRates.weekday) {
+        setValueById('distDayStartWeekday', tariff.touRates.weekday.dayStart || 6);
+        setValueById('distDayEndWeekday', tariff.touRates.weekday.dayEnd || 22);
+      }
+      if (tariff.touRates.weekend) {
+        setValueById('distDayStartWeekend', tariff.touRates.weekend.dayStart || 6);
+        setValueById('distDayEndWeekend', tariff.touRates.weekend.dayEnd || 22);
+      }
+    } else if (mappedType === 'three_zone') {
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('distPeak1Start', tariff.touRates.weekday.peak1Start);
+          setValueById('distPeak1End', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('distPeak2Start', tariff.touRates.weekday.peak2Start);
+          setValueById('distPeak2End', tariff.touRates.weekday.peak2End);
+        }
+      }
+      // 3-zone weekends = off-peak by default (most OSD tariffs)
+      const woeEl = document.getElementById('distWeekendOffPeak');
+      const weekendIsOffPeak = !tariff.touRates.weekend?.peak1Start;
+      if (woeEl) woeEl.checked = weekendIsOffPeak;
+    } else if (mappedType === 'four_zone') {
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('distFourPeak1Start', tariff.touRates.weekday.peak1Start);
+          setValueById('distFourPeak1End', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('distFourPeak2Start', tariff.touRates.weekday.peak2Start);
+          setValueById('distFourPeak2End', tariff.touRates.weekday.peak2End);
+        }
+        if (tariff.touRates.weekday.valleyStart !== undefined) {
+          setValueById('distValleyStart', tariff.touRates.weekday.valleyStart);
+          setValueById('distValleyEnd', tariff.touRates.weekday.valleyEnd);
+        }
+      }
+    }
+    onDistTariffTypeChange();
+  }
+
+  // 5. Sync Energy ToU tariff type with OSD tariff type
+  if (tariff.tariffType) {
+    // Map OSD type to energy ToU type
+    const energyTouType = tariff.tariffType;
+    const tariffTypeEl = document.getElementById('tariffType');
+    if (tariffTypeEl) {
+      tariffTypeEl.value = energyTouType;
+      onTariffTypeChange();
+    }
+
+    // If four_zone, populate energy four_zone fields from preset
+    if (tariff.tariffType === 'four_zone' && tariff.touRates) {
+      setValueById('tariffFourPeakRate', tariff.touRates.peakRate || 950);
+      setValueById('tariffFourDayRate', tariff.touRates.partialRate || tariff.touRates.dayRate || 700);
+      setValueById('tariffFourOffPeakRate', tariff.touRates.offPeakRate || tariff.touRates.nightRate || 400);
+      setValueById('tariffFourValleyRate', tariff.touRates.valleyRate || 200);
+      if (tariff.touRates.weekday) {
+        if (tariff.touRates.weekday.peak1Start !== undefined) {
+          setValueById('tariffFourPeakStart', tariff.touRates.weekday.peak1Start);
+          setValueById('tariffFourPeakEnd', tariff.touRates.weekday.peak1End);
+        }
+        if (tariff.touRates.weekday.peak2Start !== undefined) {
+          setValueById('tariffFourPeakStart2', tariff.touRates.weekday.peak2Start);
+          setValueById('tariffFourPeakEnd2', tariff.touRates.weekday.peak2End);
+        }
+        if (tariff.touRates.weekday.valleyStart !== undefined) {
+          setValueById('tariffFourValleyStart', tariff.touRates.weekday.valleyStart);
+          setValueById('tariffFourValleyEnd', tariff.touRates.weekday.valleyEnd);
+        }
+      }
+      updateTariffVisualization();
+    }
+
+    // Fill energy ToU time windows from OSD preset
+    if (tariff.touRates?.weekday) {
+      const wd = tariff.touRates.weekday;
+      if (energyTouType === 'two_zone') {
+        setValueById('tariffDayStartWeekday', wd.dayStart || 6);
+        setValueById('tariffDayEndWeekday', wd.dayEnd || 21);
+        if (tariff.touRates.weekend) {
+          setValueById('tariffDayStartWeekend', tariff.touRates.weekend.dayStart || 6);
+          setValueById('tariffDayEndWeekend', tariff.touRates.weekend.dayEnd || 21);
+        }
+      } else if (energyTouType === 'three_zone') {
+        if (wd.peak1Start !== undefined) {
+          setValueById('tariffPeakStart', wd.peak1Start);
+          setValueById('tariffPeakEnd', wd.peak1End);
+        }
+        if (wd.peak2Start !== undefined) {
+          setValueById('tariffPeakStart2', wd.peak2Start);
+          setValueById('tariffPeakEnd2', wd.peak2End);
+        }
+      }
+    }
+  }
+
+  // 6. Update tariff name
+  setValueById('tariffName', tariffKey);
+
+  // 7. Trigger visualization and average recalculation for energy ToU
+  if (typeof updateTariffVisualization === 'function') updateTariffVisualization();
+  if (typeof updateTariffAverageRate === 'function') updateTariffAverageRate();
+
+  // 6. Recalculate totals
+  updateTotalEnergyPrice();
+  updateFixedMonthlyTotal();
+
+  markUnsaved();
+  updateEnergyCostSummary();
+  console.log(`✅ Preset applied: ${operatorKey} ${tariffKey} — dystr.szczyt=${tariff.touRates?.peakRate}, dzień=${tariff.touRates?.partialRate}, noc=${tariff.touRates?.offPeakRate}, jakość=${tariff.variableFees.qualityFee}`);
 }
 
 // Make tariff functions globally available
@@ -4357,10 +5569,114 @@ window.getTariffConfig = getTariffConfig;
 window.getTariffHourlyRates = getTariffHourlyRates;
 window.updateTariffVisualization = updateTariffVisualization;
 window.updateTariffAverageRate = updateTariffAverageRate;
+window.updateFixedMonthlyTotal = updateFixedMonthlyTotal;
+window.onOsdOperatorChange = onOsdOperatorChange;
+window.onOsdTariffGroupChange = onOsdTariffGroupChange;
+window.updateDistributionAverage = updateDistributionAverage;
+window.onDistTariffTypeChange = onDistTariffTypeChange;
+window.getDistributionConfig = getDistributionConfig;
+window.switchEnergyTab = switchEnergyTab;
+window.navigateToEnergyTab = navigateToEnergyTab;
+window.updateEnergyCostSummary = updateEnergyCostSummary;
+
+/**
+ * Switch between energy cost tabs in the unified panel.
+ */
+function switchEnergyTab(tabId, btn) {
+  document.querySelectorAll('.energy-tab-panel').forEach(p => p.style.display = 'none');
+  const panel = document.getElementById('energyTab_' + tabId);
+  if (panel) panel.style.display = '';
+  document.querySelectorAll('#energyTabBar .energy-tab').forEach(t => {
+    t.style.color = '#666'; t.style.fontWeight = '600'; t.style.borderBottomColor = 'transparent';
+  });
+  if (btn) {
+    btn.style.color = '#1565c0'; btn.style.fontWeight = '700'; btn.style.borderBottomColor = '#1565c0';
+  }
+}
+
+/**
+ * Navigate to a specific energy tab from the summary tiles.
+ * Finds the correct tab button and triggers switchEnergyTab with scroll.
+ */
+function navigateToEnergyTab(tabId) {
+  const tabBar = document.getElementById('energyTabBar');
+  if (!tabBar) return;
+  const buttons = tabBar.querySelectorAll('.energy-tab');
+  const tabMap = ['dist', 'tou', 'pricing', 'fees', 'capacity', 'monthly'];
+  const idx = tabMap.indexOf(tabId);
+  const btn = idx >= 0 ? buttons[idx] : null;
+  switchEnergyTab(tabId, btn);
+  const panel = document.getElementById('energyTab_' + tabId);
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * Update the summary card in the unified energy cost panel.
+ */
+function updateEnergyCostSummary() {
+  const v = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  const distP = v('distributionPeak'), distD = v('distributionDay'), distN = v('distributionNight'), distV = v('distributionValley');
+  const quality = v('qualityFee'), oze = v('ozeFee'), cogen = v('cogenerationFee'), excise = v('exciseTax');
+  const tariffAvgEl = document.getElementById('tariffAverageRate');
+  const distAvg = Math.round(v('distribution'));
+  const energyAvg = tariffAvgEl ? Math.round(parseFloat(tariffAvgEl.textContent) || 0) : 0;
+  const statutory = Math.round(quality + oze + cogen + excise);
+  const som = v('somRate') || 0.2194;
+  const capacityVal = Math.round(som * 1000);
+  const total = distAvg + energyAvg + statutory + capacityVal;
+
+  el('summDistAvg', distAvg);
+  el('summEnergyAvg', energyAvg);
+  el('summStatutory', statutory);
+  el('summCapacityVal', capacityVal);
+  el('summTotal', total);
+  el('summFixedMonthly', Math.round(v('totalFixedMonthly')));
+  const distType = document.getElementById('distTariffType')?.value || 'three_zone';
+  const valleyStr = distType === 'four_zone' ? ` | dolina ${Math.round(distV)}` : '';
+  el('summDistZones', `szczyt ${Math.round(distP)} | dzień ${Math.round(distD)} | noc ${Math.round(distN)}${valleyStr}`);
+  const sH = parseInt(document.getElementById('selectedHoursStart')?.value) || 7;
+  const eH = parseInt(document.getElementById('selectedHoursEnd')?.value) || 22;
+  el('summCapacity', `${capacityVal} PLN/MWh (${sH}-${eH} Pn-Pt)`);
+}
+
+/**
+ * Compute weighted average distribution from 3 zone fields.
+ * Approximate weights: peak ~20%, day ~40%, night ~40% (typical Polish tariff).
+ * For flat tariffs all 3 are equal so weights don't matter.
+ */
+function updateDistributionAverage() {
+  const peak = parseFloat(document.getElementById('distributionPeak')?.value) || 0;
+  const day = parseFloat(document.getElementById('distributionDay')?.value) || 0;
+  const night = parseFloat(document.getElementById('distributionNight')?.value) || 0;
+  const valley = parseFloat(document.getElementById('distributionValley')?.value) || 0;
+
+  // Use distribution zone type to determine weights
+  const distType = document.getElementById('distTariffType')?.value || 'flat';
+  let avg;
+  if (distType === 'flat') {
+    avg = peak; // all zones should be equal for flat
+  } else if (distType === 'two_zone') {
+    // day ~60%, night ~40%
+    avg = day * 0.6 + night * 0.4;
+  } else if (distType === 'four_zone') {
+    // four_zone: peak ~18%, day ~15%, night ~10%, valley ~57% (deep night + weekends)
+    avg = peak * 0.18 + day * 0.15 + night * 0.10 + valley * 0.57;
+  } else {
+    // three_zone: peak ~20%, day ~35%, night ~45%
+    avg = peak * 0.20 + day * 0.35 + night * 0.45;
+  }
+
+  setValueById('distribution', Math.round(avg * 100) / 100);
+  updateTotalEnergyPrice();
+  markUnsaved();
+}
 
 // Initialize tariff section and add event listeners
 document.addEventListener('DOMContentLoaded', function() {
   initTariffSection();
+  populateOsdOperatorDropdown();
+  setTimeout(updateEnergyCostSummary, 500); // update summary after init
 
   // Add change listeners for visualization updates
   const tariffInputs = [
@@ -4388,4 +5704,433 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 });
+
+// ============================================================================
+// RDN Arbitrage ↔ Ceny RDN widget validation
+// ============================================================================
+
+/**
+ * Check if RDN hourly prices are available for BESS arbitrage.
+ * Called when user toggles the RDN arbitrage checkbox.
+ */
+function checkRdnDataForArbitrage() {
+  const statusEl = document.getElementById('rdnArbitrageStatus');
+  const overlayStatusEl = document.getElementById('rdnOverlayStatus');
+
+  const checkbox = document.getElementById('bessPriceArbitrageEnabled');
+  const isEnabled = checkbox?.checked;
+
+  // Check if RDN prices are cached from "Ceny RDN" widget
+  let hasData = false;
+  let dataLabel = '';
+  try {
+    const cachedInfo = localStorage.getItem('rdn_scenario_info');
+    const cachedPrices = localStorage.getItem('rdn_hourly_prices');
+    if (cachedInfo && cachedPrices) {
+      const info = JSON.parse(cachedInfo);
+      const prices = JSON.parse(cachedPrices);
+      if (prices.length >= 8000) {
+        hasData = true;
+        dataLabel = `${info.scenarioName || 'RDN'} — ${prices.length} godz., śr. ${(info.avgPrice || 0).toFixed(0)} PLN/MWh`;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  const okMsg = `<span style="color:#2e7d32">✓ ${dataLabel}</span>`;
+  const noDataMsg = '<span style="color:#c62828">⚠ Brak danych RDN — wgraj ceny w sekcji "Ceny RDN" poniżej</span>';
+  const offMsg = 'Ceny z widgetu "Ceny RDN" poniżej';
+
+  if (statusEl) {
+    statusEl.innerHTML = !isEnabled ? offMsg : (hasData ? okMsg : noDataMsg);
+  }
+  if (overlayStatusEl) {
+    overlayStatusEl.innerHTML = !isEnabled ? offMsg : (hasData ? okMsg : noDataMsg);
+  }
+}
+
+// ============================================================================
+// RDN Dynamic Pricing - Rynek Dnia Następnego (Day-Ahead Market)
+// ============================================================================
+
+document.addEventListener('DOMContentLoaded', function() {
+  // RDN enabled checkbox → toggle panel
+  const rdnCheckbox = document.getElementById('rdnPricingEnabled');
+  const rdnPanel = document.getElementById('rdnPricingPanel');
+  if (rdnCheckbox && rdnPanel) {
+    rdnCheckbox.addEventListener('change', function() {
+      rdnPanel.style.display = this.checked ? 'block' : 'none';
+      if (this.checked) {
+        loadSavedRdnScenarios();
+      }
+      markUnsaved();
+    });
+  }
+
+  // RDN file upload handler
+  const rdnFileInput = document.getElementById('rdnFileInput');
+  if (rdnFileInput) {
+    rdnFileInput.addEventListener('change', handleRdnFileUpload);
+  }
+
+  // RDN scenario select handler
+  const rdnSelect = document.getElementById('rdnScenarioSelect');
+  if (rdnSelect) {
+    rdnSelect.addEventListener('change', function() {
+      const scenarioId = parseInt(this.value);
+      if (scenarioId) {
+        selectRdnScenario(scenarioId);
+      } else {
+        clearRdnScenarioInfo();
+      }
+    });
+  }
+
+  // Restore RDN state from config
+  restoreRdnState();
+});
+
+/**
+ * Handle RDN CSV/Excel file upload
+ */
+async function handleRdnFileUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const statusEl = document.getElementById('rdnUploadStatus');
+  if (statusEl) statusEl.textContent = 'Wysyłanie...';
+
+  // Get scenario metadata from UI inputs
+  const scenarioName = document.getElementById('rdnScenarioName')?.value?.trim()
+    || file.name.replace(/\.(csv|xlsx|xls)$/i, '');
+  const scenarioYear = parseInt(document.getElementById('rdnScenarioYear')?.value) || 2025;
+  const scenarioType = document.getElementById('rdnScenarioType')?.value || 'historical';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  // Build URL with required query parameters
+  const params = new URLSearchParams({
+    name: scenarioName,
+    year: scenarioYear,
+    scenario_type: scenarioType
+  });
+
+  try {
+    const response = await fetch(`/api/db/prices/upload-tge-csv?${params.toString()}`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errText}`);
+    }
+
+    const result = await response.json();
+    console.log('RDN upload result:', result);
+
+    const stats = result.stats || {};
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#2e7d32">Wgrano: ${scenarioName} (${result.data_points || '?'} godzin, śr. ${stats.avg_price?.toFixed(0) || '?'} PLN/MWh)</span>`;
+    }
+
+    // Refresh scenarios list and auto-select the new one
+    await loadSavedRdnScenarios();
+
+    if (result.id) {
+      const rdnSelect = document.getElementById('rdnScenarioSelect');
+      if (rdnSelect) {
+        rdnSelect.value = result.id;
+        await selectRdnScenario(result.id);
+      }
+    }
+  } catch (err) {
+    console.error('RDN upload error:', err);
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#c62828">Błąd: ${err.message}</span>`;
+    }
+  }
+
+  // Reset file input
+  event.target.value = '';
+}
+
+/**
+ * Download CSV template for RDN price upload
+ * Generates a sample CSV matching TGE Fixing format: Date;Fixing 1
+ * Format: D.MM.YYYY HH:MM (European, matching real TGE exports)
+ */
+function downloadRdnTemplate() {
+  const year = parseInt(document.getElementById('rdnScenarioYear')?.value) || 2025;
+
+  // Use semicolon separator and European format to match real TGE files
+  const lines = ['Date;Fixing 1'];
+
+  // Realistic RDN hourly price profile [PLN/MWh]
+  const samplePrices = [
+    // Night (00-05): low/negative (renewables oversupply)
+    180, 150, 130, 120, 125, 140,
+    // Morning ramp (06-09): rising demand
+    220, 310, 420, 480,
+    // Midday solar dip (10-14): solar pushes prices down
+    390, 350, 320, 310, 330,
+    // Evening peak (15-20): highest (no solar + peak demand)
+    420, 510, 580, 620, 560, 490,
+    // Night wind-down (21-23)
+    380, 300, 230
+  ];
+
+  // Generate 3 sample days
+  for (let day = 1; day <= 3; day++) {
+    for (let h = 0; h < 24; h++) {
+      // TGE format: D.MM.YYYY HH:MM (no leading zero for day)
+      const dateStr = `${day}.01.${year} ${String(h).padStart(2, '0')}:00`;
+      // Use comma as decimal separator (European)
+      const price = samplePrices[h] + Math.round((Math.random() - 0.5) * 60);
+      const priceStr = price.toFixed(2).replace('.', ',');
+      lines.push(`${dateStr};${priceStr}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('# ===== INSTRUKCJA =====');
+  lines.push('# Format kompatybilny z eksportem TGE Fixing I');
+  lines.push('# Kolumna "Date": D.MM.YYYY HH:MM lub DD.MM.YYYY HH:MM');
+  lines.push('# Kolumna "Fixing 1": cena w PLN/MWh (przecinek lub kropka jako separator)');
+  lines.push('# Ceny mogą być ujemne (np. -200 podczas nadpodaży OZE)');
+  lines.push('# Uzupełnij dane za cały rok: 8760 godzin (365 x 24)');
+  lines.push('# Można też wgrać bezpośrednio plik .xlsx z TGE');
+  lines.push('# Źródło: https://tge.pl/energia-elektryczna-rdn');
+
+  const bom = '\uFEFF'; // BOM for proper Excel encoding
+  const csv = bom + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `szablon_ceny_rdn_${year}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Load saved RDN price scenarios from database
+ */
+async function loadSavedRdnScenarios() {
+  const selectEl = document.getElementById('rdnScenarioSelect');
+  if (!selectEl) return;
+
+  try {
+    const response = await fetch('/api/db/prices/scenarios-for-arbitrage');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const scenarios = await response.json();
+    console.log('RDN scenarios loaded:', scenarios);
+
+    // Clear existing options
+    selectEl.innerHTML = '<option value="">-- Wybierz scenariusz --</option>';
+
+    if (Array.isArray(scenarios)) {
+      scenarios.forEach(s => {
+        const option = document.createElement('option');
+        option.value = s.id;
+        const avgPrice = s.stats?.avg_price || s.avg_price;
+        const avgLabel = avgPrice ? ` (śr. ${avgPrice.toFixed(0)} PLN/MWh, ${s.data_points || '?'} godz.)` : '';
+        const yearLabel = s.year ? ` [${s.year}]` : '';
+        option.textContent = `${s.name || s.scenario_name || 'Scenariusz #' + s.id}${yearLabel}${avgLabel}`;
+        selectEl.appendChild(option);
+      });
+    }
+  } catch (err) {
+    console.error('Error loading RDN scenarios:', err);
+  }
+}
+
+/**
+ * Select an RDN price scenario and load its details
+ */
+async function selectRdnScenario(scenarioId) {
+  const infoEl = document.getElementById('rdnScenarioInfo');
+
+  try {
+    // Try to use cached data first (avoids fetch errors during module transitions)
+    const cachedInfo = localStorage.getItem('rdn_scenario_info');
+    const cachedPrices = localStorage.getItem('rdn_hourly_prices');
+    if (cachedInfo && cachedPrices) {
+      const info = JSON.parse(cachedInfo);
+      if (info.scenarioId == scenarioId && info.dataPoints > 0) {
+        // Cache hit - update UI from localStorage without API call
+        document.getElementById('rdnInfoName').textContent = info.scenarioName || `Scenariusz #${scenarioId}`;
+        document.getElementById('rdnInfoYear').textContent = info.year || '-';
+        document.getElementById('rdnInfoPoints').textContent = info.dataPoints;
+        document.getElementById('rdnInfoAvg').textContent = (info.avgPrice || 0).toFixed(1);
+        document.getElementById('rdnInfoMin').textContent = (info.minPrice || 0).toFixed(1);
+        document.getElementById('rdnInfoMax').textContent = (info.maxPrice || 0).toFixed(1);
+        if (infoEl) infoEl.style.display = 'block';
+        console.log(`RDN scenario #${scenarioId} restored from cache: ${info.dataPoints} prices, avg=${(info.avgPrice || 0).toFixed(1)} PLN/MWh`);
+        return;
+      }
+    }
+
+    // Fetch hourly prices from API
+    const response = await fetch(`/api/db/prices/${scenarioId}/hourly-array`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    console.log('RDN scenario data:', data);
+
+    const prices = data.prices_plnmwh || data.prices || data.hourly_prices || data;
+    const priceArray = Array.isArray(prices) ? prices : [];
+
+    if (priceArray.length === 0) {
+      throw new Error('Brak danych cenowych w scenariuszu');
+    }
+
+    // Calculate statistics
+    const validPrices = priceArray.filter(p => p !== null && p !== undefined && !isNaN(p));
+    const avg = validPrices.reduce((a, b) => a + b, 0) / validPrices.length;
+    const min = Math.min(...validPrices);
+    const max = Math.max(...validPrices);
+
+    // Get scenario name from select dropdown
+    const selectEl = document.getElementById('rdnScenarioSelect');
+    const selectedOption = selectEl?.options[selectEl.selectedIndex];
+    const scenarioName = selectedOption?.textContent || `Scenariusz #${scenarioId}`;
+
+    // Determine year from data or name
+    const yearMatch = scenarioName.match(/\[(\d{4})\]/);
+    const year = data.year || (yearMatch ? parseInt(yearMatch[1]) : null);
+
+    // Update info panel
+    document.getElementById('rdnInfoName').textContent = scenarioName.replace(/\s*\[.*?\]\s*\(.*?\)/, '').trim();
+    document.getElementById('rdnInfoYear').textContent = year || '-';
+    document.getElementById('rdnInfoPoints').textContent = priceArray.length;
+    document.getElementById('rdnInfoAvg').textContent = avg.toFixed(1);
+    document.getElementById('rdnInfoMin').textContent = min.toFixed(1);
+    document.getElementById('rdnInfoMax').textContent = max.toFixed(1);
+
+    if (infoEl) infoEl.style.display = 'block';
+
+    // Cache hourly prices in localStorage for Economics module
+    const rdnInfo = {
+      scenarioId,
+      scenarioName: scenarioName.replace(/\s*\[.*?\]\s*\(.*?\)/, '').trim(),
+      year,
+      avgPrice: avg,
+      minPrice: min,
+      maxPrice: max,
+      dataPoints: priceArray.length
+    };
+    localStorage.setItem('rdn_hourly_prices', JSON.stringify(priceArray));
+    localStorage.setItem('rdn_scenario_info', JSON.stringify(rdnInfo));
+
+    // Broadcast RDN prices to shell for centralized price config
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'RDN_PRICES_CHANGED',
+        data: {
+          hourlyPricesPlnMwh: priceArray,
+          scenarioInfo: rdnInfo
+        }
+      }, '*');
+      console.log('[Settings] RDN prices broadcast to shell:', priceArray.length, 'points');
+    }
+
+    markUnsaved();
+    console.log(`RDN scenario #${scenarioId} selected: ${priceArray.length} prices, avg=${avg.toFixed(1)} PLN/MWh`);
+
+  } catch (err) {
+    console.error('Error loading RDN scenario:', err);
+    if (infoEl) infoEl.style.display = 'none';
+    const statusEl = document.getElementById('rdnUploadStatus');
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:#c62828">Błąd ładowania scenariusza: ${err.message}</span>`;
+    }
+  }
+}
+
+/**
+ * Clear RDN scenario info panel
+ */
+function clearRdnScenarioInfo() {
+  const infoEl = document.getElementById('rdnScenarioInfo');
+  if (infoEl) infoEl.style.display = 'none';
+  localStorage.removeItem('rdn_hourly_prices');
+  localStorage.removeItem('rdn_scenario_info');
+  // Broadcast clear to shell
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'RDN_PRICES_CHANGED', data: null }, '*');
+  }
+}
+
+/**
+ * Get current RDN pricing config from UI state
+ */
+function getRdnPricingConfig() {
+  const enabled = document.getElementById('rdnPricingEnabled')?.checked || false;
+  const scenarioId = parseInt(document.getElementById('rdnScenarioSelect')?.value) || null;
+
+  if (!enabled || !scenarioId) {
+    return {
+      enabled,
+      scenarioId: null,
+      scenarioName: '',
+      year: null,
+      avgPrice: null,
+      minPrice: null,
+      maxPrice: null,
+      dataPoints: 0
+    };
+  }
+
+  // Read cached info
+  try {
+    const info = JSON.parse(localStorage.getItem('rdn_scenario_info') || '{}');
+    return {
+      enabled: true,
+      scenarioId: info.scenarioId || scenarioId,
+      scenarioName: info.scenarioName || '',
+      year: info.year || null,
+      avgPrice: info.avgPrice || null,
+      minPrice: info.minPrice || null,
+      maxPrice: info.maxPrice || null,
+      dataPoints: info.dataPoints || 0
+    };
+  } catch (e) {
+    return { enabled: true, scenarioId, scenarioName: '', year: null, avgPrice: null, minPrice: null, maxPrice: null, dataPoints: 0 };
+  }
+}
+
+/**
+ * Restore RDN state from saved config on page load
+ */
+function restoreRdnState() {
+  try {
+    const savedSettings = JSON.parse(localStorage.getItem('pv_system_settings') || '{}');
+    const rdnConfig = savedSettings.rdnPricingConfig || DEFAULT_CONFIG.rdnPricingConfig;
+
+    const checkbox = document.getElementById('rdnPricingEnabled');
+    const panel = document.getElementById('rdnPricingPanel');
+
+    if (checkbox) checkbox.checked = rdnConfig.enabled || false;
+    if (panel) panel.style.display = rdnConfig.enabled ? 'block' : 'none';
+
+    if (rdnConfig.enabled) {
+      // Load scenarios and restore selection
+      loadSavedRdnScenarios().then(() => {
+        if (rdnConfig.scenarioId) {
+          const selectEl = document.getElementById('rdnScenarioSelect');
+          if (selectEl) {
+            selectEl.value = rdnConfig.scenarioId;
+            selectRdnScenario(rdnConfig.scenarioId);
+          }
+        }
+      });
+    }
+    // Update arbitrage status after RDN state is restored
+    setTimeout(() => checkRdnDataForArbitrage(), 500);
+  } catch (e) {
+    console.error('Error restoring RDN state:', e);
+  }
+}
 

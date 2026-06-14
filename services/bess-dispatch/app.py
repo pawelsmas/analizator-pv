@@ -1,7 +1,10 @@
 """
-BESS Dispatch Service
-=====================
-FastAPI service for BESS dispatch simulation and sizing.
+PLIK: app.py
+ROLA: FastAPI router — HTTP endpoints dla BESS dispatch i sizing.
+WEJŚCIE: JSON request body (DispatchRequest, SizingRequest) z frontendu (bess_request_builder.js)
+WYJŚCIE: JSON response (DispatchResult, SizingResponse) z wynikami symulacji i ekonomiki
+NIE ROBI: Nie liczy fizyki (deleguje do lp_dispatch), nie liczy NPV (deleguje do economics_engine),
+          nie rozstrzyga cen (deleguje do price_resolver)
 
 Endpoints:
 - POST /dispatch - Run dispatch simulation
@@ -15,6 +18,7 @@ Port: 8031
 
 import io
 import json
+import logging
 import os
 import time
 import uuid
@@ -148,6 +152,9 @@ from models import (
     # v0.9.0 Caching
     CacheInfo,
     CacheStatus,
+    # v1.4.0 LP Solver
+    SolverType,
+    LPSolverParams,
 )
 from cache_helper import (
     compute_request_hash,
@@ -387,6 +394,10 @@ app.include_router(audit_router, prefix="/api/bess-dispatch")
 # Include projects router (v3.7.0)
 from projects_router import router as projects_router
 app.include_router(projects_router, prefix="/api/bess-dispatch")
+
+# Include engine comparison router (v4.0.0 - Multi-engine BESS analysis)
+from api_engine_compare import router as engine_compare_router
+app.include_router(engine_compare_router)
 
 
 # =============================================================================
@@ -1555,9 +1566,18 @@ class ArbitrageConfigAPI(BaseModel):
     min_spread_pln_kwh: float = Field(0.10, ge=0)
     arbitrage_soc_min: float = Field(0.20, ge=0.0, le=0.5)
     max_grid_charge_kw: Optional[float] = None
+    allow_grid_charging: bool = Field(True, description="Allow battery to charge from grid (False = PV-only charging)")
     degradation_cost_pln_kwh: float = Field(0.05, ge=0)
     capacity_fee_pln_kwh: float = Field(0.0, ge=0)
     other_components_pln_kwh: float = Field(0.0, ge=0)
+    hourly_prices_pln_mwh: Optional[List[float]] = Field(
+        None,
+        description="Hourly all-in import prices [PLN/MWh] = RDN + distribution + fees + capacity (8760 values)."
+    )
+    hourly_export_prices_pln_mwh: Optional[List[float]] = Field(
+        None,
+        description="Hourly export prices [PLN/MWh] = raw RDN prices (prosumer sell price, without OSD fees)."
+    )
 
 
 class DispatchRequestAPI(BaseModel):
@@ -1620,6 +1640,16 @@ class DispatchRequestAPI(BaseModel):
     demand_charge_pln_kw_month: float = Field(0.0, ge=0, description="Monthly demand charge [PLN/kW/month]")
     demand_charge_pln_kw_year: float = Field(0.0, ge=0, description="Annual demand charge [PLN/kW/year]")
 
+    # LP Solver (v7.0.0 - LP only, no greedy)
+    solver: Optional[str] = Field(
+        None,
+        description="DEPRECATED: Ignored. LP is always used."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        None,
+        description="LP solver configuration. Defaults: 34h forecast, 24h keep, 30s timeout."
+    )
+
     # Options
     return_hourly: bool = Field(True, description="Include hourly arrays")
 
@@ -1667,10 +1697,10 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
                     400,
                     "start_date is required when arbitrage_config.enabled=True"
                 )
-            if request.mode != DispatchMode.STACKED:
+            if request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS):
                 raise HTTPException(
                     400,
-                    "Arbitrage requires STACKED mode. Set mode='stacked' with peak_limit_kw."
+                    "Arbitrage requires STACKED or PV_SURPLUS mode."
                 )
 
         # Build internal request
@@ -1729,9 +1759,12 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
                 min_spread_pln_kwh=request.arbitrage_config.min_spread_pln_kwh,
                 arbitrage_soc_min=request.arbitrage_config.arbitrage_soc_min,
                 max_grid_charge_kw=request.arbitrage_config.max_grid_charge_kw,
+                allow_grid_charging=request.arbitrage_config.allow_grid_charging,
                 degradation_cost_pln_kwh=request.arbitrage_config.degradation_cost_pln_kwh,
                 capacity_fee_pln_kwh=request.arbitrage_config.capacity_fee_pln_kwh,
                 other_components_pln_kwh=request.arbitrage_config.other_components_pln_kwh,
+                hourly_prices_pln_mwh=request.arbitrage_config.hourly_prices_pln_mwh,
+                hourly_export_prices_pln_mwh=request.arbitrage_config.hourly_export_prices_pln_mwh,
             )
 
         # Handle PV generation - empty list for LOAD_ONLY topology
@@ -1750,50 +1783,36 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
             prices=prices,
             arbitrage_config=arb_config,
             start_date=request.start_date,
+            solver=SolverType.LP,  # v7.0.0: LP only
+            lp_params=request.lp_params or LPSolverParams(),
         )
 
-        # Fetch import prices if arbitrage enabled
+        # Unified price resolution via PriceResolver (Faza 2 SSoT)
+        from price_resolver import PriceResolver as _PriceResolver
+        n_hours = len(request.load_kw)
+        # DispatchRequestAPI has flat price fields, not a prices dict
+        _dispatch_prices = {
+            'import_price_pln_mwh': request.import_price_pln_mwh,
+            'export_price_pln_mwh': request.export_price_pln_mwh,
+        }
+        _resolved = _PriceResolver().resolve(
+            n_hours=n_hours,
+            prices=_dispatch_prices,
+            arbitrage_config=arb_config,
+            start_date=request.start_date,
+            interval_minutes=request.interval_minutes,
+        )
         import_prices_array = None
-        if arb_config and arb_config.enabled and request.start_date:
-            from datetime import datetime, timedelta
-            from price_engine import ToUPriceProvider, ToUPriceConfig
-            from osd_tariffs.presets.templates import ALL_PRESETS
-
-            # Get tariff
-            tariff = ALL_PRESETS.get(arb_config.tariff_id)
-            if tariff is None:
-                for t in ALL_PRESETS.values():
-                    if t.id == arb_config.tariff_id:
-                        tariff = t
-                        break
-            if tariff is None:
-                raise HTTPException(404, f"Tariff not found: {arb_config.tariff_id}")
-
-            # Parse dates
-            start_date = datetime.strptime(request.start_date, "%Y-%m-%d").date()
-            n_hours = len(request.load_kw)
-            n_days = (n_hours + 23) // 24
-            end_date = start_date + timedelta(days=n_days - 1)
-
-            # Create price provider (capacity_fee = 0 for steering)
-            price_config = ToUPriceConfig(
-                osd_tariff=tariff,
-                capacity_fee_pln_kwh=0.0,
-                other_components_pln_kwh=arb_config.other_components_pln_kwh,
+        export_prices_array = None
+        if _resolved.path != "flat":
+            import_prices_array = _resolved.import_kwh
+            export_prices_array = _resolved.export_kwh
+            logging.warning(
+                f"PRICE_RESOLVE: dispatch path={_resolved.path}, "
+                f"avg_import={_resolved.avg_import_mwh:.0f}, "
+                f"avg_export={_resolved.avg_export_mwh:.0f}, "
+                f"spread={_resolved.spread_mwh:.0f} PLN/MWh"
             )
-            provider = ToUPriceProvider(price_config)
-            price_bundle = provider.get_series(start_date, end_date, request.interval_minutes)
-
-            # Extract import prices and trim/pad to match load length
-            import_prices_array = np.array(price_bundle.import_total[:n_hours])
-            if len(import_prices_array) < n_hours:
-                pad_value = import_prices_array[-1] if len(import_prices_array) > 0 else 0.65
-                import_prices_array = np.pad(
-                    import_prices_array,
-                    (0, n_hours - len(import_prices_array)),
-                    'constant',
-                    constant_values=pad_value
-                )
 
         # Structured log: dispatch request
         n_hours = len(request.load_kw)
@@ -1809,7 +1828,7 @@ async def run_dispatch_simulation(request: DispatchRequestAPI):
         )
 
         # Run dispatch
-        result = run_dispatch(internal_request, import_prices=import_prices_array)
+        result = run_dispatch(internal_request, import_prices=import_prices_array, export_prices=export_prices_array)
 
         # Remove hourly arrays if not requested
         if not request.return_hourly:
@@ -1892,13 +1911,12 @@ class SizingRequestAPI(BaseModel):
     durations_h: List[float] = Field([1.0, 2.0, 4.0])
 
     # Battery parameters
-    roundtrip_efficiency: float = Field(0.90, ge=0.7, le=1.0)
+    roundtrip_efficiency: float = Field(0.85, ge=0.7, le=1.0)
     soc_min: float = Field(0.10, ge=0.0, le=0.5)
     soc_max: float = Field(0.90, ge=0.5, le=1.0)
+    house_load_kw_per_mwh: float = Field(2.75, ge=0, le=10.0, description="Auxiliary power draw [kW/MWh]")
 
     # EOL (End-of-Life) Degradation Sizing
-    # If eol_capacity_factor > 0, battery will be oversized so EOL capacity meets this target
-    # Example: 0.70 = size so that at end of life (after analysis_years) battery has 70% of BOL capacity
     eol_capacity_factor: float = Field(0.0, ge=0.0, le=1.0, description="Target EOL capacity factor (0=no adjustment)")
     annual_degradation_pct: float = Field(2.0, ge=0.0, le=10.0, description="Annual degradation [%/year]")
 
@@ -1906,7 +1924,7 @@ class SizingRequestAPI(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0)
     capex_per_kw: float = Field(300.0, ge=0)
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
 
     # Prices (legacy flat pricing)
@@ -1927,6 +1945,12 @@ class SizingRequestAPI(BaseModel):
         50.0,
         ge=0,
         description="Degradation cost per MWh throughput [PLN/MWh]. Used to calculate degradation_cost_pln in savings_breakdown."
+    )
+
+    # Grid connection limit [kW] - limits battery charging from grid
+    grid_connection_kw: Optional[float] = Field(
+        None, ge=0,
+        description="Grid connection capacity [kW]. Limits battery grid charging to: grid_connection_kw - current_load."
     )
 
     # Degradation budget (annual limits - checked post-dispatch)
@@ -2012,6 +2036,28 @@ class SizingRequestAPI(BaseModel):
         description="If True, include per-timestep cost ledger in response. Default: False."
     )
 
+    # LP Solver (v7.0.0 - LP only, no greedy)
+    solver: Optional[str] = Field(
+        None,
+        description="DEPRECATED: Ignored. LP is always used."
+    )
+    lp_params: Optional[LPSolverParams] = Field(
+        None,
+        description="LP solver configuration. Defaults: 34h forecast, 24h keep, 30s timeout."
+    )
+
+    # Ancillary services (v2.0 — uslugi pomocnicze)
+    ancillary_services_enabled: bool = Field(
+        False,
+        description="Enable ancillary services revenue in sizing economics"
+    )
+    ancillary_market_year: int = Field(2026, description="Market preset year for ancillary services")
+    ancillary_aggregator_margin_pct: float = Field(20.0, ge=0, le=50)
+    ancillary_services_list: Optional[List[str]] = Field(
+        None,
+        description="List of enabled services: aFRR_up, aFRR_down, mFRR_up, etc."
+    )
+
     @model_validator(mode='after')
     def validate_optimization_objective(self):
         """Validate optimization.objective is a valid enum value."""
@@ -2054,6 +2100,21 @@ async def run_sizing_optimization(
     - Recommended variant based on score
     """
     start_time = time.time()
+
+    # DEBUG: Log sizing request key parameters
+    import logging as _log
+    try:
+        arb = request.arbitrage_config
+        prices = request.prices
+        _log.warning(f"📊 SIZING REQUEST: mode={request.mode}, peak_limit_kw={request.peak_limit_kw}, "
+                     f"arb_enabled={arb.enabled if arb else False}, "
+                     f"hourly_prices={len(arb.hourly_prices_pln_mwh) if arb and arb.hourly_prices_pln_mwh else 0}, "
+                     f"export_prices={len(arb.hourly_export_prices_pln_mwh) if arb and arb.hourly_export_prices_pln_mwh else 0}, "
+                     f"allow_grid={getattr(arb, 'allow_grid_charging', 'N/A') if arb else 'N/A'}, "
+                     f"tariff_id={getattr(prices, 'tariff_id', None) if prices else None}, "
+                     f"start_date={request.start_date}")
+    except Exception as e:
+        _log.warning(f"📊 SIZING REQUEST (debug log error: {e})")
 
     try:
         # Validate step limits (v2.5.0)
@@ -2126,10 +2187,10 @@ async def run_sizing_optimization(
                     400,
                     "start_date is required when arbitrage_config.enabled=True"
                 )
-            if request.mode != DispatchMode.STACKED:
+            if request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS, DispatchMode.LOAD_ONLY):
                 raise HTTPException(
                     400,
-                    "Arbitrage sizing requires STACKED mode. Set mode='stacked' with peak_limit_kw."
+                    "Arbitrage sizing requires STACKED, PV_SURPLUS, or LOAD_ONLY mode."
                 )
 
         stacked_params = None
@@ -2242,9 +2303,12 @@ async def run_sizing_optimization(
                 min_spread_pln_kwh=request.arbitrage_config.min_spread_pln_kwh,
                 arbitrage_soc_min=request.arbitrage_config.arbitrage_soc_min,
                 max_grid_charge_kw=request.arbitrage_config.max_grid_charge_kw,
+                allow_grid_charging=request.arbitrage_config.allow_grid_charging,
                 degradation_cost_pln_kwh=request.arbitrage_config.degradation_cost_pln_kwh,
                 capacity_fee_pln_kwh=0.0,  # Always 0 for sizing - post-dispatch calculation
                 other_components_pln_kwh=request.arbitrage_config.other_components_pln_kwh,
+                hourly_prices_pln_mwh=request.arbitrage_config.hourly_prices_pln_mwh,
+                hourly_export_prices_pln_mwh=request.arbitrage_config.hourly_export_prices_pln_mwh,
             )
 
         # Parse optimization config from frontend
@@ -2271,7 +2335,7 @@ async def run_sizing_optimization(
             fc_dict = request.finance_config
             finance_config = FinanceConfig(
                 horizon_years=fc_dict.get("horizon_years", 10),
-                discount_rate=fc_dict.get("discount_rate", 0.08),
+                discount_rate=fc_dict.get("discount_rate", 0.10),
                 savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
                 opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
                 opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
@@ -2356,6 +2420,16 @@ async def run_sizing_optimization(
             grid_constraints=grid_constraints,
             # Sizing constraints (v0.8.0)
             constraints_config=constraints_config,
+            # Grid connection limit
+            grid_connection_kw=request.grid_connection_kw,
+            # LP Solver (v7.0.0)
+            solver=SolverType.LP,
+            lp_params=request.lp_params or LPSolverParams(),
+            # Ancillary services (v2.0)
+            ancillary_services_enabled=request.ancillary_services_enabled,
+            ancillary_market_year=request.ancillary_market_year,
+            ancillary_aggregator_margin_pct=request.ancillary_aggregator_margin_pct,
+            ancillary_services_list=request.ancillary_services_list,
         )
 
         # v0.9.0: Caching - compute request hash
@@ -2503,7 +2577,11 @@ async def run_sizing_optimization(
 
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except HTTPException:
+        raise  # Don't wrap 400s as 500s
     except Exception as e:
+        import traceback
+        _log.error(f"Sizing error: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(500, f"Sizing error: {str(e)}")
 
 
@@ -2585,8 +2663,8 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
     if api_request.arbitrage_config and api_request.arbitrage_config.enabled:
         if not api_request.start_date:
             raise ValueError("start_date is required when arbitrage_config.enabled=True")
-        if api_request.mode != DispatchMode.STACKED:
-            raise ValueError("Arbitrage sizing requires STACKED mode")
+        if api_request.mode not in (DispatchMode.STACKED, DispatchMode.PV_SURPLUS, DispatchMode.LOAD_ONLY):
+            raise ValueError("Arbitrage sizing requires STACKED, PV_SURPLUS, or LOAD_ONLY mode")
 
     stacked_params = None
     if api_request.mode == DispatchMode.STACKED:
@@ -2688,9 +2766,12 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
             min_spread_pln_kwh=api_request.arbitrage_config.min_spread_pln_kwh,
             arbitrage_soc_min=api_request.arbitrage_config.arbitrage_soc_min,
             max_grid_charge_kw=api_request.arbitrage_config.max_grid_charge_kw,
+            allow_grid_charging=api_request.arbitrage_config.allow_grid_charging,
             degradation_cost_pln_kwh=api_request.arbitrage_config.degradation_cost_pln_kwh,
             capacity_fee_pln_kwh=0.0,
             other_components_pln_kwh=api_request.arbitrage_config.other_components_pln_kwh,
+            hourly_prices_pln_mwh=api_request.arbitrage_config.hourly_prices_pln_mwh,
+            hourly_export_prices_pln_mwh=api_request.arbitrage_config.hourly_export_prices_pln_mwh,
         )
 
     # Parse optimization config
@@ -2717,7 +2798,7 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         fc_dict = api_request.finance_config
         finance_config = FinanceConfig(
             horizon_years=fc_dict.get("horizon_years", 10),
-            discount_rate=fc_dict.get("discount_rate", 0.08),
+            discount_rate=fc_dict.get("discount_rate", 0.10),
             savings_escalation_rate=fc_dict.get("savings_escalation_rate", 0.0),
             opex_pln_per_year=fc_dict.get("opex_pln_per_year", 0.0),
             opex_escalation_rate=fc_dict.get("opex_escalation_rate", 0.0),
@@ -2775,6 +2856,7 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         roundtrip_efficiency=api_request.roundtrip_efficiency,
         soc_min=api_request.soc_min,
         soc_max=api_request.soc_max,
+        house_load_kw_per_mwh=api_request.house_load_kw_per_mwh,
         eol_capacity_factor=api_request.eol_capacity_factor,
         annual_degradation_pct=api_request.annual_degradation_pct,
         capex_per_kwh=api_request.capex_per_kwh,
@@ -2791,6 +2873,9 @@ def _process_single_sizing_item(item_request: Dict[str, Any]) -> SizingResult:
         finance_config=finance_config,
         grid_constraints=grid_constraints,
         constraints_config=constraints_config,
+        # LP Solver (v7.0.0)
+        solver=SolverType.LP,
+        lp_params=getattr(api_request, 'lp_params', None) or LPSolverParams(),
     )
 
     return run_sizing(internal_request)
@@ -3020,7 +3105,7 @@ class SensitivityRequestAPI(BaseModel):
     capex_per_kwh: float = Field(1500.0, ge=0)
     capex_per_kw: float = Field(300.0, ge=0)
     opex_pct_per_year: float = Field(0.015, ge=0, le=0.1)
-    discount_rate: float = Field(0.07, ge=0, le=0.3)
+    discount_rate: float = Field(0.10, ge=0, le=0.3)
     analysis_years: int = Field(15, ge=1, le=30)
     import_price_pln_mwh: float = Field(800.0, ge=0)
 
@@ -3168,11 +3253,11 @@ async def calculate_capacity_fee(request: CapacityFeeRequestAPI):
     Selected hours: 7:00-22:00 on workdays (2026 default).
     Fee applies only to workdays (Mon-Fri, excluding Polish holidays).
 
-    K-class classification based on Δs:
-    - K1: Δs < 5%     → A = 0.17 (83% discount)
-    - K2: Δs ∈ [5%, 10%)  → A = 0.50 (50% discount)
-    - K3: Δs ∈ [10%, 15%) → A = 0.83 (17% discount)
-    - K4: Δs ≥ 15%    → A = 1.00 (no discount)
+    K-class classification based on Δs (Dz.U. 2023 poz. 503):
+    - K1: Δs < -10%    → A = 0.17 (83% discount)
+    - K2: Δs ∈ [-10%, 10%) → A = 0.50 (50% discount)
+    - K3: Δs ∈ [10%, 30%) → A = 0.83 (17% discount)
+    - K4: Δs ≥ 30%    → A = 1.00 (no discount)
     """
     import pandas as pd
 
@@ -3496,6 +3581,7 @@ from fastapi.responses import StreamingResponse
 from datetime import date as date_type
 from excel_export import (
     generate_economics_excel,
+    calculate_hourly_costs,
     ToUConfig,
     FixedChargesConfig,
 )
@@ -3539,7 +3625,10 @@ class ExcelExportRequest(BaseModel):
     peak2_end: int = Field(21, ge=0, le=24)
 
     # Fixed charges [PLN/MWh]
-    distribution: float = Field(200.0, ge=0, description="Dystrybucja [PLN/MWh]")
+    distribution: float = Field(200.0, ge=0, description="Dystrybucja avg [PLN/MWh]")
+    distribution_peak: Optional[float] = Field(None, ge=0, description="Dystrybucja szczyt [PLN/MWh]")
+    distribution_day: Optional[float] = Field(None, ge=0, description="Dystrybucja dzień [PLN/MWh]")
+    distribution_night: Optional[float] = Field(None, ge=0, description="Dystrybucja noc [PLN/MWh]")
     quality_fee: float = Field(10.0, ge=0, description="Opłata jakościowa [PLN/MWh]")
     oze_fee: float = Field(7.0, ge=0, description="Opłata OZE [PLN/MWh]")
     cogeneration_fee: float = Field(10.0, ge=0, description="Opłata kogeneracyjna [PLN/MWh]")
@@ -3549,8 +3638,44 @@ class ExcelExportRequest(BaseModel):
     # OSD_ALL_IN mode: if True, ToU rates already include distribution (no double counting)
     is_osd_all_in: bool = Field(False, description="If True, ToU rates include distribution")
 
+    # Distribution time windows (OSD zones — separate from energy ToU)
+    dist_zone_type: str = Field('three_zone', description="Distribution zone type: flat/two_zone/three_zone/four_zone")
+    dist_two_zone_weekday_start: int = Field(6, ge=0, le=23)
+    dist_two_zone_weekday_end: int = Field(22, ge=0, le=24)
+    dist_two_zone_weekend_start: int = Field(6, ge=0, le=23)
+    dist_two_zone_weekend_end: int = Field(22, ge=0, le=24)
+    dist_peak1_start: int = Field(7, ge=0, le=23)
+    dist_peak1_end: int = Field(13, ge=0, le=24)
+    dist_peak2_start: int = Field(16, ge=0, le=23)
+    dist_peak2_end: int = Field(21, ge=0, le=24)
+    dist_weekend_off_peak: bool = Field(True, description="Weekends = off-peak for 3-zone dist")
+    distribution_valley: Optional[float] = Field(None, ge=0, description="Dystrybucja dolina [PLN/MWh] (four_zone)")
+    dist_valley_start: int = Field(1, ge=0, le=23, description="Valley start hour on weekdays (e.g. 1)")
+    dist_valley_end: int = Field(5, ge=0, le=24, description="Valley end hour on weekdays (e.g. 5)")
+
     # Report configuration
     project_name: str = Field("Analiza BESS", description="Report title")
+
+    # Battery trace data (optional - adds "Praca Magazynu" sheet)
+    pv_kw: Optional[List[float]] = Field(None, description="PV generation profile [kW]")
+    load_kw: Optional[List[float]] = Field(None, description="Load profile [kW]")
+    soc_kwh: Optional[List[float]] = Field(None, description="Battery SOC [kWh] per timestep")
+    charge_kw: Optional[List[float]] = Field(None, description="Battery charge [kW] per timestep")
+    discharge_kw: Optional[List[float]] = Field(None, description="Battery discharge [kW] per timestep")
+    charge_from_pv_kw: Optional[List[float]] = Field(None, description="Charge from PV [kW]")
+    charge_from_grid_kw: Optional[List[float]] = Field(None, description="Charge from grid [kW]")
+    discharge_to_load_kw: Optional[List[float]] = Field(None, description="Discharge to load [kW]")
+    discharge_to_grid_kw: Optional[List[float]] = Field(None, description="Discharge to grid/export [kW]")
+
+    # RDN hourly prices (optional - overrides ToU energia rates when provided)
+    hourly_prices_pln_mwh: Optional[List[float]] = Field(None, description="RDN hourly energy prices [PLN/MWh] - overrides ToU rates for energia czynna")
+
+    # Hybrid monthly pricing: per-month price source selection
+    monthly_price_sources: Optional[Dict[int, str]] = Field(None, description="Per-month price source: {1:'osd', 4:'rdn', ...}")
+
+    # Sizing variants comparison data (optional - adds comparison sheets)
+    sizing_variants: Optional[List[Dict[str, Any]]] = Field(None, description="S/M/L variant summaries for comparison sheet")
+    grid_search_results: Optional[List[Dict[str, Any]]] = Field(None, description="Full grid search results for ranking sheet")
 
 
 @app.post("/sizing-export-excel")
@@ -3609,13 +3734,44 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
         # Build fixed charges config
         fixed_config = FixedChargesConfig(
             distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
             quality_fee=request.quality_fee,
             oze_fee=request.oze_fee,
             cogeneration_fee=request.cogeneration_fee,
             excise_tax=request.excise_tax,
             capacity_fee_som=request.capacity_fee_som,
             is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
         )
+
+        # Build battery trace dict if data provided
+        battery_trace_data = None
+        if request.soc_kwh and request.charge_kw and request.discharge_kw:
+            battery_trace_data = {
+                'pv_kw': np.array(request.pv_kw) if request.pv_kw else None,
+                'load_kw': np.array(request.load_kw) if request.load_kw else None,
+                'soc_kwh': np.array(request.soc_kwh),
+                'charge_kw': np.array(request.charge_kw),
+                'discharge_kw': np.array(request.discharge_kw),
+                'charge_from_pv_kw': np.array(request.charge_from_pv_kw) if request.charge_from_pv_kw else None,
+                'charge_from_grid_kw': np.array(request.charge_from_grid_kw) if request.charge_from_grid_kw else None,
+                'discharge_to_load_kw': np.array(request.discharge_to_load_kw) if request.discharge_to_load_kw else None,
+                'discharge_to_grid_kw': np.array(request.discharge_to_grid_kw) if request.discharge_to_grid_kw else None,
+            }
 
         # Generate Excel
         excel_bytes = generate_economics_excel(
@@ -3628,6 +3784,14 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
             bess_energy_kwh=request.bess_energy_kwh,
             interval_minutes=request.interval_minutes,
             project_name=request.project_name,
+            battery_trace=battery_trace_data,
+            import_prices_pln_mwh=request.hourly_prices_pln_mwh,
+            monthly_price_sources=request.monthly_price_sources,
+            sizing_variants=request.sizing_variants,
+            grid_search_results=request.grid_search_results,
+            hourly_prices_pln_mwh=request.hourly_prices_pln_mwh,
+            pv_kw=np.array(request.pv_kw) if request.pv_kw else None,
+            load_kw=np.array(request.load_kw) if request.load_kw else None,
         )
 
         # Create filename
@@ -3645,6 +3809,335 @@ async def export_sizing_to_excel(request: ExcelExportRequest):
         raise
     except Exception as e:
         raise HTTPException(500, f"Excel export error: {str(e)}")
+
+
+# =============================================================================
+# PV-only Excel Export
+# =============================================================================
+
+class PvExcelExportRequest(BaseModel):
+    """Request for PV-only Excel export with hourly pricing breakdown."""
+    # Load and PV profiles
+    load_kw: List[float] = Field(..., description="Load profile [kW] per timestep")
+    pv_kw: List[float] = Field(..., description="PV generation profile [kW] per timestep")
+
+    # Time config
+    start_date: str = Field("2025-01-01", description="Start date (YYYY-MM-DD)")
+    interval_minutes: int = Field(60)
+
+    # ToU tariff (for OSD months)
+    tariff_type: str = Field("two_zone")
+    flat_rate: float = Field(750.0)
+    day_rate: float = Field(850.0)
+    night_rate: float = Field(450.0)
+    peak_rate: float = Field(950.0)
+    partial_rate: float = Field(700.0)
+    off_peak_rate: float = Field(400.0)
+    weekday_day_start: int = Field(6)
+    weekday_day_end: int = Field(22)
+    weekend_day_start: int = Field(6)
+    weekend_day_end: int = Field(13)
+    peak1_start: int = Field(7)
+    peak1_end: int = Field(13)
+    peak2_start: int = Field(17)
+    peak2_end: int = Field(21)
+
+    # Fixed charges
+    distribution: float = Field(200.0)
+    distribution_peak: Optional[float] = Field(None)
+    distribution_day: Optional[float] = Field(None)
+    distribution_night: Optional[float] = Field(None)
+    quality_fee: float = Field(10.0)
+    oze_fee: float = Field(7.0)
+    cogeneration_fee: float = Field(10.0)
+    excise_tax: float = Field(5.0)
+    capacity_fee_som: float = Field(0.2194)
+    is_osd_all_in: bool = Field(False)
+
+    # Distribution time windows (OSD zones)
+    dist_zone_type: str = Field('three_zone')
+    dist_two_zone_weekday_start: int = Field(6)
+    dist_two_zone_weekday_end: int = Field(22)
+    dist_two_zone_weekend_start: int = Field(6)
+    dist_two_zone_weekend_end: int = Field(22)
+    dist_peak1_start: int = Field(7)
+    dist_peak1_end: int = Field(13)
+    dist_peak2_start: int = Field(16)
+    dist_peak2_end: int = Field(21)
+    dist_weekend_off_peak: bool = Field(True)
+    distribution_valley: Optional[float] = Field(None)
+    dist_valley_start: int = Field(1)
+    dist_valley_end: int = Field(5)
+
+    # Project info
+    project_name: str = Field("Analiza PV")
+    pv_capacity_kwp: float = Field(0, description="PV capacity [kWp] for report")
+
+    # Hybrid monthly pricing
+    hourly_prices_pln_mwh: Optional[List[float]] = Field(None)
+    monthly_price_sources: Optional[Dict[int, str]] = Field(None)
+
+
+@app.post("/pv-export-excel")
+async def export_pv_to_excel(request: PvExcelExportRequest):
+    """Export PV-only economics to Excel with hourly pricing breakdown."""
+    try:
+        start_date = date_type.fromisoformat(request.start_date)
+        load = np.array(request.load_kw)
+        pv = np.array(request.pv_kw)
+        n = min(len(load), len(pv))
+
+        # Baseline = pure consumption (no PV) = load
+        # Project = consumption - PV self-consumed = max(0, load - pv)
+        baseline_import = load[:n].copy()
+        project_import = np.maximum(0, load[:n] - pv[:n])
+
+        tou_config = ToUConfig(
+            tariff_type=request.tariff_type,
+            flat_rate=request.flat_rate,
+            day_rate=request.day_rate,
+            night_rate=request.night_rate,
+            peak_rate=request.peak_rate,
+            partial_rate=request.partial_rate,
+            off_peak_rate=request.off_peak_rate,
+            weekday_day_start=request.weekday_day_start,
+            weekday_day_end=request.weekday_day_end,
+            weekend_day_start=request.weekend_day_start,
+            weekend_day_end=request.weekend_day_end,
+            peak1_start=request.peak1_start,
+            peak1_end=request.peak1_end,
+            peak2_start=request.peak2_start,
+            peak2_end=request.peak2_end,
+        )
+
+        fixed_config = FixedChargesConfig(
+            distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
+            quality_fee=request.quality_fee,
+            oze_fee=request.oze_fee,
+            cogeneration_fee=request.cogeneration_fee,
+            excise_tax=request.excise_tax,
+            capacity_fee_som=request.capacity_fee_som,
+            is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
+        )
+
+        excel_bytes = generate_economics_excel(
+            baseline_import_kw=baseline_import,
+            project_import_kw=project_import,
+            tou_config=tou_config,
+            fixed_config=fixed_config,
+            start_date=start_date,
+            bess_power_kw=0.001,
+            bess_energy_kwh=0.001,
+            interval_minutes=request.interval_minutes,
+            project_name=request.project_name,
+            import_prices_pln_mwh=request.hourly_prices_pln_mwh,
+            monthly_price_sources=request.monthly_price_sources,
+            pv_kw=pv[:n],
+            load_kw=load[:n],
+            pv_capacity_kwp=request.pv_capacity_kwp,
+        )
+
+        filename = f"PV_Economics_{request.pv_capacity_kwp:.0f}kWp_{start_date.year}.xlsx"
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"PV Excel export error: {str(e)}")
+
+
+@app.post("/pv-annual-summary")
+async def pv_annual_summary(request: PvExcelExportRequest):
+    """
+    Compute precise annual savings using hourly methodology (same as Excel).
+    Returns JSON summary — single source of truth for all frontend calculations.
+    """
+    try:
+        start_date = date_type.fromisoformat(request.start_date)
+        load = np.array(request.load_kw)
+        pv = np.array(request.pv_kw)
+        n = min(len(load), len(pv))
+
+        baseline_import = load[:n].copy()
+        project_import = np.maximum(0, load[:n] - pv[:n])
+
+        tou_config = ToUConfig(
+            tariff_type=request.tariff_type,
+            flat_rate=request.flat_rate,
+            day_rate=request.day_rate,
+            night_rate=request.night_rate,
+            peak_rate=request.peak_rate,
+            partial_rate=request.partial_rate,
+            off_peak_rate=request.off_peak_rate,
+            weekday_day_start=request.weekday_day_start,
+            weekday_day_end=request.weekday_day_end,
+            weekend_day_start=request.weekend_day_start,
+            weekend_day_end=request.weekend_day_end,
+            peak1_start=request.peak1_start,
+            peak1_end=request.peak1_end,
+            peak2_start=request.peak2_start,
+            peak2_end=request.peak2_end,
+        )
+
+        fixed_config = FixedChargesConfig(
+            distribution=request.distribution,
+            distribution_peak=request.distribution_peak,
+            distribution_day=request.distribution_day,
+            distribution_night=request.distribution_night,
+            quality_fee=request.quality_fee,
+            oze_fee=request.oze_fee,
+            cogeneration_fee=request.cogeneration_fee,
+            excise_tax=request.excise_tax,
+            capacity_fee_som=request.capacity_fee_som,
+            is_osd_all_in=request.is_osd_all_in,
+            dist_zone_type=request.dist_zone_type,
+            dist_two_zone_weekday_start=request.dist_two_zone_weekday_start,
+            dist_two_zone_weekday_end=request.dist_two_zone_weekday_end,
+            dist_two_zone_weekend_start=request.dist_two_zone_weekend_start,
+            dist_two_zone_weekend_end=request.dist_two_zone_weekend_end,
+            dist_peak1_start=request.dist_peak1_start,
+            dist_peak1_end=request.dist_peak1_end,
+            dist_peak2_start=request.dist_peak2_start,
+            dist_peak2_end=request.dist_peak2_end,
+            dist_weekend_off_peak=request.dist_weekend_off_peak,
+            distribution_valley=request.distribution_valley,
+            dist_valley_start=request.dist_valley_start,
+            dist_valley_end=request.dist_valley_end,
+        )
+
+        import_prices = None
+        if request.hourly_prices_pln_mwh:
+            import_prices = np.asarray(request.hourly_prices_pln_mwh, dtype=float)
+
+        monthly_sources = None
+        if request.monthly_price_sources:
+            monthly_sources = {int(k): v for k, v in request.monthly_price_sources.items()}
+
+        # Compute hourly costs — same logic as Excel export
+        baseline_df, bl_cap = calculate_hourly_costs(
+            baseline_import, tou_config, fixed_config, start_date,
+            request.interval_minutes, import_prices, monthly_sources,
+        )
+        project_df, pj_cap = calculate_hourly_costs(
+            project_import, tou_config, fixed_config, start_date,
+            request.interval_minutes, import_prices, monthly_sources,
+        )
+
+        # Aggregate annual totals
+        bl_total = float(baseline_df['total_pln'].sum())
+        pj_total = float(project_df['total_pln'].sum())
+        bl_energia = float(baseline_df['energia_pln'].sum())
+        pj_energia = float(project_df['energia_pln'].sum())
+        bl_mocowa = float(baseline_df['mocowa_pln'].sum())
+        pj_mocowa = float(project_df['mocowa_pln'].sum())
+        bl_dystr = float(baseline_df['dystrybucja_pln'].sum())
+        pj_dystr = float(project_df['dystrybucja_pln'].sum())
+        bl_import_kwh = float(baseline_df['import_kwh'].sum())
+        pj_import_kwh = float(project_df['import_kwh'].sum())
+
+        # Self-consumed energy
+        self_consumed_kwh = float(np.minimum(pv[:n], load[:n]).sum())
+        surplus_kwh = float(np.maximum(0, pv[:n] - load[:n]).sum())
+
+        total_savings = bl_total - pj_total
+        energia_savings = bl_energia - pj_energia
+        mocowa_savings = bl_mocowa - pj_mocowa
+        dystr_savings = bl_dystr - pj_dystr
+        other_savings = total_savings - energia_savings - mocowa_savings - dystr_savings
+
+        # Monthly breakdown
+        baseline_df['month'] = baseline_df['datetime'].apply(lambda dt: dt.month)
+        project_df['month'] = project_df['datetime'].apply(lambda dt: dt.month)
+        monthly = []
+        for m in range(1, 13):
+            bl_m = baseline_df[baseline_df['month'] == m]
+            pj_m = project_df[project_df['month'] == m]
+            if len(bl_m) == 0:
+                continue
+            monthly.append({
+                'month': m,
+                'baseline_total_pln': round(float(bl_m['total_pln'].sum()), 2),
+                'project_total_pln': round(float(pj_m['total_pln'].sum()), 2),
+                'savings_pln': round(float(bl_m['total_pln'].sum() - pj_m['total_pln'].sum()), 2),
+                'baseline_import_kwh': round(float(bl_m['import_kwh'].sum()), 1),
+                'project_import_kwh': round(float(pj_m['import_kwh'].sum()), 1),
+                'price_source': monthly_sources.get(m, 'osd') if monthly_sources else 'osd',
+            })
+
+        # Effective weighted average price (what self-consumed energy was actually worth)
+        effective_price_pln_mwh = (total_savings / (self_consumed_kwh / 1000)) if self_consumed_kwh > 0 else 0
+
+        # --- AUDIT LOG: key values for EaaS savings traceability ---
+        logging.warning(
+            f"📊 PV-ANNUAL-SUMMARY [{request.pv_capacity_kwp} kWp]: "
+            f"baseline_total={bl_total:.0f} PLN, project_total={pj_total:.0f} PLN, "
+            f"savings={total_savings:.0f} PLN | "
+            f"energia={energia_savings:.0f}, mocowa={mocowa_savings:.0f}, "
+            f"dystr={dystr_savings:.0f}, other={other_savings:.0f} | "
+            f"self_consumed={self_consumed_kwh:.0f} kWh ({self_consumed_kwh/1000:.1f} MWh), "
+            f"surplus={surplus_kwh:.0f} kWh | "
+            f"effective_price={effective_price_pln_mwh:.1f} PLN/MWh | "
+            f"baseline_rate={bl_total/(bl_import_kwh/1000) if bl_import_kwh > 0 else 0:.1f} PLN/MWh | "
+            f"K-class: {bl_cap.get('k_class','?')}→{pj_cap.get('k_class','?')}, "
+            f"mocowa: {bl_mocowa:.0f}→{pj_mocowa:.0f} PLN"
+        )
+
+        return {
+            'status': 'ok',
+            'year1_savings': {
+                'total_pln': round(total_savings, 2),
+                'energia_pln': round(energia_savings, 2),
+                'mocowa_pln': round(mocowa_savings, 2),
+                'dystrybucja_pln': round(dystr_savings, 2),
+                'other_pln': round(other_savings, 2),
+            },
+            'baseline': {
+                'total_cost_pln': round(bl_total, 2),
+                'import_kwh': round(bl_import_kwh, 1),
+                'import_mwh': round(bl_import_kwh / 1000, 2),
+                'capacity_fee_pln': round(bl_mocowa, 2),
+                'k_class': bl_cap.get('k_class', 'N/A'),
+                'avg_delta_s_pct': round(bl_cap.get('avg_delta_s', 0), 2),
+            },
+            'project': {
+                'total_cost_pln': round(pj_total, 2),
+                'import_kwh': round(pj_import_kwh, 1),
+                'import_mwh': round(pj_import_kwh / 1000, 2),
+                'capacity_fee_pln': round(pj_mocowa, 2),
+                'k_class': pj_cap.get('k_class', 'N/A'),
+                'avg_delta_s_pct': round(pj_cap.get('avg_delta_s', 0), 2),
+            },
+            'energy': {
+                'self_consumed_kwh': round(self_consumed_kwh, 1),
+                'self_consumed_mwh': round(self_consumed_kwh / 1000, 2),
+                'surplus_kwh': round(surplus_kwh, 1),
+                'pv_capacity_kwp': request.pv_capacity_kwp,
+            },
+            'effective_price_pln_mwh': round(effective_price_pln_mwh, 1),
+            'monthly': monthly,
+        }
+    except Exception as e:
+        logging.exception(f"PV annual summary error: {e}")
+        raise HTTPException(500, f"PV annual summary error: {str(e)}")
 
 
 # =============================================================================
@@ -5732,6 +6225,902 @@ async def get_portfolio_report_zip(request: PortfolioReportRequest):
     except Exception as e:
         track_portfolio_report_error("generation")
         raise HTTPException(500, f"Portfolio report error: {str(e)}")
+
+
+# =============================================================================
+# Ancillary Services — Revenue Stacking (v2.0)
+# =============================================================================
+
+class AncillaryServiceRequest(BaseModel):
+    """Request for ancillary services revenue optimization."""
+    # Battery parameters
+    battery_power_kw: float = Field(..., gt=0, description="Battery power [kW]")
+    battery_energy_kwh: float = Field(..., gt=0, description="Battery energy [kWh]")
+    roundtrip_efficiency: float = Field(0.90, ge=0.7, le=1.0)
+
+    # Timeseries (hourly, 8760 or subset)
+    load_kw: List[float] = Field(..., min_length=24, description="Load profile [kW]")
+    pv_generation_kw: Optional[List[float]] = Field(None, description="PV generation [kW]")
+    buy_prices_pln_kwh: List[float] = Field(..., min_length=24, description="Buy prices [PLN/kWh]")
+    sell_prices_pln_kwh: Optional[List[float]] = Field(None, description="Sell prices [PLN/kWh]")
+
+    # Peak shaving
+    peak_limit_kw: Optional[float] = Field(None, description="Peak shaving limit [kW]")
+
+    # Ancillary services config
+    services_enabled: List[str] = Field(
+        default=["aFRR_up", "aFRR_down", "mFRR_up", "peak_shaving", "energy_arbitrage"],
+        description="List of services to optimize"
+    )
+    market_year: int = Field(2026, description="Market preset year (2025 or 2026)")
+    aggregator_margin_pct: float = Field(20.0, ge=0, le=50)
+
+    # Custom market prices (optional overrides)
+    afrr_up_capacity_pln_mw_h: Optional[float] = None
+    afrr_down_capacity_pln_mw_h: Optional[float] = None
+    mfrr_up_capacity_pln_mw_h: Optional[float] = None
+    capacity_market_pln_mw_year: Optional[float] = None
+
+    # Optimization
+    optimize_mode: str = Field("day", description="'day' for single day, 'year' for full year")
+    dt_hours: float = Field(1.0, ge=0.25, le=1.0)
+
+
+class AncillaryServiceResponse(BaseModel):
+    """Response from ancillary services optimization."""
+    status: str
+    revenue: Dict[str, Any]
+    metrics: Dict[str, Any]
+    allocation: Dict[str, Any]
+    schedule_summary: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory=list)
+    stacked_total: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/bess-dispatch/ancillary-services/optimize", response_model=AncillaryServiceResponse)
+async def optimize_ancillary_services(request: AncillaryServiceRequest):
+    """
+    Optimize battery revenue stacking across multiple services.
+
+    Services: peak shaving, PV surplus, energy arbitrage, aFRR up/down, mFRR up, capacity market.
+    Uses LP co-optimization (scipy HiGHS) to dynamically allocate capacity per timestep.
+
+    Returns revenue breakdown per service + optimal dispatch schedule.
+    """
+    start_time = time.time()
+
+    try:
+        from ancillary_services import (
+            AncillaryServiceType,
+            BatteryVirtualizer,
+            StackedServiceOptimizer,
+        )
+        from ancillary_services.models import (
+            PolishMarketPreset,
+            POLISH_MARKET_PRESETS,
+        )
+
+        n = len(request.load_kw)
+        load_kw = np.array(request.load_kw)
+        pv_kw = np.array(request.pv_generation_kw) if request.pv_generation_kw else np.zeros(n)
+        buy_prices = np.array(request.buy_prices_pln_kwh)
+        sell_prices = np.array(request.sell_prices_pln_kwh) if request.sell_prices_pln_kwh else buy_prices * 0.8
+
+        if len(buy_prices) != n:
+            raise HTTPException(400, f"buy_prices length ({len(buy_prices)}) must match load_kw ({n})")
+        if len(pv_kw) != n:
+            raise HTTPException(400, f"pv_generation_kw length ({len(pv_kw)}) must match load_kw ({n})")
+
+        # Peak limit defaults to 80% of max load
+        peak_limit = request.peak_limit_kw or float(np.max(load_kw) * 0.8)
+
+        # Build market preset with optional overrides
+        market = POLISH_MARKET_PRESETS.get(request.market_year, PolishMarketPreset(year=request.market_year))
+        if request.afrr_up_capacity_pln_mw_h is not None:
+            market.afrr_up_capacity_pln_mw_h = request.afrr_up_capacity_pln_mw_h
+        if request.afrr_down_capacity_pln_mw_h is not None:
+            market.afrr_down_capacity_pln_mw_h = request.afrr_down_capacity_pln_mw_h
+        if request.mfrr_up_capacity_pln_mw_h is not None:
+            market.mfrr_up_capacity_pln_mw_h = request.mfrr_up_capacity_pln_mw_h
+        if request.capacity_market_pln_mw_year is not None:
+            market.capacity_market_pln_mw_year = request.capacity_market_pln_mw_year
+        market.aggregator_margin_pct = request.aggregator_margin_pct
+
+        # Map service strings to enum
+        service_types = []
+        for svc_name in request.services_enabled:
+            try:
+                service_types.append(AncillaryServiceType(svc_name))
+            except ValueError:
+                raise HTTPException(400, f"Unknown service: {svc_name}. Valid: {[s.value for s in AncillaryServiceType]}")
+
+        # Create virtualizer with default allocation
+        virt_config = BatteryVirtualizer.create_default_allocation(
+            total_power_kw=request.battery_power_kw,
+            total_energy_kwh=request.battery_energy_kwh,
+            services=service_types,
+            roundtrip_efficiency=request.roundtrip_efficiency,
+        )
+
+        # Create optimizer
+        optimizer = StackedServiceOptimizer(virt_config, market, request.market_year)
+
+        if request.optimize_mode == "year" and n >= 8760:
+            # Full year optimization
+            result = optimizer.optimize_year(
+                buy_prices=buy_prices,
+                sell_prices=sell_prices,
+                load_kw=load_kw,
+                pv_kw=pv_kw,
+                peak_limit_kw=peak_limit,
+                dt_hours=request.dt_hours,
+            )
+
+            response = AncillaryServiceResponse(
+                status="optimal",
+                revenue={
+                    "btm_savings_pln": result.btm_savings_pln,
+                    "ancillary_gross_pln": result.ancillary_revenue.total_gross_revenue_pln,
+                    "ancillary_net_pln": result.ancillary_revenue.total_net_revenue_pln,
+                    "aggregator_fees_pln": result.ancillary_revenue.total_aggregator_fees_pln,
+                    "degradation_cost_pln": result.ancillary_revenue.total_degradation_cost_pln,
+                    "total_annual_revenue_pln": result.total_annual_revenue_pln,
+                    "services": {
+                        svc.service_type.value: {
+                            "gross_pln": svc.gross_revenue_pln,
+                            "net_pln": svc.net_revenue_pln,
+                            "aggregator_fee_pln": svc.aggregator_fee_pln,
+                        }
+                        for svc in result.ancillary_revenue.services
+                    },
+                },
+                metrics={
+                    "total_efc": result.total_efc,
+                    "btm_efc": result.btm_efc,
+                    "ancillary_throughput_mwh": result.ancillary_revenue.total_throughput_mwh,
+                    "optimization_time_s": round(time.time() - start_time, 2),
+                },
+                allocation=result.allocation_summary,
+                warnings=result.warnings,
+                stacked_total={
+                    "total_annual_revenue_pln": result.total_annual_revenue_pln,
+                    "btm_share_pct": result.btm_savings_pln / max(result.total_annual_revenue_pln, 1) * 100,
+                    "ancillary_share_pct": result.ancillary_revenue.total_net_revenue_pln / max(result.total_annual_revenue_pln, 1) * 100,
+                },
+            )
+        else:
+            # Single day (or short period) optimization
+            day_result = optimizer.optimize_day(
+                buy_prices=buy_prices[:min(n, 24)],
+                sell_prices=sell_prices[:min(n, 24)],
+                load_kw=load_kw[:min(n, 24)],
+                pv_kw=pv_kw[:min(n, 24)],
+                peak_limit_kw=peak_limit,
+                dt_hours=request.dt_hours,
+            )
+
+            if day_result.get("status") != "optimal":
+                return AncillaryServiceResponse(
+                    status="failed",
+                    revenue={},
+                    metrics={},
+                    allocation={},
+                    warnings=[day_result.get("error", "LP optimization failed")],
+                )
+
+            rev = day_result["revenue"]
+            met = day_result["metrics"]
+
+            # Annualize daily results
+            annual_factor = 365
+            response = AncillaryServiceResponse(
+                status="optimal",
+                revenue={
+                    "daily": rev,
+                    "annualized": {
+                        k: v * annual_factor for k, v in rev.items()
+                    },
+                },
+                metrics={
+                    "daily": met,
+                    "annualized_efc": met.get("efc", 0) * annual_factor,
+                    "optimization_time_s": round(time.time() - start_time, 2),
+                },
+                allocation={
+                    "avg_afrr_up_kw": met.get("avg_afrr_up_reserved_kw", 0),
+                    "avg_afrr_down_kw": met.get("avg_afrr_down_reserved_kw", 0),
+                    "avg_mfrr_up_kw": met.get("avg_mfrr_up_reserved_kw", 0),
+                },
+                schedule_summary={
+                    "total_charge_kwh": met.get("total_charge_kwh", 0),
+                    "total_discharge_kwh": met.get("total_discharge_kwh", 0),
+                    "throughput_mwh": met.get("throughput_mwh", 0),
+                },
+                stacked_total={
+                    "daily_total_pln": rev.get("net_total_pln", 0),
+                    "annualized_total_pln": rev.get("net_total_pln", 0) * annual_factor,
+                    "btm_pln": rev.get("total_btm_pln", 0),
+                    "ancillary_pln": rev.get("total_ancillary_pln", 0),
+                },
+            )
+
+        return response
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(500, f"Ancillary services module not available: {str(e)}. Install scipy.")
+    except Exception as e:
+        raise HTTPException(500, f"Ancillary services optimization error: {str(e)}")
+
+
+@app.get("/api/bess-dispatch/ancillary-services/market-presets")
+async def get_market_presets():
+    """Get available Polish market presets for ancillary services."""
+    try:
+        from ancillary_services.models import POLISH_MARKET_PRESETS
+        return {
+            "presets": {
+                str(year): preset.model_dump()
+                for year, preset in POLISH_MARKET_PRESETS.items()
+            },
+            "available_services": [
+                {"id": "aFRR_up", "name": "aFRR Up (discharge)", "platform": "PICASSO"},
+                {"id": "aFRR_down", "name": "aFRR Down (charge)", "platform": "PICASSO"},
+                {"id": "mFRR_up", "name": "mFRR Up (discharge)", "platform": "MARI"},
+                {"id": "mFRR_down", "name": "mFRR Down (charge)", "platform": "MARI"},
+                {"id": "fcr", "name": "FCR (symmetric)", "platform": "FCR Cooperation"},
+                {"id": "capacity_market", "name": "Rynek Mocy", "platform": "PSE"},
+                {"id": "energy_arbitrage", "name": "Energy Arbitrage", "platform": "RDN/TGE"},
+                {"id": "peak_shaving", "name": "Peak Shaving", "platform": "Behind-meter"},
+                {"id": "pv_surplus", "name": "PV Surplus", "platform": "Behind-meter"},
+            ],
+        }
+    except ImportError:
+        raise HTTPException(500, "Ancillary services module not available")
+
+
+# =============================================================================
+# Monte Carlo BESS — Stochastic Investment Analysis
+# =============================================================================
+
+# In-memory job store for async MC jobs (with TTL cleanup)
+_mc_jobs: Dict[str, Any] = {}
+_MC_JOB_TTL_SECONDS = 3600  # 1 hour
+
+
+class MCStartResponse(BaseModel):
+    job_id: str
+    message: str
+
+
+@app.post("/api/bess-dispatch/monte-carlo/start", response_model=MCStartResponse)
+async def start_monte_carlo_bess(request_body: Dict[str, Any]):
+    """
+    Start async Monte Carlo BESS simulation.
+
+    Returns job_id immediately. Poll /monte-carlo/status/{job_id} for progress.
+    """
+    import asyncio
+
+    try:
+        from monte_carlo_bess.models import MCBessRequest, MCBessJobStatus, SimulationMode
+        from monte_carlo_bess.models import JobState
+        from monte_carlo_bess.engine import MonteCarlosBessEngine
+    except ImportError as e:
+        raise HTTPException(500, f"Monte Carlo BESS module not available: {e}")
+
+    # Parse and validate request
+    try:
+        mc_request = MCBessRequest(**request_body)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid request: {e}")
+
+    job_id = str(uuid.uuid4())[:12]
+
+    # Initialize job status
+    _mc_jobs[job_id] = {
+        "state": "running",
+        "progress_pct": 0.0,
+        "iterations_done": 0,
+        "iterations_target": 0,
+        "message": "Inicjalizacja symulacji...",
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+
+    async def _run_mc():
+        try:
+            engine = MonteCarlosBessEngine()
+
+            def on_progress(done, total, partial):
+                _mc_jobs[job_id]["iterations_done"] = done
+                _mc_jobs[job_id]["iterations_target"] = total
+                _mc_jobs[job_id]["progress_pct"] = round(done / max(total, 1) * 100, 1)
+                _mc_jobs[job_id]["message"] = f"Iteracja {done}/{total}..."
+
+            # Run in thread to avoid blocking event loop
+            import concurrent.futures
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = await loop.run_in_executor(
+                    pool,
+                    lambda: engine.run(mc_request, progress_callback=on_progress)
+                )
+
+            _mc_jobs[job_id]["state"] = "done"
+            _mc_jobs[job_id]["progress_pct"] = 100.0
+            _mc_jobs[job_id]["result"] = result.model_dump()
+            _mc_jobs[job_id]["message"] = f"Zakończono w {result.computation_time_ms:.0f} ms"
+
+        except Exception as e:
+            import traceback
+            _mc_jobs[job_id]["state"] = "failed"
+            _mc_jobs[job_id]["error"] = str(e)
+            _mc_jobs[job_id]["message"] = f"Błąd: {e}"
+            print(f"[MC BESS] Job {job_id} failed: {traceback.format_exc()}")
+
+    # Fire and forget
+    asyncio.create_task(_run_mc())
+
+    return MCStartResponse(job_id=job_id, message="Symulacja Monte Carlo BESS uruchomiona")
+
+
+@app.get("/api/bess-dispatch/monte-carlo/status/{job_id}")
+async def get_monte_carlo_status(job_id: str):
+    """Poll Monte Carlo BESS job status and partial/final results."""
+    if job_id not in _mc_jobs:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    job = _mc_jobs[job_id]
+    return {
+        "job_id": job_id,
+        "state": job["state"],
+        "progress_pct": job["progress_pct"],
+        "iterations_done": job["iterations_done"],
+        "iterations_target": job["iterations_target"],
+        "message": job["message"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "elapsed_ms": (time.time() - job["created_at"]) * 1000,
+    }
+
+
+@app.post("/api/bess-dispatch/monte-carlo/sync")
+async def run_monte_carlo_bess_sync(request_body: Dict[str, Any]):
+    """
+    Synchronous Monte Carlo BESS (for small simulations / quick mode).
+
+    Use /monte-carlo/start for large simulations.
+    """
+    try:
+        from monte_carlo_bess.models import MCBessRequest
+        from monte_carlo_bess.engine import MonteCarlosBessEngine
+    except ImportError as e:
+        raise HTTPException(500, f"Monte Carlo BESS module not available: {e}")
+
+    try:
+        mc_request = MCBessRequest(**request_body)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid request: {e}")
+
+    engine = MonteCarlosBessEngine()
+    result = engine.run(mc_request)
+    return result.model_dump()
+
+
+@app.delete("/api/bess-dispatch/monte-carlo/jobs:cleanup")
+async def cleanup_mc_jobs():
+    """Remove MC jobs older than TTL (1 hour)."""
+    now = time.time()
+    expired = [
+        jid for jid, job in _mc_jobs.items()
+        if now - job.get("created_at", 0) > _MC_JOB_TTL_SECONDS
+    ]
+    for jid in expired:
+        del _mc_jobs[jid]
+    return {"deleted": len(expired), "remaining": len(_mc_jobs)}
+
+
+# Background TTL cleanup task
+async def _mc_ttl_cleanup_loop():
+    """Periodic cleanup of expired MC jobs (runs every 60s)."""
+    import asyncio
+    while True:
+        await asyncio.sleep(60)
+        now = time.time()
+        expired = [
+            jid for jid, job in _mc_jobs.items()
+            if now - job.get("created_at", 0) > _MC_JOB_TTL_SECONDS
+        ]
+        for jid in expired:
+            del _mc_jobs[jid]
+
+
+@app.on_event("startup")
+async def _start_mc_cleanup():
+    import asyncio
+    asyncio.create_task(_mc_ttl_cleanup_loop())
+
+
+# =============================================================================
+# Tariff Cost Comparison — energy cost per tariff for a given load profile
+# =============================================================================
+
+class TariffCostComparisonRequest(BaseModel):
+    """Compare energy costs across all OSD tariffs + RDN for a load profile."""
+    load_kw: List[float]
+    start_date: str = "2025-01-01"
+    interval_minutes: int = 60
+
+
+class TariffCostResult(BaseModel):
+    tariff_id: str
+    tariff_name: str
+    osd: str
+    group: str
+    annual_cost_pln: float
+    avg_rate_pln_kwh: float
+    total_energy_mwh: float
+    zone_breakdown: Dict[str, Any] = {}
+
+
+class TariffCostComparisonResponse(BaseModel):
+    results: List[TariffCostResult]
+    rdn_result: Optional[TariffCostResult] = None
+    total_energy_mwh: float
+    cheapest: Optional[str] = None
+    most_expensive: Optional[str] = None
+
+
+@app.post("/tariff-cost-comparison", response_model=TariffCostComparisonResponse)
+async def tariff_cost_comparison(request: TariffCostComparisonRequest):
+    """
+    For each OSD tariff preset (matching the year from start_date),
+    calculate annual energy cost for the given load profile.
+    Also calculates RDN cost if data is available.
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    from osd_tariffs.presets.templates import ALL_PRESETS
+    from osd_tariffs.compiler import TariffCompiler
+    from datetime import date as dt_date, timedelta as td
+
+    load = np.array(request.load_kw, dtype=np.float64)
+    n_hours = len(load)
+    hours_per_step = request.interval_minutes / 60.0
+    energy_kwh = load * hours_per_step  # kWh per interval
+    total_energy_mwh = float(np.sum(energy_kwh) / 1000.0)
+
+    start = dt_date.fromisoformat(request.start_date)
+    year = start.year
+    n_days = n_hours * request.interval_minutes // (60 * 24)
+    end = start + td(days=max(n_days - 1, 0))
+
+    results: List[TariffCostResult] = []
+
+    # Filter presets by year
+    for tid, tariff in ALL_PRESETS.items():
+        if f"_{year}" not in tid:
+            continue
+
+        try:
+            compiler = TariffCompiler(tariff)
+            compiled_range = compiler.compile_range(start, end)
+
+            # Build hourly rate array
+            rates = []
+            current = start
+            while current <= end:
+                day = compiled_range.get(current)
+                if day:
+                    rates.extend(day.hourly_rates)
+                else:
+                    rates.extend([0.65] * 24)
+                current += td(days=1)
+
+            rates_arr = np.array(rates[:n_hours], dtype=np.float64)
+            if len(rates_arr) < n_hours:
+                rates_arr = np.pad(rates_arr, (0, n_hours - len(rates_arr)),
+                                   constant_values=rates_arr[-1] if len(rates_arr) > 0 else 0.65)
+
+            cost_pln = float(np.sum(energy_kwh * rates_arr))
+            avg_rate = cost_pln / max(np.sum(energy_kwh), 1e-9)
+
+            # Zone breakdown
+            zone_costs: Dict[str, float] = {}
+            zone_energy: Dict[str, float] = {}
+            zone_hours_map: Dict[str, int] = {}
+            for i in range(min(n_hours, len(rates))):
+                current_day = start + td(days=i // 24)
+                day = compiled_range.get(current_day)
+                zone_name = "FLAT"
+                if day and (i % 24) < len(day.hourly_zones):
+                    zone_name = day.hourly_zones[i % 24].value
+                zone_costs[zone_name] = zone_costs.get(zone_name, 0) + energy_kwh[i] * rates_arr[i]
+                zone_energy[zone_name] = zone_energy.get(zone_name, 0) + energy_kwh[i]
+                zone_hours_map[zone_name] = zone_hours_map.get(zone_name, 0) + 1
+
+            breakdown = {}
+            for z in zone_costs:
+                breakdown[z] = {
+                    "cost_pln": round(zone_costs[z], 2),
+                    "energy_kwh": round(zone_energy[z], 2),
+                    "hours": zone_hours_map[z],
+                    "avg_rate": round(zone_costs[z] / max(zone_energy[z], 1e-9), 4),
+                }
+
+            results.append(TariffCostResult(
+                tariff_id=tid,
+                tariff_name=tariff.name,
+                osd=tariff.osd,
+                group=tariff.group,
+                annual_cost_pln=round(cost_pln, 2),
+                avg_rate_pln_kwh=round(avg_rate, 4),
+                total_energy_mwh=total_energy_mwh,
+                zone_breakdown=breakdown,
+            ))
+        except Exception as e:
+            _log.warning(f"Tariff comparison failed for {tid}: {e}")
+
+    # RDN prices — always use current/recent year, NOT the data year
+    # Strategy: fetch current year (as much as available), backfill from prev year
+    rdn_result = None
+    try:
+        from rdn_prices import fetch_rdn_prices
+        from datetime import date as _dt
+
+        now = _dt.today()
+        current_year = now.year
+        # If we're in Jan, use previous year as base
+        rdn_year = current_year if now.month >= 2 else current_year - 1
+
+        # 1) Fetch current year data (Jan 1 to today)
+        rdn_current = fetch_rdn_prices(
+            f"{rdn_year}-01-01",
+            now.isoformat(),
+        )
+        current_hours = len(rdn_current)
+        _log.info(f"RDN: fetched {current_hours} hourly records for {rdn_year} (up to {now})")
+
+        # 2) If we don't have a full year, backfill remaining with prev year
+        rdn_backfill = []
+        needed_hours = 8760 - current_hours
+        if needed_hours > 0:
+            prev_year = rdn_year - 1
+            # Calculate which day to start backfill from
+            if current_hours > 0:
+                last_ts = rdn_current[-1]["udtczas"]
+                # Parse last timestamp to get the next day
+                try:
+                    last_dt = _dt.fromisoformat(last_ts.split("T")[0])
+                    backfill_start_day = last_dt.day
+                    backfill_start_month = last_dt.month
+                except Exception:
+                    backfill_start_month = now.month
+                    backfill_start_day = now.day
+                backfill_from = f"{prev_year}-{backfill_start_month:02d}-{backfill_start_day:02d}"
+            else:
+                backfill_from = f"{prev_year}-01-01"
+
+            rdn_backfill = fetch_rdn_prices(
+                backfill_from,
+                f"{prev_year}-12-31",
+            )
+            _log.info(f"RDN: backfilled {len(rdn_backfill)} hours from {prev_year} ({backfill_from} onwards)")
+
+        # 3) Combine: current year first, then backfill
+        rdn_combined = rdn_current + rdn_backfill
+        rdn_label_parts = [str(rdn_year)]
+        if rdn_backfill:
+            rdn_label_parts.append(f"+{rdn_year - 1}")
+
+        if rdn_combined:
+            rdn_rates = np.array([r["rce_pln_kwh"] for r in rdn_combined], dtype=np.float64)
+            # Trim or pad to n_hours
+            if len(rdn_rates) < n_hours:
+                repeats = (n_hours + len(rdn_rates) - 1) // len(rdn_rates)
+                rdn_rates = np.tile(rdn_rates, repeats)[:n_hours]
+            else:
+                rdn_rates = rdn_rates[:n_hours]
+
+            rdn_cost = float(np.sum(energy_kwh * rdn_rates))
+            rdn_avg = rdn_cost / max(np.sum(energy_kwh), 1e-9)
+            rdn_result = TariffCostResult(
+                tariff_id="rdn_spot",
+                tariff_name=f"RDN Spot {'/'.join(rdn_label_parts)}",
+                osd="PSE",
+                group="RDN",
+                annual_cost_pln=round(rdn_cost, 2),
+                avg_rate_pln_kwh=round(rdn_avg, 4),
+                total_energy_mwh=total_energy_mwh,
+                zone_breakdown={
+                    "stats": {
+                        "min_pln_kwh": round(float(np.min(rdn_rates)), 4),
+                        "max_pln_kwh": round(float(np.max(rdn_rates)), 4),
+                        "avg_pln_kwh": round(float(np.mean(rdn_rates)), 4),
+                        "p25_pln_kwh": round(float(np.percentile(rdn_rates, 25)), 4),
+                        "p75_pln_kwh": round(float(np.percentile(rdn_rates, 75)), 4),
+                    },
+                    "source": {
+                        "current_year": rdn_year,
+                        "current_hours": current_hours,
+                        "backfill_year": rdn_year - 1 if rdn_backfill else None,
+                        "backfill_hours": len(rdn_backfill),
+                        "total_hours": len(rdn_combined),
+                    }
+                },
+            )
+    except Exception as e:
+        _log.warning(f"RDN cost comparison failed: {e}")
+        import traceback
+        _log.warning(traceback.format_exc())
+
+    # Sort by cost
+    results.sort(key=lambda r: r.annual_cost_pln)
+
+    cheapest = results[0].tariff_id if results else None
+    most_expensive = results[-1].tariff_id if results else None
+
+    return TariffCostComparisonResponse(
+        results=results,
+        rdn_result=rdn_result,
+        total_energy_mwh=total_energy_mwh,
+        cheapest=cheapest,
+        most_expensive=most_expensive,
+    )
+
+
+# =============================================================================
+# BESS Arbitrage Ranking — which tariff gives best battery earnings
+# =============================================================================
+
+class BessArbitrageRankingRequest(BaseModel):
+    """Estimate BESS arbitrage potential across all tariffs."""
+    load_kw: List[float]
+    pv_kw: Optional[List[float]] = None
+    battery_power_kw: float = 200.0
+    battery_energy_kwh: float = 400.0
+    roundtrip_efficiency: float = 0.90
+    start_date: str = "2025-01-01"
+    interval_minutes: int = 60
+
+
+class ArbitrageRankingResult(BaseModel):
+    tariff_id: str
+    tariff_name: str
+    osd: str
+    group: str
+    estimated_annual_arbitrage_pln: float
+    price_spread_pln_kwh: float
+    peak_rate_pln_kwh: float
+    offpeak_rate_pln_kwh: float
+    cycles_per_year: int
+    energy_per_cycle_kwh: float
+
+
+class BessArbitrageRankingResponse(BaseModel):
+    results: List[ArbitrageRankingResult]
+    rdn_result: Optional[ArbitrageRankingResult] = None
+    best_tariff: Optional[str] = None
+    battery_spec: Dict[str, float]
+
+
+@app.post("/bess-arbitrage-ranking", response_model=BessArbitrageRankingResponse)
+async def bess_arbitrage_ranking(request: BessArbitrageRankingRequest):
+    """
+    Estimate BESS arbitrage earnings for each tariff.
+    Uses price spread analysis (fast, no full dispatch).
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    from osd_tariffs.presets.templates import ALL_PRESETS
+    from osd_tariffs.compiler import TariffCompiler
+    from datetime import date as dt_date, timedelta as td
+
+    start = dt_date.fromisoformat(request.start_date)
+    year = start.year
+    n_hours = len(request.load_kw)
+    n_days = n_hours * request.interval_minutes // (60 * 24)
+    end = start + td(days=max(n_days - 1, 0))
+
+    eff = request.roundtrip_efficiency
+    e_kwh = request.battery_energy_kwh
+    usable_kwh = e_kwh * 0.8  # SoC 10%-90%
+
+    # Capacity fee (opłata mocowa SOM) — applies 7-22 workdays only
+    SOM_RATE = 0.2194  # PLN/kWh, 2026
+
+    results: List[ArbitrageRankingResult] = []
+
+    for tid, tariff in ALL_PRESETS.items():
+        if f"_{year}" not in tid:
+            continue
+
+        try:
+            compiler = TariffCompiler(tariff)
+            compiled_range = compiler.compile_range(start, end)
+
+            # Collect FULL cost per hour: all-in rate + capacity fee
+            # all-in rate = energia czynna + dystrybucja zmienna
+            # Then sort by cost: cheapest hours=charge, most expensive=discharge
+            daily_spreads = []
+
+            current = start
+            while current <= end:
+                day = compiled_range.get(current)
+                if day:
+                    dow = current.weekday()  # 0=Mon, 6=Sun
+                    is_workday = dow < 5
+                    hourly_full_costs = []
+
+                    for h in range(24):
+                        rate = day.hourly_rates[h]  # PLN/kWh all-in
+                        full_cost = rate
+                        if is_workday and 7 <= h < 22:
+                            full_cost += SOM_RATE
+                        hourly_full_costs.append(full_cost)
+
+                    # BESS strategy: charge during cheapest hours, discharge during most expensive
+                    # Battery needs ~2-4h to charge and ~2-4h to discharge (depends on C-rate)
+                    # Use top/bottom 4 hours as proxy
+                    sorted_costs = sorted(hourly_full_costs)
+                    charge_hours = 4   # cheapest hours for charging
+                    discharge_hours = 4  # most expensive hours for discharging
+                    avg_charge = float(np.mean(sorted_costs[:charge_hours]))
+                    avg_discharge = float(np.mean(sorted_costs[-discharge_hours:]))
+                    daily_spreads.append((avg_discharge, avg_charge, avg_discharge - avg_charge))
+
+                current += td(days=1)
+
+            if not daily_spreads:
+                continue
+
+            all_discharge = [d[0] for d in daily_spreads]
+            all_charge = [d[1] for d in daily_spreads]
+            all_spread = [d[2] for d in daily_spreads]
+
+            peak_avg = float(np.mean(all_discharge))
+            offpeak_avg = float(np.mean(all_charge))
+            spread = float(np.mean(all_spread))
+
+            if spread < 0.001:
+                results.append(ArbitrageRankingResult(
+                    tariff_id=tid, tariff_name=tariff.name,
+                    osd=tariff.osd, group=tariff.group,
+                    estimated_annual_arbitrage_pln=0,
+                    price_spread_pln_kwh=0,
+                    peak_rate_pln_kwh=round(peak_avg, 4),
+                    offpeak_rate_pln_kwh=round(offpeak_avg, 4),
+                    cycles_per_year=0, energy_per_cycle_kwh=0,
+                ))
+                continue
+
+            # 1 cycle per day, 365 days/year (BESS can cycle daily)
+            cycles = 365
+
+            # Revenue per cycle: spread * usable energy * efficiency
+            revenue_per_cycle = usable_kwh * spread * eff
+            annual_arb = revenue_per_cycle * cycles
+
+            results.append(ArbitrageRankingResult(
+                tariff_id=tid,
+                tariff_name=tariff.name,
+                osd=tariff.osd,
+                group=tariff.group,
+                estimated_annual_arbitrage_pln=round(annual_arb, 2),
+                price_spread_pln_kwh=round(spread, 4),
+                peak_rate_pln_kwh=round(peak_avg, 4),
+                offpeak_rate_pln_kwh=round(offpeak_avg, 4),
+                cycles_per_year=cycles,
+                energy_per_cycle_kwh=round(usable_kwh, 1),
+            ))
+        except Exception as e:
+            _log.warning(f"Arbitrage ranking failed for {tid}: {e}")
+
+    # RDN arbitrage estimate — always use current/recent year + backfill
+    rdn_result = None
+    try:
+        from rdn_prices import fetch_rdn_prices
+        from datetime import date as _dt
+
+        now = _dt.today()
+        current_year = now.year
+        rdn_year = current_year if now.month >= 2 else current_year - 1
+
+        # 1) Fetch current year data
+        rdn_current = fetch_rdn_prices(f"{rdn_year}-01-01", now.isoformat())
+        _log.info(f"RDN arb: fetched {len(rdn_current)} hours for {rdn_year}")
+
+        # 2) Backfill from previous year if needed
+        rdn_backfill = []
+        if len(rdn_current) < 8760:
+            prev_year = rdn_year - 1
+            if rdn_current:
+                last_ts = rdn_current[-1]["udtczas"]
+                try:
+                    last_dt = _dt.fromisoformat(last_ts.split("T")[0])
+                    bf_from = f"{prev_year}-{last_dt.month:02d}-{last_dt.day:02d}"
+                except Exception:
+                    bf_from = f"{prev_year}-{now.month:02d}-{now.day:02d}"
+            else:
+                bf_from = f"{prev_year}-01-01"
+            rdn_backfill = fetch_rdn_prices(bf_from, f"{prev_year}-12-31")
+            _log.info(f"RDN arb: backfilled {len(rdn_backfill)} hours from {prev_year}")
+
+        rdn_combined = rdn_current + rdn_backfill
+        rdn_label = f"RDN Spot {rdn_year}" + (f"+{rdn_year-1}" if rdn_backfill else "")
+
+        if rdn_combined:
+            rdn_rates = np.array([r["rce_pln_kwh"] for r in rdn_combined], dtype=np.float64)
+            # RDN: split into peak hours (workday 7-22) and offpeak (rest)
+            # Add capacity fee SOM to peak hours
+            peak_rdn = []
+            offpeak_rdn = []
+            for rec in rdn_combined:
+                rate = rec["rce_pln_kwh"]
+                ts = rec.get("udtczas", "")
+                try:
+                    from datetime import datetime as _datetime
+                    dt_rec = _datetime.fromisoformat(ts.replace("Z", "+00:00")) if "T" in ts else None
+                    if dt_rec:
+                        h = dt_rec.hour
+                        dow = dt_rec.weekday()
+                        is_peak = dow < 5 and 7 <= h < 22
+                        if is_peak:
+                            peak_rdn.append(rate + SOM_RATE)
+                        else:
+                            offpeak_rdn.append(rate)
+                    else:
+                        offpeak_rdn.append(rate)
+                except Exception:
+                    offpeak_rdn.append(rate)
+
+            if peak_rdn and offpeak_rdn:
+                peak_avg = float(np.mean(peak_rdn))
+                offpeak_avg = float(np.mean(offpeak_rdn))
+                spread = peak_avg - offpeak_avg
+            else:
+                p25 = float(np.percentile(rdn_rates, 25))
+                p75 = float(np.percentile(rdn_rates, 75))
+                peak_avg = p75 + SOM_RATE
+                offpeak_avg = p25
+                spread = peak_avg - offpeak_avg
+
+            cycles = 365
+            annual_arb = usable_kwh * spread * eff * cycles
+
+            rdn_result = ArbitrageRankingResult(
+                tariff_id="rdn_spot",
+                tariff_name=rdn_label,
+                osd="PSE",
+                group="RDN",
+                estimated_annual_arbitrage_pln=round(annual_arb, 2),
+                price_spread_pln_kwh=round(spread, 4),
+                peak_rate_pln_kwh=round(peak_avg, 4),
+                offpeak_rate_pln_kwh=round(offpeak_avg, 4),
+                cycles_per_year=cycles,
+                energy_per_cycle_kwh=round(usable_kwh, 1),
+            )
+    except Exception as e:
+        _log.warning(f"RDN arbitrage ranking failed: {e}")
+
+    # Sort by arbitrage potential (descending)
+    results.sort(key=lambda r: r.estimated_annual_arbitrage_pln, reverse=True)
+    best = results[0].tariff_id if results and results[0].estimated_annual_arbitrage_pln > 0 else None
+
+    return BessArbitrageRankingResponse(
+        results=results,
+        rdn_result=rdn_result,
+        best_tariff=best,
+        battery_spec={
+            "power_kw": request.battery_power_kw,
+            "energy_kwh": request.battery_energy_kwh,
+            "usable_kwh": usable_kwh,
+            "roundtrip_efficiency": eff,
+        },
+    )
 
 
 # =============================================================================

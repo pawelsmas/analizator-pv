@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Analiza Ekonomiczna</title>
-  <link rel="stylesheet" href="styles.css?v=20260111-portal">
+  <link rel="stylesheet" href="styles.css?v=20260118-PULS-DNIA">
 </head>
 <body>
 <div class="economics-container">
@@ -161,6 +161,9 @@
     <!-- Spacer for fixed selector -->
     <div style="height:10px"></div>
 
+    <!-- K-class Warning/Info Banner -->
+    <div id="kclassWarningBanner" style="display:none;padding:10px 16px;margin-bottom:12px;border:1px solid #ff9800;border-radius:6px;font-size:13px;color:#fff;"></div>
+
     <div class="content-grid">
     <!-- BESS Source Selector -->
     <div id="bessSourceSection" class="bess-source-section" style="display:none;background:#f8f9fa;border:1px solid #dee2e6;border-radius:8px;padding:12px 16px;margin-bottom:16px;">
@@ -232,7 +235,6 @@
         <span>Taryfa: <strong id="sbTariff">-</strong></span>
       </div>
     </div>
-
     <!-- ================================================================== -->
     <!-- SEKCJA 1: ANALIZA CAPEX - PERSPEKTYWA INWESTORA                   -->
     <!-- ================================================================== -->
@@ -383,6 +385,42 @@
         Porównanie przychodów z kosztami w czasie
       </div>
       <canvas id="revenueVsCosts"></canvas>
+    </div>
+
+    <!-- PULS DNIA - Premium 24h Energy Flow Visualization -->
+    <div class="chart-section full-width puls-dnia-section" id="pulsDniaSection" style="padding:0;overflow:hidden;">
+      <!-- No data placeholder -->
+      <div id="pulsDniaNoData" class="variant-scan-no-data" style="background:linear-gradient(180deg, #0a1628 0%, #1a2744 100%);border-radius:12px;min-height:500px;">
+        <div class="no-data-icon" style="color:#4a9eff;">📊</div>
+        <p style="color:#8899aa;">Dane dostępne po załadowaniu konfiguracji instalacji PV</p>
+      </div>
+
+      <!-- Premium visualization canvas -->
+      <div id="pulsDniaContent" style="display:none;position:relative;">
+        <canvas id="pulsDniaCanvas" style="width:100%;border-radius:12px;"></canvas>
+        <!-- Controls overlay - calendar selector -->
+        <div style="position:absolute;top:12px;right:12px;display:flex;gap:8px;z-index:10;align-items:center;">
+          <select id="pulsDniaMonth" onchange="updatePulsDniaCalendar()" style="padding:6px 10px;border-radius:6px;border:1px solid #3a4a6a;background:#1a2744;color:#fff;font-size:12px;cursor:pointer;">
+            <option value="1">Styczeń</option>
+            <option value="2">Luty</option>
+            <option value="3">Marzec</option>
+            <option value="4">Kwiecień</option>
+            <option value="5">Maj</option>
+            <option value="6" selected>Czerwiec</option>
+            <option value="7">Lipiec</option>
+            <option value="8">Sierpień</option>
+            <option value="9">Wrzesień</option>
+            <option value="10">Październik</option>
+            <option value="11">Listopad</option>
+            <option value="12">Grudzień</option>
+          </select>
+          <select id="pulsDniaDay" onchange="generatePulsDniaChart()" style="padding:6px 10px;border-radius:6px;border:1px solid #3a4a6a;background:#1a2744;color:#fff;font-size:12px;cursor:pointer;min-width:55px;">
+            <!-- Days populated by JS -->
+          </select>
+          <button onclick="exportPulsDniaToExcel()" style="padding:6px 12px;border-radius:6px;border:1px solid #3a4a6a;background:#1a2744;color:#4a9eff;font-size:12px;cursor:pointer;">📥 Export CSV</button>
+          <button onclick="exportPvYearlyExcel()" style="padding:6px 12px;border-radius:6px;border:1px solid #3a4a6a;background:#1a2744;color:#27ae60;font-size:12px;cursor:pointer;font-weight:600;">📊 Excel 8760h (rok)</button>
+        </div>
+      </div>
     </div>
 
     <!-- Tabela przychodów i kosztów -->
@@ -574,8 +612,11 @@
             <a href="#" onclick="exportEaaSToExcelWithFormulas();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
               📊 Z formułami (audyt CFO)
             </a>
-            <a href="#" onclick="exportEaaSToExcel();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+            <a href="#" onclick="exportEaaSToExcel();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
               ⚡ Szybki (wartości)
+            </a>
+            <a href="#" onclick="exportPvYearlyExcel();hideExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;background:#f0fff0">
+              📊 Rozliczenie godzinowe 8760h (PV)
             </a>
           </div>
         </div>
@@ -596,6 +637,93 @@
 
       <div id="eaasResults"></div>
 
+      <!-- EaaS + BESS Synergy Section (NEW) -->
+      <div id="eaasBessSynergySection" style="display:none;margin-top:20px;background:#e3f2fd;padding:20px;border-radius:8px;border-left:4px solid #1976d2">
+        <div style="font-size:14px;font-weight:600;color:#1565c0;margin-bottom:16px">
+          🔋 Synergia EaaS + BESS
+          <span style="font-size:11px;font-weight:normal;color:#666;margin-left:8px">(uwzględnia arbitraż, peak-shaving, opłatę mocową)</span>
+        </div>
+
+        <!-- Row 1: Price comparison -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Cena z sieci</div>
+            <div id="eaasBessGridPrice" style="font-size:20px;font-weight:700;color:#e53935">–</div>
+            <div style="font-size:10px;color:#888">PLN/MWh</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Cena EaaS (bazowa)</div>
+            <div id="eaasBessBasePrice" style="font-size:20px;font-weight:700;color:#fb8c00">–</div>
+            <div style="font-size:10px;color:#888">PLN/MWh</div>
+          </div>
+          <div style="text-align:center;background:#e8f5e9;padding:14px;border-radius:6px;border:2px solid #4caf50">
+            <div style="font-size:11px;color:#2e7d32;margin-bottom:4px;font-weight:600">Cena EaaS NETTO</div>
+            <div id="eaasBessNetPrice" style="font-size:22px;font-weight:700;color:#2e7d32">–</div>
+            <div style="font-size:10px;color:#666">PLN/MWh (po BESS savings)</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Premia vs sieć</div>
+            <div id="eaasBessPremium" style="font-size:20px;font-weight:700;color:#7b1fa2">–</div>
+            <div style="font-size:10px;color:#888">% taniej</div>
+          </div>
+        </div>
+
+        <!-- Row 2: Subscription and BESS metrics -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Abonament bazowy</div>
+            <div id="eaasBessBaseSub" style="font-size:18px;font-weight:600;color:#455a64">–</div>
+            <div style="font-size:10px;color:#888">tys. PLN/rok</div>
+          </div>
+          <div style="text-align:center;background:#fff3e0;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#e65100;margin-bottom:4px">Oszczędności BESS</div>
+            <div id="eaasBessSavings" style="font-size:18px;font-weight:600;color:#e65100">–</div>
+            <div style="font-size:10px;color:#888">tys. PLN/rok</div>
+          </div>
+          <div style="text-align:center;background:#e8f5e9;padding:14px;border-radius:6px;border:2px solid #4caf50">
+            <div style="font-size:11px;color:#2e7d32;margin-bottom:4px;font-weight:600">Abonament NETTO</div>
+            <div id="eaasBessNetSub" style="font-size:18px;font-weight:600;color:#2e7d32">–</div>
+            <div style="font-size:10px;color:#666">tys. PLN/rok</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Rabat BESS</div>
+            <div id="eaasBessDiscount" style="font-size:18px;font-weight:600;color:#00897b">–</div>
+            <div style="font-size:10px;color:#888">% abonamentu</div>
+          </div>
+        </div>
+
+        <!-- Row 3: BESS economics -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px">
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">CAPEX BESS</div>
+            <div id="eaasBessCapex" style="font-size:18px;font-weight:600;color:#546e7a">–</div>
+            <div style="font-size:10px;color:#888">tys. PLN</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">Payback BESS</div>
+            <div id="eaasBessPayback" style="font-size:18px;font-weight:600;color:#0288d1">–</div>
+            <div style="font-size:10px;color:#888">lat</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px" title="Z arbitrażu cenowego (różnica dzień/noc)">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">💹 Arbitraż</div>
+            <div id="eaasBessArbitrage" style="font-size:18px;font-weight:600;color:#f57c00">–</div>
+            <div style="font-size:10px;color:#888">tys. PLN/rok</div>
+          </div>
+          <div style="text-align:center;background:#fff;padding:14px;border-radius:6px" title="Z redukcji szczytów mocy">
+            <div style="font-size:11px;color:#666;margin-bottom:4px">📉 Peak Shaving</div>
+            <div id="eaasBessPeakShaving" style="font-size:18px;font-weight:600;color:#7b1fa2">–</div>
+            <div style="font-size:10px;color:#888">tys. PLN/rok</div>
+          </div>
+        </div>
+
+        <!-- Info tooltip -->
+        <div style="padding:10px;background:#fff;border-radius:6px;font-size:11px;color:#666">
+          <strong>Legenda:</strong>
+          Cena EaaS NETTO = (Abonament − Oszczędności BESS) / Autokonsumpcja |
+          Premia vs sieć = (Cena sieci − Cena EaaS netto) / Cena sieci × 100%
+        </div>
+      </div>
+
       <!-- EaaS Year-by-Year Table -->
       <div class="table-wrapper" style="margin-top:24px">
         <h3 style="font-size:16px;margin-bottom:12px;color:#2c3e50">Analiza EaaS Rok po Roku z NPV</h3>
@@ -606,11 +734,12 @@
               <th>Deg PV<br/><span class="unit">%</span></th>
               <th>Deg BESS<br/><span class="unit">%</span></th>
               <th>Zużycie<br/><span class="unit">MWh</span></th>
-              <th>Koszt OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Koszt BEZ PV<br/><span class="unit">tys. PLN</span></th>
               <th>Auto PV<br/><span class="unit">MWh</span></th>
               <th>Auto BESS<br/><span class="unit">MWh</span></th>
               <th>Suma Auto<br/><span class="unit">MWh</span></th>
-              <th>Równow. OSD<br/><span class="unit">tys. PLN</span></th>
+              <th>Koszt Z PV<br/><span class="unit">tys. PLN</span></th>
+              <th>Oszczędn. PV<br/><span class="unit">tys. PLN</span></th>
               <th>Koszt EaaS<br/><span class="unit">tys. PLN</span></th>
               <th>Oszczędn.<br/><span class="unit">tys. PLN</span></th>
               <th>NPV<br/><span class="unit">mln PLN</span></th>
@@ -890,6 +1019,17 @@
         CFADS = Revenue - OPEX - Taxes - MaintCapex ± ΔWC<br>
         DSCR = CFADS / DebtService<br>
         Avg DSCR (weighted) = Σ(CFADS) / Σ(DebtService) dla lat z DS>0
+      </div>
+
+      <!-- Export Button -->
+      <div class="bankability-export-section" style="margin-top:20px;padding-top:16px;border-top:1px solid #e0e0e0;">
+        <button class="export-btn bankability-export-btn" onclick="exportBankabilityToExcel()" title="Eksport do Excel z formułami">
+          <span class="export-icon">📥</span>
+          <span>Eksport Bankability (Excel)</span>
+        </button>
+        <span style="font-size:11px;color:#666;margin-left:12px;">
+          ✓ Formuły Excel dla audytowalności • ✓ Założenia finansowe • ✓ Tabela DSCR
+        </span>
       </div>
     </div>
 
@@ -1210,6 +1350,285 @@
     <!-- BESS Analysis Section - MOVED TO DEDICATED BESS MODULE -->
     <!-- Sekcja BESS przeniesiona do dedykowanego modułu BESS w menu głównym -->
 
+    <!-- ============== RDN vs TARYFA COMPARISON ============== -->
+    <!-- TCSL Comparison Section (Total Cost to Serve Load) -->
+    <div class="chart-section full-width" id="tcslComparisonSection" style="display:none;border-top:3px solid #1565c0;padding-top:20px;margin-top:32px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <span style="background:#e3f2fd;padding:2px 8px;border-radius:4px;font-size:11px;color:#1565c0;font-weight:600;">TCSL</span>
+        <span style="font-size:11px;color:#666;">Total Cost to Serve Load - roczny koszt obslugi obciazenia</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h2>Analiza TCSL - Taryfa vs RDN</h2>
+        <div style="display:flex;gap:8px;">
+          <button onclick="exportPvImpactExcel()" style="background:#2e7d32;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;">
+            Raport: Wplyw PV
+          </button>
+          <button onclick="exportTcslHourlyExcel()" style="background:#1565c0;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;">
+            Eksport godzinowy
+          </button>
+        </div>
+      </div>
+      <div class="chart-info">
+        TCSL = koszty zmienne (energia + oplaty) + oplata mocowa (K-class) + oplaty stale miesieczne. Porownanie scenariuszy Taryfa vs RDN.
+      </div>
+
+      <!-- Top: PV Savings Card - Gross vs Net -->
+      <div style="background:linear-gradient(135deg,#e8f5e9,#c8e6c9);border-radius:12px;padding:20px;border:1px solid #a5d6a7;margin:20px 0;">
+        <div style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:16px;">OSZCZEDNOSCI DZIEKI PV - roczne (Taryfa)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:end;">
+          <div style="text-align:center;">
+            <div style="font-size:11px;color:#555;margin-bottom:4px;">Oszcz. brutto (TCSL)</div>
+            <div style="font-size:24px;font-weight:700;color:#1b5e20;" id="tcslPvSavingsTariff">-</div>
+            <div style="font-size:10px;color:#888;">TCSL(bezPV) - TCSL(zPV)</div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:11px;color:#555;margin-bottom:4px;">Roczny koszt PV</div>
+            <div style="font-size:24px;font-weight:700;color:#c62828;" id="tcslPvAnnualCost">-</div>
+            <div style="font-size:10px;color:#888;" id="tcslPvCostBreakdown">CAPEX/okres + OPEX + ubezp.</div>
+          </div>
+          <div style="text-align:center;background:rgba(27,94,32,0.1);border-radius:8px;padding:12px;">
+            <div style="font-size:11px;color:#2e7d32;font-weight:600;margin-bottom:4px;">NETTO (realna korzysc)</div>
+            <div style="font-size:28px;font-weight:700;color:#1b5e20;" id="tcslPvNetSavingsTariff">-</div>
+            <div style="font-size:10px;color:#2e7d32;" id="tcslPvNetSavingsTariffPct">-</div>
+          </div>
+        </div>
+        <div id="tcslPvSavingsRdnWrap" hidden style="margin-top:12px;padding-top:12px;border-top:1px dashed #a5d6a7;">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:end;">
+            <div style="text-align:center;">
+              <div style="font-size:11px;color:#e65100;margin-bottom:4px;">Oszcz. brutto (RDN)</div>
+              <div style="font-size:20px;font-weight:700;color:#bf360c;" id="tcslPvSavingsRdn">-</div>
+            </div>
+            <div style="text-align:center;">
+              <div style="font-size:11px;color:#888;margin-bottom:4px;">Koszt PV (ten sam)</div>
+              <div style="font-size:20px;font-weight:700;color:#c62828;" id="tcslPvAnnualCostRdn">-</div>
+            </div>
+            <div style="text-align:center;background:rgba(191,54,12,0.08);border-radius:8px;padding:8px;">
+              <div style="font-size:11px;color:#bf360c;font-weight:600;margin-bottom:4px;">NETTO (RDN)</div>
+              <div style="font-size:22px;font-weight:700;color:#bf360c;" id="tcslPvNetSavingsRdn">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- K-class / Capacity Fee Savings Card -->
+      <div style="background:linear-gradient(135deg,#fff8e1,#ffecb3);border-radius:12px;padding:20px;border:1px solid #ffe082;margin:0 0 16px 0;">
+        <div style="font-size:13px;color:#f57f17;font-weight:600;margin-bottom:12px;">OPLATA MOCOWA - wplyw PV na klase K</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:center;">
+          <div style="text-align:center;">
+            <div style="font-size:11px;color:#888;margin-bottom:4px;">BEZ PV</div>
+            <div style="font-size:24px;font-weight:700;color:#c62828;" id="tcslCapacityNoPv">-</div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">Klasa <span id="tcslKclassNoPv" style="font-weight:600;">-</span></div>
+          </div>
+          <div style="text-align:center;">
+            <div style="font-size:11px;color:#888;margin-bottom:4px;">Z PV</div>
+            <div style="font-size:24px;font-weight:700;color:#2e7d32;" id="tcslCapacityWithPv">-</div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">Klasa <span id="tcslKclassWithPv" style="font-weight:600;">-</span></div>
+          </div>
+          <div style="text-align:center;background:rgba(46,125,50,0.08);border-radius:8px;padding:12px;">
+            <div style="font-size:11px;color:#2e7d32;font-weight:600;margin-bottom:4px;">OSZCZEDNOSC</div>
+            <div style="font-size:24px;font-weight:700;color:#1b5e20;" id="tcslCapacitySaving">-</div>
+            <div style="font-size:11px;color:#2e7d32;margin-top:2px;" id="tcslCapacitySavingPct">-</div>
+          </div>
+        </div>
+        <div id="tcslStochasticNote" hidden style="margin-top:8px;padding:6px 10px;background:rgba(255,152,0,0.08);border-radius:6px;border-left:3px solid #ff9800;"></div>
+      </div>
+
+      <!-- TCSL Breakdown Cards -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0;" id="tcslCardsGrid">
+        <!-- Card: TCSL Taryfa -->
+        <div style="background:linear-gradient(135deg,#e3f2fd,#bbdefb);border-radius:12px;padding:20px;border:1px solid #90caf9;">
+          <div style="font-size:13px;color:#1565c0;font-weight:600;margin-bottom:12px;">TCSL TARYFA (z PV)</div>
+          <div style="font-size:32px;font-weight:700;color:#0d47a1;margin-bottom:12px;" id="tcslTariffTotal">-</div>
+          <div style="font-size:12px;color:#333;line-height:1.8;">
+            <div style="display:flex;justify-content:space-between;"><span>Energia czynna:</span><span id="tcslTariffEnergy">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Oplaty zmienne:</span><span id="tcslTariffFeesVar">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Oplata mocowa (K-class):</span><span id="tcslTariffCapacity">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Stale miesieczne:</span><span id="tcslTariffFixed">-</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:4px;">
+              <span>Klasa K:</span><span id="tcslTariffKclass">-</span>
+            </div>
+          </div>
+        </div>
+        <!-- Card: TCSL RDN -->
+        <div style="background:linear-gradient(135deg,#fff3e0,#ffe0b2);border-radius:12px;padding:20px;border:1px solid #ffcc80;" id="tcslRdnCard" hidden>
+          <div style="font-size:13px;color:#e65100;font-weight:600;margin-bottom:12px;">TCSL RDN (z PV)</div>
+          <div style="font-size:32px;font-weight:700;color:#bf360c;margin-bottom:12px;" id="tcslRdnTotal">-</div>
+          <div style="font-size:12px;color:#333;line-height:1.8;">
+            <div style="display:flex;justify-content:space-between;"><span>Energia czynna (RDN):</span><span id="tcslRdnEnergy">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Oplaty zmienne:</span><span id="tcslRdnFeesVar">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Oplata mocowa (K-class):</span><span id="tcslRdnCapacity">-</span></div>
+            <div style="display:flex;justify-content:space-between;"><span>Stale miesieczne:</span><span id="tcslRdnFixed">-</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delta Card (RDN vs Tariff) -->
+      <div style="background:linear-gradient(135deg,#f3e5f5,#e1bee7);border-radius:12px;padding:20px;border:1px solid #ce93d8;margin:16px 0;" id="tcslDeltaCard" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="font-size:12px;color:#6a1b9a;font-weight:600;margin-bottom:4px;">DELTA: TCSL(Taryfa) - TCSL(RDN)</div>
+            <div style="font-size:28px;font-weight:700;" id="tcslDelta">-</div>
+            <div style="font-size:11px;color:#666;" id="tcslDeltaPct">-</div>
+          </div>
+          <div style="font-size:14px;font-weight:600;" id="tcslDeltaVerdict">-</div>
+        </div>
+      </div>
+
+      <!-- Energy Balance -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0;">
+        <div style="background:#fafafa;border-radius:8px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+          <div style="font-size:11px;color:#888;margin-bottom:4px;">Zuzycie roczne</div>
+          <div style="font-size:16px;font-weight:600;color:#333;" id="tcslConsumption">-</div>
+          <div style="font-size:10px;color:#aaa;">MWh</div>
+        </div>
+        <div style="background:#fafafa;border-radius:8px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+          <div style="font-size:11px;color:#888;margin-bottom:4px;">Produkcja PV</div>
+          <div style="font-size:16px;font-weight:600;color:#f57c00;" id="tcslProduction">-</div>
+          <div style="font-size:10px;color:#aaa;">MWh</div>
+        </div>
+        <div style="background:#fafafa;border-radius:8px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+          <div style="font-size:11px;color:#888;margin-bottom:4px;">Autokonsumpcja</div>
+          <div style="font-size:16px;font-weight:600;color:#2e7d32;" id="tcslSelfConsumed">-</div>
+          <div style="font-size:10px;color:#aaa;">MWh</div>
+        </div>
+        <div style="background:#fafafa;border-radius:8px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+          <div style="font-size:11px;color:#888;margin-bottom:4px;">Pobor z sieci</div>
+          <div style="font-size:16px;font-weight:600;color:#c62828;" id="tcslGridImport">-</div>
+          <div style="font-size:10px;color:#aaa;">MWh</div>
+        </div>
+      </div>
+
+      <!-- Monthly Chart -->
+      <div style="margin-top:20px;">
+        <h3 style="font-size:14px;color:#333;margin-bottom:12px;">TCSL miesieczny - rozbicie kosztow</h3>
+        <canvas id="tcslMonthlyChart" height="300"></canvas>
+      </div>
+
+      <!-- Monthly Table -->
+      <div style="margin-top:20px;overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;" id="tcslMonthlyTable">
+          <thead>
+            <tr style="background:#f5f5f5;border-bottom:2px solid #ddd;">
+              <th style="padding:8px;text-align:left;">Mies.</th>
+              <th style="padding:8px;text-align:right;">Pobor [MWh]</th>
+              <th style="padding:8px;text-align:right;">En. czynna T [PLN]</th>
+              <th style="padding:8px;text-align:right;">Opl. zmienne T [PLN]</th>
+              <th style="padding:8px;text-align:right;">Mocowa T [PLN]</th>
+              <th style="padding:8px;text-align:right;">Stale [PLN]</th>
+              <th style="padding:8px;text-align:right;font-weight:700;">TCSL T [PLN]</th>
+              <th style="padding:8px;text-align:right;color:#e65100;" id="tcslTableRdnHeader" hidden>TCSL RDN [PLN]</th>
+              <th style="padding:8px;text-align:right;color:#6a1b9a;" id="tcslTableDeltaHeader" hidden>Delta [PLN]</th>
+            </tr>
+          </thead>
+          <tbody id="tcslMonthlyTableBody">
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- RDN Year-by-Year NPV Analysis: CAPEX -->
+      <!-- ============================================================ -->
+      <div id="rdnCapexTableSection" style="display:none;margin-top:32px;border-top:2px solid #1565c0;padding-top:20px;">
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
+          <h3 style="font-size:16px;margin:0;color:#0d47a1;">Analiza CAPEX Rok po Roku z NPV (scenariusz RDN)</h3>
+          <div class="dropdown" style="display:inline-block;position:relative">
+            <button class="btn btn-secondary dropdown-toggle" onclick="toggleRdnCapexExportDropdown()" style="width:auto;padding:6px 16px;font-size:12px;">
+              📥 EKSPORT DO EXCEL ▼
+            </button>
+            <div id="rdnCapexExportDropdownMenu" class="dropdown-menu" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100;min-width:220px">
+              <a href="#" onclick="exportCapexRdnToExcel(true);hideRdnCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
+                📊 Z formułami (audyt CFO)
+              </a>
+              <a href="#" onclick="exportCapexRdnToExcel();hideRdnCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+                ⚡ Szybki (wartości)
+              </a>
+            </div>
+          </div>
+        </div>
+        <div id="rdnCapexInfo" style="font-size:12px;color:#555;margin-bottom:12px;"></div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;" class="payback-table">
+            <thead>
+              <tr style="background:#e3f2fd;border-bottom:2px solid #90caf9;">
+                <th style="padding:6px;text-align:center;width:40px;">Rok</th>
+                <th style="padding:6px;text-align:right;">Deg PV<br><span style="font-weight:normal;color:#888;">%</span></th>
+                <th style="padding:6px;text-align:right;">Oszcz. Energ.+Opl.<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">Oszcz. Mocowa<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">Suma Oszcz.<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">OPEX<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">CF Netto<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">NPV Skum.<br><span style="font-weight:normal;color:#888;">mln PLN</span></th>
+              </tr>
+            </thead>
+            <tbody id="rdnCapexTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- RDN Year-by-Year NPV Analysis: EaaS -->
+      <!-- ============================================================ -->
+      <div id="rdnEaasTableSection" style="display:none;margin-top:32px;border-top:2px solid #f57c00;padding-top:20px;">
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
+          <h3 style="font-size:16px;margin:0;color:#e65100;">Analiza EaaS Rok po Roku z NPV (scenariusz RDN)</h3>
+          <div class="dropdown" style="display:inline-block;position:relative">
+            <button class="btn btn-secondary dropdown-toggle" onclick="toggleRdnEaasExportDropdown()" style="width:auto;padding:6px 16px;font-size:12px;">
+              📥 EKSPORT DO EXCEL ▼
+            </button>
+            <div id="rdnEaasExportDropdownMenu" class="dropdown-menu" style="display:none;position:absolute;top:100%;left:0;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100;min-width:220px">
+              <a href="#" onclick="exportEaaSRdnToExcel(true);hideRdnEaasExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
+                📊 Z formułami (audyt CFO)
+              </a>
+              <a href="#" onclick="exportEaaSRdnToExcel();hideRdnEaasExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+                ⚡ Szybki (wartości)
+              </a>
+            </div>
+          </div>
+        </div>
+        <div id="rdnEaasInfo" style="font-size:12px;color:#555;margin-bottom:12px;"></div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;" class="payback-table">
+            <thead>
+              <tr style="background:#fff3e0;border-bottom:2px solid #ffcc80;">
+                <th style="padding:6px;text-align:center;width:40px;">Rok</th>
+                <th style="padding:6px;text-align:center;">Faza</th>
+                <th style="padding:6px;text-align:right;">Deg PV<br><span style="font-weight:normal;color:#888;">%</span></th>
+                <th style="padding:6px;text-align:right;">Oszcz. Energ.+Opl.<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">Oszcz. Mocowa<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">Suma Oszcz.<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">Koszt EaaS/O&M<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">CF Netto<br><span style="font-weight:normal;color:#888;">tys. PLN</span></th>
+                <th style="padding:6px;text-align:right;">NPV Skum.<br><span style="font-weight:normal;color:#888;">mln PLN</span></th>
+              </tr>
+            </thead>
+            <tbody id="rdnEaasTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <script>
+        function toggleRdnCapexExportDropdown() {
+          const menu = document.getElementById('rdnCapexExportDropdownMenu');
+          menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+        function hideRdnCapexExportDropdown() {
+          document.getElementById('rdnCapexExportDropdownMenu').style.display = 'none';
+        }
+        function toggleRdnEaasExportDropdown() {
+          const menu = document.getElementById('rdnEaasExportDropdownMenu');
+          menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+        function hideRdnEaasExportDropdown() {
+          document.getElementById('rdnEaasExportDropdownMenu').style.display = 'none';
+        }
+        document.addEventListener('click', function(e) {
+          if (!e.target.closest('.dropdown')) {
+            hideRdnCapexExportDropdown();
+            hideRdnEaasExportDropdown();
+          }
+        });
+      </script>
+    </div>
+
     <!-- Szczegółowe wskaźniki -->
     <div class="details-section full-width">
       <h2>Szczegółowe Wskaźniki Finansowe</h2>
@@ -1286,8 +1705,11 @@
             <a href="#" onclick="exportCapexToExcelWithFormulas();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
               📊 Z formułami (audyt CFO)
             </a>
-            <a href="#" onclick="exportCapexToExcel();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none">
+            <a href="#" onclick="exportCapexToExcel();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;border-bottom:1px solid #eee">
               ⚡ Szybki (wartości)
+            </a>
+            <a href="#" onclick="exportPvYearlyExcel();hideCapexExportDropdown();return false" style="display:block;padding:10px 16px;color:#333;text-decoration:none;background:#f0fff0">
+              📊 Rozliczenie godzinowe 8760h (PV)
             </a>
           </div>
         </div>
@@ -1442,8 +1864,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <script src="bankability.js?v=20260113-DSCR-v1"></script>
-<script src="economics.js?v=20260115-v4"></script>
-<script src="capex-export.js?v=20260116-v23-eng-charts"></script>
+<script src="economics.js?v=20260511-UI-EXCEL-PARITY"></script>
+<script src="capex-export.js?v=20260419-HOURLY-BILLING"></script>
 <script src="monte-carlo.js?v=20251224"></script>
 <script src="customer-portal.js?v=20260111-v2"></script>
 </body>
