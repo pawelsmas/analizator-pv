@@ -3450,6 +3450,42 @@ function updateKClassWidget(analysis) {
   lastKClassAnalysis = analysis;
   document.getElementById('capacityFeeKClassSection').style.display = 'block';
 
+  // Publish K-class breakdown to shell so EKONOMIA can pick it up.
+  // Only the scalar/aggregate fields — no big arrays.
+  try {
+    const payload = {
+      kclassBefore: analysis.kclassBefore,
+      kclassAfter: analysis.kclassAfter,
+      coeffBefore: analysis.coeffBefore,
+      coeffAfter: analysis.coeffAfter,
+      deltaSBefore: analysis.deltaSBefore,
+      deltaSAfter: analysis.deltaSAfter,
+      totalZsBefore: analysis.totalZsBefore,
+      totalZsAfter: analysis.totalZsAfter,
+      totalFeeBefore: analysis.totalFeeBefore,
+      totalFeeAfter: analysis.totalFeeAfter,
+      totalSavings: analysis.totalSavings,
+      savingsPercent: analysis.savingsPercent,
+      savingsFromZsReduction: analysis.savingsFromZsReduction,
+      savingsFromKclassImprovement: analysis.savingsFromKclassImprovement,
+      monthlySavings: analysis.monthlySavings,
+      kclassDistBefore: analysis.kclassDistBefore,
+      kclassDistAfter: analysis.kclassDistAfter,
+      avgPeakBefore: analysis.avgPeakBefore,
+      avgPeakAfter: analysis.avgPeakAfter,
+    };
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'K_CLASS_ANALYSIS_COMPLETE', data: payload }, '*');
+      console.log('[K-class] Published breakdown to shell:', {
+        zs: payload.savingsFromZsReduction,
+        kClass: payload.savingsFromKclassImprovement,
+        total: payload.totalSavings
+      });
+    }
+  } catch (e) {
+    console.warn('[K-class] Failed to publish to shell:', e);
+  }
+
   // Helper: get indicator - clear icons without confusing arrows
   // ✓ green = OSZCZĘDNOŚĆ (lepiej z PV)
   // ✗ red = WZROST (gorzej z PV)
